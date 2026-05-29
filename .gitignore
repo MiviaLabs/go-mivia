@@ -1,0 +1,26 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+secrets/*
+!secrets/
+!secrets/.gitignore
+!secrets/*.example
+
+# Go build and test output
+/bin/
+/build/
+/dist/
+*.test
+coverage.out
+coverage.*
+
+# Local editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temporary files
+*.tmp
+*.log
