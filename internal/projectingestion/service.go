@@ -18,8 +18,10 @@ import (
 
 var (
 	ErrProjectNotFound     = projectregistry.ErrProjectNotFound
+	ErrInvalidInput        = projectregistry.ErrInvalidInput
 	ErrProjectDisabled     = errors.New("ingestion project disabled")
 	ErrUnsupportedIngest   = errors.New("ingestion unsupported")
+	ErrIngestionNotFound   = errors.New("ingestion resource not found")
 	ErrPathEscapesRoot     = errors.New("path escapes project root")
 	ErrPathNotProjectLocal = errors.New("path must be project-relative")
 )
@@ -222,8 +224,94 @@ func (svc *Service) GetRun(ctx context.Context, projectID string, runID string) 
 	return svc.state.GetRun(ctx, strings.TrimSpace(projectID), strings.TrimSpace(runID))
 }
 
+func (svc *Service) RunMetadata(ctx context.Context, projectID string, runID string) (RunMetadata, error) {
+	run, err := svc.GetRun(ctx, projectID, runID)
+	if err != nil {
+		return RunMetadata{}, err
+	}
+	return MetadataForRun(run), nil
+}
+
 func (svc *Service) ListFileStates(ctx context.Context, projectID string, filter FileStateFilter) ([]FileState, error) {
 	return svc.state.ListFileStates(ctx, strings.TrimSpace(projectID), filter)
+}
+
+func (svc *Service) ListFiles(ctx context.Context, projectID string, filter FileStateFilter, pagination Pagination) (FileList, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return FileList{}, err
+	}
+	states, err := svc.state.ListFileStates(ctx, project.ID, filter)
+	if err != nil {
+		return FileList{}, err
+	}
+	window, nextToken, err := paginate(states, pagination)
+	if err != nil {
+		return FileList{}, err
+	}
+	files := make([]FileMetadata, 0, len(window))
+	for _, state := range window {
+		files = append(files, MetadataForFileState(project, state))
+	}
+	return FileList{Files: files, NextPageToken: nextToken}, nil
+}
+
+func (svc *Service) GetFile(ctx context.Context, projectID string, fileID string) (FileMetadata, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return FileMetadata{}, err
+	}
+	if !validOpaqueID(fileID) {
+		return FileMetadata{}, ErrInvalidInput
+	}
+	states, err := svc.state.ListFileStates(ctx, project.ID, FileStateFilter{})
+	if err != nil {
+		return FileMetadata{}, err
+	}
+	for _, state := range states {
+		if repoFileID(project.GraphNamespace, state.RelativePathHash) == fileID {
+			return MetadataForFileState(project, state), nil
+		}
+	}
+	return FileMetadata{}, ErrIngestionNotFound
+}
+
+func (svc *Service) ListChunks(ctx context.Context, projectID string, fileID string, pagination Pagination, maxChunkBytes int) (ChunkList, error) {
+	if maxChunkBytes < 0 {
+		return ChunkList{}, ErrInvalidInput
+	}
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return ChunkList{}, err
+	}
+	return svc.graph.ListChunks(ctx, project, fileID, pagination, effectiveMaxChunkBytes(project, maxChunkBytes))
+}
+
+func (svc *Service) GetChunk(ctx context.Context, projectID string, fileID string, chunkID string, maxChunkBytes int) (ChunkMetadata, error) {
+	if maxChunkBytes < 0 {
+		return ChunkMetadata{}, ErrInvalidInput
+	}
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return ChunkMetadata{}, err
+	}
+	return svc.graph.GetChunk(ctx, project, fileID, chunkID, effectiveMaxChunkBytes(project, maxChunkBytes))
+}
+
+func (svc *Service) ListSymbols(ctx context.Context, projectID string, pagination Pagination) (SymbolList, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolList{}, err
+	}
+	return svc.graph.ListSymbols(ctx, project, pagination)
+}
+
+func (svc *Service) GetSymbol(ctx context.Context, projectID string, symbolID string) (SymbolMetadata, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolMetadata{}, err
+	}
+	return svc.graph.GetSymbol(ctx, project, symbolID)
 }
 
 func (svc *Service) projectForIngestion(projectID string) (projectregistry.Project, error) {
@@ -256,6 +344,23 @@ func (svc *Service) projectForIngestion(projectID string) (projectregistry.Proje
 	}
 	project.RootPath = cleanRoot
 	project.CanonicalRootPath = canonicalRoot
+	return project, nil
+}
+
+func (svc *Service) projectForQuery(projectID string) (projectregistry.Project, error) {
+	if svc == nil || svc.registry == nil || svc.graph == nil || svc.state == nil {
+		return projectregistry.Project{}, fmt.Errorf("%w: service dependencies are required", ErrUnsupportedIngest)
+	}
+	project, ok := svc.registry.Get(strings.TrimSpace(projectID))
+	if !ok {
+		return projectregistry.Project{}, ErrProjectNotFound
+	}
+	if !project.Enabled {
+		return projectregistry.Project{}, ErrProjectDisabled
+	}
+	if project.DigestMode != projectregistry.DigestModeContentGraph {
+		return projectregistry.Project{}, fmt.Errorf("%w: digest_mode must be %q", ErrUnsupportedIngest, projectregistry.DigestModeContentGraph)
+	}
 	return project, nil
 }
 

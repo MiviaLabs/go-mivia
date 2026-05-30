@@ -40,6 +40,7 @@ type Graph interface {
 	Bootstrap(context.Context, schema.GraphSchema) error
 	PutNode(context.Context, Node) error
 	GetNode(context.Context, string, string) (Node, error)
+	ListNodes(context.Context, string, map[string]string) ([]Node, error)
 	PutRelationship(context.Context, Relationship) error
 }
 
@@ -96,6 +97,26 @@ func (graph *MemoryGraph) GetNode(_ context.Context, label string, id string) (N
 		ID:         node.ID,
 		Properties: copyProperties(node.Properties),
 	}, nil
+}
+
+func (graph *MemoryGraph) ListNodes(_ context.Context, label string, filter map[string]string) ([]Node, error) {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
+	nodes := make([]Node, 0)
+	for _, node := range graph.nodes {
+		if node.Label != label {
+			continue
+		}
+		if !matchesProperties(node.Properties, filter) {
+			continue
+		}
+		nodes = append(nodes, Node{
+			Label:      node.Label,
+			ID:         node.ID,
+			Properties: copyProperties(node.Properties),
+		})
+	}
+	return nodes, nil
 }
 
 func (graph *MemoryGraph) PutRelationship(_ context.Context, relationship Relationship) error {
@@ -156,4 +177,13 @@ func copyProperties(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func matchesProperties(properties map[string]string, filter map[string]string) bool {
+	for key, value := range filter {
+		if properties[key] != value {
+			return false
+		}
+	}
+	return true
 }

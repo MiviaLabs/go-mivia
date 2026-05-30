@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"path"
+	"sort"
 	"strconv"
 	"time"
 
@@ -12,16 +14,18 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 )
 
-type graphWriter interface {
+type graphBackend interface {
 	PutNode(context.Context, ladybug.Node) error
+	GetNode(context.Context, string, string) (ladybug.Node, error)
+	ListNodes(context.Context, string, map[string]string) ([]ladybug.Node, error)
 	PutRelationship(context.Context, ladybug.Relationship) error
 }
 
 type GraphStore struct {
-	graph graphWriter
+	graph graphBackend
 }
 
-func NewGraphStore(graph graphWriter) *GraphStore {
+func NewGraphStore(graph graphBackend) *GraphStore {
 	return &GraphStore{graph: graph}
 }
 
@@ -165,6 +169,117 @@ func (store *GraphStore) PutRun(ctx context.Context, project projectregistry.Pro
 	return store.putRelationship(ctx, "PROJECT_HAS_INGESTION_RUN", "Project", project.ID, "IngestionRun", run.ID, project.ID)
 }
 
+func (store *GraphStore) GetFile(ctx context.Context, project projectregistry.Project, fileID string) (FileMetadata, error) {
+	if !validOpaqueID(fileID) {
+		return FileMetadata{}, ErrInvalidInput
+	}
+	node, err := store.graph.GetNode(ctx, "RepoFile", fileID)
+	if errors.Is(err, ladybug.ErrNodeNotFound) {
+		return FileMetadata{}, ErrIngestionNotFound
+	}
+	if err != nil {
+		return FileMetadata{}, err
+	}
+	if node.Properties["project_id"] != project.ID {
+		return FileMetadata{}, ErrIngestionNotFound
+	}
+	return fileMetadataFromNode(node)
+}
+
+func (store *GraphStore) ListChunks(ctx context.Context, project projectregistry.Project, fileID string, pagination Pagination, maxChunkBytes int) (ChunkList, error) {
+	if _, err := store.GetFile(ctx, project, fileID); err != nil {
+		return ChunkList{}, err
+	}
+	nodes, err := store.graph.ListNodes(ctx, "ContentChunk", map[string]string{
+		"project_id":   project.ID,
+		"repo_file_id": fileID,
+	})
+	if err != nil {
+		return ChunkList{}, err
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		left, _ := strconv.Atoi(nodes[i].Properties["chunk_index"])
+		right, _ := strconv.Atoi(nodes[j].Properties["chunk_index"])
+		if left == right {
+			return nodes[i].ID < nodes[j].ID
+		}
+		return left < right
+	})
+	window, nextToken, err := paginate(nodes, pagination)
+	if err != nil {
+		return ChunkList{}, err
+	}
+	chunks := make([]ChunkMetadata, 0, len(window))
+	for _, node := range window {
+		chunk, err := chunkMetadataFromNode(node, maxChunkBytes)
+		if err != nil {
+			return ChunkList{}, err
+		}
+		chunks = append(chunks, chunk)
+	}
+	return ChunkList{Chunks: chunks, NextPageToken: nextToken}, nil
+}
+
+func (store *GraphStore) GetChunk(ctx context.Context, project projectregistry.Project, fileID string, chunkID string, maxChunkBytes int) (ChunkMetadata, error) {
+	if !validOpaqueID(fileID) || !validOpaqueID(chunkID) {
+		return ChunkMetadata{}, ErrInvalidInput
+	}
+	node, err := store.graph.GetNode(ctx, "ContentChunk", chunkID)
+	if errors.Is(err, ladybug.ErrNodeNotFound) {
+		return ChunkMetadata{}, ErrIngestionNotFound
+	}
+	if err != nil {
+		return ChunkMetadata{}, err
+	}
+	if node.Properties["project_id"] != project.ID || node.Properties["repo_file_id"] != fileID {
+		return ChunkMetadata{}, ErrIngestionNotFound
+	}
+	return chunkMetadataFromNode(node, maxChunkBytes)
+}
+
+func (store *GraphStore) ListSymbols(ctx context.Context, project projectregistry.Project, pagination Pagination) (SymbolList, error) {
+	nodes, err := store.graph.ListNodes(ctx, "CodeSymbol", map[string]string{"project_id": project.ID})
+	if err != nil {
+		return SymbolList{}, err
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].Properties["name"] == nodes[j].Properties["name"] {
+			return nodes[i].ID < nodes[j].ID
+		}
+		return nodes[i].Properties["name"] < nodes[j].Properties["name"]
+	})
+	window, nextToken, err := paginate(nodes, pagination)
+	if err != nil {
+		return SymbolList{}, err
+	}
+	symbols := make([]SymbolMetadata, 0, len(window))
+	for _, node := range window {
+		symbol, err := symbolMetadataFromNode(node)
+		if err != nil {
+			return SymbolList{}, err
+		}
+		symbols = append(symbols, symbol)
+	}
+	return SymbolList{Symbols: symbols, NextPageToken: nextToken}, nil
+}
+
+func (store *GraphStore) GetSymbol(ctx context.Context, project projectregistry.Project, symbolID string) (SymbolMetadata, error) {
+	if !validOpaqueID(symbolID) {
+		return SymbolMetadata{}, ErrInvalidInput
+	}
+	node, err := store.graph.GetNode(ctx, "CodeSymbol", symbolID)
+	if errors.Is(err, ladybug.ErrNodeNotFound) {
+		return SymbolMetadata{}, ErrIngestionNotFound
+	}
+	if err != nil {
+		return SymbolMetadata{}, err
+	}
+	if node.Properties["project_id"] != project.ID {
+		return SymbolMetadata{}, ErrIngestionNotFound
+	}
+	return symbolMetadataFromNode(node)
+}
+
 func (store *GraphStore) putProject(ctx context.Context, project projectregistry.Project) error {
 	return store.graph.PutNode(ctx, ladybug.Node{
 		Label: "Project",
@@ -272,4 +387,90 @@ func formatTime(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func fileMetadataFromNode(node ladybug.Node) (FileMetadata, error) {
+	size, err := strconv.ParseInt(node.Properties["size_bytes"], 10, 64)
+	if err != nil && node.Properties["size_bytes"] != "" {
+		return FileMetadata{}, err
+	}
+	modifiedAt, err := parseOptionalTime(node.Properties["modified_at"])
+	if err != nil {
+		return FileMetadata{}, err
+	}
+	present, _ := strconv.ParseBool(node.Properties["present"])
+	relativePathSafe, _ := strconv.ParseBool(node.Properties["relative_path_safe"])
+	metadata := FileMetadata{
+		ID:             node.ID,
+		ProjectID:      node.Properties["project_id"],
+		Status:         node.Properties["status"],
+		Present:        present,
+		SizeBytes:      size,
+		ModifiedAt:     modifiedAt,
+		SkippedReason:  node.Properties["skipped_reason"],
+		RelativePathOK: relativePathSafe,
+	}
+	if relativePathSafe {
+		metadata.RelativePath = node.Properties["relative_path"]
+	}
+	return metadata, nil
+}
+
+func chunkMetadataFromNode(node ladybug.Node, maxChunkBytes int) (ChunkMetadata, error) {
+	index, err := strconv.Atoi(node.Properties["chunk_index"])
+	if err != nil {
+		return ChunkMetadata{}, err
+	}
+	startLine, err := strconv.Atoi(node.Properties["start_line"])
+	if err != nil {
+		return ChunkMetadata{}, err
+	}
+	endLine, err := strconv.Atoi(node.Properties["end_line"])
+	if err != nil {
+		return ChunkMetadata{}, err
+	}
+	byteStart, err := strconv.Atoi(node.Properties["byte_start"])
+	if err != nil {
+		return ChunkMetadata{}, err
+	}
+	byteEnd, err := strconv.Atoi(node.Properties["byte_end"])
+	if err != nil {
+		return ChunkMetadata{}, err
+	}
+	text, truncated := truncateUTF8Bytes(node.Properties["text"], maxChunkBytes)
+	return ChunkMetadata{
+		ID:            node.ID,
+		FileID:        node.Properties["repo_file_id"],
+		ProjectID:     node.Properties["project_id"],
+		Index:         index,
+		StartLine:     startLine,
+		EndLine:       endLine,
+		ByteStart:     byteStart,
+		ByteEnd:       byteEnd,
+		Text:          text,
+		TextTruncated: truncated,
+	}, nil
+}
+
+func symbolMetadataFromNode(node ladybug.Node) (SymbolMetadata, error) {
+	startLine, err := strconv.Atoi(node.Properties["start_line"])
+	if err != nil {
+		return SymbolMetadata{}, err
+	}
+	endLine, err := strconv.Atoi(node.Properties["end_line"])
+	if err != nil {
+		return SymbolMetadata{}, err
+	}
+	return SymbolMetadata{
+		ID:          node.ID,
+		FileID:      node.Properties["repo_file_id"],
+		ProjectID:   node.Properties["project_id"],
+		Kind:        node.Properties["kind"],
+		Name:        node.Properties["name"],
+		PackageName: node.Properties["package"],
+		ImportPath:  node.Properties["import_path"],
+		Receiver:    node.Properties["receiver"],
+		StartLine:   startLine,
+		EndLine:     endLine,
+	}, nil
 }

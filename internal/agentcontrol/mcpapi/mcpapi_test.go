@@ -16,6 +16,9 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
 	ladybugschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
+	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
+	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 )
 
@@ -138,6 +141,52 @@ func TestProjectToolsListAndCall_WhenProjectRegistryConfigured(t *testing.T) {
 	}
 }
 
+func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
+	handler, root := newHandlerWithProjectIngestion(t)
+
+	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
+		t.Fatalf("expected ingestion tools, got %s", list.Body.String())
+	}
+
+	templates := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"resources/templates/list"}`)
+	if !bytes.Contains(templates.Body.Bytes(), []byte(`mivialabs://projects/{id}/files/{file_id}`)) {
+		t.Fatalf("expected ingestion resource templates, got %s", templates.Body.String())
+	}
+
+	ingest := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects_ingest","arguments":{"id":"example-service","_meta":{"source":"test"}}}}`)
+	if bytes.Contains(ingest.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected ingest success, got %s", ingest.Body.String())
+	}
+	if bytes.Contains(ingest.Body.Bytes(), []byte(root)) || bytes.Contains(ingest.Body.Bytes(), []byte("content_sha256")) {
+		t.Fatalf("ingest response leaked sensitive metadata: %s", ingest.Body.String())
+	}
+
+	files := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.files.list","arguments":"{\"id\":\"example-service\",\"page_size\":1}"}}`)
+	if bytes.Contains(files.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected files success, got %s", files.Body.String())
+	}
+	var filesRPC rpcResponse
+	if err := json.Unmarshal(files.Body.Bytes(), &filesRPC); err != nil {
+		t.Fatalf("decode files response: %v", err)
+	}
+	fileItems := filesRPC.Result.StructuredContent["files"].([]any)
+	fileID := fileItems[0].(map[string]any)["id"].(string)
+
+	chunks := postMCP(t, handler, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"projects.file.chunks","arguments":{"id":"example-service","file_id":"`+fileID+`","max_chunk_bytes":10}}}`)
+	if bytes.Contains(chunks.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected chunks success, got %s", chunks.Body.String())
+	}
+	if bytes.Contains(chunks.Body.Bytes(), []byte(root)) || bytes.Contains(chunks.Body.Bytes(), []byte("content_sha256")) {
+		t.Fatalf("chunk response leaked forbidden metadata: %s", chunks.Body.String())
+	}
+
+	read := postMCP(t, handler, `{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"mivialabs://projects/example-service/files/`+fileID+`"}}`)
+	if read.Code != http.StatusOK || bytes.Contains(read.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected file resource success, got %s", read.Body.String())
+	}
+}
+
 type rpcResponse struct {
 	Result struct {
 		StructuredContent map[string]any `json:"structuredContent"`
@@ -178,6 +227,55 @@ func newHandlerWithProjects(t *testing.T) http.Handler {
 	}
 	digest := projectregistry.NewDigestService(registry, graph)
 	return mcpapi.NewHandlerWithResearchAndProjects(svc, nil, registry, digest, slog.Default())
+}
+
+func newHandlerWithProjectIngestion(t *testing.T) (http.Handler, string) {
+	t.Helper()
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "cmd"), 0o700); err != nil {
+		t.Fatalf("create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cmd", "main.go"), []byte("package main\n\nfunc Run() { println(\"hello\") }\n"), 0o600); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	registry, err := projectregistry.NewRegistry([]config.Project{{
+		ID:                    "example-service",
+		DisplayName:           "Example Service",
+		RootPath:              root,
+		Enabled:               true,
+		Classification:        projectregistry.ClassificationInternal,
+		GraphNamespace:        "example-service",
+		DigestMode:            projectregistry.DigestModeContentGraph,
+		UpdatePolicy:          projectregistry.UpdatePolicyManual,
+		Include:               []string{"**/*.go"},
+		FollowSymlinks:        false,
+		MaxFileBytes:          4096,
+		MaxChunkBytes:         1024,
+		SensitiveMarkerPolicy: projectregistry.SensitiveMarkerPolicySkipFile,
+	}}, projectregistry.Options{
+		ContentGraphEnabled:          true,
+		ContentGraphApprovalAccepted: true,
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(t.Context(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := sqliteschema.Bootstrap(t.Context(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+	digest := projectregistry.NewDigestService(registry, graph)
+	ingestion := projectingestion.NewService(registry, projectingestion.NewGraphStore(graph), projectingestion.NewSQLiteStore(db.SQLDB()))
+	return mcpapi.NewHandlerWithResearchProjectsAndIngestion(svc, nil, registry, digest, ingestion, slog.Default()), root
 }
 
 func postMCP(t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {

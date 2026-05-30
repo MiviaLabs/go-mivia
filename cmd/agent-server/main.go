@@ -21,6 +21,7 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/logging"
 	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	projecthttpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/httpapi"
 	projectstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/store"
@@ -77,6 +78,7 @@ func run() error {
 	agentStore := store.NewLadybugStore(graph)
 	researchService := research.NewService(researchstore.NewLadybugMetadataStore(graph))
 	projectDigestService := projectregistry.NewDigestService(projectRegistry, graph)
+	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(graph), projectingestion.NewSQLiteStore(sqliteDB.SQLDB()))
 	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
 	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
 		return err
@@ -106,8 +108,8 @@ func run() error {
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
 	httpapi.RegisterRoutes(mux, agentService)
 	researchhttpapi.RegisterRoutes(mux, researchService)
-	projecthttpapi.RegisterRoutes(mux, projectRegistry, projectDigestService)
-	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchAndProjects(agentService, researchService, projectRegistry, projectDigestService, logger))
+	projecthttpapi.RegisterRoutesWithIngestion(mux, projectRegistry, projectDigestService, projectIngestionService)
+	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsAndIngestion(agentService, researchService, projectRegistry, projectDigestService, projectIngestionService, logger))
 
 	handler := httpserver.Chain(
 		mux,

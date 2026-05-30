@@ -9,11 +9,16 @@ import (
 	"io"
 	"strings"
 
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 )
 
 func ToolDefinitions() []map[string]any {
-	return []map[string]any{
+	return ToolDefinitionsWithIngestion(false)
+}
+
+func ToolDefinitionsWithIngestion(includeIngestion bool) []map[string]any {
+	tools := []map[string]any{
 		{
 			"name":        "projects.list",
 			"title":       "List Configured Projects",
@@ -37,10 +42,18 @@ func ToolDefinitions() []map[string]any {
 			}, []string{"id"}),
 		},
 	}
+	if includeIngestion {
+		tools = append(tools, ingestionToolDefinitions()...)
+	}
+	return tools
 }
 
 func ResourceTemplates() []map[string]any {
-	return []map[string]any{
+	return ResourceTemplatesWithIngestion(false)
+}
+
+func ResourceTemplatesWithIngestion(includeIngestion bool) []map[string]any {
+	templates := []map[string]any{
 		{
 			"uriTemplate": "mivialabs://projects/{id}",
 			"name":        "project",
@@ -56,9 +69,17 @@ func ResourceTemplates() []map[string]any {
 			"mimeType":    "application/json",
 		},
 	}
+	if includeIngestion {
+		templates = append(templates, ingestionResourceTemplates()...)
+	}
+	return templates
 }
 
 func CallTool(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, name string, arguments json.RawMessage) (map[string]any, error) {
+	return CallToolWithIngestion(ctx, registry, digest, nil, name, arguments)
+}
+
+func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion *projectingestion.Service, name string, arguments json.RawMessage) (map[string]any, error) {
 	switch name {
 	case "projects.list", "projects_list":
 		var input struct {
@@ -96,12 +117,95 @@ func CallTool(ctx context.Context, registry *projectregistry.Registry, digest *p
 		}
 		run, err := digest.DigestProject(ctx, strings.TrimSpace(input.ID))
 		return toolResult(projectregistry.MetadataForDigestRun(run)), err
+	case "projects.ingest", "projects_ingest":
+		var input struct {
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		run, err := ingestion.IngestProject(ctx, strings.TrimSpace(input.ID), projectingestion.TriggerManual)
+		return toolResult(projectingestion.MetadataForRun(run)), err
+	case "projects.ingestion_status", "projects_ingestion_status":
+		var input struct {
+			ID    string          `json:"id"`
+			RunID string          `json:"run_id"`
+			Meta  json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		run, err := ingestion.RunMetadata(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.RunID))
+		return toolResult(run), err
+	case "projects.files.list", "projects_files_list":
+		var input struct {
+			ID        string          `json:"id"`
+			Status    string          `json:"status,omitempty"`
+			PageSize  int             `json:"page_size,omitempty"`
+			PageToken string          `json:"page_token,omitempty"`
+			Meta      json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		filter, err := fileFilter(input.Status)
+		if err != nil {
+			return nil, err
+		}
+		files, err := ingestion.ListFiles(ctx, strings.TrimSpace(input.ID), filter, projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
+		return toolResult(files), err
+	case "projects.file.chunks", "projects_file_chunks":
+		var input struct {
+			ID            string          `json:"id"`
+			FileID        string          `json:"file_id"`
+			PageSize      int             `json:"page_size,omitempty"`
+			PageToken     string          `json:"page_token,omitempty"`
+			MaxChunkBytes int             `json:"max_chunk_bytes,omitempty"`
+			Meta          json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		chunks, err := ingestion.ListChunks(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.FileID), projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken}, input.MaxChunkBytes)
+		return toolResult(chunks), err
+	case "projects.symbols.list", "projects_symbols_list":
+		var input struct {
+			ID        string          `json:"id"`
+			PageSize  int             `json:"page_size,omitempty"`
+			PageToken string          `json:"page_token,omitempty"`
+			Meta      json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		symbols, err := ingestion.ListSymbols(ctx, strings.TrimSpace(input.ID), projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
+		return toolResult(symbols), err
 	default:
 		return nil, projectregistry.ErrProjectNotFound
 	}
 }
 
 func ReadResource(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, uri string) (map[string]any, error) {
+	return ReadResourceWithIngestion(ctx, registry, digest, nil, uri)
+}
+
+func ReadResourceWithIngestion(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion *projectingestion.Service, uri string) (map[string]any, error) {
 	if !strings.HasPrefix(uri, "mivialabs://projects/") {
 		return nil, projectregistry.ErrProjectNotFound
 	}
@@ -121,7 +225,131 @@ func ReadResource(ctx context.Context, registry *projectregistry.Registry, diges
 		}
 		return resourceResult(uri, projectregistry.MetadataForDigestRun(run))
 	}
+	if ingestion != nil && len(parts) == 3 && parts[1] == "files" {
+		file, err := ingestion.GetFile(ctx, parts[0], parts[2])
+		if err != nil {
+			return nil, err
+		}
+		return resourceResult(uri, file)
+	}
+	if ingestion != nil && len(parts) == 5 && parts[1] == "files" && parts[3] == "chunks" {
+		chunk, err := ingestion.GetChunk(ctx, parts[0], parts[2], parts[4], 0)
+		if err != nil {
+			return nil, err
+		}
+		return resourceResult(uri, chunk)
+	}
+	if ingestion != nil && len(parts) == 3 && parts[1] == "symbols" {
+		symbol, err := ingestion.GetSymbol(ctx, parts[0], parts[2])
+		if err != nil {
+			return nil, err
+		}
+		return resourceResult(uri, symbol)
+	}
 	return nil, projectregistry.ErrProjectNotFound
+}
+
+func ingestionToolDefinitions() []map[string]any {
+	pageProperties := map[string]any{
+		"page_size":  map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxPageSize},
+		"page_token": map[string]any{"type": "string"},
+	}
+	return []map[string]any{
+		{
+			"name":        "projects.ingest",
+			"title":       "Run Content Graph Ingestion",
+			"description": "Run bounded manual content_graph ingestion for an opted-in local project.",
+			"inputSchema": objectSchema(map[string]any{
+				"id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id"}),
+		},
+		{
+			"name":        "projects.ingestion_status",
+			"title":       "Get Project Ingestion Run",
+			"description": "Fetch non-sensitive ingestion run metadata by project id and run id.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":     map[string]any{"type": "string", "minLength": 1},
+				"run_id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id", "run_id"}),
+		},
+		{
+			"name":        "projects.files.list",
+			"title":       "List Project Files",
+			"description": "List bounded file ingestion metadata without root paths or skipped sensitive content.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":     map[string]any{"type": "string", "minLength": 1},
+				"status": map[string]any{"type": "string", "enum": []string{"eligible", "skipped", "absent"}},
+			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.file.chunks",
+			"title":       "List Project File Chunks",
+			"description": "List bounded chunk text for an opaque file id after ingestion safety gates pass.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":              map[string]any{"type": "string", "minLength": 1},
+				"file_id":         map[string]any{"type": "string", "minLength": 1},
+				"max_chunk_bytes": map[string]any{"type": "integer", "minimum": 1},
+			}), []string{"id", "file_id"}),
+		},
+		{
+			"name":        "projects.symbols.list",
+			"title":       "List Project Symbols",
+			"description": "List bounded symbol metadata for an opted-in content graph project.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id": map[string]any{"type": "string", "minLength": 1},
+			}), []string{"id"}),
+		},
+	}
+}
+
+func ingestionResourceTemplates() []map[string]any {
+	return []map[string]any{
+		{
+			"uriTemplate": "mivialabs://projects/{id}/files/{file_id}",
+			"name":        "project_file",
+			"title":       "Project File",
+			"description": "Project file ingestion metadata by opaque file id.",
+			"mimeType":    "application/json",
+		},
+		{
+			"uriTemplate": "mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}",
+			"name":        "project_file_chunk",
+			"title":       "Project File Chunk",
+			"description": "Bounded project file chunk by opaque chunk id.",
+			"mimeType":    "application/json",
+		},
+		{
+			"uriTemplate": "mivialabs://projects/{id}/symbols/{symbol_id}",
+			"name":        "project_symbol",
+			"title":       "Project Symbol",
+			"description": "Project symbol metadata by opaque symbol id.",
+			"mimeType":    "application/json",
+		},
+	}
+}
+
+func fileFilter(raw string) (projectingestion.FileStateFilter, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return projectingestion.FileStateFilter{}, nil
+	}
+	switch projectingestion.FileStatus(raw) {
+	case projectingestion.FileStatusEligible, projectingestion.FileStatusSkipped, projectingestion.FileStatusAbsent:
+		return projectingestion.FileStateFilter{Status: projectingestion.FileStatus(raw)}, nil
+	default:
+		return projectingestion.FileStateFilter{}, projectregistry.ErrInvalidInput
+	}
+}
+
+func mergeProperties(base map[string]any, extra map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(extra))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range extra {
+		out[key] = value
+	}
+	return out
 }
 
 func objectSchema(properties map[string]any, required []string) map[string]any {

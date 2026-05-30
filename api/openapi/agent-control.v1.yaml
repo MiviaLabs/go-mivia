@@ -160,6 +160,109 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/ingestion-runs:
+    post:
+      operationId: createProjectIngestionRun
+      summary: Run manual content graph ingestion
+      description: Runs bounded localhost-only ingestion for an opted-in content_graph project. Raw DB queries, absolute roots, skipped sensitive content, secrets, PII, raw prompts, and provider payloads are not returned.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '201':
+          description: Created ingestion run metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIngestionRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/ingestion-runs/{run_id}:
+    get:
+      operationId: getProjectIngestionRun
+      summary: Get manual content graph ingestion run metadata
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/RunID'
+      responses:
+        '200':
+          description: Ingestion run metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIngestionRun'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/files:
+    get:
+      operationId: listProjectFiles
+      summary: List project ingestion file metadata
+      description: Returns bounded file metadata only. Sensitive skips omit relative paths and content hashes.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [eligible, skipped, absent]
+      responses:
+        '200':
+          description: Project files
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectFileList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/files/{file_id}/chunks:
+    get:
+      operationId: listProjectFileChunks
+      summary: List bounded project file chunks
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/FileID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: max_chunk_bytes
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Project file chunks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectChunkList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/symbols:
+    get:
+      operationId: listProjectSymbols
+      summary: List project symbol metadata
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Project symbols
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSymbolList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   parameters:
     ID:
@@ -169,6 +272,33 @@ components:
       schema:
         type: string
         minLength: 1
+    RunID:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    FileID:
+      name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+      description: Stable opaque file id; never an absolute path.
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+    PageToken:
+      name: page_token
+      in: query
+      schema:
+        type: string
   responses:
     BadRequest:
       description: Invalid request
@@ -315,10 +445,10 @@ components:
           type: string
         digest_mode:
           type: string
-          enum: [metadata_only]
+          enum: [metadata_only, content_graph]
         update_policy:
           type: string
-          enum: [manual]
+          enum: [manual, live]
         validation_status:
           type: string
         validation_error:
@@ -354,6 +484,167 @@ components:
           type: string
           format: date-time
       description: Digest run metadata only; raw source content and file-content hashes are not stored or returned.
+    ProjectIngestionRun:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, trigger, mode, status, files_seen, files_ingested, files_skipped, chunks_stored, symbols_stored, started_at, finished_at]
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        trigger:
+          type: string
+          enum: [manual, live]
+        mode:
+          type: string
+          enum: [content_graph]
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        files_seen:
+          type: integer
+          minimum: 0
+        files_ingested:
+          type: integer
+          minimum: 0
+        files_skipped:
+          type: integer
+          minimum: 0
+        chunks_stored:
+          type: integer
+          minimum: 0
+        symbols_stored:
+          type: integer
+          minimum: 0
+        error_category:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+    ProjectFileList:
+      type: object
+      additionalProperties: false
+      required: [files]
+      properties:
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectFile'
+        next_page_token:
+          type: string
+    ProjectFile:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, status, present, size_bytes, modified_at, relative_path_safe]
+      properties:
+        id:
+          type: string
+          description: Stable opaque file id; never an absolute path.
+        project_id:
+          type: string
+        relative_path:
+          type: string
+          description: Root-relative path for safe eligible files only.
+        status:
+          type: string
+          enum: [eligible, skipped, absent]
+        present:
+          type: boolean
+        size_bytes:
+          type: integer
+          minimum: 0
+        modified_at:
+          type: string
+          format: date-time
+        skipped_reason:
+          type: string
+        relative_path_safe:
+          type: boolean
+      description: Does not include absolute roots, source-content hashes, skipped sensitive content, or matched sensitive text.
+    ProjectChunkList:
+      type: object
+      additionalProperties: false
+      required: [chunks]
+      properties:
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectChunk'
+        next_page_token:
+          type: string
+    ProjectChunk:
+      type: object
+      additionalProperties: false
+      required: [id, file_id, project_id, index, start_line, end_line, byte_start, byte_end, text, text_truncated]
+      properties:
+        id:
+          type: string
+        file_id:
+          type: string
+        project_id:
+          type: string
+        index:
+          type: integer
+          minimum: 0
+        start_line:
+          type: integer
+          minimum: 1
+        end_line:
+          type: integer
+          minimum: 1
+        byte_start:
+          type: integer
+          minimum: 0
+        byte_end:
+          type: integer
+          minimum: 0
+        text:
+          type: string
+          description: Bounded eligible chunk text only; never skipped sensitive content.
+        text_truncated:
+          type: boolean
+    ProjectSymbolList:
+      type: object
+      additionalProperties: false
+      required: [symbols]
+      properties:
+        symbols:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSymbol'
+        next_page_token:
+          type: string
+    ProjectSymbol:
+      type: object
+      additionalProperties: false
+      required: [id, file_id, project_id, kind, name, start_line, end_line]
+      properties:
+        id:
+          type: string
+        file_id:
+          type: string
+        project_id:
+          type: string
+        kind:
+          type: string
+        name:
+          type: string
+        package:
+          type: string
+        import_path:
+          type: string
+        receiver:
+          type: string
+        start_line:
+          type: integer
+          minimum: 1
+        end_line:
+          type: integer
+          minimum: 1
     ErrorResponse:
       type: object
       additionalProperties: false

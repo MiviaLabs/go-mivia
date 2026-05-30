@@ -16,6 +16,7 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/service"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	projectmcpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/mcpapi"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
@@ -30,6 +31,7 @@ type Handler struct {
 	research      *research.Service
 	projects      *projectregistry.Registry
 	projectDigest *projectregistry.DigestService
+	projectIngest *projectingestion.Service
 	logger        *slog.Logger
 }
 
@@ -49,11 +51,16 @@ func NewHandlerWithResearch(service *service.Service, research *research.Service
 }
 
 func NewHandlerWithResearchAndProjects(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, logger *slog.Logger) http.Handler {
+	return NewHandlerWithResearchProjectsAndIngestion(service, research, projects, projectDigest, nil, logger)
+}
+
+func NewHandlerWithResearchProjectsAndIngestion(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest *projectingestion.Service, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:       service,
 		research:      research,
 		projects:      projects,
 		projectDigest: projectDigest,
+		projectIngest: projectIngest,
 		logger:        logger,
 	}
 }
@@ -197,11 +204,14 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		}
 		run, err := handler.service.GetResearchRun(r.Context(), input.ID)
 		return toolResult(run), err
-	case "projects.list", "projects_list", "projects.get", "projects_get", "projects.digest", "projects_digest":
+	case "projects.list", "projects_list", "projects.get", "projects_get", "projects.digest", "projects_digest",
+		"projects.ingest", "projects_ingest", "projects.ingestion_status", "projects_ingestion_status",
+		"projects.files.list", "projects_files_list", "projects.file.chunks", "projects_file_chunks",
+		"projects.symbols.list", "projects_symbols_list":
 		if handler.projects == nil {
 			return nil, projectregistry.ErrProjectNotFound
 		}
-		return projectmcpapi.CallTool(r.Context(), handler.projects, handler.projectDigest, params.Name, params.Arguments)
+		return projectmcpapi.CallToolWithIngestion(r.Context(), handler.projects, handler.projectDigest, handler.projectIngest, params.Name, params.Arguments)
 	default:
 		if handler.research != nil {
 			return researchmcpapi.CallTool(r.Context(), handler.research, params.Name, params.Arguments)
@@ -239,7 +249,7 @@ func (handler *Handler) readResource(r *http.Request, raw json.RawMessage) (map[
 		if handler.projects == nil {
 			return nil, projectregistry.ErrProjectNotFound
 		}
-		return projectmcpapi.ReadResource(r.Context(), handler.projects, handler.projectDigest, params.URI)
+		return projectmcpapi.ReadResourceWithIngestion(r.Context(), handler.projects, handler.projectDigest, handler.projectIngest, params.URI)
 	default:
 		if handler.research != nil {
 			return researchmcpapi.ReadResource(r.Context(), handler.research, params.URI)
@@ -277,6 +287,19 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 	}
 	if errors.Is(err, projectregistry.ErrProjectNotFound) {
 		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, projectingestion.ErrIngestionNotFound) ||
+		errors.Is(err, projectingestion.ErrRunNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, projectingestion.ErrInvalidInput) ||
+		errors.Is(err, projectingestion.ErrProjectDisabled) ||
+		errors.Is(err, projectingestion.ErrUnsupportedIngest) ||
+		errors.Is(err, projectingestion.ErrPathEscapesRoot) ||
+		errors.Is(err, projectingestion.ErrPathNotProjectLocal) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
 	writeJSONRPCError(w, id, -32603, "internal error")
@@ -319,7 +342,7 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 		},
 	}
 	if handler.projects != nil {
-		tools = append(tools, projectmcpapi.ToolDefinitions()...)
+		tools = append(tools, projectmcpapi.ToolDefinitionsWithIngestion(handler.projectIngest != nil)...)
 	}
 	return append(tools, researchmcpapi.ToolDefinitions()...)
 }
@@ -342,7 +365,7 @@ func (handler *Handler) resourceTemplates() []map[string]any {
 		},
 	}
 	if handler.projects != nil {
-		templates = append(templates, projectmcpapi.ResourceTemplates()...)
+		templates = append(templates, projectmcpapi.ResourceTemplatesWithIngestion(handler.projectIngest != nil)...)
 	}
 	return append(templates, researchmcpapi.ResourceTemplates()...)
 }
