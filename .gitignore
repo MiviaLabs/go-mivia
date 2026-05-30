@@ -8,6 +8,8 @@ secrets/*
 !secrets/*.example
 configs/*.local.toml
 configs/*.local.json
+local-atlassian-credentials.json
+*.credentials.local.json
 
 # Go build and test output
 /bin/

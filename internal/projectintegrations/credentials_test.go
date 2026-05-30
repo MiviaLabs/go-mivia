@@ -53,6 +53,24 @@ func TestCredentialResolver_ResolveAtlassianFromFiles(t *testing.T) {
 	}
 }
 
+func TestCredentialResolver_ResolveAtlassianFromCredentialsFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "atlassian-credentials.json")
+	writeSecretFixture(t, path, `{
+		"email": "  agent@example.invalid  ",
+		"api_token": "\nsynthetic-token-value\n"
+	}`)
+
+	credentials, err := NewCredentialResolver().ResolveAtlassian(config.AtlassianCredentialRefs{
+		CredentialsFile: path,
+	})
+	if err != nil {
+		t.Fatalf("resolve credentials file: %v", err)
+	}
+	if credentials.Email != "agent@example.invalid" || credentials.APIToken != "synthetic-token-value" {
+		t.Fatalf("expected trimmed credentials file values, got %#v", credentials)
+	}
+}
+
 func TestCredentialResolver_RejectsMissingRefs(t *testing.T) {
 	_, err := NewCredentialResolver().ResolveAtlassian(config.AtlassianCredentialRefs{})
 	if !errors.Is(err, ErrCredentialUnavailable) {
@@ -106,18 +124,53 @@ func TestCredentialResolver_RejectsEmptyValues(t *testing.T) {
 		}
 		assertErrorOmits(t, err, emailPath, tokenPath, "synthetic-token-value")
 	})
+
+	t.Run("credentials file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "atlassian-credentials.json")
+		writeSecretFixture(t, path, `{"email":"agent@example.invalid","api_token":"  "}`)
+		_, err := NewCredentialResolver().ResolveAtlassian(config.AtlassianCredentialRefs{
+			CredentialsFile: path,
+		})
+		if !errors.Is(err, ErrCredentialUnavailable) {
+			t.Fatalf("expected credential unavailable error, got %v", err)
+		}
+		assertErrorOmits(t, err, path, "agent@example.invalid")
+	})
 }
 
 func TestCredentialResolver_RejectsAmbiguousRefs(t *testing.T) {
-	_, err := NewCredentialResolver().ResolveAtlassian(config.AtlassianCredentialRefs{
-		EmailEnv:     "ATLASSIAN_EMAIL_REF",
-		EmailFile:    "secrets/email",
-		APITokenFile: "secrets/token",
-	})
-	if !errors.Is(err, ErrCredentialUnavailable) {
-		t.Fatalf("expected credential unavailable error, got %v", err)
+	tests := []struct {
+		name      string
+		refs      config.AtlassianCredentialRefs
+		forbidden []string
+	}{
+		{
+			name: "split refs",
+			refs: config.AtlassianCredentialRefs{
+				EmailEnv:     "ATLASSIAN_EMAIL_REF",
+				EmailFile:    "secrets/email",
+				APITokenFile: "secrets/token",
+			},
+			forbidden: []string{"ATLASSIAN_EMAIL_REF", "secrets/email", "secrets/token"},
+		},
+		{
+			name: "credentials file with split refs",
+			refs: config.AtlassianCredentialRefs{
+				CredentialsFile: "secrets/atlassian-credentials.json",
+				APITokenFile:    "secrets/token",
+			},
+			forbidden: []string{"secrets/atlassian-credentials.json", "secrets/token"},
+		},
 	}
-	assertErrorOmits(t, err, "ATLASSIAN_EMAIL_REF", "secrets/email", "secrets/token")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewCredentialResolver().ResolveAtlassian(tt.refs)
+			if !errors.Is(err, ErrCredentialUnavailable) {
+				t.Fatalf("expected credential unavailable error, got %v", err)
+			}
+			assertErrorOmits(t, err, tt.forbidden...)
+		})
+	}
 }
 
 func TestCredentialResolver_ReadFileErrorIsSafe(t *testing.T) {
@@ -129,6 +182,19 @@ func TestCredentialResolver_ReadFileErrorIsSafe(t *testing.T) {
 		t.Fatalf("expected credential unavailable error, got %v", err)
 	}
 	assertErrorOmits(t, err, "missing-email", "synthetic-token-value")
+}
+
+func TestCredentialResolver_CredentialsFileDecodeErrorIsSafe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "atlassian-credentials.json")
+	writeSecretFixture(t, path, `{"email":"agent@example.invalid","api_token":"synthetic-token-value"`)
+
+	_, err := NewCredentialResolver().ResolveAtlassian(config.AtlassianCredentialRefs{
+		CredentialsFile: path,
+	})
+	if !errors.Is(err, ErrCredentialUnavailable) {
+		t.Fatalf("expected credential unavailable error, got %v", err)
+	}
+	assertErrorOmits(t, err, path, "agent@example.invalid", "synthetic-token-value")
 }
 
 func writeSecretFixture(t *testing.T, path string, content string) {

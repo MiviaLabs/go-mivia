@@ -72,6 +72,24 @@ func TestService_StatusIsRedacted(t *testing.T) {
 	}
 }
 
+func TestService_StatusRedactsCombinedCredentialsFileRef(t *testing.T) {
+	project := testIntegrationProject()
+	project.Integrations.Jira.CredentialRefs = config.AtlassianCredentialRefs{
+		CredentialsFile: "/home/mac/secret-atlassian-credentials.json",
+	}
+	service := newTestService(t, nil, project)
+
+	status, err := service.Status(context.Background(), "project-1", ProviderJira)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	payload := mustJSON(t, status)
+	assertOmits(t, payload, "/home/mac/secret-atlassian-credentials.json")
+	if !strings.Contains(payload, `"CredentialSource":"file"`) {
+		t.Fatalf("expected redacted file credential source in payload: %s", payload)
+	}
+}
+
 func TestService_UpsertConfiguredSourcesStoresHashesAndCountsOnly(t *testing.T) {
 	ctx := context.Background()
 	store, db := newTestSQLiteStore(t)

@@ -107,6 +107,7 @@ type fileAtlassianIntegrationConfig struct {
 	EmailFile           string  `toml:"email_file"`
 	APITokenEnv         string  `toml:"api_token_env"`
 	APITokenFile        string  `toml:"api_token_file"`
+	CredentialsFile     string  `toml:"credentials_file"`
 	ReadTimeout         *string `toml:"read_timeout"`
 	MaxResults          *int    `toml:"max_results"`
 	IngestionEnabled    bool    `toml:"ingestion_enabled"`
@@ -304,10 +305,7 @@ func (cfg fileAtlassianIntegrationConfig) validate(prefix string) error {
 		if strings.TrimSpace(cfg.AuthMode) == "" {
 			return fmt.Errorf("%s.auth_mode must be %q when enabled", prefix, authModeAPITokenBasic)
 		}
-		if err := validateCredentialRefPair(prefix+".email", cfg.EmailEnv, cfg.EmailFile); err != nil {
-			return err
-		}
-		if err := validateCredentialRefPair(prefix+".api_token", cfg.APITokenEnv, cfg.APITokenFile); err != nil {
+		if err := validateAtlassianCredentialRefs(prefix, cfg.EmailEnv, cfg.EmailFile, cfg.APITokenEnv, cfg.APITokenFile, cfg.CredentialsFile); err != nil {
 			return err
 		}
 	}
@@ -339,6 +337,25 @@ func validateAtlassianSiteURL(name string, raw string) error {
 	host := strings.ToLower(parsed.Hostname())
 	if host != "api.atlassian.com" && !strings.HasSuffix(host, ".atlassian.net") {
 		return fmt.Errorf("%s must be an HTTPS Atlassian Cloud host", name)
+	}
+	return nil
+}
+
+func validateAtlassianCredentialRefs(prefix, emailEnv, emailFile, apiTokenEnv, apiTokenFile, credentialsFile string) error {
+	hasCredentialsFile := strings.TrimSpace(credentialsFile) != ""
+	hasEmailRef := strings.TrimSpace(emailEnv) != "" || strings.TrimSpace(emailFile) != ""
+	hasTokenRef := strings.TrimSpace(apiTokenEnv) != "" || strings.TrimSpace(apiTokenFile) != ""
+	if hasCredentialsFile {
+		if hasEmailRef || hasTokenRef {
+			return fmt.Errorf("%s.credentials_file must not be combined with email or api token references", prefix)
+		}
+		return nil
+	}
+	if err := validateCredentialRefPair(prefix+".email", emailEnv, emailFile); err != nil {
+		return err
+	}
+	if err := validateCredentialRefPair(prefix+".api_token", apiTokenEnv, apiTokenFile); err != nil {
+		return err
 	}
 	return nil
 }
@@ -598,10 +615,11 @@ func (cfg fileConfluenceIntegrationConfig) toConfluenceIntegration() ConfluenceI
 
 func (cfg fileAtlassianIntegrationConfig) toCredentialRefs() AtlassianCredentialRefs {
 	return AtlassianCredentialRefs{
-		EmailEnv:     strings.TrimSpace(cfg.EmailEnv),
-		EmailFile:    strings.TrimSpace(cfg.EmailFile),
-		APITokenEnv:  strings.TrimSpace(cfg.APITokenEnv),
-		APITokenFile: strings.TrimSpace(cfg.APITokenFile),
+		EmailEnv:        strings.TrimSpace(cfg.EmailEnv),
+		EmailFile:       strings.TrimSpace(cfg.EmailFile),
+		APITokenEnv:     strings.TrimSpace(cfg.APITokenEnv),
+		APITokenFile:    strings.TrimSpace(cfg.APITokenFile),
+		CredentialsFile: strings.TrimSpace(cfg.CredentialsFile),
 	}
 }
 

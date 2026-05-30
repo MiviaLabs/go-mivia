@@ -104,10 +104,11 @@ type IntegrationConfig struct {
 }
 
 type AtlassianCredentialRefs struct {
-	EmailEnv     string
-	EmailFile    string
-	APITokenEnv  string
-	APITokenFile string
+	EmailEnv        string
+	EmailFile       string
+	APITokenEnv     string
+	APITokenFile    string
+	CredentialsFile string
 }
 
 type IntegrationPolling struct {

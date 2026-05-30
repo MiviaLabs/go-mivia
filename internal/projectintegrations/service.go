@@ -344,11 +344,14 @@ func sourceInput(projectID string, provider Provider, cfg statusConfig, updatedA
 }
 
 func credentialSource(refs config.AtlassianCredentialRefs) string {
+	credentialsFile := strings.TrimSpace(refs.CredentialsFile) != ""
 	emailEnv := strings.TrimSpace(refs.EmailEnv) != ""
 	emailFile := strings.TrimSpace(refs.EmailFile) != ""
 	tokenEnv := strings.TrimSpace(refs.APITokenEnv) != ""
 	tokenFile := strings.TrimSpace(refs.APITokenFile) != ""
 	switch {
+	case credentialsFile && !emailEnv && !emailFile && !tokenEnv && !tokenFile:
+		return "file"
 	case emailEnv && tokenEnv && !emailFile && !tokenFile:
 		return "env"
 	case emailFile && tokenFile && !emailEnv && !tokenEnv:

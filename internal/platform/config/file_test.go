@@ -193,6 +193,37 @@ incremental_page_size = 100
 	}
 }
 
+func TestLoadFileConfig_AcceptsAtlassianCredentialsFileRef(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.jira]
+enabled = true
+site_url = "https://example.atlassian.net"
+auth_mode = "api_token_basic"
+credentials_file = "data/local-atlassian-credentials.json"
+project_keys = ["ABC"]
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected credentials_file config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected credentials_file config to apply: %v", err)
+	}
+	refs := merged.Projects[0].Integrations.Jira.CredentialRefs
+	if refs.CredentialsFile != "data/local-atlassian-credentials.json" || refs.EmailEnv != "" || refs.APITokenFile != "" {
+		t.Fatalf("expected single credentials file ref, got %+v", refs)
+	}
+}
+
 func TestLoadFileConfig_RejectsEnabledIntegrationWithoutAllowlists(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -324,6 +355,26 @@ api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE"
 project_keys = ["ABC"]
 `,
 			message: "email",
+		},
+		{
+			name: "credentials file combined with split refs",
+			content: `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.jira]
+enabled = true
+site_url = "https://example.atlassian.net"
+auth_mode = "api_token_basic"
+credentials_file = "data/local-atlassian-credentials.json"
+email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE"
+project_keys = ["ABC"]
+`,
+			message: "credentials_file",
 		},
 		{
 			name: "empty poll above max idle",
