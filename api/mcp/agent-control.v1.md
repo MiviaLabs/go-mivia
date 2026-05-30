@@ -560,6 +560,12 @@ Input schema: `id`, `symbol_id`, optional `direction` (`callers`, `callees`, `bo
 
 Output: bounded call graph nodes and edges with `resolution_status` and confidence metadata. Unresolved dynamic-language cases are represented as metadata, not guessed edges.
 
+### `projects.headings.list`
+
+Input schema: `id`, optional `file_id`, `page_size`, and `page_token`.
+
+Output: bounded Markdown/document heading metadata without chunk text.
+
 ### `projects.file.outline`
 
 Input schema:
