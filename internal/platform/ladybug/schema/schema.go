@@ -24,6 +24,12 @@ func BootstrapSchema() GraphSchema {
 			"Document",
 			"Chunk",
 			"RepoFile",
+			"FileVersion",
+			"ContentChunk",
+			"CodeSymbol",
+			"DocumentHeading",
+			"IngestionRun",
+			"IngestionFinding",
 		},
 		Relationships: []Relationship{
 			{Type: "AGENT_RAN_TASK", From: "Agent", To: "Task"},
@@ -34,6 +40,14 @@ func BootstrapSchema() GraphSchema {
 			{Type: "TASK_TOUCHED_REPO_FILE", From: "Task", To: "RepoFile"},
 			{Type: "PROJECT_HAS_REPO_FILE", From: "Project", To: "RepoFile"},
 			{Type: "PROJECT_HAS_DIGEST_RUN", From: "Project", To: "DigestRun"},
+			{Type: "PROJECT_HAS_INGESTION_RUN", From: "Project", To: "IngestionRun"},
+			{Type: "REPO_FILE_HAS_VERSION", From: "RepoFile", To: "FileVersion"},
+			{Type: "VERSION_HAS_CHUNK", From: "FileVersion", To: "ContentChunk"},
+			{Type: "REPO_FILE_DECLARES_SYMBOL", From: "RepoFile", To: "CodeSymbol"},
+			{Type: "SYMBOL_IN_CHUNK", From: "CodeSymbol", To: "ContentChunk"},
+			{Type: "DOCUMENT_HAS_HEADING", From: "Document", To: "DocumentHeading"},
+			{Type: "INGESTION_RUN_TOUCHED_FILE", From: "IngestionRun", To: "RepoFile"},
+			{Type: "INGESTION_RUN_SKIPPED_FILE", From: "IngestionRun", To: "RepoFile"},
 		},
 	}
 }

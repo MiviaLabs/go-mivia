@@ -38,6 +38,30 @@ func TestBootstrapSchema_ProjectDigestMetadataLabels(t *testing.T) {
 	assertRelationship(t, bootstrap, "PROJECT_HAS_DIGEST_RUN", "Project", "DigestRun")
 }
 
+func TestBootstrapSchema_IngestionLabelsAndRelationships(t *testing.T) {
+	bootstrap := schema.BootstrapSchema()
+
+	for _, label := range []string{
+		"FileVersion",
+		"ContentChunk",
+		"CodeSymbol",
+		"DocumentHeading",
+		"IngestionRun",
+		"IngestionFinding",
+	} {
+		assertLabel(t, bootstrap, label)
+	}
+
+	assertRelationship(t, bootstrap, "PROJECT_HAS_INGESTION_RUN", "Project", "IngestionRun")
+	assertRelationship(t, bootstrap, "REPO_FILE_HAS_VERSION", "RepoFile", "FileVersion")
+	assertRelationship(t, bootstrap, "VERSION_HAS_CHUNK", "FileVersion", "ContentChunk")
+	assertRelationship(t, bootstrap, "REPO_FILE_DECLARES_SYMBOL", "RepoFile", "CodeSymbol")
+	assertRelationship(t, bootstrap, "SYMBOL_IN_CHUNK", "CodeSymbol", "ContentChunk")
+	assertRelationship(t, bootstrap, "DOCUMENT_HAS_HEADING", "Document", "DocumentHeading")
+	assertRelationship(t, bootstrap, "INGESTION_RUN_TOUCHED_FILE", "IngestionRun", "RepoFile")
+	assertRelationship(t, bootstrap, "INGESTION_RUN_SKIPPED_FILE", "IngestionRun", "RepoFile")
+}
+
 func assertLabel(t *testing.T, bootstrap schema.GraphSchema, expected string) {
 	t.Helper()
 	for _, label := range bootstrap.NodeLabels {
