@@ -10,6 +10,14 @@ The platform is local-first and localhost-only by default. It stores local metad
 
 Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only.
 
+## License
+
+This project is source-available under the PolyForm Noncommercial License 1.0.0.
+
+Noncommercial use is permitted under the license terms. Commercial use requires a separate commercial license from MiviaLabs LLC.
+
+Commercial licensing contact: contact@mivialabs.com.
+
 ## Feature Map
 
 ```mermaid

@@ -110,7 +110,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	projectIntegrationService, err := projectintegrations.NewServiceWithOptions(cfg.Projects, projectIntegrationStore, projectintegrations.ServiceOptions{Runner: projectIntegrationRunner})
+	projectIntegrationScheduler, err := projectintegrations.NewScheduler(cfg.Projects, projectIntegrationRunner, projectintegrations.SchedulerOptions{Logger: logger})
+	if err != nil {
+		return err
+	}
+	if err := projectIntegrationScheduler.Start(ctx); err != nil {
+		return err
+	}
+	defer func() { _ = projectIntegrationScheduler.Stop(context.Background()) }()
+	projectIntegrationService, err := projectintegrations.NewServiceWithOptions(cfg.Projects, projectIntegrationStore, projectintegrations.ServiceOptions{Runner: projectIntegrationScheduler})
 	if err != nil {
 		return err
 	}
@@ -213,12 +221,16 @@ func run() error {
 		if err := projectIngestionScheduler.Stop(shutdownCtx); err != nil {
 			return err
 		}
+		if err := projectIntegrationScheduler.Stop(shutdownCtx); err != nil {
+			return err
+		}
 		return server.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
 		_ = projectIngestionOrchestrator.Stop(shutdownCtx)
 		_ = projectIngestionScheduler.Stop(shutdownCtx)
+		_ = projectIntegrationScheduler.Stop(shutdownCtx)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
