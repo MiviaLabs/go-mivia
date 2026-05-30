@@ -1,0 +1,10 @@
+title = "MiviaLabs Agents secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow policy and scanner configuration examples only"
+paths = [
+  '''^\.gitleaks\.toml$''',
+]
