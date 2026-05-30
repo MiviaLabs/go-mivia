@@ -133,17 +133,18 @@ sequenceDiagram
   participant Graph as project graph store
   participant SQLite as SQLite ingestion state
 
-  Client->>Server: Manual ingest, file list, chunk list, or symbol list
+  Client->>Server: Manual ingest, latest status, file list, outline, chunk list, or symbol list
   Server->>Registry: Resolve enabled content_graph project
   Registry-->>Server: Project with graph_storage setting
-  Server->>Scheduler: Submit manual ingestion or bounded query
+  Server->>Scheduler: Submit manual ingestion asynchronously
+  Server->>SQLite: Read latest run status or bounded query metadata
   Watcher->>Scheduler: Submit live path event or overflow rescan
   Scheduler->>Ingestion: Run bounded full scan or priority path task
   Ingestion->>Ingestion: Apply path, symlink, include/exclude, size, binary, UTF-8, and sensitive-marker gates
   Ingestion->>Ingestion: Extract metadata with promoted parser registry
   Ingestion->>Graph: Store eligible file versions, chunks, symbols, headings, and run metadata
   Ingestion->>SQLite: Store run, file state, and extractor cache metadata
-  Ingestion-->>Server: Bounded metadata response with stable opaque IDs
+  Ingestion-->>Server: Run metadata with stable run ID
   Server-->>Client: JSON without roots, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, or provider payloads
 ```
 
@@ -175,7 +176,7 @@ sequenceDiagram
 - Content graph ingestion is approved only for explicitly opted-in `content_graph` projects. It may store eligible local source chunks after all gates pass. Skipped sensitive content, matched sensitive-marker text, secrets, PII, raw prompts, provider payloads, and absolute roots must not be stored or returned.
 - Promoted AST extraction runs after safety gates. Go uses the Go stdlib parser; JS, JSX, TS, TSX, and C# use mandatory Tree-sitter extractors with embedded queries and startup validation; Markdown and infrastructure/config files use metadata-only extractors. No regex fallback is allowed for promoted Tree-sitter languages.
 - The SQLite extractor cache stores only serialized symbols and headings keyed by project, relative-path hash, content hash, extractor name, and extractor version. It does not store raw source, AST node text, chunks, absolute roots, skipped sensitive content, matched sensitive text, secrets, prompts, provider payloads, or PII.
-- Full scans commit graph writes in bounded windows and run through a fair scheduler. Live path events have priority over full-scan continuation, and global plus per-project limits prevent one project from monopolizing ingestion workers.
+- Full scans commit graph writes in bounded windows and run through a fair scheduler. REST and MCP manual ingestion calls enqueue work and return run metadata without waiting for scan completion. Live path events have priority over full-scan continuation, and global plus per-project limits prevent one project from monopolizing ingestion workers.
 
 ## Operational Boundaries
 

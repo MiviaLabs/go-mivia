@@ -38,6 +38,27 @@ func TestSchedulerFullScansBothMakeProgress(t *testing.T) {
 	}
 }
 
+func TestSchedulerSubmitFullScanAsyncReturnsBeforeExecutionCompletes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runner := newBlockingSchedulerRunner()
+	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 1, PerProjectWorkerLimit: 1, LivePathPriority: true})
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	defer scheduler.Stop(context.Background())
+
+	run, err := scheduler.SubmitFullScanAsync(ctx, "project-a", TriggerManual)
+	if err != nil {
+		t.Fatalf("submit async full scan: %v", err)
+	}
+	if run.ID != "prepared-project-a" || run.Status != RunStatusPending {
+		t.Fatalf("expected pending prepared run, got %#v", run)
+	}
+	runner.waitStarted(t, "full_scan", "project-a")
+	runner.release("full_scan", "project-a")
+}
+
 func TestSchedulerPathStartsWhileOtherProjectFullScanActive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -136,6 +157,23 @@ func (runner *blockingSchedulerRunner) IngestProject(ctx context.Context, projec
 
 func (runner *blockingSchedulerRunner) IngestPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
 	return runner.block(ctx, "path", projectID)
+}
+
+func (runner *blockingSchedulerRunner) PrepareProjectRun(context.Context, string, Trigger) (Run, error) {
+	return Run{ID: "prepared-project-a", ProjectID: "project-a", Trigger: TriggerManual, Status: RunStatusPending}, nil
+}
+
+func (runner *blockingSchedulerRunner) ExecutePreparedProjectRun(ctx context.Context, run Run) (Run, error) {
+	completed, err := runner.block(ctx, "full_scan", run.ProjectID)
+	if err != nil {
+		return run, err
+	}
+	run.Status = completed.Status
+	return run, nil
+}
+
+func (runner *blockingSchedulerRunner) FailPreparedProjectRun(context.Context, Run, string) (Run, error) {
+	return Run{}, nil
 }
 
 func (runner *blockingSchedulerRunner) block(ctx context.Context, taskType string, projectID string) (Run, error) {

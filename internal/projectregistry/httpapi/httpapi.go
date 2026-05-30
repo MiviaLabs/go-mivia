@@ -22,6 +22,7 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 	mux.Handle("POST /api/v1/projects/{id}/digest-runs", createDigestRunHandler(digest))
 	if ingestion != nil {
 		mux.Handle("POST /api/v1/projects/{id}/ingestion-runs", createIngestionRunHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/latest", getLatestIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/{run_id}", getIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files", listFilesHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}", getFileHandler(ingestion))
@@ -60,8 +61,15 @@ func createDigestRunHandler(digest *projectregistry.DigestService) http.Handler 
 
 func createIngestionRunHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		run, err := ingestion.IngestProject(r.Context(), strings.TrimSpace(r.PathValue("id")), projectingestion.TriggerManual)
+		run, err := ingestion.SubmitIngestProject(r.Context(), strings.TrimSpace(r.PathValue("id")), projectingestion.TriggerManual)
 		writeIngestionResult(w, projectingestion.MetadataForRun(run), err, http.StatusCreated)
+	})
+}
+
+func getLatestIngestionRunHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		run, err := ingestion.LatestRunMetadata(r.Context(), strings.TrimSpace(r.PathValue("id")))
+		writeIngestionResult(w, run, err, http.StatusOK)
 	})
 }
 
@@ -154,7 +162,12 @@ func listHeadingsHandler(ingestion projectingestion.API) http.Handler {
 
 func getFileOutlineHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		outline, err := ingestion.GetFileOutline(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("file_id")))
+		options, err := fileOutlineOptions(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		outline, err := ingestion.GetFileOutline(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("file_id")), options)
 		writeIngestionResult(w, outline, err, http.StatusOK)
 	})
 }
@@ -260,6 +273,27 @@ func symbolFilter(r *http.Request) (projectingestion.SymbolFilter, error) {
 		Extension:  r.URL.Query().Get("extension"),
 		Package:    r.URL.Query().Get("package"),
 	})
+}
+
+func fileOutlineOptions(r *http.Request) (projectingestion.FileOutlineOptions, error) {
+	pageSize, err := positiveIntQuery(r, "symbol_page_size")
+	if err != nil {
+		return projectingestion.FileOutlineOptions{}, err
+	}
+	filter, err := projectingestion.NormalizeSymbolFilter(projectingestion.SymbolFilter{
+		Kind:       projectingestion.SymbolKind(strings.TrimSpace(r.URL.Query().Get("kind"))),
+		NamePrefix: r.URL.Query().Get("name_prefix"),
+	})
+	if err != nil {
+		return projectingestion.FileOutlineOptions{}, err
+	}
+	return projectingestion.FileOutlineOptions{
+		SymbolFilter: filter,
+		SymbolPagination: projectingestion.Pagination{
+			PageSize:  pageSize,
+			PageToken: r.URL.Query().Get("symbol_page_token"),
+		},
+	}, nil
 }
 
 func positiveIntQuery(r *http.Request, name string) (int, error) {

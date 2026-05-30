@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
@@ -88,8 +89,12 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode run: %v", err)
 	}
-	if run.Status != string(projectingestion.RunStatusCompleted) || run.FilesIngested != 1 {
+	if run.ID == "" || run.Status != string(projectingestion.RunStatusPending) {
 		t.Fatalf("unexpected ingestion run: %#v", run)
+	}
+	run = waitIngestionRun(t, mux, projectID, run.ID)
+	if run.Status != string(projectingestion.RunStatusCompleted) || run.FilesIngested != 1 {
+		t.Fatalf("unexpected completed ingestion run: %#v", run)
 	}
 
 	status := httptest.NewRecorder()
@@ -97,6 +102,12 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 	if status.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", status.Code, status.Body.String())
 	}
+	latest := httptest.NewRecorder()
+	mux.ServeHTTP(latest, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/ingestion-runs/latest", nil))
+	if latest.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", latest.Code, latest.Body.String())
+	}
+	assertDoesNotLeak(t, latest.Body.String(), root, "cmd/main.go", "package main", "content_sha256", "root_path")
 
 	files := httptest.NewRecorder()
 	mux.ServeHTTP(files, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files?page_size=1", nil))
@@ -136,6 +147,44 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 	}
 }
 
+func TestProjectIngestionRoutes_SubmitsAsyncWithoutWaitingForScan(t *testing.T) {
+	registry, digest := newRegistryDigest(t)
+	runner := newBlockingAsyncRunner()
+	scheduler := projectingestion.NewScheduler(runner, projectingestion.SchedulerOptions{QueueDepth: 4, GlobalWorkerCount: 1, PerProjectWorkerLimit: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	t.Cleanup(func() {
+		runner.releaseExecution()
+		_ = scheduler.Stop(context.Background())
+	})
+
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutesWithIngestion(mux, registry, digest, scheduler)
+	res := httptest.NewRecorder()
+	req, reqCancel := context.WithTimeout(context.Background(), testShortTimeout)
+	defer reqCancel()
+	mux.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/api/v1/projects/example-service/ingestion-runs", nil).WithContext(req))
+
+	if res.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", res.Code, res.Body.String())
+	}
+	var run projectingestion.RunMetadata
+	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if run.ID != "run-queued" || run.Status != string(projectingestion.RunStatusPending) {
+		t.Fatalf("expected queued run metadata, got %#v", run)
+	}
+	select {
+	case <-runner.executeStarted:
+	case <-time.After(testShortTimeout):
+		t.Fatalf("expected scheduler worker to receive submitted scan")
+	}
+}
+
 func TestProjectIngestionRoutes_SkippedSensitiveContentDoesNotLeak(t *testing.T) {
 	mux, projectID, root := newIngestionMux(t, "package main\nvar access_token = placeholder\n")
 
@@ -144,6 +193,11 @@ func TestProjectIngestionRoutes_SkippedSensitiveContentDoesNotLeak(t *testing.T)
 	if res.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", res.Code, res.Body.String())
 	}
+	var run projectingestion.RunMetadata
+	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	waitIngestionRun(t, mux, projectID, run.ID)
 
 	files := httptest.NewRecorder()
 	mux.ServeHTTP(files, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files?status=skipped", nil))
@@ -168,6 +222,11 @@ func TestProjectIngestionRoutes_ListFilesFiltersByExtension(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", created.Code, created.Body.String())
 	}
+	var run projectingestion.RunMetadata
+	if err := json.Unmarshal(created.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	waitIngestionRun(t, mux, projectID, run.ID)
 
 	files := httptest.NewRecorder()
 	mux.ServeHTTP(files, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files?status=eligible&extension=GO&page_size=1", nil))
@@ -209,6 +268,14 @@ func TestProjectIngestionRoutes_ListFilesFiltersByExtension(t *testing.T) {
 
 func newMux(t *testing.T) (*http.ServeMux, string) {
 	t.Helper()
+	registry, digest := newRegistryDigest(t)
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutes(mux, registry, digest)
+	return mux, "example-service"
+}
+
+func newRegistryDigest(t *testing.T) (*projectregistry.Registry, *projectregistry.DigestService) {
+	t.Helper()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
 		t.Fatalf("write source fixture: %v", err)
@@ -234,9 +301,7 @@ func newMux(t *testing.T) (*http.ServeMux, string) {
 		t.Fatalf("bootstrap graph: %v", err)
 	}
 	digest := projectregistry.NewDigestService(registry, graph)
-	mux := http.NewServeMux()
-	httpapi.RegisterRoutes(mux, registry, digest)
-	return mux, "example-service"
+	return registry, digest
 }
 
 func newIngestionMux(t *testing.T, content string) (*http.ServeMux, string, string) {
@@ -290,9 +355,45 @@ func newIngestionMuxWithFiles(t *testing.T, files map[string]string, include []s
 	}
 	digest := projectregistry.NewDigestService(registry, graph)
 	ingestion := projectingestion.NewService(registry, projectingestion.NewGraphStore(graph), projectingestion.NewSQLiteStore(db.SQLDB()))
+	scheduler := projectingestion.NewScheduler(ingestion, projectingestion.SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 2, PerProjectWorkerLimit: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := scheduler.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("start scheduler: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = scheduler.Stop(context.Background())
+	})
 	mux := http.NewServeMux()
-	httpapi.RegisterRoutesWithIngestion(mux, registry, digest, ingestion)
+	httpapi.RegisterRoutesWithIngestion(mux, registry, digest, scheduler)
 	return mux, "example-service", root
+}
+
+func waitIngestionRun(t *testing.T, mux *http.ServeMux, projectID string, runID string) projectingestion.RunMetadata {
+	t.Helper()
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		status := httptest.NewRecorder()
+		mux.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/ingestion-runs/"+runID, nil))
+		if status.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", status.Code, status.Body.String())
+		}
+		var run projectingestion.RunMetadata
+		if err := json.Unmarshal(status.Body.Bytes(), &run); err != nil {
+			t.Fatalf("decode status run: %v", err)
+		}
+		if run.Status == string(projectingestion.RunStatusCompleted) || run.Status == string(projectingestion.RunStatusFailed) {
+			return run
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for ingestion run %#v", run)
+		case <-ticker.C:
+		}
+	}
 }
 
 func assertProjectResponseSafe(t *testing.T, body string) {
@@ -310,5 +411,69 @@ func assertDoesNotLeak(t *testing.T, body string, forbidden ...string) {
 		if value != "" && strings.Contains(body, value) {
 			t.Fatalf("response leaked %q: %s", value, body)
 		}
+	}
+}
+
+const testShortTimeout = 100 * time.Millisecond
+
+type blockingAsyncRunner struct {
+	executeStarted chan struct{}
+	release        chan struct{}
+}
+
+func newBlockingAsyncRunner() *blockingAsyncRunner {
+	return &blockingAsyncRunner{
+		executeStarted: make(chan struct{}, 1),
+		release:        make(chan struct{}),
+	}
+}
+
+func (runner *blockingAsyncRunner) PrepareProjectRun(_ context.Context, projectID string, trigger projectingestion.Trigger) (projectingestion.Run, error) {
+	return projectingestion.Run{
+		ID:        "run-queued",
+		ProjectID: projectID,
+		Trigger:   trigger,
+		Mode:      "content_graph",
+		Status:    projectingestion.RunStatusPending,
+	}, nil
+}
+
+func (runner *blockingAsyncRunner) ExecutePreparedProjectRun(ctx context.Context, run projectingestion.Run) (projectingestion.Run, error) {
+	select {
+	case runner.executeStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-runner.release:
+		run.Status = projectingestion.RunStatusCompleted
+		return run, nil
+	case <-ctx.Done():
+		return run, ctx.Err()
+	}
+}
+
+func (runner *blockingAsyncRunner) FailPreparedProjectRun(_ context.Context, run projectingestion.Run, category string) (projectingestion.Run, error) {
+	run.Status = projectingestion.RunStatusFailed
+	run.ErrorCategory = category
+	return run, nil
+}
+
+func (runner *blockingAsyncRunner) IngestProject(ctx context.Context, projectID string, trigger projectingestion.Trigger) (projectingestion.Run, error) {
+	run, err := runner.PrepareProjectRun(ctx, projectID, trigger)
+	if err != nil {
+		return projectingestion.Run{}, err
+	}
+	return runner.ExecutePreparedProjectRun(ctx, run)
+}
+
+func (runner *blockingAsyncRunner) IngestPath(context.Context, string, string, projectingestion.Trigger) (projectingestion.Run, error) {
+	return projectingestion.Run{}, projectingestion.ErrUnsupportedIngest
+}
+
+func (runner *blockingAsyncRunner) releaseExecution() {
+	select {
+	case <-runner.release:
+	default:
+		close(runner.release)
 	}
 }

@@ -30,6 +30,11 @@ type SymbolFilter struct {
 	Package    string
 }
 
+type FileOutlineOptions struct {
+	SymbolFilter     SymbolFilter
+	SymbolPagination Pagination
+}
+
 type RunMetadata struct {
 	ID            string         `json:"id"`
 	ProjectID     string         `json:"project_id"`
@@ -129,10 +134,11 @@ type OutlineChunkMetadata struct {
 }
 
 type FileOutline struct {
-	File     FileMetadata           `json:"file"`
-	Headings []HeadingMetadata      `json:"headings,omitempty"`
-	Symbols  []SymbolMetadata       `json:"symbols,omitempty"`
-	Chunks   []OutlineChunkMetadata `json:"chunks,omitempty"`
+	File                 FileMetadata           `json:"file"`
+	Headings             []HeadingMetadata      `json:"headings,omitempty"`
+	Symbols              []SymbolMetadata       `json:"symbols,omitempty"`
+	SymbolsNextPageToken string                 `json:"symbols_next_page_token,omitempty"`
+	Chunks               []OutlineChunkMetadata `json:"chunks,omitempty"`
 }
 
 func MetadataForRun(run Run) RunMetadata {

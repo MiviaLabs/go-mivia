@@ -44,7 +44,7 @@ Serena and `agent-server` are complementary:
 | Understand a Go type, function, caller, or edit location | Serena |
 | Find indexed files or symbols without scanning the repo in chat | MCP |
 | Read a bounded chunk by opaque file ID | MCP |
-| Check whether live ingestion is configured and returning content | MCP or REST |
+| Check whether indexed data is fresh enough for the task | MCP or REST |
 | Verify a code change, test, build, log, or git state | Shell |
 | Inspect a file just created in the working tree | Shell, then Serena if code navigation is needed |
 
@@ -65,12 +65,15 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Run metadata-only digest | `POST /projects/{id}/digest-runs` | `projects.digest` |
 | Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
 | Get ingestion run | `GET /projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
+| Get latest ingestion run | `GET /projects/{id}/ingestion-runs/latest` | `projects.ingestion_status_latest` |
 | List indexed files | `GET /projects/{id}/files?status=eligible&extension=.go&path_prefix=cmd/` | `projects.files.list` |
 | Get indexed file metadata | `GET /projects/{id}/files/{file_id}` | `projects.files.get` |
 | Read bounded chunks | `GET /projects/{id}/files/{file_id}/chunks` | `projects.file.chunks` |
 | List symbols | `GET /projects/{id}/symbols?kind=function&name_prefix=Run` | `projects.symbols.list` |
 | List document headings | `GET /projects/{id}/headings?file_id={file_id}` | `projects.headings.list` |
 | Get file outline without chunk text | `GET /projects/{id}/files/{file_id}/outline` | `projects.file.outline` |
+
+`projects.ingest` and `POST /ingestion-runs` are asynchronous submissions. They return queued run metadata with a `run_id`; poll `projects.ingestion_status` or use latest status before trusting indexed content.
 
 MCP resources also expose stable IDs:
 
@@ -96,6 +99,7 @@ Check project context:
 curl -fsS http://127.0.0.1:8080/api/v1/projects
 curl -fsS http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo
 curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/files?page_size=5'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/ingestion-runs/latest'
 curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/files/<file_id>'
 curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/symbols?page_size=10'
 ```
@@ -121,6 +125,6 @@ The server is local-only. It must not expose:
 - Skipped sensitive content or matched sensitive text.
 - Public network access, provider calls, embeddings, vectors, crawling, production deployment, symlink traversal, or auth-model changes.
 
-Use stable opaque IDs from REST or MCP responses. Discovery order for agents is project metadata, small `projects.files.list` or `projects.symbols.list`/`projects.headings.list`, `projects.file.outline`, then bounded `projects.file.chunks` only when text is necessary. Do not infer or expose local root paths.
+Use stable opaque IDs from REST or MCP responses. Discovery order for agents is project metadata, latest ingestion status, small `projects.files.list` or `projects.symbols.list`/`projects.headings.list`, `projects.file.outline`, then bounded `projects.file.chunks` only when text is necessary. For large files, call `projects.file.outline` with `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token` instead of pulling a full symbol map. Do not infer or expose local root paths.
 
 Promoted AST metadata covers Go stdlib AST, Tree-sitter JS/JSX/TS/TSX, Tree-sitter C#, Markdown headings, and lightweight infrastructure/config metadata. TS/JS/TSX/JSX and C# have no regex fallback; parse failures are file-local `parse_error` skips and full scans continue. Extractor cache entries store symbols/headings only and are removed for skipped or absent files.

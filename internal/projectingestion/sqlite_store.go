@@ -143,6 +143,56 @@ func (store *SQLiteStore) GetRun(ctx context.Context, projectID string, runID st
 	return run, nil
 }
 
+func (store *SQLiteStore) ListLatestRuns(ctx context.Context, projectID string, limit int) ([]Run, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	rows, err := store.db.QueryContext(ctx, `SELECT
+		run_id,
+		project_id,
+		trigger,
+		mode,
+		status,
+		files_seen,
+		files_ingested,
+		files_skipped,
+		chunks_stored,
+		symbols_stored,
+		error_category,
+		started_at,
+		finished_at
+	FROM project_ingestion_runs
+	WHERE project_id = ?
+	ORDER BY started_at DESC, run_id DESC
+	LIMIT ?`, projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var runs []Run
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range runs {
+		counts, err := store.loadRunReasonCounts(ctx, projectID, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		runs[i].ReasonCounts = counts
+	}
+	return runs, nil
+}
+
 func (store *SQLiteStore) loadRunReasonCounts(ctx context.Context, projectID string, runID string) (map[string]int, error) {
 	rows, err := store.db.QueryContext(ctx, `SELECT reason, count
 	FROM project_ingestion_run_reason_counts

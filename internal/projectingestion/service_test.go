@@ -3,6 +3,7 @@ package projectingestion
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -750,12 +751,69 @@ func TestSymbolsHeadingsAndOutline_P2DiscoveryFlows(t *testing.T) {
 	if len(headings.Headings) != 2 || headings.Headings[0].Text != "Guide" {
 		t.Fatalf("expected markdown headings, got %#v", headings.Headings)
 	}
-	outline, err := svc.GetFileOutline(ctx, "example-service", mdFileID)
+	outline, err := svc.GetFileOutline(ctx, "example-service", mdFileID, FileOutlineOptions{})
 	if err != nil {
 		t.Fatalf("get file outline: %v", err)
 	}
 	if outline.File.ID != mdFileID || len(outline.Headings) != 2 || len(outline.Chunks) == 0 {
 		t.Fatalf("unexpected outline: %#v", outline)
+	}
+}
+
+func TestService_LatestRunMetadataIsSafe(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\nfunc Run() {}\n")
+	svc, _, _ := newTestService(t, root)
+
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	latest, err := svc.LatestRunMetadata(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("latest run metadata: %v", err)
+	}
+	if latest.ID != run.ID || latest.ProjectID != "example-service" || latest.Status != string(RunStatusCompleted) {
+		t.Fatalf("unexpected latest run: %#v", latest)
+	}
+	encoded := fmt.Sprintf("%#v", latest)
+	for _, forbidden := range []string{root, "cmd/main.go", "package main", "func Run", "content_sha256"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("latest metadata leaked %q: %#v", forbidden, latest)
+		}
+	}
+}
+
+func TestService_FileOutlineFiltersAndPaginatesSymbolsWithoutChunkText(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc Alpha() {}\nfunc Beta() {}\nfunc Alfred() {}\n")
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	states, err := svc.ListFileStates(ctx, "example-service", FileStateFilter{})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	fileID := repoFileID("example_ns", findState(t, states, "cmd/main.go").RelativePathHash)
+
+	outline, err := svc.GetFileOutline(ctx, "example-service", fileID, FileOutlineOptions{
+		SymbolFilter:     SymbolFilter{Kind: SymbolKindFunction, NamePrefix: "Al"},
+		SymbolPagination: Pagination{PageSize: 1},
+	})
+	if err != nil {
+		t.Fatalf("get filtered outline: %v", err)
+	}
+	if len(outline.Symbols) != 1 || !strings.HasPrefix(outline.Symbols[0].Name, "Al") || outline.SymbolsNextPageToken == "" {
+		t.Fatalf("expected first filtered symbol page, got %#v", outline)
+	}
+	encoded := fmt.Sprintf("%#v", outline)
+	for _, forbidden := range []string{"func Alpha", "func Beta", "package main"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("outline leaked raw source %q: %#v", forbidden, outline)
+		}
 	}
 }
 
@@ -894,6 +952,10 @@ func (store *lookupOnlyStateStore) SaveRun(context.Context, Run) error {
 
 func (store *lookupOnlyStateStore) GetRun(context.Context, string, string) (Run, error) {
 	return Run{}, errors.New("unexpected GetRun")
+}
+
+func (store *lookupOnlyStateStore) ListLatestRuns(context.Context, string, int) ([]Run, error) {
+	return nil, errors.New("unexpected ListLatestRuns")
 }
 
 func (store *lookupOnlyStateStore) SaveFileState(context.Context, FileState) error {

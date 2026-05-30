@@ -43,12 +43,19 @@ type schedulerTask struct {
 	relativePath string
 	trigger      Trigger
 	taskType     string
+	preparedRun  Run
 	done         chan schedulerResult
 }
 
 type schedulerResult struct {
 	run Run
 	err error
+}
+
+type asyncProjectRunner interface {
+	PrepareProjectRun(context.Context, string, Trigger) (Run, error)
+	ExecutePreparedProjectRun(context.Context, Run) (Run, error)
+	FailPreparedProjectRun(context.Context, Run, string) (Run, error)
 }
 
 func NewScheduler(runner ingestionRunner, options SchedulerOptions) *Scheduler {
@@ -124,6 +131,10 @@ func (scheduler *Scheduler) IngestProject(ctx context.Context, projectID string,
 	return scheduler.SubmitFullScan(ctx, projectID, trigger)
 }
 
+func (scheduler *Scheduler) SubmitIngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
+	return scheduler.SubmitFullScanAsync(ctx, projectID, trigger)
+}
+
 func (scheduler *Scheduler) IngestPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
 	return scheduler.SubmitPath(ctx, projectID, relativePath, trigger)
 }
@@ -134,6 +145,14 @@ func (scheduler *Scheduler) RunMetadata(ctx context.Context, projectID string, r
 		return RunMetadata{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
 	}
 	return api.RunMetadata(ctx, projectID, runID)
+}
+
+func (scheduler *Scheduler) LatestRunMetadata(ctx context.Context, projectID string) (RunMetadata, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return RunMetadata{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.LatestRunMetadata(ctx, projectID)
 }
 
 func (scheduler *Scheduler) ListFiles(ctx context.Context, projectID string, filter FileStateFilter, pagination Pagination) (FileList, error) {
@@ -192,12 +211,12 @@ func (scheduler *Scheduler) ListHeadings(ctx context.Context, projectID string, 
 	return api.ListHeadings(ctx, projectID, fileID, pagination)
 }
 
-func (scheduler *Scheduler) GetFileOutline(ctx context.Context, projectID string, fileID string) (FileOutline, error) {
+func (scheduler *Scheduler) GetFileOutline(ctx context.Context, projectID string, fileID string, options FileOutlineOptions) (FileOutline, error) {
 	api, ok := scheduler.runner.(API)
 	if !ok {
 		return FileOutline{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
 	}
-	return api.GetFileOutline(ctx, projectID, fileID)
+	return api.GetFileOutline(ctx, projectID, fileID, options)
 }
 
 func (scheduler *Scheduler) SubmitFullScan(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
@@ -207,6 +226,45 @@ func (scheduler *Scheduler) SubmitFullScan(ctx context.Context, projectID string
 		taskType:  "full_scan",
 		done:      make(chan schedulerResult, 1),
 	})
+}
+
+func (scheduler *Scheduler) SubmitFullScanAsync(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
+	if scheduler == nil {
+		return Run{}, fmt.Errorf("%w: scheduler is required", ErrUnsupportedIngest)
+	}
+	scheduler.mu.Lock()
+	started := scheduler.started
+	scheduler.mu.Unlock()
+	if !started {
+		return Run{}, fmt.Errorf("%w: scheduler is not started", ErrUnsupportedIngest)
+	}
+	runner, ok := scheduler.runner.(asyncProjectRunner)
+	if !ok {
+		return Run{}, fmt.Errorf("%w: async ingestion runner is required", ErrUnsupportedIngest)
+	}
+	run, err := runner.PrepareProjectRun(ctx, projectID, trigger)
+	if err != nil {
+		return run, err
+	}
+	task := schedulerTask{
+		projectID:   run.ProjectID,
+		trigger:     run.Trigger,
+		taskType:    "full_scan",
+		preparedRun: run,
+	}
+	select {
+	case scheduler.fullCh <- task:
+		return run, nil
+	case <-ctx.Done():
+		_, _ = runner.FailPreparedProjectRun(context.Background(), run, "enqueue_canceled")
+		return run, ctx.Err()
+	default:
+		failed, failErr := runner.FailPreparedProjectRun(ctx, run, "queue_full")
+		if failErr != nil {
+			return failed, failErr
+		}
+		return failed, fmt.Errorf("%w: ingestion queue is full", ErrUnsupportedIngest)
+	}
 }
 
 func (scheduler *Scheduler) SubmitPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
@@ -274,10 +332,19 @@ func (scheduler *Scheduler) runTask(ctx context.Context, task schedulerTask) {
 	var result schedulerResult
 	if task.taskType == "path" {
 		result.run, result.err = scheduler.runner.IngestPath(ctx, task.projectID, task.relativePath, task.trigger)
+	} else if task.preparedRun.ID != "" {
+		runner, ok := scheduler.runner.(asyncProjectRunner)
+		if !ok {
+			result.err = fmt.Errorf("%w: async ingestion runner is required", ErrUnsupportedIngest)
+		} else {
+			result.run, result.err = runner.ExecutePreparedProjectRun(ctx, task.preparedRun)
+		}
 	} else {
 		result.run, result.err = scheduler.runner.IngestProject(ctx, task.projectID, task.trigger)
 	}
-	task.done <- result
+	if task.done != nil {
+		task.done <- result
+	}
 }
 
 func (scheduler *Scheduler) acquireProject(ctx context.Context, projectID string) bool {

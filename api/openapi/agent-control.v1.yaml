@@ -163,8 +163,8 @@ paths:
   /projects/{id}/ingestion-runs:
     post:
       operationId: createProjectIngestionRun
-      summary: Run manual content graph ingestion
-      description: Runs bounded localhost-only ingestion for an opted-in content_graph project. Raw DB queries, absolute roots, skipped sensitive content, secrets, PII, raw prompts, and provider payloads are not returned.
+      summary: Submit manual content graph ingestion
+      description: Queues bounded localhost-only ingestion for an opted-in content_graph project and returns run metadata without waiting for scan completion. Raw DB queries, absolute roots, skipped sensitive content, secrets, PII, raw prompts, and provider payloads are not returned.
       parameters:
         - $ref: '#/components/parameters/ID'
       responses:
@@ -176,6 +176,22 @@ paths:
                 $ref: '#/components/schemas/ProjectIngestionRun'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/ingestion-runs/latest:
+    get:
+      operationId: getLatestProjectIngestionRun
+      summary: Get latest content graph ingestion run metadata
+      description: Returns safe run metadata only. It does not include roots, raw paths, source snippets, sensitive matches, or raw errors.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Latest ingestion run metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIngestionRun'
         '404':
           $ref: '#/components/responses/NotFound'
   /projects/{id}/ingestion-runs/{run_id}:
@@ -269,6 +285,43 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/files/{file_id}/outline:
+    get:
+      operationId: getProjectFileOutline
+      summary: Get project file outline
+      description: Returns file, heading, symbol, and chunk location metadata without chunk text, raw source snippets, or AST node text. Symbol filters can bound large outlines.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/FileID'
+        - name: kind
+          in: query
+          schema:
+            type: string
+        - name: name_prefix
+          in: query
+          schema:
+            type: string
+        - name: symbol_page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: symbol_page_token
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Project file outline
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectFileOutline'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects/{id}/symbols:
     get:
       operationId: listProjectSymbols
@@ -277,6 +330,26 @@ paths:
         - $ref: '#/components/parameters/ID'
         - $ref: '#/components/parameters/PageSize'
         - $ref: '#/components/parameters/PageToken'
+        - name: kind
+          in: query
+          schema:
+            type: string
+        - name: name_prefix
+          in: query
+          schema:
+            type: string
+        - name: file_id
+          in: query
+          schema:
+            type: string
+        - name: extension
+          in: query
+          schema:
+            type: string
+        - name: package
+          in: query
+          schema:
+            type: string
       responses:
         '200':
           description: Project symbols
@@ -547,6 +620,11 @@ components:
           minimum: 0
         error_category:
           type: string
+        reason_counts:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
         started_at:
           type: string
           format: date-time
@@ -638,6 +716,78 @@ components:
           description: Bounded eligible chunk text only; never skipped sensitive content.
         text_truncated:
           type: boolean
+    ProjectFileOutline:
+      type: object
+      additionalProperties: false
+      required: [file]
+      properties:
+        file:
+          $ref: '#/components/schemas/ProjectFile'
+        headings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectHeading'
+        symbols:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSymbol'
+        symbols_next_page_token:
+          type: string
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectOutlineChunk'
+      description: Does not include chunk text, raw source snippets, AST node text, absolute roots, or skipped sensitive content.
+    ProjectHeading:
+      type: object
+      additionalProperties: false
+      required: [id, file_id, project_id, level, text, parent_index, start_line, end_line]
+      properties:
+        id:
+          type: string
+        file_id:
+          type: string
+        project_id:
+          type: string
+        level:
+          type: integer
+          minimum: 1
+        text:
+          type: string
+        parent_index:
+          type: integer
+        start_line:
+          type: integer
+          minimum: 1
+        end_line:
+          type: integer
+          minimum: 1
+    ProjectOutlineChunk:
+      type: object
+      additionalProperties: false
+      required: [id, file_id, project_id, index, start_line, end_line, byte_start, byte_end]
+      properties:
+        id:
+          type: string
+        file_id:
+          type: string
+        project_id:
+          type: string
+        index:
+          type: integer
+          minimum: 0
+        start_line:
+          type: integer
+          minimum: 1
+        end_line:
+          type: integer
+          minimum: 1
+        byte_start:
+          type: integer
+          minimum: 0
+        byte_end:
+          type: integer
+          minimum: 0
     ProjectSymbolList:
       type: object
       additionalProperties: false

@@ -31,6 +31,7 @@ var (
 type stateStore interface {
 	SaveRun(context.Context, Run) error
 	GetRun(context.Context, string, string) (Run, error)
+	ListLatestRuns(context.Context, string, int) ([]Run, error)
 	SaveFileState(context.Context, FileState) error
 	ListFileStates(context.Context, string, FileStateFilter) ([]FileState, error)
 	ListFileStatesPage(context.Context, string, FileStateFilter, Pagination) ([]FileState, string, error)
@@ -43,7 +44,9 @@ type stateStore interface {
 type API interface {
 	IngestProject(context.Context, string, Trigger) (Run, error)
 	IngestPath(context.Context, string, string, Trigger) (Run, error)
+	SubmitIngestProject(context.Context, string, Trigger) (Run, error)
 	RunMetadata(context.Context, string, string) (RunMetadata, error)
+	LatestRunMetadata(context.Context, string) (RunMetadata, error)
 	ListFiles(context.Context, string, FileStateFilter, Pagination) (FileList, error)
 	GetFile(context.Context, string, string) (FileMetadata, error)
 	ListChunks(context.Context, string, string, Pagination, int) (ChunkList, error)
@@ -51,7 +54,7 @@ type API interface {
 	ListSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
 	GetSymbol(context.Context, string, string) (SymbolMetadata, error)
 	ListHeadings(context.Context, string, string, Pagination) (HeadingList, error)
-	GetFileOutline(context.Context, string, string) (FileOutline, error)
+	GetFileOutline(context.Context, string, string, FileOutlineOptions) (FileOutline, error)
 }
 
 type Service struct {
@@ -94,7 +97,20 @@ func (svc *Service) withGraphBatch(ctx context.Context, fn func(*Service) (Run, 
 }
 
 func (svc *Service) IngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
-	return svc.ingestProject(ctx, projectID, trigger)
+	project, err := svc.projectForIngestion(projectID, normalizeTrigger(trigger))
+	if err != nil {
+		return Run{}, err
+	}
+	run := svc.startRun(project, trigger)
+	run.Status = RunStatusRunning
+	if err := svc.persistRun(ctx, project, run); err != nil {
+		return run, err
+	}
+	return svc.executeProjectRun(ctx, project, run)
+}
+
+func (svc *Service) SubmitIngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
+	return Run{}, fmt.Errorf("%w: manual ingestion submission requires scheduler", ErrUnsupportedIngest)
 }
 
 func (svc *Service) SetFullScanBatchSize(size int) {
@@ -107,20 +123,59 @@ func (svc *Service) SetExtractorCacheEnabled(enabled bool) {
 	svc.extractorCacheEnabled = enabled
 }
 
-func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
+func (svc *Service) PrepareProjectRun(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
 	trigger = normalizeTrigger(trigger)
 	project, err := svc.projectForIngestion(projectID, trigger)
 	if err != nil {
 		return Run{}, err
 	}
 	run := svc.startRun(project, trigger)
+	run.Status = RunStatusPending
 	if err := svc.persistRun(ctx, project, run); err != nil {
 		return run, err
 	}
+	return run, nil
+}
 
+func (svc *Service) ExecutePreparedProjectRun(ctx context.Context, run Run) (Run, error) {
+	if strings.TrimSpace(run.ID) == "" || strings.TrimSpace(run.ProjectID) == "" {
+		return Run{}, ErrInvalidInput
+	}
+	project, err := svc.projectForIngestion(run.ProjectID, normalizeTrigger(run.Trigger))
+	if err != nil {
+		return run, err
+	}
+	run.ProjectID = project.ID
+	run.Trigger = normalizeTrigger(run.Trigger)
+	run.Mode = project.DigestMode
+	run.Status = RunStatusRunning
+	if run.StartedAt.IsZero() {
+		run.StartedAt = svc.now().UTC()
+	}
+	if err := svc.persistRun(ctx, project, run); err != nil {
+		return run, err
+	}
+	return svc.executeProjectRun(ctx, project, run)
+}
+
+func (svc *Service) FailPreparedProjectRun(ctx context.Context, run Run, errorCategory string) (Run, error) {
+	project, err := svc.projectForIngestion(run.ProjectID, normalizeTrigger(run.Trigger))
+	if err != nil {
+		return run, err
+	}
+	run.Status = RunStatusFailed
+	run.ErrorCategory = strings.TrimSpace(errorCategory)
+	if run.ErrorCategory == "" {
+		run.ErrorCategory = "ingest_failed"
+	}
+	run.FinishedAt = svc.now().UTC()
+	return run, svc.persistRun(ctx, project, run)
+}
+
+func (svc *Service) executeProjectRun(ctx context.Context, project projectregistry.Project, run Run) (Run, error) {
 	seen := make(map[string]struct{})
 	root := project.CanonicalRootPath
-	err = filepath.WalkDir(root, func(filePath string, entry fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(root, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if filePath == root {
 				return fmt.Errorf("walk failed for project root")
@@ -326,6 +381,21 @@ func (svc *Service) RunMetadata(ctx context.Context, projectID string, runID str
 	return MetadataForRun(run), nil
 }
 
+func (svc *Service) LatestRunMetadata(ctx context.Context, projectID string) (RunMetadata, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return RunMetadata{}, err
+	}
+	runs, err := svc.state.ListLatestRuns(ctx, project.ID, 1)
+	if err != nil {
+		return RunMetadata{}, err
+	}
+	if len(runs) == 0 {
+		return RunMetadata{}, ErrRunNotFound
+	}
+	return MetadataForRun(runs[0]), nil
+}
+
 func (svc *Service) ListFileStates(ctx context.Context, projectID string, filter FileStateFilter) ([]FileState, error) {
 	return svc.state.ListFileStates(ctx, strings.TrimSpace(projectID), filter)
 }
@@ -471,7 +541,7 @@ func (svc *Service) ListHeadings(ctx context.Context, projectID string, fileID s
 	return svc.graph.ListHeadings(ctx, project, strings.TrimSpace(fileID), pagination)
 }
 
-func (svc *Service) GetFileOutline(ctx context.Context, projectID string, fileID string) (FileOutline, error) {
+func (svc *Service) GetFileOutline(ctx context.Context, projectID string, fileID string, options FileOutlineOptions) (FileOutline, error) {
 	project, err := svc.projectForQuery(projectID)
 	if err != nil {
 		return FileOutline{}, err
@@ -479,11 +549,16 @@ func (svc *Service) GetFileOutline(ctx context.Context, projectID string, fileID
 	if !validOpaqueID(fileID) {
 		return FileOutline{}, ErrInvalidInput
 	}
+	normalized, err := NormalizeSymbolFilter(options.SymbolFilter)
+	if err != nil {
+		return FileOutline{}, err
+	}
+	options.SymbolFilter = normalized
 	prefix := project.GraphNamespace + ":"
 	if !strings.HasPrefix(fileID, prefix) {
 		return FileOutline{}, ErrIngestionNotFound
 	}
-	return svc.graph.GetFileOutline(ctx, project, strings.TrimSpace(fileID))
+	return svc.graph.GetFileOutline(ctx, project, strings.TrimSpace(fileID), options)
 }
 
 func NormalizeSymbolFilter(filter SymbolFilter) (SymbolFilter, error) {

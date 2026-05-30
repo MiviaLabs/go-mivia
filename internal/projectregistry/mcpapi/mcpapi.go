@@ -129,7 +129,7 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		if ingestion == nil {
 			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
 		}
-		run, err := ingestion.IngestProject(ctx, strings.TrimSpace(input.ID), projectingestion.TriggerManual)
+		run, err := ingestion.SubmitIngestProject(ctx, strings.TrimSpace(input.ID), projectingestion.TriggerManual)
 		return toolResult(projectingestion.MetadataForRun(run)), err
 	case "projects.ingestion_status", "projects_ingestion_status":
 		var input struct {
@@ -144,6 +144,19 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
 		}
 		run, err := ingestion.RunMetadata(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.RunID))
+		return toolResult(run), err
+	case "projects.ingestion_status_latest", "projects_ingestion_status_latest", "projects.ingestion_latest", "projects_ingestion_latest":
+		var input struct {
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		run, err := ingestion.LatestRunMetadata(ctx, strings.TrimSpace(input.ID))
 		return toolResult(run), err
 	case "projects.files.list", "projects_files_list":
 		var input struct {
@@ -245,9 +258,13 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		return toolResult(headings), err
 	case "projects.file.outline", "projects_file_outline":
 		var input struct {
-			ID     string          `json:"id"`
-			FileID string          `json:"file_id"`
-			Meta   json.RawMessage `json:"_meta,omitempty"`
+			ID              string          `json:"id"`
+			FileID          string          `json:"file_id"`
+			Kind            string          `json:"kind,omitempty"`
+			NamePrefix      string          `json:"name_prefix,omitempty"`
+			SymbolPageSize  int             `json:"symbol_page_size,omitempty"`
+			SymbolPageToken string          `json:"symbol_page_token,omitempty"`
+			Meta            json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
@@ -255,7 +272,13 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		if ingestion == nil {
 			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
 		}
-		outline, err := ingestion.GetFileOutline(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.FileID))
+		outline, err := ingestion.GetFileOutline(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.FileID), projectingestion.FileOutlineOptions{
+			SymbolFilter: projectingestion.SymbolFilter{
+				Kind:       projectingestion.SymbolKind(strings.TrimSpace(input.Kind)),
+				NamePrefix: input.NamePrefix,
+			},
+			SymbolPagination: projectingestion.Pagination{PageSize: input.SymbolPageSize, PageToken: input.SymbolPageToken},
+		})
 		return toolResult(outline), err
 	default:
 		return nil, projectregistry.ErrProjectNotFound
@@ -308,7 +331,7 @@ func ReadResourceWithIngestion(ctx context.Context, registry *projectregistry.Re
 		return resourceResult(uri, symbol)
 	}
 	if ingestion != nil && len(parts) == 4 && parts[1] == "files" && parts[3] == "outline" {
-		outline, err := ingestion.GetFileOutline(ctx, parts[0], parts[2])
+		outline, err := ingestion.GetFileOutline(ctx, parts[0], parts[2], projectingestion.FileOutlineOptions{})
 		if err != nil {
 			return nil, err
 		}
@@ -339,6 +362,14 @@ func ingestionToolDefinitions() []map[string]any {
 				"id":     map[string]any{"type": "string", "minLength": 1},
 				"run_id": map[string]any{"type": "string", "minLength": 1},
 			}, []string{"id", "run_id"}),
+		},
+		{
+			"name":        "projects.ingestion_status_latest",
+			"title":       "Get Latest Project Ingestion Run",
+			"description": "Fetch the latest non-sensitive ingestion run metadata for a project.",
+			"inputSchema": objectSchema(map[string]any{
+				"id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id"}),
 		},
 		{
 			"name":        "projects.files.list",
@@ -400,8 +431,12 @@ func ingestionToolDefinitions() []map[string]any {
 			"title":       "Get Project File Outline",
 			"description": "Fetch bounded file metadata, headings, symbols, and chunk ids without full chunk text.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":      map[string]any{"type": "string", "minLength": 1},
-				"file_id": map[string]any{"type": "string", "minLength": 1},
+				"id":                map[string]any{"type": "string", "minLength": 1},
+				"file_id":           map[string]any{"type": "string", "minLength": 1},
+				"kind":              map[string]any{"type": "string"},
+				"name_prefix":       map[string]any{"type": "string"},
+				"symbol_page_size":  map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxPageSize},
+				"symbol_page_token": map[string]any{"type": "string"},
 			}, []string{"id", "file_id"}),
 		},
 	}

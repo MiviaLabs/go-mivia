@@ -140,21 +140,24 @@ The server exposes bounded project metadata on localhost only:
 - `POST /api/v1/projects/{id}/digest-runs`
 - `POST /api/v1/projects/{id}/ingestion-runs`
 - `GET /api/v1/projects/{id}/ingestion-runs/{run_id}`
+- `GET /api/v1/projects/{id}/ingestion-runs/latest`
 - `GET /api/v1/projects/{id}/files`
 - `GET /api/v1/projects/{id}/files/{file_id}/chunks`
 - `GET /api/v1/projects/{id}/files/{file_id}/outline`
 - `GET /api/v1/projects/{id}/symbols`
 - `GET /api/v1/projects/{id}/headings`
-- MCP tools: `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.ingestion_status`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.headings.list`, `projects.file.outline`
+- MCP tools: `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.headings.list`, `projects.file.outline`
 - MCP resources: `mivialabs://projects/{id}`, `mivialabs://projects/{id}/digest-runs/{run_id}`, `mivialabs://projects/{id}/files/{file_id}`, `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`, `mivialabs://projects/{id}/files/{file_id}/outline`, `mivialabs://projects/{id}/symbols/{symbol_id}`
 
 Project responses omit local root paths and datastore paths by default. Digest runs are manual and metadata-only: graph writes store relative path, extension/language hint, file size, mtime, and a metadata fingerprint. Content graph ingestion stores eligible local source chunks only after all gates pass. AST metadata is promoted for Go, JS, JSX, TS, TSX, C#, Markdown, and lightweight infrastructure/config files. TS/JS/TSX/JSX and C# parsing is mandatory Tree-sitter; startup validation fails with `extractor_initialization_failed` if a promoted grammar or query cannot initialize.
 
 Extractor cache data is stored in SQLite table `project_extractor_cache`. It stores symbols and headings only; it does not store raw source, AST text, chunks, absolute paths, skipped sensitive data, or matched sensitive text. Cache rows are keyed by project, relative-path hash, content hash, extractor name, and extractor version, and are removed when a file becomes skipped or absent.
 
-Full scans commit graph writes in bounded windows. Manual and live ingestion submissions run through the scheduler, which prioritizes live path events over full-scan continuation and enforces global and per-project worker limits.
+Full scans commit graph writes in bounded windows. Manual and live ingestion submissions run through the scheduler. Manual submissions return queued run metadata without waiting for scan completion; clients should use latest status or poll the returned run ID before trusting indexed data. The scheduler prioritizes live path events over full-scan continuation and enforces global and per-project worker limits.
 
 File listing accepts optional `status`, `extension`, `path_prefix`, `skipped_reason`, `present`, `modified_since`, `page_size`, and `page_token` filters. Extension values may be `go` or `.go`; matching is case-insensitive and invalidates whitespace or path separators.
+
+File outlines return file, heading, symbol, and chunk location metadata only. They do not return chunk text or AST node text. Large outlines can be bounded with symbol `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token`.
 
 ## Live Update Mode
 

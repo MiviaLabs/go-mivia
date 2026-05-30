@@ -424,7 +424,7 @@ func (store *GraphStore) ListHeadings(ctx context.Context, project projectregist
 	return HeadingList{Headings: headings, NextPageToken: nextToken}, nil
 }
 
-func (store *GraphStore) GetFileOutline(ctx context.Context, project projectregistry.Project, fileID string) (FileOutline, error) {
+func (store *GraphStore) GetFileOutline(ctx context.Context, project projectregistry.Project, fileID string, options FileOutlineOptions) (FileOutline, error) {
 	file, err := store.GetFile(ctx, project, fileID)
 	if err != nil {
 		return FileOutline{}, err
@@ -433,7 +433,13 @@ func (store *GraphStore) GetFileOutline(ctx context.Context, project projectregi
 	if err != nil {
 		return FileOutline{}, err
 	}
-	symbols, err := store.ListSymbols(ctx, project, SymbolFilter{FileID: fileID}, Pagination{PageSize: MaxPageSize})
+	symbolFilter := options.SymbolFilter
+	symbolFilter.FileID = fileID
+	symbolPagination := options.SymbolPagination
+	if symbolPagination.PageSize == 0 && strings.TrimSpace(symbolPagination.PageToken) == "" {
+		symbolPagination.PageSize = MaxPageSize
+	}
+	symbols, err := store.ListSymbols(ctx, project, symbolFilter, symbolPagination)
 	if err != nil {
 		return FileOutline{}, err
 	}
@@ -442,10 +448,11 @@ func (store *GraphStore) GetFileOutline(ctx context.Context, project projectregi
 		return FileOutline{}, err
 	}
 	return FileOutline{
-		File:     file,
-		Headings: headings.Headings,
-		Symbols:  symbols.Symbols,
-		Chunks:   chunks,
+		File:                 file,
+		Headings:             headings.Headings,
+		Symbols:              symbols.Symbols,
+		SymbolsNextPageToken: symbols.NextPageToken,
+		Chunks:               chunks,
 	}, nil
 }
 

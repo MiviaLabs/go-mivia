@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
@@ -120,6 +121,60 @@ func TestCallToolWithIngestion_ListFilesFiltersByExtension(t *testing.T) {
 	}
 }
 
+func TestCallToolWithIngestion_SubmitsAsyncWithoutWaitingForScan(t *testing.T) {
+	registry, digest := newServices(t)
+	runner := newBlockingAsyncRunner()
+	scheduler := projectingestion.NewScheduler(runner, projectingestion.SchedulerOptions{QueueDepth: 4, GlobalWorkerCount: 1, PerProjectWorkerLimit: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	t.Cleanup(func() {
+		runner.releaseExecution()
+		_ = scheduler.Stop(context.Background())
+	})
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), testShortTimeout)
+	defer callCancel()
+	result, err := mcpapi.CallToolWithIngestion(callCtx, registry, digest, scheduler, "projects.ingest", json.RawMessage(`{"id":"example-service"}`))
+	if err != nil {
+		t.Fatalf("call ingest tool: %v", err)
+	}
+	run := result["structuredContent"].(projectingestion.RunMetadata)
+	if run.ID != "run-queued" || run.Status != string(projectingestion.RunStatusPending) {
+		t.Fatalf("expected queued run metadata, got %#v", run)
+	}
+	select {
+	case <-runner.executeStarted:
+	case <-time.After(testShortTimeout):
+		t.Fatalf("expected scheduler worker to receive submitted scan")
+	}
+}
+
+func TestCallToolWithIngestion_LatestStatusToolIsSafe(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+	run, err := ingestion.IngestProject(context.Background(), "example-service", projectingestion.TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+
+	result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.ingestion_status_latest", json.RawMessage(`{"id":"example-service"}`))
+	if err != nil {
+		t.Fatalf("call latest ingestion status: %v", err)
+	}
+	latest := result["structuredContent"].(projectingestion.RunMetadata)
+	if latest.ID != run.ID || latest.Status != string(projectingestion.RunStatusCompleted) {
+		t.Fatalf("unexpected latest metadata: %#v", latest)
+	}
+	body := marshalResult(t, result)
+	for _, forbidden := range []string{"cmd/main.go", "package main", "content_sha256", "root_path"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("latest status leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
 func TestCallToolWithIngestion_P2DiscoveryTools(t *testing.T) {
 	registry, digest, ingestion := newIngestionServices(t)
 
@@ -170,6 +225,33 @@ func TestCallToolWithIngestion_P2DiscoveryTools(t *testing.T) {
 	outline := outlineResult["structuredContent"].(projectingestion.FileOutline)
 	if outline.File.ID != files.Files[0].ID || len(outline.Headings) != 2 || len(outline.Chunks) == 0 {
 		t.Fatalf("unexpected outline: %#v", outline)
+	}
+
+	goFilesResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.files.list", json.RawMessage(`{"id":"example-service","path_prefix":"cmd/","present":true,"page_size":10}`))
+	if err != nil {
+		t.Fatalf("call go files list tool: %v", err)
+	}
+	goFiles := goFilesResult["structuredContent"].(projectingestion.FileList)
+	if len(goFiles.Files) != 1 {
+		t.Fatalf("unexpected go files: %#v", goFiles)
+	}
+	filteredOutlineResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.file.outline", marshalArgs(t, map[string]any{
+		"id":               "example-service",
+		"file_id":          goFiles.Files[0].ID,
+		"kind":             "function",
+		"name_prefix":      "main",
+		"symbol_page_size": 1,
+	}))
+	if err != nil {
+		t.Fatalf("call filtered outline tool: %v", err)
+	}
+	filteredOutline := filteredOutlineResult["structuredContent"].(projectingestion.FileOutline)
+	if len(filteredOutline.Symbols) != 1 || filteredOutline.Symbols[0].Name != "main" {
+		t.Fatalf("unexpected filtered outline symbols: %#v", filteredOutline)
+	}
+	filteredBody := marshalResult(t, filteredOutlineResult)
+	if strings.Contains(filteredBody, "func main") || strings.Contains(filteredBody, "package main") {
+		t.Fatalf("filtered outline leaked raw source: %s", filteredBody)
 	}
 }
 
@@ -270,4 +352,68 @@ func marshalArgs(t *testing.T, value any) json.RawMessage {
 		t.Fatalf("marshal args: %v", err)
 	}
 	return encoded
+}
+
+const testShortTimeout = 100 * time.Millisecond
+
+type blockingAsyncRunner struct {
+	executeStarted chan struct{}
+	release        chan struct{}
+}
+
+func newBlockingAsyncRunner() *blockingAsyncRunner {
+	return &blockingAsyncRunner{
+		executeStarted: make(chan struct{}, 1),
+		release:        make(chan struct{}),
+	}
+}
+
+func (runner *blockingAsyncRunner) PrepareProjectRun(_ context.Context, projectID string, trigger projectingestion.Trigger) (projectingestion.Run, error) {
+	return projectingestion.Run{
+		ID:        "run-queued",
+		ProjectID: projectID,
+		Trigger:   trigger,
+		Mode:      "content_graph",
+		Status:    projectingestion.RunStatusPending,
+	}, nil
+}
+
+func (runner *blockingAsyncRunner) ExecutePreparedProjectRun(ctx context.Context, run projectingestion.Run) (projectingestion.Run, error) {
+	select {
+	case runner.executeStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-runner.release:
+		run.Status = projectingestion.RunStatusCompleted
+		return run, nil
+	case <-ctx.Done():
+		return run, ctx.Err()
+	}
+}
+
+func (runner *blockingAsyncRunner) FailPreparedProjectRun(_ context.Context, run projectingestion.Run, category string) (projectingestion.Run, error) {
+	run.Status = projectingestion.RunStatusFailed
+	run.ErrorCategory = category
+	return run, nil
+}
+
+func (runner *blockingAsyncRunner) IngestProject(ctx context.Context, projectID string, trigger projectingestion.Trigger) (projectingestion.Run, error) {
+	run, err := runner.PrepareProjectRun(ctx, projectID, trigger)
+	if err != nil {
+		return projectingestion.Run{}, err
+	}
+	return runner.ExecutePreparedProjectRun(ctx, run)
+}
+
+func (runner *blockingAsyncRunner) IngestPath(context.Context, string, string, projectingestion.Trigger) (projectingestion.Run, error) {
+	return projectingestion.Run{}, projectingestion.ErrUnsupportedIngest
+}
+
+func (runner *blockingAsyncRunner) releaseExecution() {
+	select {
+	case <-runner.release:
+	default:
+		close(runner.release)
+	}
 }

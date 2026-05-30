@@ -86,9 +86,12 @@ Manual content graph ingestion, after enabling `ingestion.content_graph_enabled 
 
 ```sh
 curl -fsS -X POST http://127.0.0.1:8080/api/v1/projects/example-service/ingestion-runs
+curl -fsS http://127.0.0.1:8080/api/v1/projects/example-service/ingestion-runs/latest
 curl -fsS http://127.0.0.1:8080/api/v1/projects/example-service/files
 curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/symbols?page_size=25'
 ```
+
+Manual ingestion submits work asynchronously through the scheduler. Use the returned `run_id` with `/ingestion-runs/{run_id}` or check `/ingestion-runs/latest` until the run is `completed` before relying on indexed files and symbols.
 
 Chunk reads require stable opaque IDs from the file list response:
 
@@ -164,6 +167,7 @@ After registration, new Codex Desktop sessions can discover these tools:
 - `projects.digest`
 - `projects.ingest`
 - `projects.ingestion_status`
+- `projects.ingestion_status_latest`
 - `projects.files.list`
 - `projects.files.get`
 - `projects.file.chunks`
@@ -200,7 +204,7 @@ update_policy = "live"
 graph_storage = "persistent"
 ```
 
-The watcher uses `github.com/fsnotify/fsnotify` and watches directories, not individual files. It registers each eligible directory because filesystem notifications are not recursive. Overflow or full queues trigger a scheduled project rescan. The scheduler prioritizes live path events over full-scan continuation and enforces global and per-project worker limits. Manual ingestion remains available as fallback and runs through the same scheduler.
+The watcher uses `github.com/fsnotify/fsnotify` and watches directories, not individual files. It registers each eligible directory because filesystem notifications are not recursive. Overflow or full queues trigger a scheduled project rescan. The scheduler prioritizes live path events over full-scan continuation and enforces global and per-project worker limits. Manual ingestion remains available as fallback, returns queued metadata immediately, and runs through the same scheduler.
 
 Promoted AST extraction validates at startup when content graph ingestion is enabled. Supported promoted extractors are Go stdlib AST, Tree-sitter JavaScript/TypeScript/TSX, Tree-sitter C#, Markdown headings, and lightweight infrastructure/config metadata. Tree-sitter failures must be fixed as dependency or query initialization issues; do not re-enable regex fallback for TS/JS/TSX/JSX or C#.
 

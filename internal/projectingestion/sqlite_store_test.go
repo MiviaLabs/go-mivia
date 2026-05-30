@@ -106,6 +106,48 @@ func TestSQLiteStore_SaveRunPersistsReasonCounts(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_ListLatestRunsReturnsSafeMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	older := Run{
+		ID:        "run-older",
+		ProjectID: "project-1",
+		Trigger:   TriggerManual,
+		Mode:      "content_graph",
+		Status:    RunStatusCompleted,
+		StartedAt: time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC),
+	}
+	latest := Run{
+		ID:            "run-latest",
+		ProjectID:     "project-1",
+		Trigger:       TriggerManual,
+		Mode:          "content_graph",
+		Status:        RunStatusFailed,
+		FilesSeen:     3,
+		FilesSkipped:  1,
+		ErrorCategory: "walk_failed",
+		ReasonCounts:  map[string]int{string(SkipReasonSensitiveContent): 1},
+		StartedAt:     time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
+		FinishedAt:    time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC),
+	}
+	for _, run := range []Run{older, latest} {
+		if err := store.SaveRun(ctx, run); err != nil {
+			t.Fatalf("save run: %v", err)
+		}
+	}
+
+	runs, err := store.ListLatestRuns(ctx, "project-1", 1)
+	if err != nil {
+		t.Fatalf("list latest runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].ID != latest.ID || runs[0].ErrorCategory != "walk_failed" {
+		t.Fatalf("unexpected latest run: %#v", runs)
+	}
+	if runs[0].ReasonCounts[string(SkipReasonSensitiveContent)] != 1 {
+		t.Fatalf("expected reason counts, got %#v", runs[0].ReasonCounts)
+	}
+}
+
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	db, err := sqliteplatform.Open(":memory:")

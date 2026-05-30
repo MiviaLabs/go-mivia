@@ -189,7 +189,7 @@ Input schema:
 }
 ```
 
-Output: manual `content_graph` ingestion run metadata for an opted-in local project. The response does not include absolute roots, source-content hashes, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, or provider payloads.
+Output: queued manual `content_graph` ingestion run metadata for an opted-in local project. The tool submits work through the scheduler and returns quickly with a `run_id`; poll `projects.ingestion_status` or call `projects.ingestion_status_latest` before relying on indexed data. The response does not include absolute roots, source-content hashes, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, or provider payloads.
 
 ### `projects.ingestion_status`
 
@@ -208,6 +208,23 @@ Input schema:
 ```
 
 Output: non-sensitive ingestion run metadata.
+
+### `projects.ingestion_status_latest`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: latest non-sensitive ingestion run metadata for the project: run ID, status, trigger, counts, reason counts, timestamps, and error category only.
 
 ### `projects.files.list`
 
@@ -288,6 +305,28 @@ Input schema:
 
 Output: bounded symbol metadata for an opted-in content graph project.
 
+### `projects.file.outline`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "file_id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "file_id": { "type": "string", "minLength": 1 },
+    "kind": { "type": "string" },
+    "name_prefix": { "type": "string" },
+    "symbol_page_size": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "symbol_page_token": { "type": "string" }
+  }
+}
+```
+
+Output: bounded file metadata, headings, symbols, symbol pagination token, and chunk IDs/line ranges without chunk text, raw source snippets, or AST node text.
+
 ## Resources
 
 Resource templates:
@@ -299,6 +338,7 @@ Resource templates:
 - `mivialabs://projects/{id}/digest-runs/{run_id}`
 - `mivialabs://projects/{id}/files/{file_id}`
 - `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`
+- `mivialabs://projects/{id}/files/{file_id}/outline`
 - `mivialabs://projects/{id}/symbols/{symbol_id}`
 
 `resources/read` returns `application/json` text content for the requested task, research-run, research-source, project, project-digest-run, project-file, project-file-chunk, or project-symbol metadata.

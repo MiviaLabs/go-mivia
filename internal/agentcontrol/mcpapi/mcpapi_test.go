@@ -2,6 +2,7 @@ package mcpapi_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/mcpapi"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/service"
@@ -161,6 +163,11 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	if bytes.Contains(ingest.Body.Bytes(), []byte(root)) || bytes.Contains(ingest.Body.Bytes(), []byte("content_sha256")) {
 		t.Fatalf("ingest response leaked sensitive metadata: %s", ingest.Body.String())
 	}
+	var ingestRPC rpcResponse
+	if err := json.Unmarshal(ingest.Body.Bytes(), &ingestRPC); err != nil {
+		t.Fatalf("decode ingest response: %v", err)
+	}
+	waitMCPIngestionRun(t, handler, ingestRPC.Result.StructuredContent["id"].(string))
 
 	files := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.files.list","arguments":"{\"id\":\"example-service\",\"page_size\":1}"}}`)
 	if bytes.Contains(files.Body.Bytes(), []byte(`"error"`)) {
@@ -283,7 +290,38 @@ func newHandlerWithProjectIngestion(t *testing.T) (http.Handler, string) {
 	}
 	digest := projectregistry.NewDigestService(registry, graph)
 	ingestion := projectingestion.NewService(registry, projectingestion.NewGraphStore(graph), projectingestion.NewSQLiteStore(db.SQLDB()))
-	return mcpapi.NewHandlerWithResearchProjectsAndIngestion(svc, nil, registry, digest, ingestion, slog.Default()), root
+	scheduler := projectingestion.NewScheduler(ingestion, projectingestion.SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 2, PerProjectWorkerLimit: 1})
+	if err := scheduler.Start(context.Background()); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	t.Cleanup(func() { _ = scheduler.Stop(context.Background()) })
+	return mcpapi.NewHandlerWithResearchProjectsAndIngestion(svc, nil, registry, digest, scheduler, slog.Default()), root
+}
+
+func waitMCPIngestionRun(t *testing.T, handler http.Handler, runID string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		status := postMCP(t, handler, `{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"projects.ingestion_status","arguments":{"id":"example-service","run_id":"`+runID+`"}}}`)
+		if bytes.Contains(status.Body.Bytes(), []byte(`"error"`)) {
+			t.Fatalf("expected status success, got %s", status.Body.String())
+		}
+		var statusRPC rpcResponse
+		if err := json.Unmarshal(status.Body.Bytes(), &statusRPC); err != nil {
+			t.Fatalf("decode status response: %v", err)
+		}
+		statusValue := statusRPC.Result.StructuredContent["status"].(string)
+		if statusValue == string(projectingestion.RunStatusCompleted) || statusValue == string(projectingestion.RunStatusFailed) {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for ingestion run %s", runID)
+		case <-ticker.C:
+		}
+	}
 }
 
 func postMCP(t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {
