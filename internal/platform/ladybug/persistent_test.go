@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
@@ -166,6 +167,75 @@ func TestPersistentGraph_AppendsJournalInsteadOfRewritingSnapshot(t *testing.T) 
 	}
 	if bytes.Count(second, []byte(`"op"`)) != 3 {
 		t.Fatalf("expected bootstrap plus two appended operations, got journal: %s", second)
+	}
+}
+
+func TestPersistentGraph_ReplaysFileScopedDeletesWithoutStaleRelationships(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "graph.lbug")
+
+	graph, err := ladybug.OpenPersistentGraph(path)
+	if err != nil {
+		t.Fatalf("open graph: %v", err)
+	}
+	if err := graph.Bootstrap(ctx, schema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	for index := 0; index < 200; index++ {
+		fileID := "file-deleted"
+		chunkID := fileID + "-chunk-" + strconv.Itoa(index)
+		symbolID := fileID + "-symbol-" + strconv.Itoa(index)
+		if err := graph.PutNode(ctx, ladybug.Node{
+			Label: "ContentChunk",
+			ID:    chunkID,
+			Properties: map[string]string{
+				"project_id":   "project-1",
+				"repo_file_id": fileID,
+			},
+		}); err != nil {
+			t.Fatalf("put chunk node: %v", err)
+		}
+		if err := graph.PutNode(ctx, ladybug.Node{
+			Label: "CodeSymbol",
+			ID:    symbolID,
+			Properties: map[string]string{
+				"project_id":   "project-1",
+				"repo_file_id": fileID,
+			},
+		}); err != nil {
+			t.Fatalf("put symbol node: %v", err)
+		}
+		if err := graph.PutRelationship(ctx, ladybug.Relationship{
+			Type: "SYMBOL_IN_CHUNK",
+			From: ladybug.NodeRef{Label: "CodeSymbol", ID: symbolID},
+			To:   ladybug.NodeRef{Label: "ContentChunk", ID: chunkID},
+		}); err != nil {
+			t.Fatalf("put relationship: %v", err)
+		}
+		if err := graph.DeleteNodes(ctx, "ContentChunk", map[string]string{
+			"project_id":   "project-1",
+			"repo_file_id": fileID,
+		}); err != nil {
+			t.Fatalf("delete chunks: %v", err)
+		}
+	}
+
+	reopened, err := ladybug.OpenPersistentGraph(path)
+	if err != nil {
+		t.Fatalf("reopen graph: %v", err)
+	}
+	chunks, err := reopened.ListNodes(ctx, "ContentChunk", map[string]string{
+		"project_id":   "project-1",
+		"repo_file_id": "file-deleted",
+	})
+	if err != nil {
+		t.Fatalf("list chunks: %v", err)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("expected deleted chunks to stay deleted after replay, got %#v", chunks)
+	}
+	if _, err := reopened.GetRelationship(ctx, "SYMBOL_IN_CHUNK", ladybug.NodeRef{Label: "CodeSymbol", ID: "file-deleted-symbol-0"}, ladybug.NodeRef{Label: "ContentChunk", ID: "file-deleted-chunk-0"}); !errors.Is(err, ladybug.ErrRelationshipNotFound) {
+		t.Fatalf("expected stale relationship to be removed after replay, got %v", err)
 	}
 }
 
