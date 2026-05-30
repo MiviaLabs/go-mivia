@@ -50,7 +50,14 @@ func run() error {
 		return err
 	}
 
-	logger := logging.New(serviceName)
+	logger, logCloser, err := logging.NewWithOptions(serviceName, logging.Options{
+		FileEnabled: cfg.Logging.FileEnabled,
+		FilePath:    cfg.Logging.FilePath,
+	})
+	if err != nil {
+		return err
+	}
+	defer logCloser.Close()
 	ctx := context.Background()
 
 	sqliteDB, err := sqliteplatform.Open(cfg.SQLitePath)

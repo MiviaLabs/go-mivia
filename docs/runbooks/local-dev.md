@@ -61,6 +61,8 @@ wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_P
 
 Keep that terminal open while testing. If you need a detached process, launch `wsl.exe` from Windows process management and redirect logs to a local temp file.
 
+The server writes JSON logs to stdout by default. Persistent file logging is opt-in only: set `logging.file_enabled = true` and `logging.file_path = "data/mivia-server.log"` in local TOML, or set `MIVIA_LOG_FILE_ENABLED=true` plus `MIVIA_LOG_FILE_PATH`.
+
 ## REST Smoke
 
 For a short explanation of when to use REST, MCP, Serena, or shell, see the [agent context server guide](../agent-context-guide.md).

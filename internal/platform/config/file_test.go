@@ -112,6 +112,28 @@ sensitive_marker_policy = "skip_file"
 	}
 }
 
+func TestLoadFileConfig_AcceptsLoggingFileSection(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[logging]
+file_enabled = true
+file_path = "data/mivia-server.log"
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected logging config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected logging config to apply: %v", err)
+	}
+	if !merged.Logging.FileEnabled || merged.Logging.FilePath != "data/mivia-server.log" {
+		t.Fatalf("unexpected logging config: %+v", merged.Logging)
+	}
+}
+
 func TestLoadFileConfig_AcceptsProjectIntegrationSections(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1

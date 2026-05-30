@@ -30,6 +30,7 @@ type fileConfig struct {
 	Version   int                  `toml:"version"`
 	Server    *fileServerConfig    `toml:"server"`
 	Storage   *fileStorageConfig   `toml:"storage"`
+	Logging   *fileLoggingConfig   `toml:"logging"`
 	Ingestion *fileIngestionConfig `toml:"ingestion"`
 	Workspace *fileWorkspaceConfig `toml:"workspace"`
 	Projects  []fileProjectConfig  `toml:"projects"`
@@ -46,6 +47,11 @@ type fileServerConfig struct {
 type fileStorageConfig struct {
 	LadybugPath *string `toml:"ladybug_path"`
 	SQLitePath  *string `toml:"sqlite_path"`
+}
+
+type fileLoggingConfig struct {
+	FileEnabled *bool   `toml:"file_enabled"`
+	FilePath    *string `toml:"file_path"`
 }
 
 type fileWorkspaceConfig struct {
@@ -431,6 +437,15 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		}
 		if cfg.Storage.SQLitePath != nil {
 			base.SQLitePath = *cfg.Storage.SQLitePath
+		}
+	}
+
+	if cfg.Logging != nil {
+		if cfg.Logging.FileEnabled != nil {
+			base.Logging.FileEnabled = *cfg.Logging.FileEnabled
+		}
+		if cfg.Logging.FilePath != nil {
+			base.Logging.FilePath = *cfg.Logging.FilePath
 		}
 	}
 

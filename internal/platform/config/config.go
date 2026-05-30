@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -44,6 +45,7 @@ type Config struct {
 	HTTPAddr          string
 	LadybugPath       string
 	SQLitePath        string
+	Logging           Logging
 	MaxRequestBytes   int64
 	RequestTimeout    time.Duration
 	ReadHeaderTimeout time.Duration
@@ -51,6 +53,11 @@ type Config struct {
 	Ingestion         Ingestion
 	Workspace         Workspace
 	Projects          []Project
+}
+
+type Logging struct {
+	FileEnabled bool
+	FilePath    string
 }
 
 type Workspace struct {
@@ -197,6 +204,7 @@ func defaultConfig(configPath string) Config {
 		HTTPAddr:          defaultHTTPAddr,
 		LadybugPath:       defaultLadybugPath,
 		SQLitePath:        defaultSQLitePath,
+		Logging:           Logging{},
 		MaxRequestBytes:   defaultMaxRequestBytes,
 		RequestTimeout:    defaultRequestTimeout,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
@@ -234,6 +242,10 @@ func applyEnvOverrides(cfg *Config) error {
 	cfg.HTTPAddr = getenv("MIVIA_HTTP_ADDR", cfg.HTTPAddr)
 	cfg.LadybugPath = getenv("MIVIA_LADYBUG_PATH", cfg.LadybugPath)
 	cfg.SQLitePath = getenv("MIVIA_SQLITE_PATH", cfg.SQLitePath)
+	if cfg.Logging.FileEnabled, err = getenvBool("MIVIA_LOG_FILE_ENABLED", cfg.Logging.FileEnabled); err != nil {
+		return err
+	}
+	cfg.Logging.FilePath = getenv("MIVIA_LOG_FILE_PATH", cfg.Logging.FilePath)
 	if cfg.MaxRequestBytes, err = getenvInt64("MIVIA_MAX_REQUEST_BYTES", cfg.MaxRequestBytes); err != nil {
 		return err
 	}
@@ -319,6 +331,9 @@ func (cfg Config) Validate() error {
 	if cfg.SQLitePath == "" {
 		return errors.New("MIVIA_SQLITE_PATH must not be empty")
 	}
+	if err := cfg.Logging.Validate(); err != nil {
+		return err
+	}
 	if cfg.MaxRequestBytes <= 0 {
 		return errors.New("MIVIA_MAX_REQUEST_BYTES must be positive")
 	}
@@ -333,6 +348,13 @@ func (cfg Config) Validate() error {
 	}
 	if err := cfg.Ingestion.Validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (logging Logging) Validate() error {
+	if logging.FileEnabled && strings.TrimSpace(logging.FilePath) == "" {
+		return errors.New("MIVIA_LOG_FILE_PATH must not be empty when MIVIA_LOG_FILE_ENABLED is true")
 	}
 	return nil
 }

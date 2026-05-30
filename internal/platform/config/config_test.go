@@ -89,6 +89,10 @@ shutdown_timeout = "12s"
 ladybug_path = "data/from-file.lbug"
 sqlite_path = "data/from-file.sqlite"
 
+[logging]
+file_enabled = true
+file_path = "data/from-file.log"
+
 [ingestion]
 content_graph_enabled = false
 live_updates_enabled = false
@@ -129,6 +133,8 @@ sensitive_marker_policy = "skip_file"
 	t.Setenv("MIVIA_CONFIG_PATH", path)
 	t.Setenv("MIVIA_HTTP_ADDR", "localhost:8081")
 	t.Setenv("MIVIA_LADYBUG_PATH", "data/from-env.lbug")
+	t.Setenv("MIVIA_LOG_FILE_ENABLED", "false")
+	t.Setenv("MIVIA_LOG_FILE_PATH", "data/from-env.log")
 	t.Setenv("MIVIA_REQUEST_TIMEOUT", "13s")
 	t.Setenv("MIVIA_INGESTION_QUEUE_DEPTH", "32")
 
@@ -148,6 +154,9 @@ sensitive_marker_policy = "skip_file"
 	}
 	if cfg.SQLitePath != "data/from-file.sqlite" {
 		t.Fatalf("expected file SQLite path, got %q", cfg.SQLitePath)
+	}
+	if cfg.Logging.FileEnabled || cfg.Logging.FilePath != "data/from-env.log" {
+		t.Fatalf("expected env logging overrides, got %+v", cfg.Logging)
 	}
 	if cfg.RequestTimeout != 13*time.Second {
 		t.Fatalf("expected env request timeout override, got %s", cfg.RequestTimeout)
@@ -235,6 +244,34 @@ func TestLoad_EnvOverridesIngestion_ReturnsMergedConfig(t *testing.T) {
 	}
 }
 
+func TestLoad_LoggingFileRequiresExplicitOptInAndPath(t *testing.T) {
+	chdir(t, t.TempDir())
+	clearConfigEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected defaults to load: %v", err)
+	}
+	if cfg.Logging.FileEnabled || cfg.Logging.FilePath != "" {
+		t.Fatalf("expected file logging disabled by default, got %+v", cfg.Logging)
+	}
+
+	t.Setenv("MIVIA_LOG_FILE_ENABLED", "true")
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "MIVIA_LOG_FILE_PATH") {
+		t.Fatalf("expected missing log file path error, got %v", err)
+	}
+
+	t.Setenv("MIVIA_LOG_FILE_PATH", "data/mivia-server.log")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("expected file logging override to load: %v", err)
+	}
+	if !cfg.Logging.FileEnabled || cfg.Logging.FilePath != "data/mivia-server.log" {
+		t.Fatalf("expected file logging env overrides, got %+v", cfg.Logging)
+	}
+}
+
 func TestLoad_DefaultConfigPresent_LoadsFile(t *testing.T) {
 	clearConfigEnv(t)
 	dir := t.TempDir()
@@ -284,6 +321,8 @@ func clearConfigEnv(t *testing.T) {
 		"MIVIA_HTTP_ADDR",
 		"MIVIA_LADYBUG_PATH",
 		"MIVIA_SQLITE_PATH",
+		"MIVIA_LOG_FILE_ENABLED",
+		"MIVIA_LOG_FILE_PATH",
 		"MIVIA_MAX_REQUEST_BYTES",
 		"MIVIA_REQUEST_TIMEOUT",
 		"MIVIA_READ_HEADER_TIMEOUT",

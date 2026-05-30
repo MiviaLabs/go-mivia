@@ -34,6 +34,8 @@ Environment variables remain final overrides over file values:
 - `MIVIA_HTTP_ADDR`
 - `MIVIA_LADYBUG_PATH`
 - `MIVIA_SQLITE_PATH`
+- `MIVIA_LOG_FILE_ENABLED`
+- `MIVIA_LOG_FILE_PATH`
 - `MIVIA_MAX_REQUEST_BYTES`
 - `MIVIA_REQUEST_TIMEOUT`
 - `MIVIA_READ_HEADER_TIMEOUT`
@@ -61,6 +63,8 @@ Environment variables remain final overrides over file values:
 | `server.shutdown_timeout` | No | Go duration string, for example `10s`. |
 | `storage.ladybug_path` | No | Local ignored graph datastore path; defaults to `data/mivialabs.lbug`. |
 | `storage.sqlite_path` | No | Local ignored app-config datastore path; defaults to `data/mivialabs-config.sqlite`. |
+| `logging.file_enabled` | No | Opts into writing JSON logs to `logging.file_path` as well as stdout; default `false`. |
+| `logging.file_path` | When file logging enabled | Ignored local log path. Required only when `logging.file_enabled = true`. |
 | `ingestion.content_graph_enabled` | No | Global content graph gate; default `false`. |
 | `ingestion.live_updates_enabled` | No | Global live watcher gate; requires content graph enabled; default `false`. |
 | `ingestion.ast_extraction_enabled` | No | Must remain `true` when content graph is enabled; default `true`. |
