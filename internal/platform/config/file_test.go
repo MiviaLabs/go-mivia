@@ -112,6 +112,254 @@ sensitive_marker_policy = "skip_file"
 	}
 }
 
+func TestLoadFileConfig_AcceptsProjectIntegrationSections(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.jira]
+enabled = true
+site_url = "https://example.atlassian.net"
+cloud_id = "00000000-0000-0000-0000-000000000000"
+auth_mode = "api_token_basic"
+email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE"
+api_token_file = "secrets/atlassian-token"
+project_keys = ["abc", "XYZ"]
+ingestion_enabled = true
+initial_full_sync = "manual"
+incremental_interval = "1m"
+empty_poll_sleep = "10m"
+max_idle_sleep = "30m"
+overlap_window = "2m"
+initial_page_size = 50
+incremental_page_size = 25
+read_timeout = "5s"
+max_results = 200
+default_fields = ["summary", "status"]
+allowed_fields = ["customfield_10010"]
+include_rich_fields = true
+include_comments = true
+jql_extra_filter = "issuetype is not EMPTY"
+
+[projects.integrations.confluence]
+enabled = true
+site_url = "https://example.atlassian.net"
+cloud_id = "00000000-0000-0000-0000-000000000000"
+auth_mode = "api_token_basic"
+email_file = "secrets/atlassian-email"
+api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE"
+space_keys = ["ENG", "Ops"]
+body_representation = "storage"
+include_body = true
+include_comments = true
+include_labels = true
+include_properties = true
+ingestion_enabled = true
+incremental_interval = "1m"
+empty_poll_sleep = "5m"
+max_idle_sleep = "30m"
+overlap_window = "30s"
+initial_page_size = 100
+incremental_page_size = 100
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected integration config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected integration config to apply: %v", err)
+	}
+	project := merged.Projects[0]
+	if project.Integrations.Jira == nil || project.Integrations.Confluence == nil {
+		t.Fatalf("expected both integration providers: %+v", project.Integrations)
+	}
+	if got := project.Integrations.Jira.ProjectKeys; len(got) != 2 || got[0] != "ABC" || got[1] != "XYZ" {
+		t.Fatalf("expected normalized Jira project keys, got %#v", got)
+	}
+	if project.Integrations.Jira.CredentialRefs.EmailEnv == "" || project.Integrations.Jira.CredentialRefs.APITokenFile == "" {
+		t.Fatalf("expected Jira credential references only, got %+v", project.Integrations.Jira.CredentialRefs)
+	}
+	if project.Integrations.Jira.Polling.IncrementalInterval.String() != "1m0s" {
+		t.Fatalf("unexpected Jira polling defaults/overrides: %+v", project.Integrations.Jira.Polling)
+	}
+	if got := project.Integrations.Confluence.SpaceKeys; len(got) != 2 || got[0] != "ENG" || got[1] != "Ops" {
+		t.Fatalf("expected Confluence space keys, got %#v", got)
+	}
+}
+
+func TestLoadFileConfig_RejectsEnabledIntegrationWithoutAllowlists(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		message string
+	}{
+		{
+			name: "jira project keys",
+			content: `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.jira]
+enabled = true
+site_url = "https://example.atlassian.net"
+auth_mode = "api_token_basic"
+email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE"
+api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE"
+`,
+			message: "project_keys",
+		},
+		{
+			name: "confluence space keys",
+			content: `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.confluence]
+enabled = true
+site_url = "https://example.atlassian.net"
+auth_mode = "api_token_basic"
+email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE"
+api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE"
+`,
+			message: "space_keys",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempConfig(t, tt.content)
+			_, err := loadFileConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.message) {
+				t.Fatalf("expected %q error, got %v", tt.message, err)
+			}
+		})
+	}
+}
+
+func TestLoadFileConfig_RejectsUnsafeIntegrationCredentialFields(t *testing.T) {
+	for _, field := range []string{"email", "api_token", "password", "token", "basic_auth"} {
+		t.Run(field, func(t *testing.T) {
+			path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.jira]
+enabled = true
+site_url = "https://example.atlassian.net"
+auth_mode = "api_token_basic"
+email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE"
+api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE"
+project_keys = ["ABC"]
+`+field+` = "unsafe"
+`)
+			_, err := loadFileConfig(path)
+			if err == nil {
+				t.Fatal("expected raw credential-like field to fail")
+			}
+		})
+	}
+}
+
+func TestLoadFileConfig_RejectsInvalidIntegrationSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		message string
+	}{
+		{
+			name: "raw site URL",
+			content: `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.jira]
+enabled = true
+site_url = "http://example.atlassian.net"
+auth_mode = "api_token_basic"
+email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE"
+api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE"
+project_keys = ["ABC"]
+`,
+			message: "site_url",
+		},
+		{
+			name: "both email refs",
+			content: `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.jira]
+enabled = true
+site_url = "https://example.atlassian.net"
+auth_mode = "api_token_basic"
+email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE"
+email_file = "secrets/email"
+api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE"
+project_keys = ["ABC"]
+`,
+			message: "email",
+		},
+		{
+			name: "empty poll above max idle",
+			content: `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.jira]
+enabled = true
+site_url = "https://example.atlassian.net"
+auth_mode = "api_token_basic"
+email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE"
+api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE"
+project_keys = ["ABC"]
+empty_poll_sleep = "31m"
+max_idle_sleep = "30m"
+`,
+			message: "empty_poll_sleep",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempConfig(t, tt.content)
+			_, err := loadFileConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.message) {
+				t.Fatalf("expected %q error, got %v", tt.message, err)
+			}
+		})
+	}
+}
+
 func TestLoadFileConfig_RejectsUnsupportedWorkspaceMode(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1

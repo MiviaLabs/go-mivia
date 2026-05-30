@@ -71,6 +71,52 @@ max_file_bytes = 1048576
 max_chunk_bytes = 16384
 sensitive_marker_policy = "skip_file"
 
+# Optional Atlassian Cloud project integrations. Credentials are references only:
+# never put raw email addresses, API tokens, passwords, or Basic auth values here.
+# Jira and Confluence use separate allowlists because issue projects and docs spaces
+# do not have to match. Polling is local and disabled until explicitly enabled.
+#
+# [projects.integrations.jira]
+# enabled = true
+# site_url = "https://example.atlassian.net"
+# cloud_id = "00000000-0000-0000-0000-000000000000"
+# auth_mode = "api_token_basic"
+# email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE_SERVICE"
+# api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE_SERVICE"
+# project_keys = ["ABC", "XYZ"]
+# ingestion_enabled = false
+# initial_full_sync = "manual"
+# incremental_interval = "1m"
+# empty_poll_sleep = "10m"
+# max_idle_sleep = "30m"
+# overlap_window = "2m"
+# initial_page_size = 100
+# incremental_page_size = 100
+# include_rich_fields = true
+# include_comments = true
+#
+# [projects.integrations.confluence]
+# enabled = true
+# site_url = "https://example.atlassian.net"
+# cloud_id = "00000000-0000-0000-0000-000000000000"
+# auth_mode = "api_token_basic"
+# email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE_SERVICE"
+# api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE_SERVICE"
+# space_keys = ["ENG", "OPS"]
+# ingestion_enabled = false
+# initial_full_sync = "manual"
+# incremental_interval = "1m"
+# empty_poll_sleep = "10m"
+# max_idle_sleep = "30m"
+# overlap_window = "2m"
+# initial_page_size = 100
+# incremental_page_size = 100
+# body_representation = "storage"
+# include_body = true
+# include_comments = true
+# include_labels = true
+# include_properties = true
+
 [[projects]]
 id = "disabled-example"
 display_name = "Disabled Example"

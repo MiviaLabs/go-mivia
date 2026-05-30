@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
@@ -16,7 +19,12 @@ const (
 	updatePolicyLive       = "live"
 	graphStoragePersistent = "persistent"
 	graphStorageInMemory   = "in_memory"
+	authModeAPITokenBasic  = "api_token_basic"
+	initialFullSyncManual  = "manual"
+	initialFullSyncOnStart = "on_start"
 )
+
+var jiraProjectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
 
 type fileConfig struct {
 	Version   int                  `toml:"version"`
@@ -65,23 +73,72 @@ type fileIngestionConfig struct {
 }
 
 type fileProjectConfig struct {
-	ID                    string   `toml:"id"`
-	DisplayName           string   `toml:"display_name"`
-	Description           string   `toml:"description"`
-	RootPath              string   `toml:"root_path"`
-	Enabled               bool     `toml:"enabled"`
-	Classification        string   `toml:"classification"`
-	GraphNamespace        string   `toml:"graph_namespace"`
-	GraphStorage          string   `toml:"graph_storage"`
-	DigestMode            string   `toml:"digest_mode"`
-	UpdatePolicy          string   `toml:"update_policy"`
-	WorkspaceMode         string   `toml:"workspace_mode"`
-	Include               []string `toml:"include"`
-	Exclude               []string `toml:"exclude"`
-	FollowSymlinks        bool     `toml:"follow_symlinks"`
-	MaxFileBytes          *int64   `toml:"max_file_bytes"`
-	MaxChunkBytes         *int     `toml:"max_chunk_bytes"`
-	SensitiveMarkerPolicy string   `toml:"sensitive_marker_policy"`
+	ID                    string                         `toml:"id"`
+	DisplayName           string                         `toml:"display_name"`
+	Description           string                         `toml:"description"`
+	RootPath              string                         `toml:"root_path"`
+	Enabled               bool                           `toml:"enabled"`
+	Classification        string                         `toml:"classification"`
+	GraphNamespace        string                         `toml:"graph_namespace"`
+	GraphStorage          string                         `toml:"graph_storage"`
+	DigestMode            string                         `toml:"digest_mode"`
+	UpdatePolicy          string                         `toml:"update_policy"`
+	WorkspaceMode         string                         `toml:"workspace_mode"`
+	Include               []string                       `toml:"include"`
+	Exclude               []string                       `toml:"exclude"`
+	FollowSymlinks        bool                           `toml:"follow_symlinks"`
+	MaxFileBytes          *int64                         `toml:"max_file_bytes"`
+	MaxChunkBytes         *int                           `toml:"max_chunk_bytes"`
+	SensitiveMarkerPolicy string                         `toml:"sensitive_marker_policy"`
+	Integrations          *fileProjectIntegrationsConfig `toml:"integrations"`
+}
+
+type fileProjectIntegrationsConfig struct {
+	Jira       *fileJiraIntegrationConfig       `toml:"jira"`
+	Confluence *fileConfluenceIntegrationConfig `toml:"confluence"`
+}
+
+type fileAtlassianIntegrationConfig struct {
+	Enabled             bool    `toml:"enabled"`
+	SiteURL             string  `toml:"site_url"`
+	CloudID             string  `toml:"cloud_id"`
+	AuthMode            string  `toml:"auth_mode"`
+	EmailEnv            string  `toml:"email_env"`
+	EmailFile           string  `toml:"email_file"`
+	APITokenEnv         string  `toml:"api_token_env"`
+	APITokenFile        string  `toml:"api_token_file"`
+	ReadTimeout         *string `toml:"read_timeout"`
+	MaxResults          *int    `toml:"max_results"`
+	IngestionEnabled    bool    `toml:"ingestion_enabled"`
+	InitialFullSync     string  `toml:"initial_full_sync"`
+	IncrementalInterval *string `toml:"incremental_interval"`
+	EmptyPollSleep      *string `toml:"empty_poll_sleep"`
+	MaxIdleSleep        *string `toml:"max_idle_sleep"`
+	OverlapWindow       *string `toml:"overlap_window"`
+	InitialPageSize     *int    `toml:"initial_page_size"`
+	IncrementalPageSize *int    `toml:"incremental_page_size"`
+}
+
+type fileJiraIntegrationConfig struct {
+	fileAtlassianIntegrationConfig
+	ProjectKeys       []string `toml:"project_keys"`
+	DefaultFields     []string `toml:"default_fields"`
+	AllowedFields     []string `toml:"allowed_fields"`
+	IncludeRichFields bool     `toml:"include_rich_fields"`
+	IncludeComments   bool     `toml:"include_comments"`
+	JQLExtraFilter    string   `toml:"jql_extra_filter"`
+}
+
+type fileConfluenceIntegrationConfig struct {
+	fileAtlassianIntegrationConfig
+	SpaceKeys          []string `toml:"space_keys"`
+	BodyRepresentation string   `toml:"body_representation"`
+	IncludeBody        bool     `toml:"include_body"`
+	IncludeComments    bool     `toml:"include_comments"`
+	IncludeLabels      bool     `toml:"include_labels"`
+	IncludeProperties  bool     `toml:"include_properties"`
+	RootPageIDs        []string `toml:"root_page_ids"`
+	CQLExtraFilter     string   `toml:"cql_extra_filter"`
 }
 
 func loadFileConfig(path string) (fileConfig, error) {
@@ -144,6 +201,153 @@ func (cfg fileConfig) validate() error {
 		if project.SensitiveMarkerPolicy != "" && project.SensitiveMarkerPolicy != sensitiveMarkerPolicySkipFile {
 			return fmt.Errorf("projects[%d].sensitive_marker_policy must be %q", i, sensitiveMarkerPolicySkipFile)
 		}
+		if project.Integrations != nil {
+			if err := project.Integrations.validate(i); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (cfg fileProjectIntegrationsConfig) validate(projectIndex int) error {
+	if cfg.Jira != nil {
+		if err := cfg.Jira.validate(projectIndex); err != nil {
+			return err
+		}
+	}
+	if cfg.Confluence != nil {
+		if err := cfg.Confluence.validate(projectIndex); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (cfg fileJiraIntegrationConfig) validate(projectIndex int) error {
+	prefix := fmt.Sprintf("projects[%d].integrations.jira", projectIndex)
+	if err := cfg.fileAtlassianIntegrationConfig.validate(prefix); err != nil {
+		return err
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+	if len(cfg.ProjectKeys) == 0 {
+		return fmt.Errorf("%s.project_keys must contain at least one key when enabled", prefix)
+	}
+	for _, key := range cfg.ProjectKeys {
+		normalized := strings.ToUpper(strings.TrimSpace(key))
+		if !jiraProjectKeyPattern.MatchString(normalized) {
+			return fmt.Errorf("%s.project_keys must contain uppercase alphanumeric keys starting with a letter", prefix)
+		}
+	}
+	return nil
+}
+
+func (cfg fileConfluenceIntegrationConfig) validate(projectIndex int) error {
+	prefix := fmt.Sprintf("projects[%d].integrations.confluence", projectIndex)
+	if err := cfg.fileAtlassianIntegrationConfig.validate(prefix); err != nil {
+		return err
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+	if len(cfg.SpaceKeys) == 0 {
+		return fmt.Errorf("%s.space_keys must contain at least one key when enabled", prefix)
+	}
+	for _, key := range cfg.SpaceKeys {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("%s.space_keys must not contain empty keys", prefix)
+		}
+	}
+	return nil
+}
+
+func (cfg fileAtlassianIntegrationConfig) validate(prefix string) error {
+	if strings.TrimSpace(cfg.AuthMode) != "" && strings.TrimSpace(cfg.AuthMode) != authModeAPITokenBasic {
+		return fmt.Errorf("%s.auth_mode must be %q", prefix, authModeAPITokenBasic)
+	}
+	if strings.TrimSpace(cfg.InitialFullSync) != "" && strings.TrimSpace(cfg.InitialFullSync) != initialFullSyncManual && strings.TrimSpace(cfg.InitialFullSync) != initialFullSyncOnStart {
+		return fmt.Errorf("%s.initial_full_sync must be %q or %q", prefix, initialFullSyncManual, initialFullSyncOnStart)
+	}
+	if err := validateOptionalDuration(prefix+".read_timeout", cfg.ReadTimeout, true); err != nil {
+		return err
+	}
+	if err := validateOptionalDuration(prefix+".incremental_interval", cfg.IncrementalInterval, true); err != nil {
+		return err
+	}
+	if err := validateOptionalDuration(prefix+".empty_poll_sleep", cfg.EmptyPollSleep, true); err != nil {
+		return err
+	}
+	if err := validateOptionalDuration(prefix+".max_idle_sleep", cfg.MaxIdleSleep, true); err != nil {
+		return err
+	}
+	if err := validateOptionalDuration(prefix+".overlap_window", cfg.OverlapWindow, false); err != nil {
+		return err
+	}
+	if durationDefault(cfg.EmptyPollSleep, defaultIntegrationEmptyPollSleep) > durationDefault(cfg.MaxIdleSleep, defaultIntegrationMaxIdleSleep) {
+		return fmt.Errorf("%s.empty_poll_sleep must be <= max_idle_sleep", prefix)
+	}
+	if cfg.InitialPageSize != nil && *cfg.InitialPageSize <= 0 {
+		return fmt.Errorf("%s.initial_page_size must be positive", prefix)
+	}
+	if cfg.IncrementalPageSize != nil && *cfg.IncrementalPageSize <= 0 {
+		return fmt.Errorf("%s.incremental_page_size must be positive", prefix)
+	}
+	if cfg.MaxResults != nil && *cfg.MaxResults <= 0 {
+		return fmt.Errorf("%s.max_results must be positive", prefix)
+	}
+	if cfg.Enabled {
+		if err := validateAtlassianSiteURL(prefix+".site_url", cfg.SiteURL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(cfg.AuthMode) == "" {
+			return fmt.Errorf("%s.auth_mode must be %q when enabled", prefix, authModeAPITokenBasic)
+		}
+		if err := validateCredentialRefPair(prefix+".email", cfg.EmailEnv, cfg.EmailFile); err != nil {
+			return err
+		}
+		if err := validateCredentialRefPair(prefix+".api_token", cfg.APITokenEnv, cfg.APITokenFile); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateOptionalDuration(name string, value *string, mustBePositive bool) error {
+	if value == nil {
+		return nil
+	}
+	parsed, err := time.ParseDuration(*value)
+	if err != nil {
+		return fmt.Errorf("%s must be a Go duration", name)
+	}
+	if mustBePositive && parsed <= 0 {
+		return fmt.Errorf("%s must be positive", name)
+	}
+	if !mustBePositive && parsed < 0 {
+		return fmt.Errorf("%s must not be negative", name)
+	}
+	return nil
+}
+
+func validateAtlassianSiteURL(name string, raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%s must be an HTTPS Atlassian Cloud host", name)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "api.atlassian.com" && !strings.HasSuffix(host, ".atlassian.net") {
+		return fmt.Errorf("%s must be an HTTPS Atlassian Cloud host", name)
+	}
+	return nil
+}
+
+func validateCredentialRefPair(name, envRef, fileRef string) error {
+	hasEnv := strings.TrimSpace(envRef) != ""
+	hasFile := strings.TrimSpace(fileRef) != ""
+	if hasEnv == hasFile {
+		return fmt.Errorf("%s must use exactly one env or file reference", name)
 	}
 	return nil
 }
@@ -333,5 +537,128 @@ func (project fileProjectConfig) toProject() Project {
 		cfgProject.MaxChunkBytes = *project.MaxChunkBytes
 	}
 	cfgProject.SensitiveMarkerPolicy = project.SensitiveMarkerPolicy
+	if project.Integrations != nil {
+		cfgProject.Integrations = project.Integrations.toIntegrationConfig()
+	}
 	return cfgProject
+}
+
+func (cfg fileProjectIntegrationsConfig) toIntegrationConfig() IntegrationConfig {
+	integrations := IntegrationConfig{}
+	if cfg.Jira != nil {
+		jira := cfg.Jira.toJiraIntegration()
+		integrations.Jira = &jira
+	}
+	if cfg.Confluence != nil {
+		confluence := cfg.Confluence.toConfluenceIntegration()
+		integrations.Confluence = &confluence
+	}
+	return integrations
+}
+
+func (cfg fileJiraIntegrationConfig) toJiraIntegration() JiraIntegration {
+	return JiraIntegration{
+		Enabled:           cfg.Enabled,
+		SiteURL:           strings.TrimSpace(cfg.SiteURL),
+		CloudID:           strings.TrimSpace(cfg.CloudID),
+		AuthMode:          defaultString(strings.TrimSpace(cfg.AuthMode), authModeAPITokenBasic),
+		CredentialRefs:    cfg.toCredentialRefs(),
+		ReadTimeout:       cfg.readTimeout(),
+		MaxResults:        intDefault(cfg.MaxResults, defaultIntegrationMaxResults),
+		Polling:           cfg.toPolling(),
+		ProjectKeys:       normalizeJiraProjectKeys(cfg.ProjectKeys),
+		DefaultFields:     trimStrings(cfg.DefaultFields),
+		AllowedFields:     trimStrings(cfg.AllowedFields),
+		IncludeRichFields: cfg.IncludeRichFields,
+		IncludeComments:   cfg.IncludeComments,
+		JQLExtraFilter:    strings.TrimSpace(cfg.JQLExtraFilter),
+	}
+}
+
+func (cfg fileConfluenceIntegrationConfig) toConfluenceIntegration() ConfluenceIntegration {
+	return ConfluenceIntegration{
+		Enabled:            cfg.Enabled,
+		SiteURL:            strings.TrimSpace(cfg.SiteURL),
+		CloudID:            strings.TrimSpace(cfg.CloudID),
+		AuthMode:           defaultString(strings.TrimSpace(cfg.AuthMode), authModeAPITokenBasic),
+		CredentialRefs:     cfg.toCredentialRefs(),
+		ReadTimeout:        cfg.readTimeout(),
+		MaxResults:         intDefault(cfg.MaxResults, defaultIntegrationMaxResults),
+		Polling:            cfg.toPolling(),
+		SpaceKeys:          trimStrings(cfg.SpaceKeys),
+		BodyRepresentation: defaultString(strings.TrimSpace(cfg.BodyRepresentation), "storage"),
+		IncludeBody:        cfg.IncludeBody,
+		IncludeComments:    cfg.IncludeComments,
+		IncludeLabels:      cfg.IncludeLabels,
+		IncludeProperties:  cfg.IncludeProperties,
+		RootPageIDs:        trimStrings(cfg.RootPageIDs),
+		CQLExtraFilter:     strings.TrimSpace(cfg.CQLExtraFilter),
+	}
+}
+
+func (cfg fileAtlassianIntegrationConfig) toCredentialRefs() AtlassianCredentialRefs {
+	return AtlassianCredentialRefs{
+		EmailEnv:     strings.TrimSpace(cfg.EmailEnv),
+		EmailFile:    strings.TrimSpace(cfg.EmailFile),
+		APITokenEnv:  strings.TrimSpace(cfg.APITokenEnv),
+		APITokenFile: strings.TrimSpace(cfg.APITokenFile),
+	}
+}
+
+func (cfg fileAtlassianIntegrationConfig) toPolling() IntegrationPolling {
+	return IntegrationPolling{
+		IngestionEnabled:    cfg.IngestionEnabled,
+		InitialFullSync:     defaultString(strings.TrimSpace(cfg.InitialFullSync), initialFullSyncManual),
+		IncrementalInterval: durationDefault(cfg.IncrementalInterval, defaultIntegrationIncremental),
+		EmptyPollSleep:      durationDefault(cfg.EmptyPollSleep, defaultIntegrationEmptyPollSleep),
+		MaxIdleSleep:        durationDefault(cfg.MaxIdleSleep, defaultIntegrationMaxIdleSleep),
+		OverlapWindow:       durationDefault(cfg.OverlapWindow, defaultIntegrationOverlapWindow),
+		InitialPageSize:     intDefault(cfg.InitialPageSize, defaultIntegrationPageSize),
+		IncrementalPageSize: intDefault(cfg.IncrementalPageSize, defaultIntegrationPageSize),
+	}
+}
+
+func (cfg fileAtlassianIntegrationConfig) readTimeout() time.Duration {
+	return durationDefault(cfg.ReadTimeout, defaultIntegrationReadTimeout)
+}
+
+func durationDefault(value *string, fallback time.Duration) time.Duration {
+	if value == nil {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(*value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func intDefault(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func normalizeJiraProjectKeys(keys []string) []string {
+	normalized := make([]string, 0, len(keys))
+	for _, key := range keys {
+		normalized = append(normalized, strings.ToUpper(strings.TrimSpace(key)))
+	}
+	return normalized
+}
+
+func trimStrings(values []string) []string {
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed = append(trimmed, strings.TrimSpace(value))
+	}
+	return trimmed
 }

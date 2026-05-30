@@ -28,6 +28,13 @@ const (
 	defaultIngestionPerProjectLimit   = 2
 	defaultIngestionFullScanBatchSize = 500
 	defaultIngestionTaskWarnAfter     = 30 * time.Second
+	defaultIntegrationIncremental     = time.Minute
+	defaultIntegrationEmptyPollSleep  = 10 * time.Minute
+	defaultIntegrationMaxIdleSleep    = 30 * time.Minute
+	defaultIntegrationOverlapWindow   = 2 * time.Minute
+	defaultIntegrationReadTimeout     = 10 * time.Second
+	defaultIntegrationPageSize        = 100
+	defaultIntegrationMaxResults      = 100
 	defaultSensitiveMarkerPolicy      = "skip_file"
 	sensitiveMarkerPolicySkipFile     = "skip_file"
 )
@@ -88,6 +95,66 @@ type Project struct {
 	MaxFileBytes          int64
 	MaxChunkBytes         int
 	SensitiveMarkerPolicy string
+	Integrations          IntegrationConfig
+}
+
+type IntegrationConfig struct {
+	Jira       *JiraIntegration
+	Confluence *ConfluenceIntegration
+}
+
+type AtlassianCredentialRefs struct {
+	EmailEnv     string
+	EmailFile    string
+	APITokenEnv  string
+	APITokenFile string
+}
+
+type IntegrationPolling struct {
+	IngestionEnabled    bool
+	InitialFullSync     string
+	IncrementalInterval time.Duration
+	EmptyPollSleep      time.Duration
+	MaxIdleSleep        time.Duration
+	OverlapWindow       time.Duration
+	InitialPageSize     int
+	IncrementalPageSize int
+}
+
+type JiraIntegration struct {
+	Enabled           bool
+	SiteURL           string
+	CloudID           string
+	AuthMode          string
+	CredentialRefs    AtlassianCredentialRefs
+	ReadTimeout       time.Duration
+	MaxResults        int
+	Polling           IntegrationPolling
+	ProjectKeys       []string
+	DefaultFields     []string
+	AllowedFields     []string
+	IncludeRichFields bool
+	IncludeComments   bool
+	JQLExtraFilter    string
+}
+
+type ConfluenceIntegration struct {
+	Enabled            bool
+	SiteURL            string
+	CloudID            string
+	AuthMode           string
+	CredentialRefs     AtlassianCredentialRefs
+	ReadTimeout        time.Duration
+	MaxResults         int
+	Polling            IntegrationPolling
+	SpaceKeys          []string
+	BodyRepresentation string
+	IncludeBody        bool
+	IncludeComments    bool
+	IncludeLabels      bool
+	IncludeProperties  bool
+	RootPageIDs        []string
+	CQLExtraFilter     string
 }
 
 func Load() (Config, error) {
