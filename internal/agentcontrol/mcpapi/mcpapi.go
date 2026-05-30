@@ -17,6 +17,8 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations"
+	integrationmcpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations/mcpapi"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	projectmcpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/mcpapi"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
@@ -34,6 +36,7 @@ type Handler struct {
 	projectDigest *projectregistry.DigestService
 	projectIngest projectingestion.API
 	projectWork   projectworkspace.API
+	integrations  *projectintegrations.Service
 	logger        *slog.Logger
 }
 
@@ -61,6 +64,10 @@ func NewHandlerWithResearchProjectsAndIngestion(service *service.Service, resear
 }
 
 func NewHandlerWithResearchProjectsIngestionAndWorkspace(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, logger *slog.Logger) http.Handler {
+	return NewHandlerWithResearchProjectsIngestionWorkspaceAndIntegrations(service, research, projects, projectDigest, projectIngest, projectWork, nil, logger)
+}
+
+func NewHandlerWithResearchProjectsIngestionWorkspaceAndIntegrations(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, integrations *projectintegrations.Service, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:       service,
 		research:      research,
@@ -68,6 +75,7 @@ func NewHandlerWithResearchProjectsIngestionAndWorkspace(service *service.Servic
 		projectDigest: projectDigest,
 		projectIngest: projectIngest,
 		projectWork:   projectWork,
+		integrations:  integrations,
 		logger:        logger,
 	}
 }
@@ -240,6 +248,9 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 			return nil, projectregistry.ErrProjectNotFound
 		}
 		return projectmcpapi.CallToolWithWorkspace(r.Context(), handler.projects, handler.projectDigest, handler.projectIngest, handler.projectWork, params.Name, params.Arguments)
+	case "projects.integrations.list", "projects_integrations_list",
+		"projects.integrations.status", "projects_integrations_status":
+		return integrationmcpapi.CallTool(r.Context(), handler.integrations, params.Name, params.Arguments)
 	default:
 		if handler.research != nil {
 			return researchmcpapi.CallTool(r.Context(), handler.research, params.Name, params.Arguments)
@@ -348,6 +359,14 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
 	}
+	if errors.Is(err, projectintegrations.ErrInvalidInput) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
+	if errors.Is(err, projectintegrations.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
 	writeJSONRPCError(w, id, -32603, "internal error")
 }
 
@@ -389,6 +408,9 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 	}
 	if handler.projects != nil {
 		tools = append(tools, projectmcpapi.ToolDefinitionsWithWorkspace(handler.projectIngest != nil, handler.projectWork != nil)...)
+	}
+	if handler.integrations != nil {
+		tools = append(tools, integrationmcpapi.ToolDefinitions()...)
 	}
 	return append(tools, researchmcpapi.ToolDefinitions()...)
 }

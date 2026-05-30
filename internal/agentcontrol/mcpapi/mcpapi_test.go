@@ -22,6 +22,7 @@ import (
 	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
 )
@@ -142,6 +143,73 @@ func TestProjectToolsListAndCall_WhenProjectRegistryConfigured(t *testing.T) {
 	}
 	if bytes.Contains(call.Body.Bytes(), []byte("package main")) || bytes.Contains(call.Body.Bytes(), []byte("content_sha256")) {
 		t.Fatalf("project digest leaked content markers: %s", call.Body.String())
+	}
+}
+
+func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
+	handler := newHandlerWithProjectIntegrations(t)
+
+	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.list"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.status"`)) {
+		t.Fatalf("expected integration tools, got %s", list.Body.String())
+	}
+	for _, forbidden := range [][]byte{
+		[]byte(`"projects.integrations.ingest"`),
+		[]byte(`"projects.integrations.read"`),
+		[]byte(`"projects.integrations.search"`),
+	} {
+		if bytes.Contains(list.Body.Bytes(), forbidden) {
+			t.Fatalf("unexpected later-phase integration tool %s in %s", forbidden, list.Body.String())
+		}
+	}
+
+	providers := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects_integrations_list","arguments":{"id":"project-1"}}}`)
+	if bytes.Contains(providers.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected providers success, got %s", providers.Body.String())
+	}
+	if !bytes.Contains(providers.Body.Bytes(), []byte(`"Provider":"jira"`)) || !bytes.Contains(providers.Body.Bytes(), []byte(`"CredentialSource":"env"`)) || !bytes.Contains(providers.Body.Bytes(), []byte(`"AllowlistCount":2`)) {
+		t.Fatalf("expected redacted provider metadata, got %s", providers.Body.String())
+	}
+
+	status := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects.integrations.status","arguments":{"id":"project-1","provider":"jira"}}}`)
+	if bytes.Contains(status.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected status success, got %s", status.Body.String())
+	}
+	if !bytes.Contains(status.Body.Bytes(), []byte(`"CursorHashPresent":true`)) || !bytes.Contains(status.Body.Bytes(), []byte(`"Status":"no_op"`)) {
+		t.Fatalf("expected sync state and run status, got %s", status.Body.String())
+	}
+	for _, forbidden := range []string{
+		"https://tenant.atlassian.net",
+		"ACME",
+		"OPS",
+		"ENG",
+		"TEAM",
+		"MIVIA_ATLASSIAN_EMAIL_PROJECT_1",
+		"MIVIA_ATLASSIAN_TOKEN_PROJECT_1",
+		"/home/mac/secret-email",
+		"/home/mac/secret-token",
+		"/home/mac/mivialabs/mivialabs-agents-monorepo",
+		"raw-provider-cursor-token",
+		"sha256:",
+		"jira rich description",
+		"confluence page body",
+	} {
+		if bytes.Contains(status.Body.Bytes(), []byte(forbidden)) || bytes.Contains(providers.Body.Bytes(), []byte(forbidden)) {
+			t.Fatalf("integration MCP response leaked %q: providers=%s status=%s", forbidden, providers.Body.String(), status.Body.String())
+		}
+	}
+
+	missing := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.integrations.status","arguments":{"id":"missing","provider":"jira"}}}`)
+	if !bytes.Contains(missing.Body.Bytes(), []byte(`"message":"resource not found"`)) {
+		t.Fatalf("expected stable missing project error, got %s", missing.Body.String())
+	}
+	if bytes.Contains(missing.Body.Bytes(), []byte("tenant.atlassian.net")) || bytes.Contains(missing.Body.Bytes(), []byte("MIVIA_ATLASSIAN")) {
+		t.Fatalf("missing project error leaked raw integration data: %s", missing.Body.String())
+	}
+
+	withoutIntegrations := postMCP(t, newHandlerWithProjects(t), `{"jsonrpc":"2.0","id":5,"method":"tools/list"}`)
+	if bytes.Contains(withoutIntegrations.Body.Bytes(), []byte(`"projects.integrations.list"`)) {
+		t.Fatalf("unexpected integration tools without integration service: %s", withoutIntegrations.Body.String())
 	}
 }
 
@@ -338,6 +406,109 @@ func newHandlerWithProjects(t *testing.T) http.Handler {
 	}
 	digest := projectregistry.NewDigestService(registry, graph)
 	return mcpapi.NewHandlerWithResearchAndProjects(svc, nil, registry, digest, slog.Default())
+}
+
+func newHandlerWithProjectIntegrations(t *testing.T) http.Handler {
+	t.Helper()
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := sqliteschema.Bootstrap(t.Context(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+	integrationStore := projectintegrations.NewSQLiteStore(db.SQLDB())
+	project := config.Project{
+		ID:       "project-1",
+		RootPath: "/home/mac/mivialabs/mivialabs-agents-monorepo",
+		Integrations: config.IntegrationConfig{
+			Jira: &config.JiraIntegration{
+				Enabled:    true,
+				SiteURL:    "https://tenant.atlassian.net",
+				CloudID:    "cloud-id-1",
+				AuthMode:   "api_token_basic",
+				MaxResults: 100,
+				CredentialRefs: config.AtlassianCredentialRefs{
+					EmailEnv:    "MIVIA_ATLASSIAN_EMAIL_PROJECT_1",
+					APITokenEnv: "MIVIA_ATLASSIAN_TOKEN_PROJECT_1",
+				},
+				Polling: config.IntegrationPolling{
+					IngestionEnabled:    false,
+					InitialFullSync:     "manual",
+					IncrementalInterval: time.Minute,
+					EmptyPollSleep:      10 * time.Minute,
+					MaxIdleSleep:        30 * time.Minute,
+					OverlapWindow:       2 * time.Minute,
+					InitialPageSize:     50,
+					IncrementalPageSize: 25,
+				},
+				ProjectKeys: []string{"ACME", "OPS"},
+			},
+			Confluence: &config.ConfluenceIntegration{
+				Enabled:    true,
+				SiteURL:    "https://tenant.atlassian.net",
+				CloudID:    "cloud-id-1",
+				AuthMode:   "api_token_basic",
+				MaxResults: 100,
+				CredentialRefs: config.AtlassianCredentialRefs{
+					EmailFile:    "/home/mac/secret-email",
+					APITokenFile: "/home/mac/secret-token",
+				},
+				Polling: config.IntegrationPolling{
+					IngestionEnabled:    false,
+					InitialFullSync:     "manual",
+					IncrementalInterval: time.Minute,
+					EmptyPollSleep:      10 * time.Minute,
+					MaxIdleSleep:        30 * time.Minute,
+					OverlapWindow:       2 * time.Minute,
+					InitialPageSize:     50,
+					IncrementalPageSize: 25,
+				},
+				SpaceKeys: []string{"ENG", "TEAM"},
+			},
+		},
+	}
+	integrations, err := projectintegrations.NewService([]config.Project{project}, integrationStore)
+	if err != nil {
+		t.Fatalf("new integration service: %v", err)
+	}
+	if _, err := integrations.UpsertConfiguredSources(t.Context(), "project-1"); err != nil {
+		t.Fatalf("upsert integration sources: %v", err)
+	}
+	run := projectintegrations.SyncRun{
+		ID:            "run-1",
+		ProjectID:     "project-1",
+		Provider:      projectintegrations.ProviderJira,
+		Kind:          projectintegrations.SyncKindIncremental,
+		Status:        projectintegrations.SyncRunStatusNoOp,
+		ItemsSeen:     0,
+		ItemsUpserted: 0,
+		EmptyPoll:     true,
+		IdleSleep:     5 * time.Minute,
+		StartedAt:     time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC),
+		FinishedAt:    time.Date(2026, 5, 31, 10, 1, 0, 0, time.UTC),
+	}
+	if err := integrationStore.CreateSyncRun(t.Context(), run); err != nil {
+		t.Fatalf("create sync run: %v", err)
+	}
+	if _, err := integrationStore.UpdateSyncState(t.Context(), projectintegrations.SyncStateInput{
+		ProjectID:           "project-1",
+		Provider:            projectintegrations.ProviderJira,
+		LastRunID:           "run-1",
+		LastSuccessfulRunID: "run-1",
+		LastSuccessAt:       run.FinishedAt,
+		LastEmptyPollAt:     run.FinishedAt,
+		EmptyPollCount:      1,
+		CurrentIdleSleep:    5 * time.Minute,
+		Cursor:              "raw-provider-cursor-token",
+		UpdatedAt:           run.FinishedAt,
+	}); err != nil {
+		t.Fatalf("update sync state: %v", err)
+	}
+	return mcpapi.NewHandlerWithResearchProjectsIngestionWorkspaceAndIntegrations(svc, nil, nil, nil, nil, nil, integrations, slog.Default())
 }
 
 func newHandlerWithProjectIngestion(t *testing.T) (http.Handler, string) {

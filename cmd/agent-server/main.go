@@ -22,6 +22,7 @@ import (
 	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	projecthttpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/httpapi"
 	projectstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/store"
@@ -96,6 +97,10 @@ func run() error {
 	projectIngestionService.SetFullScanBatchSize(cfg.Ingestion.FullScanBatchSize)
 	projectIngestionService.SetFullScanWorkerCount(cfg.Ingestion.PerProjectWorkerLimit)
 	projectIngestionService.SetExtractorCacheEnabled(cfg.Ingestion.ExtractorCacheEnabled)
+	projectIntegrationService, err := projectintegrations.NewService(cfg.Projects, projectintegrations.NewSQLiteStore(sqliteDB.SQLDB()))
+	if err != nil {
+		return err
+	}
 	if failed, err := projectIngestionService.FailInterruptedRuns(ctx, "server_restarted"); err != nil {
 		return err
 	} else if failed > 0 {
@@ -160,7 +165,7 @@ func run() error {
 	httpapi.RegisterRoutes(mux, agentService)
 	researchhttpapi.RegisterRoutes(mux, researchService)
 	projecthttpapi.RegisterRoutesWithWorkspace(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService)
-	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsIngestionAndWorkspace(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, logger))
+	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsIngestionWorkspaceAndIntegrations(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, logger))
 
 	handler := httpserver.Chain(
 		mux,
