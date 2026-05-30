@@ -238,6 +238,9 @@ Implement Phase 3 only. Select LadybugDB as the simple embedded graph persistenc
 
 ## Phase 4 - Agent Server Skeleton
 
+Status: Completed
+Verified: 2026-05-30
+
 Files:
 
 - `cmd/agent-server/main.go`
@@ -256,6 +259,26 @@ Verifier:
 - Native Ladybug library setup documented or scripted before `internal/platform/ladybug` imports `go-ladybug`.
 - `go run ./cmd/agent-server`
 - Local `/healthz`, `/readyz`, `/api/v1/tasks`, and `/mcp` smoke tests.
+
+Verification performed:
+
+- `go mod tidy`
+- `go test ./internal/agentcontrol ./internal/platform/httpserver`
+- `go test ./...`
+- `make check`
+- Local smoke test with `go run ./cmd/agent-server` on `127.0.0.1:18080`:
+  - `GET /healthz`
+  - `GET /readyz`
+  - `POST /api/v1/tasks`
+  - `GET /api/v1/tasks/{id}`
+  - `POST /mcp` initialize
+  - `POST /mcp` tools/list
+
+Residual risk:
+
+- LadybugDB native imports remain gated behind `ladybug_native`; normal `go test ./...` does not import `go-ladybug`.
+- `scripts/ladybug-libs.sh` documents local native-library setup, but native Ladybug integration is not exercised until an explicit integration build path is approved.
+- `agent-server` remains localhost-only and unauthenticated; non-localhost exposure still requires authn/authz, origin policy, rate limits, and audit logging approval.
 
 Implementation details:
 
