@@ -11,9 +11,21 @@ secrets/*
 /bin/
 /build/
 /dist/
+lib-ladybug/
 *.test
 coverage.out
 coverage.*
+
+# Local datastore files
+/data/
+*.lbug
+*.lbug-wal
+*.lbug-shm
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
 
 # Local editor and OS noise
 .DS_Store

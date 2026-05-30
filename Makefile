@@ -14,4 +14,4 @@ tidy:
 	go mod tidy
 
 test-integration:
-	@echo "No integration tests yet. Phase 3+ will add Docker-backed targets."
+	@echo "No integration tests yet. Database runtime is deferred pending ADR approval."
