@@ -32,6 +32,8 @@ func BootstrapSchema() GraphSchema {
 			"DocumentHeading",
 			"IngestionRun",
 			"IngestionFinding",
+			"IntegrationArtifact",
+			"IntegrationContentChunk",
 		},
 		Relationships: []Relationship{
 			{Type: "AGENT_RAN_TASK", From: "Agent", To: "Task"},
@@ -55,6 +57,8 @@ func BootstrapSchema() GraphSchema {
 			{Type: "DOCUMENT_HAS_HEADING", From: "Document", To: "DocumentHeading"},
 			{Type: "INGESTION_RUN_TOUCHED_FILE", From: "IngestionRun", To: "RepoFile"},
 			{Type: "INGESTION_RUN_SKIPPED_FILE", From: "IngestionRun", To: "RepoFile"},
+			{Type: "PROJECT_HAS_INTEGRATION_ARTIFACT", From: "Project", To: "IntegrationArtifact"},
+			{Type: "INTEGRATION_ARTIFACT_HAS_CHUNK", From: "IntegrationArtifact", To: "IntegrationContentChunk"},
 		},
 	}
 }

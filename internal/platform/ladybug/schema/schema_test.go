@@ -48,6 +48,8 @@ func TestBootstrapSchema_IngestionLabelsAndRelationships(t *testing.T) {
 		"DocumentHeading",
 		"IngestionRun",
 		"IngestionFinding",
+		"IntegrationArtifact",
+		"IntegrationContentChunk",
 	} {
 		assertLabel(t, bootstrap, label)
 	}
@@ -60,6 +62,8 @@ func TestBootstrapSchema_IngestionLabelsAndRelationships(t *testing.T) {
 	assertRelationship(t, bootstrap, "DOCUMENT_HAS_HEADING", "Document", "DocumentHeading")
 	assertRelationship(t, bootstrap, "INGESTION_RUN_TOUCHED_FILE", "IngestionRun", "RepoFile")
 	assertRelationship(t, bootstrap, "INGESTION_RUN_SKIPPED_FILE", "IngestionRun", "RepoFile")
+	assertRelationship(t, bootstrap, "PROJECT_HAS_INTEGRATION_ARTIFACT", "Project", "IntegrationArtifact")
+	assertRelationship(t, bootstrap, "INTEGRATION_ARTIFACT_HAS_CHUNK", "IntegrationArtifact", "IntegrationContentChunk")
 }
 
 func assertLabel(t *testing.T, bootstrap schema.GraphSchema, expected string) {
