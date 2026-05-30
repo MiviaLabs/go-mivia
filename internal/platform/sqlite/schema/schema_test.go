@@ -93,6 +93,59 @@ func TestBootstrap_SearchIndexTablesExist(t *testing.T) {
 	}
 }
 
+func TestBootstrap_ProjectIntegrationTablesExist(t *testing.T) {
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := schema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+
+	for _, table := range []string{
+		"project_integration_sources",
+		"project_integration_sync_runs",
+		"project_integration_sync_state",
+		"project_integration_items",
+	} {
+		assertTable(t, db.SQLDB(), table)
+	}
+}
+
+func TestBootstrap_ProjectIntegrationTablesDoNotExposeCredentialOrContentColumns(t *testing.T) {
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := schema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+
+	for _, table := range []string{
+		"project_integration_sources",
+		"project_integration_sync_runs",
+		"project_integration_sync_state",
+		"project_integration_items",
+	} {
+		assertNoColumnsContaining(t, db.SQLDB(), table,
+			"credential",
+			"email",
+			"token",
+			"body",
+			"comment",
+			"label",
+			"property",
+			"payload",
+			"content",
+			"root",
+		)
+	}
+}
+
 func TestBootstrap_ConfiguredProjectIngestionColumnsExist(t *testing.T) {
 	db, err := sqliteplatform.Open(":memory:")
 	if err != nil {
@@ -223,4 +276,36 @@ func assertColumn(t *testing.T, db *sql.DB, table string, column string) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("inspect column %s.%s: %v", table, column, err)
 	}
+}
+
+func assertNoColumnsContaining(t *testing.T, db *sql.DB, table string, forbidden ...string) {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		t.Fatalf("inspect columns for %s: %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan column for %s: %v", table, err)
+		}
+		for _, value := range forbidden {
+			if contains(name, value) {
+				t.Fatalf("column %s.%s contains forbidden term %q", table, name, value)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("inspect columns for %s: %v", table, err)
+	}
+}
+
+func contains(value string, needle string) bool {
+	for i := 0; i+len(needle) <= len(value); i++ {
+		if value[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }

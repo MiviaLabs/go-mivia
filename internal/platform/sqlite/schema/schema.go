@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 10
+const Version = 11
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -137,6 +137,90 @@ var statements = []string{
 		ON project_extractor_cache(project_id, relative_path_hash)`,
 	`CREATE INDEX IF NOT EXISTS idx_project_extractor_cache_project_extractor
 		ON project_extractor_cache(project_id, extractor_name, extractor_version)`,
+	`CREATE TABLE IF NOT EXISTS project_integration_sources (
+		project_id TEXT NOT NULL,
+		provider TEXT NOT NULL,
+		site_url_hash TEXT NOT NULL DEFAULT '',
+		cloud_id_hash TEXT NOT NULL DEFAULT '',
+		allowlist_hash TEXT NOT NULL DEFAULT '',
+		allowlist_count INTEGER NOT NULL DEFAULT 0 CHECK (allowlist_count >= 0),
+		auth_mode TEXT NOT NULL DEFAULT '',
+		ingestion_enabled INTEGER NOT NULL DEFAULT 0 CHECK (ingestion_enabled IN (0, 1)),
+		initial_full_sync TEXT NOT NULL DEFAULT '',
+		incremental_interval_ms INTEGER NOT NULL DEFAULT 0 CHECK (incremental_interval_ms >= 0),
+		empty_poll_sleep_ms INTEGER NOT NULL DEFAULT 0 CHECK (empty_poll_sleep_ms >= 0),
+		max_idle_sleep_ms INTEGER NOT NULL DEFAULT 0 CHECK (max_idle_sleep_ms >= 0),
+		overlap_window_ms INTEGER NOT NULL DEFAULT 0 CHECK (overlap_window_ms >= 0),
+		initial_page_size INTEGER NOT NULL DEFAULT 0 CHECK (initial_page_size >= 0),
+		incremental_page_size INTEGER NOT NULL DEFAULT 0 CHECK (incremental_page_size >= 0),
+		max_results INTEGER NOT NULL DEFAULT 0 CHECK (max_results >= 0),
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY(project_id, provider),
+		FOREIGN KEY(project_id) REFERENCES configured_projects(id),
+		CHECK (provider IN ('jira', 'confluence')),
+		CHECK (site_url_hash = '' OR site_url_hash LIKE 'sha256:%'),
+		CHECK (cloud_id_hash = '' OR cloud_id_hash LIKE 'sha256:%'),
+		CHECK (allowlist_hash = '' OR allowlist_hash LIKE 'sha256:%')
+	)`,
+	`CREATE TABLE IF NOT EXISTS project_integration_sync_runs (
+		run_id TEXT PRIMARY KEY,
+		project_id TEXT NOT NULL,
+		provider TEXT NOT NULL,
+		sync_kind TEXT NOT NULL,
+		status TEXT NOT NULL,
+		items_seen INTEGER NOT NULL DEFAULT 0 CHECK (items_seen >= 0),
+		items_upserted INTEGER NOT NULL DEFAULT 0 CHECK (items_upserted >= 0),
+		empty_poll INTEGER NOT NULL DEFAULT 0 CHECK (empty_poll IN (0, 1)),
+		idle_sleep_ms INTEGER NOT NULL DEFAULT 0 CHECK (idle_sleep_ms >= 0),
+		error_category TEXT NOT NULL DEFAULT '',
+		started_at TEXT NOT NULL,
+		finished_at TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY(project_id, provider) REFERENCES project_integration_sources(project_id, provider),
+		CHECK (provider IN ('jira', 'confluence')),
+		CHECK (sync_kind IN ('initial_full', 'incremental')),
+		CHECK (status IN ('pending', 'running', 'completed', 'failed', 'no_op'))
+	)`,
+	`CREATE TABLE IF NOT EXISTS project_integration_sync_state (
+		project_id TEXT NOT NULL,
+		provider TEXT NOT NULL,
+		last_run_id TEXT NOT NULL DEFAULT '',
+		last_successful_run_id TEXT NOT NULL DEFAULT '',
+		last_success_at TEXT NOT NULL DEFAULT '',
+		last_full_sync_at TEXT NOT NULL DEFAULT '',
+		last_incremental_sync_at TEXT NOT NULL DEFAULT '',
+		last_empty_poll_at TEXT NOT NULL DEFAULT '',
+		empty_poll_count INTEGER NOT NULL DEFAULT 0 CHECK (empty_poll_count >= 0),
+		current_idle_sleep_ms INTEGER NOT NULL DEFAULT 0 CHECK (current_idle_sleep_ms >= 0),
+		cursor_hash TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY(project_id, provider),
+		FOREIGN KEY(project_id, provider) REFERENCES project_integration_sources(project_id, provider),
+		CHECK (provider IN ('jira', 'confluence')),
+		CHECK (cursor_hash = '' OR cursor_hash LIKE 'sha256:%')
+	)`,
+	`CREATE TABLE IF NOT EXISTS project_integration_items (
+		project_id TEXT NOT NULL,
+		provider TEXT NOT NULL,
+		item_id_hash TEXT NOT NULL,
+		item_key_hash TEXT NOT NULL DEFAULT '',
+		item_type TEXT NOT NULL,
+		item_status TEXT NOT NULL DEFAULT '',
+		item_updated_at TEXT NOT NULL DEFAULT '',
+		first_seen_at TEXT NOT NULL,
+		last_seen_at TEXT NOT NULL,
+		last_run_id TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY(project_id, provider, item_id_hash),
+		FOREIGN KEY(project_id, provider) REFERENCES project_integration_sources(project_id, provider),
+		CHECK (provider IN ('jira', 'confluence')),
+		CHECK (item_id_hash LIKE 'sha256:%'),
+		CHECK (item_key_hash = '' OR item_key_hash LIKE 'sha256:%')
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_integration_sources_project_provider
+		ON project_integration_sources(project_id, provider)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_integration_sync_runs_project_provider_started
+		ON project_integration_sync_runs(project_id, provider, started_at, run_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_integration_items_project_provider_seen
+		ON project_integration_items(project_id, provider, last_seen_at, item_id_hash)`,
 	`CREATE TABLE IF NOT EXISTS project_search_index_state (
 		project_id TEXT PRIMARY KEY,
 		status TEXT NOT NULL,
