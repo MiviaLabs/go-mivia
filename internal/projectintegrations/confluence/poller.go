@@ -30,6 +30,7 @@ func (poller Poller) PollConfluence(ctx context.Context, credentials projectinte
 		return projectintegrations.PollResult{}, err
 	}
 	items := make([]projectintegrations.PollItem, 0, len(response.Results))
+	richContent := make([]projectintegrations.RichContentPayload, 0, len(response.Results))
 	for _, raw := range response.Results {
 		if len(items) >= maxResults {
 			break
@@ -39,8 +40,15 @@ func (poller Poller) PollConfluence(ctx context.Context, credentials projectinte
 			return projectintegrations.PollResult{}, projectintegrations.DecodeError(provider, "extract_page_metadata")
 		}
 		items = append(items, item)
+		if shouldExtractRichContent(plan) {
+			payload, err := poller.richContentForPage(ctx, credentials, plan, item.ID)
+			if err != nil {
+				return projectintegrations.PollResult{}, err
+			}
+			richContent = append(richContent, payload)
+		}
 	}
-	return projectintegrations.PollResult{Items: items}, nil
+	return projectintegrations.PollResult{Items: items, RichContent: richContent}, nil
 }
 
 type searchResultMetadata struct {
@@ -90,6 +98,22 @@ func pollItemFromSearchResult(raw json.RawMessage) (projectintegrations.PollItem
 		Status:    firstNonEmpty(result.Content.Status, result.Status),
 		UpdatedAt: updatedAt,
 	}, nil
+}
+
+func shouldExtractRichContent(plan projectintegrations.ConfluenceQueryPlan) bool {
+	return plan.IncludeBody || plan.IncludeComments || plan.IncludeLabels || plan.IncludeProperties
+}
+
+func (poller Poller) richContentForPage(ctx context.Context, credentials projectintegrations.Credentials, plan projectintegrations.ConfluenceQueryPlan, pageID string) (projectintegrations.RichContentPayload, error) {
+	response, err := poller.Client.GetPage(ctx, credentials, pageID, plan.BodyRepresentation)
+	if err != nil {
+		return projectintegrations.RichContentPayload{}, err
+	}
+	item, chunks, err := projectintegrations.ExtractConfluenceRichContent(plan, response.Raw, projectintegrations.RichContentOptions{})
+	if err != nil {
+		return projectintegrations.RichContentPayload{}, projectintegrations.DecodeError(provider, "extract_page_rich_content")
+	}
+	return projectintegrations.RichContentPayload{Item: item, Chunks: chunks}, nil
 }
 
 func firstNonEmpty(values ...string) string {

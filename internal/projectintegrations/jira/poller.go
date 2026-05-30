@@ -23,6 +23,7 @@ func (poller Poller) PollJira(ctx context.Context, credentials projectintegratio
 	}
 	pageSize, maxResults := boundedRequest(plan.PageSize, plan.MaxResults)
 	var items []projectintegrations.PollItem
+	var richContent []projectintegrations.RichContentPayload
 	var nextPageToken string
 	for len(items) < maxResults {
 		remaining := maxResults - len(items)
@@ -45,6 +46,13 @@ func (poller Poller) PollJira(ctx context.Context, credentials projectintegratio
 				return projectintegrations.PollResult{}, projectintegrations.DecodeError(provider, "extract_issue_metadata")
 			}
 			items = append(items, item)
+			if shouldExtractRichContent(plan) {
+				payload, err := richContentFromIssue(plan, raw)
+				if err != nil {
+					return projectintegrations.PollResult{}, projectintegrations.DecodeError(provider, "extract_issue_rich_content")
+				}
+				richContent = append(richContent, payload)
+			}
 			if len(items) >= maxResults {
 				break
 			}
@@ -54,7 +62,7 @@ func (poller Poller) PollJira(ctx context.Context, credentials projectintegratio
 		}
 		nextPageToken = response.NextPageToken
 	}
-	return projectintegrations.PollResult{Items: items}, nil
+	return projectintegrations.PollResult{Items: items, RichContent: richContent}, nil
 }
 
 type issueMetadata struct {
@@ -95,6 +103,18 @@ func pollItemFromIssue(raw json.RawMessage) (projectintegrations.PollItem, error
 		Status:    strings.TrimSpace(issue.Fields.Status.Name),
 		UpdatedAt: updatedAt,
 	}, nil
+}
+
+func shouldExtractRichContent(plan projectintegrations.JiraQueryPlan) bool {
+	return plan.IncludeRichFields || plan.IncludeComments
+}
+
+func richContentFromIssue(plan projectintegrations.JiraQueryPlan, raw json.RawMessage) (projectintegrations.RichContentPayload, error) {
+	item, chunks, err := projectintegrations.ExtractJiraRichContent(plan, raw, projectintegrations.RichContentOptions{})
+	if err != nil {
+		return projectintegrations.RichContentPayload{}, err
+	}
+	return projectintegrations.RichContentPayload{Item: item, Chunks: chunks}, nil
 }
 
 func boundedRequest(pageSize int, maxResults int) (int, int) {

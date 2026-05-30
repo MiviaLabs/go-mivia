@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,77 @@ func TestPoller_PollConfluenceBoundsRequestAndExtractsMetadata(t *testing.T) {
 	if result.Items[1].UpdatedAt.IsZero() || result.Items[1].UpdatedAt.Location() != time.UTC {
 		t.Fatalf("expected UTC updated timestamp: %#v", result.Items[1])
 	}
+	if len(result.RichContent) != 0 {
+		t.Fatalf("metadata-only poll should not emit rich content: %#v", result.RichContent)
+	}
+}
+
+func TestPoller_PollConfluenceFetchesPageDetailsForConfiguredRichContent(t *testing.T) {
+	var searchRequests int
+	var pageRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		switch r.URL.Path {
+		case "/wiki/rest/api/search":
+			searchRequests++
+			if r.URL.Query().Get("limit") != "1" {
+				t.Fatalf("unexpected search limit: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"results":[{"content":{"id":"20001","type":"page","status":"current","version":{"when":"2026-05-31T10:00:00Z"}}}]}`))
+		case "/wiki/api/v2/pages/20001":
+			pageRequests++
+			if r.URL.Query().Get("body-format") != "storage" {
+				t.Fatalf("unexpected body format: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{
+				"id":"20001",
+				"type":"page",
+				"title":"Runbook",
+				"version":{"when":"2026-05-31T10:00:00Z"},
+				"body":{"storage":{"value":"Storage body"}},
+				"labels":{"results":[{"name":"ops"}]},
+				"properties":{"results":[{"key":"owner","value":{"displayName":"Ops Lead","email":"ops@example.invalid"}}]}
+			}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollConfluence(context.Background(), testCredentials(), projectintegrations.ConfluenceQueryPlan{
+		ProjectID:          "project-1",
+		Provider:           projectintegrations.ProviderConfluence,
+		Kind:               projectintegrations.SyncKindInitialFull,
+		CQL:                `space in ("ENG") and type=page`,
+		PageSize:           1,
+		MaxResults:         1,
+		BodyRepresentation: "storage",
+		IncludeBody:        true,
+		IncludeLabels:      true,
+		IncludeProperties:  true,
+	})
+	if err != nil {
+		t.Fatalf("poll confluence: %v", err)
+	}
+	if searchRequests != 1 || pageRequests != 1 || len(result.Items) != 1 || len(result.RichContent) != 1 {
+		t.Fatalf("unexpected requests/result: search=%d page=%d result=%#v", searchRequests, pageRequests, result)
+	}
+	payload := result.RichContent[0]
+	if payload.Item.ItemID != "20001" || payload.Item.Provider != projectintegrations.ProviderConfluence {
+		t.Fatalf("unexpected rich item: %#v", payload.Item)
+	}
+	rendered := renderPollChunks(payload.Chunks)
+	for _, expected := range []string{"Runbook", "Storage body", "ops", "Ops Lead"} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("expected %q in rich chunks: %s", expected, rendered)
+		}
+	}
+	for _, forbidden := range []string{"ops@example.invalid", "synthetic-token-value", "/home/mac"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("rich content leaked %q: %s", forbidden, rendered)
+		}
+	}
 }
 
 func TestPoller_PollConfluenceMalformedResultReturnsRedactedDecodeError(t *testing.T) {
@@ -76,4 +148,15 @@ func TestPoller_PollConfluenceMalformedResultReturnsRedactedDecodeError(t *testi
 		t.Fatalf("unexpected provider error: %#v", providerErr)
 	}
 	assertErrorOmits(t, err, "FORBIDDEN_REMOTE_BODY_MARKER", "synthetic-token-value", "agent@example.invalid")
+}
+
+func renderPollChunks(chunks []projectintegrations.RichContentChunk) string {
+	var builder strings.Builder
+	for _, chunk := range chunks {
+		builder.WriteString(chunk.FieldName)
+		builder.WriteByte('=')
+		builder.WriteString(chunk.Text)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
 }
