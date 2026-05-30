@@ -12,13 +12,14 @@ var ErrProviderRequestFailed = errors.New("integration provider request failed")
 type ErrorCategory string
 
 const (
-	ErrorCategoryAuthFailed       ErrorCategory = "auth_failed"
-	ErrorCategoryPermissionDenied ErrorCategory = "permission_denied"
-	ErrorCategoryNotFound         ErrorCategory = "not_found"
-	ErrorCategoryRateLimited      ErrorCategory = "rate_limited"
-	ErrorCategoryUnexpectedStatus ErrorCategory = "unexpected_status"
-	ErrorCategoryRequestFailed    ErrorCategory = "request_failed"
-	ErrorCategoryDecodeFailed     ErrorCategory = "decode_failed"
+	ErrorCategoryAuthFailed            ErrorCategory = "auth_failed"
+	ErrorCategoryPermissionDenied      ErrorCategory = "permission_denied"
+	ErrorCategoryNotFound              ErrorCategory = "not_found"
+	ErrorCategoryRateLimited           ErrorCategory = "rate_limited"
+	ErrorCategoryUnexpectedStatus      ErrorCategory = "unexpected_status"
+	ErrorCategoryRequestFailed         ErrorCategory = "request_failed"
+	ErrorCategoryDecodeFailed          ErrorCategory = "decode_failed"
+	ErrorCategoryCredentialUnavailable ErrorCategory = "credential_unavailable"
 )
 
 type ProviderError struct {
