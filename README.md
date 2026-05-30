@@ -6,7 +6,7 @@ Generic Go microservices monorepo for AI-agent work.
 
 This repository contains the local MiviaLabs agent service platform. The current service is `agent-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, research metadata, project registry, project ingestion, and semantic code-context workflows.
 
-The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion. It does not ingest PII, call live AI or browsing providers, expose public APIs, run embeddings/vector storage, or use production database infrastructure.
+The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion with governed FTS and named AST search. It does not ingest PII, call live AI or browsing providers, expose public APIs, run embeddings/vector storage, crawl arbitrary roots, or use production database infrastructure.
 
 Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only.
 
@@ -28,7 +28,9 @@ flowchart TB
   Extractors["Extractors: Go AST, Tree-sitter JS/TS/TSX/C#/Python, Markdown, infra/config"]
   Graph["Ladybug graph: files, chunks, symbols, references, calls, headings"]
   SQLite["SQLite: config, run state, file state, extractor cache"]
-  Queries["Bounded query APIs: files, chunks, outlines, search, symbol source, refs, callers, callees, call graph, AST search"]
+  FTS["SQLite FTS5: eligible indexed search rows"]
+  AST["Named AST search catalog"]
+  Queries["Bounded query APIs: files, chunks, outlines, FTS search, symbol source, refs, callers, callees, call graph, AST search"]
   Boundaries["No public exposure, auth changes, provider calls, crawling, embeddings, raw DB queries, PII, secrets, roots, prompts, or skipped sensitive content"]
 
   Client --> Server
@@ -46,8 +48,12 @@ flowchart TB
   Safety --> Extractors
   Extractors --> Graph
   Extractors --> SQLite
+  Extractors --> FTS
+  Extractors --> AST
   Graph --> Queries
   SQLite --> Queries
+  FTS --> Queries
+  AST --> Queries
   Queries --> REST
   Queries --> MCP
   Server --> Boundaries
@@ -62,6 +68,7 @@ flowchart TB
 | Ingestion scheduler | Async manual ingestion, live watcher rescan, global/per-project limits, live path priority | No one project can monopolize scheduler workers |
 | Full-scan ingestion | Parallel bounded file workers, periodic running counters, stale cleanup after workers drain | Source is stored only for eligible chunks after safety gates |
 | Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph, named AST structural search, AST query catalog discovery | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
+| Search index | SQLite FTS5 rows for eligible chunks, files, symbols, references, and calls; async rebuild repair through ingestion scheduler | Raw FTS syntax and raw SQLite errors are never exposed |
 | Query APIs | Files, chunks, outlines, text/file/symbol/reference/call search, AST query catalog, named AST search, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned; raw FTS and raw Tree-sitter syntax are not exposed |
 
 ## Start Here
@@ -119,40 +126,42 @@ What this enables:
 
 ## Agent Reliability Model
 
-`agent-server` and Serena solve different parts of reliable agent work:
+`agent-server`, Serena, and shell solve different parts of reliable agent work:
 
-- Serena helps the agent inspect and edit code precisely using semantic code navigation, symbols, and references.
-- `agent-server` gives the agent a governed local API for project registry, ingestion state, graph-backed project context, and MCP-compatible workflows.
-- Together, they reduce blind file scanning, stale assumptions, and unsafe over-broad context collection.
+- `agent-server` is first choice for indexed project discovery, ingestion freshness, files, chunks, symbols, references, calls, FTS search, symbol source, call graph, and named AST search.
+- Serena remains useful when MCP is unavailable, stale, missing the project, or lacks the edit-time semantic operation needed for a precise code change.
+- Shell remains the source of truth for git state, tests, builds, logs, generated files, and files changed after the latest indexed ingestion.
+- This routing reduces blind file scanning, stale assumptions, and unsafe over-broad context collection.
 
 ```mermaid
 flowchart TB
   Agent["AI agent"]
-  Serena["Serena semantic tools"]
-  MCP["agent-server MCP"]
+  MCP["agent-server MCP first for indexed context"]
+  Serena["Serena fallback or edit-time semantic tools"]
+  Shell["Shell for git, tests, logs, and current disk"]
   Source["Source files"]
-  Symbols["Symbols and references"]
-  Registry["Project registry"]
-  Ingestion["Content graph ingestion"]
-  Calls["References and call graph"]
-  Store["Local graph and SQLite state"]
+  Indexed["Files, chunks, symbols, refs, calls, AST matches"]
+  Registry["Project registry and ingestion status"]
+  Ingestion["Live and manual content graph ingestion"]
+  Store["Local graph, SQLite state, and FTS index"]
   Guardrails["Safety gates and policy boundaries"]
-
-  Agent --> Serena
-  Serena --> Source
-  Serena --> Symbols
 
   Agent --> MCP
   MCP --> Registry
   MCP --> Ingestion
   Ingestion --> Guardrails
   Guardrails --> Store
-  Store --> Calls
+  Store --> Indexed
+  Indexed --> MCP
   Store --> MCP
+  Agent --> Serena
+  Serena --> Source
+  Agent --> Shell
+  Shell --> Source
 
-  Symbols --> Decision["Grounded implementation decisions"]
-  Calls --> Decision
-  Store --> Decision
+  MCP --> Decision["Grounded implementation decisions"]
+  Serena --> Decision
+  Shell --> Decision
   Decision --> Agent
 ```
 
@@ -162,19 +171,22 @@ High-level flow:
 sequenceDiagram
   participant Engineer
   participant Agent
-  participant Serena
   participant Server as agent-server
+  participant Serena
+  participant Shell
   participant Project as Local project
-  participant Store as Local graph and SQLite
+  participant Store as Local graph, SQLite, and FTS
 
   Engineer->>Agent: Ask for implementation or review
-  Agent->>Serena: Inspect symbols, references, and affected code
-  Agent->>Server: Query project metadata, ingestion state, chunks, and symbols
+  Agent->>Server: Query project metadata, ingestion state, search, symbols, refs, calls, AST, and bounded chunks
   Server->>Project: Read only eligible local files after safety gates
   Server->>Store: Persist approved local metadata and graph context
   Store-->>Server: Return bounded context
-  Serena-->>Agent: Return precise code structure
   Server-->>Agent: Return governed project context
+  Agent->>Serena: Fall back for edit-time semantic gaps
+  Serena-->>Agent: Return precise code structure when needed
+  Agent->>Shell: Verify git, tests, build, logs, and current disk
+  Shell-->>Agent: Return runtime evidence
   Agent-->>Engineer: Make a smaller, verified change with clearer evidence
 ```
 
@@ -293,7 +305,7 @@ The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.
 
 Project APIs are for engineer local computers only. REST exposes project list/get, manual digest, manual ingestion, ingestion status, file, chunk, and symbol metadata endpoints under `/api/v1`; MCP exposes matching project tools and resources.
 
-Use REST for scripts, smoke tests, and direct local checks. Use MCP when an agent client needs the same capabilities. Use Serena for code navigation and shell for git/tests/logs/current disk state.
+Use REST for scripts, smoke tests, and direct local checks. Use MCP first when an agent client needs indexed project context. Use Serena only for edit-time semantic gaps that MCP cannot answer, and use shell for git/tests/logs/current disk state.
 
 | Capability | REST | MCP |
 | --- | --- | --- |

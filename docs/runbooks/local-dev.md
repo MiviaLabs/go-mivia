@@ -166,12 +166,20 @@ After registration, new Codex Desktop sessions can discover these tools:
 - `projects.get`
 - `projects.digest`
 - `projects.ingest`
+- `projects.search_index.rebuild`
 - `projects.ingestion_status`
 - `projects.ingestion_status_latest`
 - `projects.files.list`
 - `projects.files.get`
 - `projects.file.chunks`
 - `projects.symbols.list`
+- `projects.search.text`
+- `projects.search.files`
+- `projects.search.symbols`
+- `projects.search.references`
+- `projects.search.calls`
+- `projects.search.ast.queries`
+- `projects.search.ast`
 - `projects.symbol.source`
 - `projects.symbol.references`
 - `projects.symbol.callers`
@@ -181,6 +189,24 @@ After registration, new Codex Desktop sessions can discover these tools:
 - `projects.file.outline`
 
 Codex may expose underscore-normalized callable names such as `tasks_create`, `projects_digest`, or `projects_ingest`; the server accepts both dotted MCP tool names and underscore aliases.
+
+Search smoke after a completed `content_graph` ingestion:
+
+```sh
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/search/text?query=main&page_size=5&max_snippet_bytes=200'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/search/symbols?name_contains=Run&page_size=5'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/search/ast/queries'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/search/ast?language=go&query=function_declarations&page_size=5'
+```
+
+Search index repair is asynchronous:
+
+```sh
+curl -fsS -X POST http://127.0.0.1:8080/api/v1/projects/example-service/search-index/rebuild
+curl -fsS http://127.0.0.1:8080/api/v1/projects/example-service/ingestion-runs/latest
+```
+
+Use repair only when search metadata reports degraded indexed state or after local datastore recovery. Normal freshness comes from live ingestion or manual `projects.ingest`.
 
 ## Live Project Updates
 
@@ -214,6 +240,8 @@ On server startup, persisted `pending` or `running` ingestion runs from a prior 
 The watcher uses `github.com/fsnotify/fsnotify` and watches directories, not individual files. It registers each eligible directory because filesystem notifications are not recursive. Overflow or full queues trigger a scheduled project rescan. The scheduler prioritizes live path events over full-scan continuation and enforces global and per-project worker limits. Manual ingestion remains available as fallback, returns queued metadata immediately, and runs through the same scheduler.
 
 Promoted AST extraction validates at startup when content graph ingestion is enabled. Supported promoted extractors are Go stdlib AST, Tree-sitter JavaScript/TypeScript/TSX, Tree-sitter C#, Tree-sitter Python, Markdown headings, and lightweight infrastructure/config metadata. Tree-sitter failures must be fixed as dependency or query initialization issues; do not re-enable regex fallback for TS/JS/TSX/JSX, C#, or Python.
+
+Named AST structural search uses server-owned query IDs for Go, Python, JavaScript, JSX, TypeScript, TSX, and C#. Raw Tree-sitter query syntax is not exposed. Oversized, sensitive, denied, absent, parse-error, and other skipped files are not searched; oversized files can appear only as safe coverage counts.
 
 Verified local smoke:
 

@@ -4,7 +4,7 @@ Status: Current local guide
 Date: 2026-05-30
 Classification: Internal; PII-prohibited
 
-`agent-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata and chunks, and keeps source understanding inside the developer machine.
+`agent-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, symbol navigation, call graph views, and named AST structural search, and keeps source understanding inside the developer machine.
 
 ## Who It Helps
 
@@ -13,40 +13,46 @@ Classification: Internal; PII-prohibited
 | Business stakeholders | Less agent guesswork, faster engineering work, and a clear local-only data boundary. |
 | Local users | A simple way to ask what projects are configured, indexed, and safe for agents to inspect. |
 | Engineers | One local service for project config, ingestion, run status, REST checks, and MCP tools. |
-| AI agents | Token-efficient project discovery, file IDs, symbols, chunks, and ingestion state without broad scans. |
+| AI agents | Token-efficient project discovery, file IDs, symbols, chunks, references, calls, FTS search, AST catalog search, and ingestion state without broad scans. |
 
 ## How It Works
 
 ```mermaid
 flowchart LR
   Engineer["Engineer"] --> Agent["AI agent"]
-  Agent --> Serena["Serena"]
-  Agent --> MCP["MiviaLabs MCP"]
-  Serena --> Code["Code symbols and references"]
+  Agent --> MCP["MiviaLabs MCP first"]
+  Agent --> Serena["Serena fallback"]
+  Agent --> Shell["Shell"]
+  MCP --> Indexed["Indexed files, chunks, symbols, refs, calls, AST"]
   MCP --> Server["agent-server on localhost"]
   Server --> Project["Approved local project"]
-  Server --> Store["Local graph and SQLite"]
+  Server --> Store["Local graph, SQLite, and FTS"]
   Store --> MCP
+  Indexed --> Agent
+  Serena --> Code["Edit-time semantic gaps"]
+  Shell --> Disk["Git, tests, build, logs, current disk"]
   Code --> Agent
+  Disk --> Agent
   MCP --> Agent
 ```
 
-Serena and `agent-server` are complementary:
+MiviaLabs MCP, Serena, and shell are complementary:
 
-- Use Serena for precise code navigation: symbols, references, call sites, and edit targets.
-- Use MiviaLabs MCP for indexed project context: project metadata, ingestion state, file IDs, outlines, headings, chunks, and symbol lists.
-- Use shell for current disk and git truth: diffs, tests, builds, logs, and newly changed files.
+- Use MiviaLabs MCP first for indexed project context: project metadata, ingestion state, file IDs, outlines, headings, chunks, search, symbols, references, calls, symbol source, call graph, and named AST structural search.
+- Use Serena only when MCP is unavailable, stale, missing the project, or lacks the edit-time semantic operation needed for a precise code change.
+- Use shell for current disk and git truth: diffs, tests, builds, logs, generated files, and newly changed files.
 
 ## When To Use What
 
 | Need | First tool |
 | --- | --- |
-| Understand a Go type, function, caller, or edit location | Serena |
+| Understand indexed code structure, symbols, references, calls, or source | MCP |
 | Find indexed files or symbols without scanning the repo in chat | MCP |
+| Run routine text, path, symbol, reference, call, or named AST discovery | MCP `projects.search.*` |
 | Read a bounded chunk by opaque file ID | MCP |
 | Check whether indexed data is fresh enough for the task | MCP or REST |
 | Verify a code change, test, build, log, or git state | Shell |
-| Inspect a file just created in the working tree | Shell, then Serena if code navigation is needed |
+| Inspect a file just created in the working tree | Shell, then MCP after live ingestion catches up; Serena only for edit-time semantic gaps |
 
 ## Surfaces
 
@@ -90,7 +96,9 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 
 `projects.digest` is only for `metadata_only` projects. For `content_graph` projects, use ingestion status and bounded file/search tools; the MCP error is `project digest unsupported`, not an active-ingestion block.
 
-`projects.search.ast.queries` returns supported named query IDs, languages, capture names, query versions, matching extensions, and safe per-language `file_too_large` coverage counts. It does not expose raw Tree-sitter query text. `projects.search.ast` accepts named query IDs only, such as `function_declarations`, `class_declarations`, `call_expressions`, `imports`, `test_functions`, `assignments`, and `error_handling`. It does not accept raw Tree-sitter query syntax and only runs over eligible indexed chunks.
+Search tools are backed by governed indexed state. Text search is literal-only and returns capped snippets from eligible chunks. File, symbol, reference, and call search use indexed metadata and pagination. Raw FTS syntax and raw SQLite errors are not exposed.
+
+`projects.search.ast.queries` returns supported named query IDs, languages, capture names, query versions, matching extensions, and safe per-language `file_too_large` coverage counts. It does not expose raw Tree-sitter query text. `projects.search.ast` accepts named query IDs only, such as `function_declarations`, `class_declarations`, `type_declarations`, `call_expressions`, `imports`, `test_functions`, `assignments`, and `error_handling`. It does not accept raw Tree-sitter query syntax and only runs over eligible indexed chunks.
 
 MCP resources also expose stable IDs:
 

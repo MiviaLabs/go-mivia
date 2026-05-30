@@ -1,6 +1,6 @@
 ---
 name: mivialabs-agent-mcp
-description: Use with the MiviaLabs localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, bounded file chunks, or symbol lists.
+description: Use with the MiviaLabs localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, search, bounded chunks, symbol navigation, call graph, or named AST discovery.
 ---
 
 # MiviaLabs Agent MCP

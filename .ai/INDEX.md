@@ -13,11 +13,11 @@ Agent entrypoints:
 
 Context-tool routing:
 
-- Use the local MiviaLabs MCP server first for indexed repo context: project discovery, ingestion status, file discovery, file metadata, bounded chunks, symbol lists, references, call sites, and planning context exposed by the localhost content graph.
+- Use the local MiviaLabs MCP server first for indexed repo context: project discovery, ingestion status, file discovery, file metadata, bounded chunks, outlines, text/file/symbol/reference/call search, symbol source, references, callers, callees, call graph, named AST query catalog/search, search-index repair status, and planning context exposed by the localhost content graph.
 - Do not use Serena for indexed project discovery, symbol overview/listing, references, call sites, search, bounded source chunks, or planning context when MiviaLabs MCP is available and current.
 - Use Serena only when MiviaLabs MCP is unavailable, stale, missing this project, or lacks the needed semantic operation; state that fallback explicitly.
 - Use shell commands for exact working-tree facts: `git status`, `git diff`, tests, builds, generated files, logs, and files not yet indexed by MCP.
-- Do not guess between tools: if the question is about indexed code structure or project graph state, start with MCP; if it is about current disk/git/runtime state, use shell.
+- Do not guess between tools: if the question is about indexed code structure, search, source snippets, AST discovery, or project graph state, start with MCP; if it is about current disk/git/runtime state, use shell.
 - If the MCP server is unavailable, state the gap and fall back to Serena plus shell only for the minimum evidence needed.
 
 Source-of-truth order:
