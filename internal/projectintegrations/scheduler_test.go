@@ -143,6 +143,36 @@ func TestScheduler_RunProviderPollSingleFlightPreventsOverlap(t *testing.T) {
 	}
 }
 
+func TestScheduler_SubmitProviderPollReturnsBeforeExecutionCompletes(t *testing.T) {
+	runner := &schedulerFakeRunner{
+		started: make(chan schedulerPollCall, 1),
+		release: make(chan struct{}),
+	}
+	scheduler := newTestScheduler(t, nil, runner)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	t.Cleanup(func() { _ = scheduler.Stop(context.Background()) })
+
+	run, err := scheduler.SubmitProviderPoll(context.Background(), "project-1", ProviderJira, SyncKindInitialFull)
+	if err != nil {
+		t.Fatalf("submit provider poll: %v", err)
+	}
+	if run.ID == "" || run.Status != SyncRunStatusPending || run.Kind != SyncKindInitialFull {
+		t.Fatalf("unexpected submitted run: %#v", run)
+	}
+	call := receiveSchedulerCall(t, runner.started)
+	if call.projectID != "project-1" || call.provider != ProviderJira || call.kind != SyncKindInitialFull {
+		t.Fatalf("unexpected async execution call: %#v", call)
+	}
+	if _, err := scheduler.SubmitProviderPoll(context.Background(), "project-1", ProviderJira, SyncKindIncremental); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected overlapping async poll rejection, got %v", err)
+	}
+	close(runner.release)
+}
+
 func TestScheduler_ErrorsAreRedacted(t *testing.T) {
 	runner := &schedulerFakeRunner{
 		err: fmt.Errorf("provider failure MIVIA_ATLASSIAN_TOKEN_PROJECT_1 /home/mac/secret-atlassian-credentials.json ACME raw-provider-cursor-token"),
@@ -207,6 +237,51 @@ func (runner *schedulerFakeRunner) RunProviderPoll(ctx context.Context, projectI
 		Kind:      kind,
 		Status:    SyncRunStatusCompleted,
 	}}, nil
+}
+
+func (runner *schedulerFakeRunner) PrepareProviderPoll(_ context.Context, projectID string, provider Provider, kind SyncKind) (SyncRun, error) {
+	if runner.err != nil {
+		return SyncRun{}, runner.err
+	}
+	return SyncRun{
+		ID:        "run-async-1",
+		ProjectID: projectID,
+		Provider:  provider,
+		Kind:      kind,
+		Status:    SyncRunStatusPending,
+		StartedAt: time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC),
+	}, nil
+}
+
+func (runner *schedulerFakeRunner) ExecutePreparedProviderPoll(ctx context.Context, run SyncRun) (PollRunResult, error) {
+	call := schedulerPollCall{projectID: run.ProjectID, provider: run.Provider, kind: run.Kind}
+	runner.mu.Lock()
+	runner.calls = append(runner.calls, call)
+	runner.mu.Unlock()
+	if runner.started != nil {
+		select {
+		case runner.started <- call:
+		default:
+		}
+	}
+	if runner.release != nil {
+		select {
+		case <-runner.release:
+		case <-ctx.Done():
+			return PollRunResult{}, ctx.Err()
+		}
+	}
+	if runner.err != nil {
+		return PollRunResult{}, runner.err
+	}
+	run.Status = SyncRunStatusCompleted
+	return PollRunResult{Run: run}, nil
+}
+
+func (runner *schedulerFakeRunner) FailPreparedProviderPoll(_ context.Context, run SyncRun, category string) (SyncRun, error) {
+	run.Status = SyncRunStatusFailed
+	run.ErrorCategory = category
+	return run, nil
 }
 
 func newTestScheduler(t *testing.T, projects []config.Project, runner PollRunner) *Scheduler {

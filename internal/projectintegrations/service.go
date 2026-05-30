@@ -2,6 +2,7 @@ package projectintegrations
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -18,6 +19,10 @@ type Store interface {
 
 type PollRunner interface {
 	RunProviderPoll(context.Context, string, Provider, SyncKind) (PollRunResult, error)
+}
+
+type AsyncPollRunner interface {
+	SubmitProviderPoll(context.Context, string, Provider, SyncKind) (SyncRun, error)
 }
 
 type RichContentReader interface {
@@ -106,6 +111,13 @@ type ProviderPollStatus struct {
 	Provider  Provider
 	Run       SyncRunStatusView
 	SyncState SyncStateStatus
+}
+
+type ProviderPollAccepted struct {
+	ProjectID string
+	Provider  Provider
+	Accepted  bool
+	Run       SyncRunStatusView
 }
 
 type LocalSearchInput struct {
@@ -256,6 +268,72 @@ func (service *Service) PollProvider(ctx context.Context, projectID string, prov
 		Run:       syncRunStatusView(result.Run),
 		SyncState: syncStateStatus(result.State),
 	}, nil
+}
+
+func (service *Service) SubmitProviderPoll(ctx context.Context, projectID string, provider Provider, kind SyncKind) (ProviderPollAccepted, error) {
+	if service == nil {
+		return ProviderPollAccepted{}, fmt.Errorf("%w: service is nil", ErrInvalidInput)
+	}
+	if service.runner == nil {
+		return ProviderPollAccepted{}, fmt.Errorf("%w: integration runner unavailable", ErrNotFound)
+	}
+	asyncRunner, ok := service.runner.(AsyncPollRunner)
+	if !ok {
+		return ProviderPollAccepted{}, fmt.Errorf("%w: async integration runner unavailable", ErrNotFound)
+	}
+	project, err := service.project(projectID)
+	if err != nil {
+		return ProviderPollAccepted{}, err
+	}
+	statusCfg, err := providerStatusConfig(project, provider)
+	if err != nil {
+		return ProviderPollAccepted{}, err
+	}
+	if !statusCfg.enabled {
+		return ProviderPollAccepted{}, fmt.Errorf("%w: provider disabled", ErrInvalidInput)
+	}
+	run, err := asyncRunner.SubmitProviderPoll(ctx, project.ID, provider, kind)
+	if err != nil {
+		return ProviderPollAccepted{}, err
+	}
+	return ProviderPollAccepted{
+		ProjectID: project.ID,
+		Provider:  provider,
+		Accepted:  true,
+		Run:       syncRunStatusView(run),
+	}, nil
+}
+
+func (service *Service) PollRunStatus(ctx context.Context, projectID string, provider Provider, runID string) (ProviderPollStatus, error) {
+	if service == nil {
+		return ProviderPollStatus{}, fmt.Errorf("%w: service is nil", ErrInvalidInput)
+	}
+	if service.store == nil {
+		return ProviderPollStatus{}, fmt.Errorf("%w: integration store unavailable", ErrNotFound)
+	}
+	project, err := service.project(projectID)
+	if err != nil {
+		return ProviderPollStatus{}, err
+	}
+	if _, err := providerStatusConfig(project, provider); err != nil {
+		return ProviderPollStatus{}, err
+	}
+	run, err := service.store.GetSyncRun(ctx, project.ID, provider, strings.TrimSpace(runID))
+	if err != nil {
+		return ProviderPollStatus{}, err
+	}
+	status := ProviderPollStatus{
+		ProjectID: project.ID,
+		Provider:  provider,
+		Run:       syncRunStatusView(run),
+	}
+	state, err := service.store.GetSyncState(ctx, project.ID, provider)
+	if err == nil {
+		status.SyncState = syncStateStatus(state)
+	} else if !errors.Is(err, ErrNotFound) {
+		return ProviderPollStatus{}, err
+	}
+	return status, nil
 }
 
 func (service *Service) SearchLocalContent(ctx context.Context, input LocalSearchInput) ([]RichContentSearchResult, error) {

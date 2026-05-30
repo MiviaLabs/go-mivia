@@ -57,6 +57,56 @@ func TestPoller_PollConfluenceBoundsRequestAndExtractsMetadata(t *testing.T) {
 	}
 }
 
+func TestPoller_PollConfluencePaginatesUntilMaxResults(t *testing.T) {
+	var cursors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/wiki/rest/api/search" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		assertBasicAuth(t, r)
+		cursors = append(cursors, r.URL.Query().Get("cursor"))
+		switch r.URL.Query().Get("cursor") {
+		case "":
+			if r.URL.Query().Get("limit") != "2" {
+				t.Fatalf("unexpected first page limit: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"results":[
+				{"content":{"id":"20001","type":"page","status":"current","version":{"when":"2026-05-31T10:00:00Z"}}},
+				{"content":{"id":"20002","type":"page","status":"current","version":{"when":"2026-05-31T10:01:00Z"}}}
+			],"_links":{"next":"/wiki/rest/api/search?cql=type%3Dpage&limit=2&cursor=page-2"}}`))
+		case "page-2":
+			if r.URL.Query().Get("limit") != "1" {
+				t.Fatalf("unexpected second page limit: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"results":[
+				{"content":{"id":"20003","type":"page","status":"current","version":{"when":"2026-05-31T10:02:00Z"}}}
+			],"_links":{"next":"/wiki/rest/api/search?cursor=page-3"}}`))
+		default:
+			t.Fatalf("unexpected cursor %q", r.URL.Query().Get("cursor"))
+		}
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollConfluence(context.Background(), testCredentials(), projectintegrations.ConfluenceQueryPlan{
+		ProjectID:  "project-1",
+		Provider:   projectintegrations.ProviderConfluence,
+		Kind:       projectintegrations.SyncKindInitialFull,
+		CQL:        `space in ("ENG") and type=page`,
+		PageSize:   2,
+		MaxResults: 3,
+	})
+	if err != nil {
+		t.Fatalf("poll confluence: %v", err)
+	}
+	if got := strings.Join(cursors, ","); got != ",page-2" {
+		t.Fatalf("unexpected cursors: %q", got)
+	}
+	if len(result.Items) != 3 || result.Items[2].ID != "20003" {
+		t.Fatalf("unexpected paginated items: %#v", result.Items)
+	}
+}
+
 func TestPoller_PollConfluenceFetchesPageDetailsForConfiguredRichContent(t *testing.T) {
 	var searchRequests int
 	var pageRequests int
@@ -78,7 +128,7 @@ func TestPoller_PollConfluenceFetchesPageDetailsForConfiguredRichContent(t *test
 				"id":"20001",
 				"type":"page",
 				"title":"Runbook",
-				"version":{"when":"2026-05-31T10:00:00Z"},
+				"version":{"createdAt":"2026-05-31T10:00:00Z"},
 				"body":{"storage":{"value":"Storage body"}},
 				"labels":{"results":[{"name":"ops"}]},
 				"properties":{"results":[{"key":"owner","value":{"displayName":"Ops Lead","email":"ops@example.invalid"}}]}
@@ -111,6 +161,9 @@ func TestPoller_PollConfluenceFetchesPageDetailsForConfiguredRichContent(t *test
 	payload := result.RichContent[0]
 	if payload.Item.ItemID != "20001" || payload.Item.Provider != projectintegrations.ProviderConfluence {
 		t.Fatalf("unexpected rich item: %#v", payload.Item)
+	}
+	if payload.Item.UpdatedAt.IsZero() {
+		t.Fatalf("expected rich item updated timestamp: %#v", payload.Item)
 	}
 	rendered := renderPollChunks(payload.Chunks)
 	for _, expected := range []string{"Runbook", "Storage body", "ops", "Ops Lead"} {

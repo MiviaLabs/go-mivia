@@ -135,7 +135,7 @@ func ExtractConfluenceRichContent(plan ConfluenceQueryPlan, raw json.RawMessage,
 		Provider:  ProviderConfluence,
 		ItemID:    id,
 		ItemType:  firstNonEmptyText(firstJSONText(page, "type", "content.type"), "page"),
-		UpdatedAt: parseRichProviderTime(firstJSONText(page, "lastModified", "version.when", "content.version.when", "content.history.lastUpdated.when")),
+		UpdatedAt: parseRichProviderTime(firstJSONText(page, "lastModified", "version.when", "version.createdAt", "createdAt", "content.version.when", "content.version.createdAt", "content.history.lastUpdated.when")),
 	}
 	item.Fields = appendConfluenceField(item.Fields, "title", "title", page["title"], true)
 	if plan.IncludeBody {

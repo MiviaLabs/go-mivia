@@ -153,6 +153,7 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.list"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.status"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.poll"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.poll_status"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.search"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.jira.issue.get"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.confluence.page.get"`)) {
@@ -187,8 +188,16 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 	if bytes.Contains(poll.Body.Bytes(), []byte(`"error"`)) {
 		t.Fatalf("expected poll success, got %s", poll.Body.String())
 	}
-	if !bytes.Contains(poll.Body.Bytes(), []byte(`"Provider":"jira"`)) || !bytes.Contains(poll.Body.Bytes(), []byte(`"Status":"completed"`)) || !bytes.Contains(poll.Body.Bytes(), []byte(`"CursorHashPresent":true`)) {
+	if !bytes.Contains(poll.Body.Bytes(), []byte(`"Provider":"jira"`)) || !bytes.Contains(poll.Body.Bytes(), []byte(`"Accepted":true`)) || !bytes.Contains(poll.Body.Bytes(), []byte(`"Status":"pending"`)) || !bytes.Contains(poll.Body.Bytes(), []byte(`"ID":"run-2"`)) {
 		t.Fatalf("expected redacted poll status, got %s", poll.Body.String())
+	}
+
+	pollStatus := postMCP(t, handler, `{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"projects.integrations.poll_status","arguments":{"id":"project-1","provider":"jira","run_id":"run-1"}}}`)
+	if bytes.Contains(pollStatus.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected poll status success, got %s", pollStatus.Body.String())
+	}
+	if !bytes.Contains(pollStatus.Body.Bytes(), []byte(`"Provider":"jira"`)) || !bytes.Contains(pollStatus.Body.Bytes(), []byte(`"Status":"no_op"`)) || !bytes.Contains(pollStatus.Body.Bytes(), []byte(`"ID":"run-1"`)) {
+		t.Fatalf("expected redacted poll run status, got %s", pollStatus.Body.String())
 	}
 	for _, forbidden := range []string{
 		"https://tenant.atlassian.net",
@@ -209,8 +218,9 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 	} {
 		if bytes.Contains(status.Body.Bytes(), []byte(forbidden)) ||
 			bytes.Contains(providers.Body.Bytes(), []byte(forbidden)) ||
-			bytes.Contains(poll.Body.Bytes(), []byte(forbidden)) {
-			t.Fatalf("integration MCP response leaked %q: providers=%s status=%s poll=%s", forbidden, providers.Body.String(), status.Body.String(), poll.Body.String())
+			bytes.Contains(poll.Body.Bytes(), []byte(forbidden)) ||
+			bytes.Contains(pollStatus.Body.Bytes(), []byte(forbidden)) {
+			t.Fatalf("integration MCP response leaked %q: providers=%s status=%s poll=%s poll_status=%s", forbidden, providers.Body.String(), status.Body.String(), poll.Body.String(), pollStatus.Body.String())
 		}
 	}
 
@@ -489,23 +499,12 @@ func newHandlerWithProjectIntegrations(t *testing.T) http.Handler {
 	runner := &fakeIntegrationPollRunner{
 		result: projectintegrations.PollRunResult{
 			Run: projectintegrations.SyncRun{
-				ID:            "run-2",
-				ProjectID:     "project-1",
-				Provider:      projectintegrations.ProviderJira,
-				Kind:          projectintegrations.SyncKindIncremental,
-				Status:        projectintegrations.SyncRunStatusCompleted,
-				ItemsSeen:     1,
-				ItemsUpserted: 1,
-				StartedAt:     time.Date(2026, 5, 31, 10, 2, 0, 0, time.UTC),
-				FinishedAt:    time.Date(2026, 5, 31, 10, 3, 0, 0, time.UTC),
-			},
-			State: projectintegrations.SyncState{
-				ProjectID:           "project-1",
-				Provider:            projectintegrations.ProviderJira,
-				LastRunID:           "run-2",
-				LastSuccessfulRunID: "run-2",
-				CursorHash:          "sha256:raw-provider-cursor-token",
-				UpdatedAt:           time.Date(2026, 5, 31, 10, 3, 0, 0, time.UTC),
+				ID:        "run-2",
+				ProjectID: "project-1",
+				Provider:  projectintegrations.ProviderJira,
+				Kind:      projectintegrations.SyncKindIncremental,
+				Status:    projectintegrations.SyncRunStatusPending,
+				StartedAt: time.Date(2026, 5, 31, 10, 2, 0, 0, time.UTC),
 			},
 		},
 	}
@@ -559,6 +558,13 @@ func (runner *fakeIntegrationPollRunner) RunProviderPoll(context.Context, string
 		return projectintegrations.PollRunResult{}, runner.err
 	}
 	return runner.result, nil
+}
+
+func (runner *fakeIntegrationPollRunner) SubmitProviderPoll(context.Context, string, projectintegrations.Provider, projectintegrations.SyncKind) (projectintegrations.SyncRun, error) {
+	if runner.err != nil {
+		return projectintegrations.SyncRun{}, runner.err
+	}
+	return runner.result.Run, nil
 }
 
 func newHandlerWithProjectIngestion(t *testing.T) (http.Handler, string) {

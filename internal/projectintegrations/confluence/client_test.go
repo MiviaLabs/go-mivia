@@ -20,7 +20,7 @@ func TestClient_SearchPagesSendsBasicAuthAndCQLRequest(t *testing.T) {
 		if r.Header.Get("Accept") != "application/json" {
 			t.Fatalf("unexpected accept header: %s", r.Header.Get("Accept"))
 		}
-		if r.URL.Query().Get("cql") != `space in ("ENG") and type=page` || r.URL.Query().Get("limit") != "25" {
+		if r.URL.Query().Get("cql") != `space in ("ENG") and type=page` || r.URL.Query().Get("limit") != "25" || r.URL.Query().Get("cursor") != "next-cursor" {
 			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
 		}
 		_, _ = w.Write([]byte(`{"results":[{"id":"123"}],"_links":{"next":"/wiki/rest/api/search?cursor=next"}}`))
@@ -28,11 +28,11 @@ func TestClient_SearchPagesSendsBasicAuthAndCQLRequest(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()})
-	response, err := client.SearchPages(context.Background(), testCredentials(), `space in ("ENG") and type=page`, 25)
+	response, err := client.SearchPages(context.Background(), testCredentials(), `space in ("ENG") and type=page`, 25, "next-cursor")
 	if err != nil {
 		t.Fatalf("search pages: %v", err)
 	}
-	if len(response.Results) != 1 || response.Links["next"] == "" {
+	if len(response.Results) != 1 || response.NextCursor() != "next" {
 		t.Fatalf("unexpected response: %#v", response)
 	}
 }

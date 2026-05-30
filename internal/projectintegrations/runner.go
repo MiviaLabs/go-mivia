@@ -122,23 +122,31 @@ func NewRunner(options RunnerOptions) (*Runner, error) {
 }
 
 func (runner *Runner) RunProviderPoll(ctx context.Context, projectID string, provider Provider, kind SyncKind) (PollRunResult, error) {
+	run, err := runner.PrepareProviderPoll(ctx, projectID, provider, kind)
+	if err != nil {
+		return PollRunResult{}, err
+	}
+	return runner.ExecutePreparedProviderPoll(ctx, run)
+}
+
+func (runner *Runner) PrepareProviderPoll(ctx context.Context, projectID string, provider Provider, kind SyncKind) (SyncRun, error) {
 	if runner == nil {
-		return PollRunResult{}, fmt.Errorf("%w: runner is nil", ErrInvalidInput)
+		return SyncRun{}, fmt.Errorf("%w: runner is nil", ErrInvalidInput)
 	}
 	project, ok := runner.projects[strings.TrimSpace(projectID)]
 	if !ok {
-		return PollRunResult{}, fmt.Errorf("%w: project", ErrNotFound)
+		return SyncRun{}, fmt.Errorf("%w: project", ErrNotFound)
 	}
 	state, err := runner.store.GetSyncState(ctx, project.ID, provider)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return PollRunResult{}, err
+		return SyncRun{}, err
 	}
 	if errors.Is(err, ErrNotFound) {
 		state = SyncState{}
 	}
 	plannedKind, err := planKind(kind, state)
 	if err != nil {
-		return PollRunResult{}, err
+		return SyncRun{}, err
 	}
 	now := runner.now().UTC()
 	run := SyncRun{
@@ -150,23 +158,53 @@ func (runner *Runner) RunProviderPoll(ctx context.Context, projectID string, pro
 		StartedAt: now,
 	}
 	if run.ID == "" {
-		return PollRunResult{}, fmt.Errorf("%w: run id is empty", ErrInvalidInput)
+		return SyncRun{}, fmt.Errorf("%w: run id is empty", ErrInvalidInput)
 	}
 	if err := runner.store.CreateSyncRun(ctx, run); err != nil {
+		return SyncRun{}, err
+	}
+	return run, nil
+}
+
+func (runner *Runner) ExecutePreparedProviderPoll(ctx context.Context, run SyncRun) (PollRunResult, error) {
+	if runner == nil {
+		return PollRunResult{}, fmt.Errorf("%w: runner is nil", ErrInvalidInput)
+	}
+	run.ID = strings.TrimSpace(run.ID)
+	run.ProjectID = strings.TrimSpace(run.ProjectID)
+	if run.ID == "" || run.ProjectID == "" || !validProvider(run.Provider) {
+		return PollRunResult{}, fmt.Errorf("%w: prepared run is invalid", ErrInvalidInput)
+	}
+	project, ok := runner.projects[run.ProjectID]
+	if !ok {
+		return PollRunResult{}, fmt.Errorf("%w: project", ErrNotFound)
+	}
+	state, err := runner.store.GetSyncState(ctx, project.ID, run.Provider)
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return PollRunResult{}, err
+	}
+	if errors.Is(err, ErrNotFound) {
+		state = SyncState{}
+	}
+	if run.Kind == "" {
+		plannedKind, err := planKind(run.Kind, state)
+		if err != nil {
+			return PollRunResult{}, err
+		}
+		run.Kind = plannedKind
 	}
 	run.Status = SyncRunStatusRunning
 	if err := runner.store.UpdateSyncRun(ctx, run); err != nil {
 		return PollRunResult{}, err
 	}
-	result, pollErr := runner.pollProvider(ctx, project, provider, plannedKind, state)
+	result, pollErr := runner.pollProvider(ctx, project, run.Provider, run.Kind, state)
 	finishedAt := runner.now().UTC()
 	if pollErr != nil {
 		run.Status = SyncRunStatusFailed
 		run.ErrorCategory = string(errorCategory(pollErr))
 		run.FinishedAt = finishedAt
 		_ = runner.store.UpdateSyncRun(ctx, run)
-		return PollRunResult{Run: run}, redactedPollError(provider, run.ErrorCategory)
+		return PollRunResult{Run: run}, redactedPollError(run.Provider, run.ErrorCategory)
 	}
 	run.ItemsSeen = len(result.Items)
 	upserted, err := runner.upsertItems(ctx, run, result.Items, finishedAt)
@@ -175,7 +213,7 @@ func (runner *Runner) RunProviderPoll(ctx context.Context, projectID string, pro
 		run.ErrorCategory = string(ErrorCategoryRequestFailed)
 		run.FinishedAt = finishedAt
 		_ = runner.store.UpdateSyncRun(ctx, run)
-		return PollRunResult{Run: run}, redactedPollError(provider, run.ErrorCategory)
+		return PollRunResult{Run: run}, redactedPollError(run.Provider, run.ErrorCategory)
 	}
 	run.ItemsUpserted = upserted
 	if err := runner.putRichContent(ctx, result.RichContent); err != nil {
@@ -183,10 +221,10 @@ func (runner *Runner) RunProviderPoll(ctx context.Context, projectID string, pro
 		run.ErrorCategory = string(ErrorCategoryRequestFailed)
 		run.FinishedAt = finishedAt
 		_ = runner.store.UpdateSyncRun(ctx, run)
-		return PollRunResult{Run: run}, redactedPollError(provider, run.ErrorCategory)
+		return PollRunResult{Run: run}, redactedPollError(run.Provider, run.ErrorCategory)
 	}
 	run.EmptyPoll = len(result.Items) == 0
-	run.IdleSleep = idleSleepForRun(plannedKind, run.EmptyPoll, state.CurrentIdleSleep, pollingFor(project, provider))
+	run.IdleSleep = idleSleepForRun(run.Kind, run.EmptyPoll, state.CurrentIdleSleep, pollingFor(project, run.Provider))
 	if run.EmptyPoll {
 		run.Status = SyncRunStatusNoOp
 	} else {
@@ -201,6 +239,27 @@ func (runner *Runner) RunProviderPoll(ctx context.Context, projectID string, pro
 		return PollRunResult{}, err
 	}
 	return PollRunResult{Run: run, State: updatedState}, nil
+}
+
+func (runner *Runner) FailPreparedProviderPoll(ctx context.Context, run SyncRun, errorCategory string) (SyncRun, error) {
+	if runner == nil {
+		return SyncRun{}, fmt.Errorf("%w: runner is nil", ErrInvalidInput)
+	}
+	run.ID = strings.TrimSpace(run.ID)
+	run.ProjectID = strings.TrimSpace(run.ProjectID)
+	if run.ID == "" || run.ProjectID == "" || !validProvider(run.Provider) {
+		return SyncRun{}, fmt.Errorf("%w: prepared run is invalid", ErrInvalidInput)
+	}
+	run.Status = SyncRunStatusFailed
+	run.ErrorCategory = strings.TrimSpace(errorCategory)
+	if run.ErrorCategory == "" {
+		run.ErrorCategory = string(ErrorCategoryRequestFailed)
+	}
+	run.FinishedAt = runner.now().UTC()
+	if err := runner.store.UpdateSyncRun(ctx, run); err != nil {
+		return run, err
+	}
+	return run, nil
 }
 
 func (runner *Runner) putRichContent(ctx context.Context, payloads []RichContentPayload) error {

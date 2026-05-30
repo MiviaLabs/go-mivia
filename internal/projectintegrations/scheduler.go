@@ -24,6 +24,7 @@ type Scheduler struct {
 	logger    *slog.Logger
 
 	mu      sync.Mutex
+	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	started bool
@@ -37,6 +38,12 @@ type ProviderSchedule struct {
 	IncrementalInterval time.Duration
 	EmptyPollSleep      time.Duration
 	MaxIdleSleep        time.Duration
+}
+
+type asyncProviderPollRunner interface {
+	PrepareProviderPoll(context.Context, string, Provider, SyncKind) (SyncRun, error)
+	ExecutePreparedProviderPoll(context.Context, SyncRun) (PollRunResult, error)
+	FailPreparedProviderPoll(context.Context, SyncRun, string) (SyncRun, error)
 }
 
 type SchedulerDiagnostics struct {
@@ -79,6 +86,7 @@ func (scheduler *Scheduler) Start(ctx context.Context) error {
 		return nil
 	}
 	runCtx, cancel := context.WithCancel(ctx)
+	scheduler.ctx = runCtx
 	scheduler.cancel = cancel
 	scheduler.started = true
 	for _, schedule := range scheduler.schedules {
@@ -99,6 +107,7 @@ func (scheduler *Scheduler) Stop(ctx context.Context) error {
 	}
 	scheduler.mu.Lock()
 	cancel := scheduler.cancel
+	scheduler.ctx = nil
 	scheduler.cancel = nil
 	scheduler.started = false
 	scheduler.mu.Unlock()
@@ -136,6 +145,66 @@ func (scheduler *Scheduler) RunProviderPoll(ctx context.Context, projectID strin
 		return PollRunResult{}, redactedSchedulerError(provider, err)
 	}
 	return result, nil
+}
+
+func (scheduler *Scheduler) SubmitProviderPoll(ctx context.Context, projectID string, provider Provider, kind SyncKind) (SyncRun, error) {
+	if scheduler == nil || scheduler.runner == nil {
+		return SyncRun{}, fmt.Errorf("%w: integration scheduler dependencies are required", ErrInvalidInput)
+	}
+	scheduler.mu.Lock()
+	started := scheduler.started
+	runCtx := scheduler.ctx
+	scheduler.mu.Unlock()
+	if !started || runCtx == nil {
+		return SyncRun{}, fmt.Errorf("%w: integration scheduler is not started", ErrInvalidInput)
+	}
+	runner, ok := scheduler.runner.(asyncProviderPollRunner)
+	if !ok {
+		return SyncRun{}, fmt.Errorf("%w: async integration runner is required", ErrInvalidInput)
+	}
+	key := providerRunKey{projectID: strings.TrimSpace(projectID), provider: provider}
+	if key.projectID == "" || !validProvider(provider) {
+		return SyncRun{}, fmt.Errorf("%w: provider poll target is invalid", ErrInvalidInput)
+	}
+	if !scheduler.acquire(key) {
+		return SyncRun{}, fmt.Errorf("%w: integration poll already running", ErrInvalidInput)
+	}
+	run, err := runner.PrepareProviderPoll(ctx, key.projectID, provider, kind)
+	if err != nil {
+		scheduler.release(key)
+		return SyncRun{}, err
+	}
+	scheduler.wg.Add(1)
+	go func() {
+		defer scheduler.wg.Done()
+		defer scheduler.release(key)
+		startedAt := time.Now()
+		result, err := runner.ExecutePreparedProviderPoll(runCtx, run)
+		if err != nil {
+			scheduler.logWarn("project integration poll failed",
+				slog.String("project_id", run.ProjectID),
+				slog.String("provider", string(run.Provider)),
+				slog.String("kind", string(run.Kind)),
+				slog.String("run_id", run.ID),
+				slog.String("error_category", string(schedulerErrorCategory(err))),
+				slog.Duration("elapsed", time.Since(startedAt)),
+			)
+			return
+		}
+		scheduler.logInfo("project integration poll completed",
+			slog.String("project_id", run.ProjectID),
+			slog.String("provider", string(run.Provider)),
+			slog.String("kind", string(run.Kind)),
+			slog.String("run_id", result.Run.ID),
+			slog.String("status", string(result.Run.Status)),
+			slog.Int("items_seen", result.Run.ItemsSeen),
+			slog.Int("items_upserted", result.Run.ItemsUpserted),
+			slog.Bool("empty_poll", result.Run.EmptyPoll),
+			slog.Duration("idle_sleep", result.Run.IdleSleep),
+			slog.Duration("elapsed", time.Since(startedAt)),
+		)
+	}()
+	return run, nil
 }
 
 func (scheduler *Scheduler) ScheduledProviders() []ProviderSchedule {

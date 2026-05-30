@@ -141,6 +141,70 @@ func TestService_PollProviderRunsManualOneShotAndReturnsRedactedMetadata(t *test
 	)
 }
 
+func TestService_SubmitProviderPollReturnsPendingRunMetadata(t *testing.T) {
+	runner := &fakePollRunner{
+		result: PollRunResult{
+			Run: SyncRun{
+				ID:        "run-queued",
+				ProjectID: "project-1",
+				Provider:  ProviderJira,
+				Kind:      SyncKindInitialFull,
+				Status:    SyncRunStatusPending,
+				StartedAt: testTime(),
+			},
+		},
+	}
+	service := newTestServiceWithOptions(t, nil, ServiceOptions{Runner: runner}, testIntegrationProject())
+
+	accepted, err := service.SubmitProviderPoll(context.Background(), "project-1", ProviderJira, SyncKindInitialFull)
+	if err != nil {
+		t.Fatalf("submit provider poll: %v", err)
+	}
+	if !runner.submitCalled || runner.projectID != "project-1" || runner.provider != ProviderJira || runner.kind != SyncKindInitialFull {
+		t.Fatalf("runner received unexpected async input: %#v", runner)
+	}
+	if !accepted.Accepted || accepted.Run.ID != "run-queued" || accepted.Run.Status != SyncRunStatusPending {
+		t.Fatalf("unexpected accepted poll: %#v", accepted)
+	}
+	assertOmits(t, mustJSON(t, accepted), "tenant.atlassian.net", "ACME", "MIVIA_ATLASSIAN", "/home/mac")
+}
+
+func TestService_PollRunStatusReturnsRunByIDWithoutRawCursor(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t)
+	service := newTestService(t, store, testIntegrationProject())
+	run := SyncRun{
+		ID:        "run-queued",
+		ProjectID: "project-1",
+		Provider:  ProviderJira,
+		Kind:      SyncKindInitialFull,
+		Status:    SyncRunStatusPending,
+		StartedAt: testTime(),
+	}
+	if err := store.CreateSyncRun(ctx, run); err != nil {
+		t.Fatalf("create sync run: %v", err)
+	}
+	if _, err := store.UpdateSyncState(ctx, SyncStateInput{
+		ProjectID:     "project-1",
+		Provider:      ProviderJira,
+		LastRunID:     "previous-run",
+		Cursor:        "raw-provider-cursor-token",
+		LastSuccessAt: testTime(),
+		UpdatedAt:     testTime(),
+	}); err != nil {
+		t.Fatalf("update sync state: %v", err)
+	}
+
+	status, err := service.PollRunStatus(ctx, "project-1", ProviderJira, "run-queued")
+	if err != nil {
+		t.Fatalf("poll run status: %v", err)
+	}
+	if status.Run.ID != "run-queued" || status.Run.Status != SyncRunStatusPending || !status.SyncState.CursorHashPresent {
+		t.Fatalf("unexpected run status: %#v", status)
+	}
+	assertOmits(t, mustJSON(t, status), "raw-provider-cursor-token", "sha256:", "tenant.atlassian.net", "ACME", "/home/mac")
+}
+
 func TestService_PollProviderRejectsDisabledProviderBeforeRunner(t *testing.T) {
 	project := testIntegrationProject()
 	project.Integrations.Jira.Enabled = false
@@ -301,12 +365,13 @@ func newTestServiceWithOptions(t *testing.T, store Store, options ServiceOptions
 }
 
 type fakePollRunner struct {
-	called    bool
-	projectID string
-	provider  Provider
-	kind      SyncKind
-	result    PollRunResult
-	err       error
+	called       bool
+	submitCalled bool
+	projectID    string
+	provider     Provider
+	kind         SyncKind
+	result       PollRunResult
+	err          error
 }
 
 func (runner *fakePollRunner) RunProviderPoll(_ context.Context, projectID string, provider Provider, kind SyncKind) (PollRunResult, error) {
@@ -318,6 +383,17 @@ func (runner *fakePollRunner) RunProviderPoll(_ context.Context, projectID strin
 		return PollRunResult{}, runner.err
 	}
 	return runner.result, nil
+}
+
+func (runner *fakePollRunner) SubmitProviderPoll(_ context.Context, projectID string, provider Provider, kind SyncKind) (SyncRun, error) {
+	runner.submitCalled = true
+	runner.projectID = projectID
+	runner.provider = provider
+	runner.kind = kind
+	if runner.err != nil {
+		return SyncRun{}, runner.err
+	}
+	return runner.result.Run, nil
 }
 
 func testIntegrationProject() config.Project {

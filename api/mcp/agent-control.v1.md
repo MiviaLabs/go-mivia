@@ -244,7 +244,26 @@ Input schema:
 }
 ```
 
-Output: redacted run metadata and sync state after one manual provider poll. The tool uses configured env/file credential refs at execution time, but does not return credentials, credential refs, raw provider payloads, raw cursors, raw roots, or datastore paths.
+Output: queued manual provider poll metadata with a `run_id`. The tool submits work through the local integration scheduler and returns quickly; poll `projects.integrations.poll_status` or `projects.integrations.status` before relying on newly indexed integration data. The background run uses configured env/file credential refs at execution time, but the response does not return credentials, credential refs, raw provider payloads, raw cursors, raw roots, or datastore paths.
+
+### `projects.integrations.poll_status`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "provider", "run_id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "enum": ["jira", "confluence"] },
+    "run_id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: redacted local integration poll run metadata by run ID, plus redacted sync state when available. The response omits credentials, credential refs, raw site URLs, raw allowlists, raw provider payloads, raw cursors, raw roots, and datastore paths.
 
 ### `projects.integrations.search`
 

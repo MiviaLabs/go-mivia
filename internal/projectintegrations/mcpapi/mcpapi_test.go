@@ -75,27 +75,16 @@ func TestCallToolStatusIncludesSyncMetadataWithoutRawCursor(t *testing.T) {
 	assertOmits(t, body, append(forbiddenIntegrationStrings(), "raw-provider-cursor-token", "sha256:")...)
 }
 
-func TestCallToolPollReturnsRedactedRunMetadata(t *testing.T) {
+func TestCallToolPollQueuesAsyncRunAndReturnsRedactedRunMetadata(t *testing.T) {
 	runner := &fakePollRunner{
 		result: projectintegrations.PollRunResult{
 			Run: projectintegrations.SyncRun{
-				ID:            "run-1",
-				ProjectID:     "project-1",
-				Provider:      projectintegrations.ProviderJira,
-				Kind:          projectintegrations.SyncKindIncremental,
-				Status:        projectintegrations.SyncRunStatusCompleted,
-				ItemsSeen:     1,
-				ItemsUpserted: 1,
-				StartedAt:     testTime(),
-				FinishedAt:    testTime().Add(time.Minute),
-			},
-			State: projectintegrations.SyncState{
-				ProjectID:           "project-1",
-				Provider:            projectintegrations.ProviderJira,
-				LastRunID:           "run-1",
-				LastSuccessfulRunID: "run-1",
-				CursorHash:          "sha256:raw-provider-cursor-token",
-				UpdatedAt:           testTime().Add(time.Minute),
+				ID:        "run-1",
+				ProjectID: "project-1",
+				Provider:  projectintegrations.ProviderJira,
+				Kind:      projectintegrations.SyncKindIncremental,
+				Status:    projectintegrations.SyncRunStatusPending,
+				StartedAt: testTime(),
 			},
 		},
 	}
@@ -105,16 +94,48 @@ func TestCallToolPollReturnsRedactedRunMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("poll integration: %v", err)
 	}
-	if runner.projectID != "project-1" || runner.provider != projectintegrations.ProviderJira || runner.kind != projectintegrations.SyncKindIncremental {
-		t.Fatalf("runner received unexpected input: %#v", runner)
+	if runner.projectID != "project-1" || runner.provider != projectintegrations.ProviderJira || runner.kind != projectintegrations.SyncKindIncremental || !runner.submitCalled {
+		t.Fatalf("async runner received unexpected input: %#v", runner)
 	}
 	body := mustJSON(t, result)
-	for _, expected := range []string{`"Provider":"jira"`, `"Status":"completed"`, `"ItemsUpserted":1`, `"CursorHashPresent":true`} {
+	for _, expected := range []string{`"Provider":"jira"`, `"Accepted":true`, `"Status":"pending"`, `"ID":"run-1"`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected %q in poll response: %s", expected, body)
 		}
 	}
 	assertOmits(t, body, append(forbiddenIntegrationStrings(), "raw-provider-cursor-token", "sha256:", "ISSUE-1", "PAGE-1")...)
+}
+
+func TestCallToolPollStatusReturnsRunByID(t *testing.T) {
+	store := &fakeStore{
+		state: projectintegrations.SyncState{
+			ProjectID:  "project-1",
+			Provider:   projectintegrations.ProviderJira,
+			CursorHash: "sha256:raw-provider-cursor-token",
+			UpdatedAt:  testTime(),
+		},
+		run: projectintegrations.SyncRun{
+			ID:        "run-1",
+			ProjectID: "project-1",
+			Provider:  projectintegrations.ProviderJira,
+			Kind:      projectintegrations.SyncKindInitialFull,
+			Status:    projectintegrations.SyncRunStatusRunning,
+			StartedAt: testTime(),
+		},
+	}
+	service := newIntegrationService(t, store)
+
+	result, err := mcpapi.CallTool(context.Background(), service, "projects.integrations.poll_status", json.RawMessage(`{"id":"project-1","provider":"jira","run_id":"run-1"}`))
+	if err != nil {
+		t.Fatalf("poll status: %v", err)
+	}
+	body := mustJSON(t, result)
+	for _, expected := range []string{`"Provider":"jira"`, `"Status":"running"`, `"ID":"run-1"`, `"CursorHashPresent":true`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in poll status response: %s", expected, body)
+		}
+	}
+	assertOmits(t, body, append(forbiddenIntegrationStrings(), "raw-provider-cursor-token", "sha256:")...)
 }
 
 func TestCallToolSearchLocalIntegrationContent(t *testing.T) {
@@ -328,11 +349,12 @@ func testTime() time.Time {
 }
 
 type fakePollRunner struct {
-	projectID string
-	provider  projectintegrations.Provider
-	kind      projectintegrations.SyncKind
-	result    projectintegrations.PollRunResult
-	err       error
+	projectID    string
+	provider     projectintegrations.Provider
+	kind         projectintegrations.SyncKind
+	result       projectintegrations.PollRunResult
+	err          error
+	submitCalled bool
 }
 
 func (runner *fakePollRunner) RunProviderPoll(_ context.Context, projectID string, provider projectintegrations.Provider, kind projectintegrations.SyncKind) (projectintegrations.PollRunResult, error) {
@@ -343,6 +365,17 @@ func (runner *fakePollRunner) RunProviderPoll(_ context.Context, projectID strin
 		return projectintegrations.PollRunResult{}, runner.err
 	}
 	return runner.result, nil
+}
+
+func (runner *fakePollRunner) SubmitProviderPoll(_ context.Context, projectID string, provider projectintegrations.Provider, kind projectintegrations.SyncKind) (projectintegrations.SyncRun, error) {
+	runner.submitCalled = true
+	runner.projectID = projectID
+	runner.provider = provider
+	runner.kind = kind
+	if runner.err != nil {
+		return projectintegrations.SyncRun{}, runner.err
+	}
+	return runner.result.Run, nil
 }
 
 type fakeRichContentReader struct {

@@ -25,28 +25,40 @@ func (poller Poller) PollConfluence(ctx context.Context, credentials projectinte
 	if limit > maxResults {
 		limit = maxResults
 	}
-	response, err := poller.Client.SearchPages(ctx, credentials, plan.CQL, limit)
-	if err != nil {
-		return projectintegrations.PollResult{}, err
-	}
-	items := make([]projectintegrations.PollItem, 0, len(response.Results))
-	richContent := make([]projectintegrations.RichContentPayload, 0, len(response.Results))
-	for _, raw := range response.Results {
-		if len(items) >= maxResults {
+	items := make([]projectintegrations.PollItem, 0, minInt(limit, maxResults))
+	richContent := make([]projectintegrations.RichContentPayload, 0, minInt(limit, maxResults))
+	cursor := ""
+	for len(items) < maxResults {
+		pageLimit := minInt(limit, maxResults-len(items))
+		response, err := poller.Client.SearchPages(ctx, credentials, plan.CQL, pageLimit, cursor)
+		if err != nil {
+			return projectintegrations.PollResult{}, err
+		}
+		if len(response.Results) == 0 {
 			break
 		}
-		item, err := pollItemFromSearchResult(raw)
-		if err != nil {
-			return projectintegrations.PollResult{}, projectintegrations.DecodeError(provider, "extract_page_metadata")
-		}
-		items = append(items, item)
-		if shouldExtractRichContent(plan) {
-			payload, err := poller.richContentForPage(ctx, credentials, plan, item.ID)
-			if err != nil {
-				return projectintegrations.PollResult{}, err
+		for _, raw := range response.Results {
+			if len(items) >= maxResults {
+				break
 			}
-			richContent = append(richContent, payload)
+			item, err := pollItemFromSearchResult(raw)
+			if err != nil {
+				return projectintegrations.PollResult{}, projectintegrations.DecodeError(provider, "extract_page_metadata")
+			}
+			items = append(items, item)
+			if shouldExtractRichContent(plan) {
+				payload, err := poller.richContentForPage(ctx, credentials, plan, item.ID)
+				if err != nil {
+					return projectintegrations.PollResult{}, err
+				}
+				richContent = append(richContent, payload)
+			}
 		}
+		nextCursor := response.NextCursor()
+		if nextCursor == "" || nextCursor == cursor {
+			break
+		}
+		cursor = nextCursor
 	}
 	return projectintegrations.PollResult{Items: items, RichContent: richContent}, nil
 }
@@ -133,6 +145,13 @@ func boundedRequest(pageSize int, maxResults int) (int, int) {
 		pageSize = maxResults
 	}
 	return pageSize, maxResults
+}
+
+func minInt(left int, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func parseProviderTime(value string) (time.Time, error) {

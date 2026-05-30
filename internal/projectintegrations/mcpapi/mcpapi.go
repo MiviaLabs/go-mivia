@@ -34,12 +34,22 @@ func ToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.integrations.poll",
 			"title":       "Run Project Integration Poll",
-			"description": "Run one manual provider poll and return redacted local sync metadata only.",
+			"description": "Queue one manual provider poll and return redacted pending run metadata only.",
 			"inputSchema": objectSchema(map[string]any{
 				"id":       map[string]any{"type": "string", "minLength": 1},
 				"provider": map[string]any{"type": "string", "enum": []string{string(projectintegrations.ProviderJira), string(projectintegrations.ProviderConfluence)}},
 				"kind":     map[string]any{"type": "string", "enum": []string{string(projectintegrations.SyncKindInitialFull), string(projectintegrations.SyncKindIncremental)}},
 			}, []string{"id", "provider"}),
+		},
+		{
+			"name":        "projects.integrations.poll_status",
+			"title":       "Get Project Integration Poll Run",
+			"description": "Fetch redacted local integration poll run metadata by project, provider, and run ID.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":       map[string]any{"type": "string", "minLength": 1},
+				"provider": map[string]any{"type": "string", "enum": []string{string(projectintegrations.ProviderJira), string(projectintegrations.ProviderConfluence)}},
+				"run_id":   map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id", "provider", "run_id"}),
 		},
 		{
 			"name":        "projects.integrations.search",
@@ -119,7 +129,22 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid integration arguments", projectintegrations.ErrInvalidInput)
 		}
-		status, err := service.PollProvider(ctx, strings.TrimSpace(input.ID), projectintegrations.Provider(strings.TrimSpace(input.Provider)), projectintegrations.SyncKind(strings.TrimSpace(input.Kind)))
+		status, err := service.SubmitProviderPoll(ctx, strings.TrimSpace(input.ID), projectintegrations.Provider(strings.TrimSpace(input.Provider)), projectintegrations.SyncKind(strings.TrimSpace(input.Kind)))
+		if err != nil {
+			return nil, err
+		}
+		return toolResult(status), nil
+	case "projects.integrations.poll_status", "projects_integrations_poll_status":
+		var input struct {
+			ID       string          `json:"id"`
+			Provider string          `json:"provider"`
+			RunID    string          `json:"run_id"`
+			Meta     json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid integration arguments", projectintegrations.ErrInvalidInput)
+		}
+		status, err := service.PollRunStatus(ctx, strings.TrimSpace(input.ID), projectintegrations.Provider(strings.TrimSpace(input.Provider)), strings.TrimSpace(input.RunID))
 		if err != nil {
 			return nil, err
 		}

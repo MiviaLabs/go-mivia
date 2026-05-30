@@ -45,17 +45,32 @@ func NewClient(options Options) Client {
 	}
 }
 
-func (client Client) SearchPages(ctx context.Context, credentials projectintegrations.Credentials, cql string, limit int) (SearchResponse, error) {
+func (client Client) SearchPages(ctx context.Context, credentials projectintegrations.Credentials, cql string, limit int, cursor ...string) (SearchResponse, error) {
 	values := url.Values{}
 	values.Set("cql", cql)
 	if limit > 0 {
 		values.Set("limit", strconvItoa(limit))
+	}
+	if len(cursor) > 0 && strings.TrimSpace(cursor[0]) != "" {
+		values.Set("cursor", strings.TrimSpace(cursor[0]))
 	}
 	var response SearchResponse
 	if err := client.doJSON(ctx, credentials, "/wiki/rest/api/search?"+values.Encode(), "search", &response); err != nil {
 		return SearchResponse{}, err
 	}
 	return response, nil
+}
+
+func (response SearchResponse) NextCursor() string {
+	next := strings.TrimSpace(response.Links["next"])
+	if next == "" {
+		return ""
+	}
+	parsed, err := url.Parse(next)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Query().Get("cursor"))
 }
 
 func (client Client) GetPage(ctx context.Context, credentials projectintegrations.Credentials, pageID string, bodyRepresentation string) (PageResponse, error) {
