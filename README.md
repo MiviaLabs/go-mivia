@@ -14,6 +14,7 @@ Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only
 - Go: `1.26`
 - Toolchain: `go1.26.3`
 - Module strategy: one root `go.mod`; add `go.work` only if independent module release boundaries become real.
+- Root package: `doc.go` only, used to keep baseline Go verification executable before service packages exist.
 
 ## Planned Layout
 
