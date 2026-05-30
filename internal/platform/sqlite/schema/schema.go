@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 8
+const Version = 9
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -137,6 +137,97 @@ var statements = []string{
 		ON project_extractor_cache(project_id, relative_path_hash)`,
 	`CREATE INDEX IF NOT EXISTS idx_project_extractor_cache_project_extractor
 		ON project_extractor_cache(project_id, extractor_name, extractor_version)`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS project_search_chunks_fts USING fts5(
+		project_id UNINDEXED,
+		file_id UNINDEXED,
+		chunk_id UNINDEXED,
+		relative_path UNINDEXED,
+		extension UNINDEXED,
+		size_bytes UNINDEXED,
+		modified_at UNINDEXED,
+		chunk_index UNINDEXED,
+		start_line UNINDEXED,
+		end_line UNINDEXED,
+		byte_start UNINDEXED,
+		byte_end UNINDEXED,
+		text,
+		tokenize='trigram'
+	)`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS project_search_files_fts USING fts5(
+		project_id UNINDEXED,
+		file_id UNINDEXED,
+		relative_path,
+		extension,
+		size_bytes UNINDEXED,
+		modified_at UNINDEXED,
+		tokenize='trigram'
+	)`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS project_search_symbols_fts USING fts5(
+		project_id UNINDEXED,
+		file_id UNINDEXED,
+		symbol_id UNINDEXED,
+		relative_path,
+		extension,
+		kind,
+		name,
+		package,
+		import_path,
+		receiver,
+		start_line UNINDEXED,
+		end_line UNINDEXED,
+		start_byte UNINDEXED,
+		end_byte UNINDEXED,
+		start_column UNINDEXED,
+		end_column UNINDEXED,
+		tokenize='trigram'
+	)`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS project_search_references_fts USING fts5(
+		project_id UNINDEXED,
+		file_id UNINDEXED,
+		reference_id UNINDEXED,
+		relative_path,
+		extension,
+		kind,
+		name,
+		target_name,
+		target_symbol_id UNINDEXED,
+		package,
+		receiver,
+		import_path,
+		enclosing_symbol_id UNINDEXED,
+		enclosing_symbol_name,
+		start_line UNINDEXED,
+		end_line UNINDEXED,
+		start_byte UNINDEXED,
+		end_byte UNINDEXED,
+		start_column UNINDEXED,
+		end_column UNINDEXED,
+		resolution_status,
+		confidence,
+		tokenize='trigram'
+	)`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS project_search_calls_fts USING fts5(
+		project_id UNINDEXED,
+		file_id UNINDEXED,
+		call_id UNINDEXED,
+		relative_path,
+		extension,
+		caller_symbol_id UNINDEXED,
+		callee_symbol_id UNINDEXED,
+		caller_name,
+		callee_name,
+		receiver,
+		import_path,
+		start_line UNINDEXED,
+		end_line UNINDEXED,
+		start_byte UNINDEXED,
+		end_byte UNINDEXED,
+		start_column UNINDEXED,
+		end_column UNINDEXED,
+		resolution_status,
+		confidence,
+		tokenize='trigram'
+	)`,
 }
 
 const versionStatement = `INSERT INTO schema_versions (component, version)

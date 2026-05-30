@@ -504,6 +504,11 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 		if err := svc.graph.PutFileState(ctx, project, run, state); err != nil {
 			return run, err
 		}
+		if search, ok := svc.state.(searchMutationStore); ok {
+			if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
+				return run, err
+			}
+		}
 		run.Status = RunStatusCompleted
 		run.FinishedAt = svc.now().UTC()
 		return run, svc.persistRun(ctx, project, run)
@@ -726,7 +731,7 @@ func (svc *Service) SearchText(ctx context.Context, projectID string, options Te
 	if err != nil {
 		return TextSearchResultList{}, err
 	}
-	results, err := svc.graph.SearchText(ctx, project, normalized)
+	results, err := svc.searchBackend().SearchText(ctx, project, normalized)
 	if err != nil {
 		return TextSearchResultList{}, err
 	}
@@ -743,6 +748,15 @@ func (svc *Service) SearchFiles(ctx context.Context, projectID string, options F
 	project, err := svc.projectForQuery(projectID)
 	if err != nil {
 		return FileList{}, err
+	}
+	if search, ok := svc.state.(searchQueryStore); ok {
+		files, err := search.SearchFiles(ctx, project, normalized)
+		if err != nil {
+			return FileList{}, err
+		}
+		index := svc.searchIndexMetadata(ctx, project.ID)
+		files.Index = &index
+		return files, nil
 	}
 	present := true
 	states, err := svc.state.ListFileStates(ctx, project.ID, FileStateFilter{
@@ -782,7 +796,7 @@ func (svc *Service) SearchSymbols(ctx context.Context, projectID string, filter 
 	if err != nil {
 		return SymbolList{}, err
 	}
-	symbols, err := svc.graph.ListSymbols(ctx, project, normalized, pagination)
+	symbols, err := svc.searchBackend().SearchSymbols(ctx, project, normalized, pagination)
 	if err != nil {
 		return SymbolList{}, err
 	}
@@ -800,7 +814,7 @@ func (svc *Service) SearchReferences(ctx context.Context, projectID string, opti
 	if err != nil {
 		return SymbolReferenceList{}, err
 	}
-	refs, err := svc.graph.SearchReferences(ctx, project, normalized)
+	refs, err := svc.searchBackend().SearchReferences(ctx, project, normalized)
 	if err != nil {
 		return SymbolReferenceList{}, err
 	}
@@ -818,7 +832,7 @@ func (svc *Service) SearchCalls(ctx context.Context, projectID string, options R
 	if err != nil {
 		return SymbolCallEdgeList{}, err
 	}
-	calls, err := svc.graph.SearchCalls(ctx, project, normalized)
+	calls, err := svc.searchBackend().SearchCalls(ctx, project, normalized)
 	if err != nil {
 		return SymbolCallEdgeList{}, err
 	}
@@ -1005,6 +1019,13 @@ func (svc *Service) searchIndexMetadata(ctx context.Context, projectID string) S
 		return SearchIndexMetadata{IndexStatus: "unknown"}
 	}
 	return SearchIndexMetadata{IndexStatus: string(runs[0].Status), IngestionRunID: runs[0].ID}
+}
+
+func (svc *Service) searchBackend() searchQueryStore {
+	if search, ok := svc.state.(searchQueryStore); ok {
+		return search
+	}
+	return graphSearchAdapter{graph: svc.graph}
 }
 
 func containsWithCaseOption(value string, query string, caseSensitive bool) bool {
@@ -1276,6 +1297,11 @@ func (svc *Service) saveEligiblePreparedFile(ctx context.Context, project projec
 	if err := svc.graph.PutEligibleFile(ctx, project, run, result.state, result.chunks, result.symbols, result.references, result.calls, result.headings); err != nil {
 		return err
 	}
+	if search, ok := svc.state.(searchMutationStore); ok {
+		if err := search.UpsertSearchFile(ctx, project, result.state, result.chunks, result.symbols, result.references, result.calls); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1335,6 +1361,11 @@ func (svc *Service) saveSkipped(ctx context.Context, project projectregistry.Pro
 	if err := svc.graph.PutSkippedFile(ctx, project, run, state); err != nil {
 		return err
 	}
+	if search, ok := svc.state.(searchMutationStore); ok {
+		if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
+			return err
+		}
+	}
 	if skipDir {
 		return filepath.SkipDir
 	}
@@ -1366,6 +1397,11 @@ func (svc *Service) tombstoneMissingFiles(ctx context.Context, project projectre
 		}
 		if err := svc.graph.putFileState(ctx, project, run, state); err != nil {
 			return err
+		}
+		if search, ok := svc.state.(searchMutationStore); ok {
+			if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -320,6 +320,168 @@ func Run() {
 	assertNoSearchLeak(t, root, secretText, "access_token", "placeholder", "content_sha256", "secrets/token.go")
 }
 
+func TestFTSSearchBacksAllSearchToolsWithoutGraphDerivedNodes(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), `package main
+
+func helperAlpha() {}
+func helperBeta() {}
+
+func Run() {
+	helperAlpha()
+	helperBeta()
+}
+`)
+
+	svc, graph, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	for _, label := range []string{"ContentChunk", "CodeSymbol", "CodeReference", "CodeCall"} {
+		if err := graph.DeleteNodes(ctx, label, map[string]string{"project_id": "example-service"}); err != nil {
+			t.Fatalf("delete %s graph nodes: %v", label, err)
+		}
+	}
+
+	text, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "helperBeta", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search text: %v", err)
+	}
+	if len(text.Results) != 2 {
+		t.Fatalf("expected FTS text results after graph node deletion, got %#v", text)
+	}
+	files, err := svc.SearchFiles(ctx, "example-service", FileSearchOptions{PathContains: "main", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search files: %v", err)
+	}
+	if len(files.Files) != 1 || files.Files[0].RelativePath != "cmd/main.go" {
+		t.Fatalf("expected FTS file result after graph node deletion, got %#v", files)
+	}
+	symbols, err := svc.SearchSymbols(ctx, "example-service", SymbolFilter{NameContains: "Beta"}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search symbols: %v", err)
+	}
+	if len(symbols.Symbols) != 1 || symbols.Symbols[0].Name != "helperBeta" {
+		t.Fatalf("expected FTS symbol result after graph node deletion, got %#v", symbols)
+	}
+	refs, err := svc.SearchReferences(ctx, "example-service", ReferenceSearchOptions{TargetNameContains: "Alpha", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search references: %v", err)
+	}
+	if len(refs.References) != 1 || refs.References[0].TargetName != "helperAlpha" {
+		t.Fatalf("expected FTS reference result after graph node deletion, got %#v", refs)
+	}
+	calls, err := svc.SearchCalls(ctx, "example-service", ReferenceSearchOptions{CallerNameContains: "Run", CalleeNameContains: "Beta", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search calls: %v", err)
+	}
+	if len(calls.Edges) != 1 || calls.Edges[0].CallerName != "Run" || calls.Edges[0].CalleeName != "helperBeta" {
+		t.Fatalf("expected FTS call result after graph node deletion, got %#v", calls)
+	}
+}
+
+func TestFTSSearchRowsUpdateDeleteAndRestoreAcrossReingestion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	file := filepath.Join(root, "cmd", "main.go")
+	writeFile(t, file, "package main\n\nfunc OldNeedle() {}\n")
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	requireTextMatches(t, ctx, svc, "OldNeedle", 1)
+
+	writeFile(t, file, "package main\n\nfunc NewNeedle() {}\n")
+	if _, err := svc.IngestPath(ctx, "example-service", "cmd/main.go", TriggerManual); err != nil {
+		t.Fatalf("reingest changed file: %v", err)
+	}
+	requireTextMatches(t, ctx, svc, "OldNeedle", 0)
+	requireTextMatches(t, ctx, svc, "NewNeedle", 1)
+	symbols, err := svc.SearchSymbols(ctx, "example-service", SymbolFilter{NameContains: "Old"}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search old symbols: %v", err)
+	}
+	if len(symbols.Symbols) != 0 {
+		t.Fatalf("expected stale symbol rows removed, got %#v", symbols)
+	}
+
+	writeFile(t, file, "package main\n\n// password = placeholder\nfunc NewNeedle() {}\n")
+	if _, err := svc.IngestPath(ctx, "example-service", "cmd/main.go", TriggerManual); err != nil {
+		t.Fatalf("reingest sensitive file: %v", err)
+	}
+	requireTextMatches(t, ctx, svc, "NewNeedle", 0)
+	files, err := svc.SearchFiles(ctx, "example-service", FileSearchOptions{PathContains: "main", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search files after sensitive skip: %v", err)
+	}
+	if len(files.Files) != 0 {
+		t.Fatalf("expected skipped file removed from FTS files, got %#v", files)
+	}
+	secret, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "password", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search skipped secret text: %v", err)
+	}
+	if len(secret.Results) != 0 {
+		t.Fatalf("expected skipped sensitive content excluded, got %#v", secret)
+	}
+	assertNoSearchLeak(t, root, secret, "password", "placeholder")
+
+	writeFile(t, file, "package main\n\nfunc RestoredNeedle() {}\n")
+	if _, err := svc.IngestPath(ctx, "example-service", "cmd/main.go", TriggerManual); err != nil {
+		t.Fatalf("reingest restored file: %v", err)
+	}
+	requireTextMatches(t, ctx, svc, "RestoredNeedle", 1)
+
+	if err := os.Remove(file); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+	if _, err := svc.IngestPath(ctx, "example-service", "cmd/main.go", TriggerManual); err != nil {
+		t.Fatalf("reingest absent file: %v", err)
+	}
+	requireTextMatches(t, ctx, svc, "RestoredNeedle", 0)
+}
+
+func TestFTSLiteralEscapingSnippetsPaginationAndCaseFilters(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), `package main
+
+// literal helper* OR Beta marker
+func CaseNeedle() {}
+func caseneedle() {}
+`)
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	literal, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "helper* OR Beta", PageSize: MaxPageSize, MaxSnippetBytes: 32})
+	if err != nil {
+		t.Fatalf("search literal operator-like query: %v", err)
+	}
+	if len(literal.Results) != 1 || !strings.Contains(literal.Results[0].Snippet, "helper* OR Beta") {
+		t.Fatalf("expected escaped literal match, got %#v", literal)
+	}
+	assertNoSearchLeak(t, root, literal, "MATCH", "project_search")
+
+	paged, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "Needle", PageSize: 1, MaxSnippetBytes: 12})
+	if err != nil {
+		t.Fatalf("search paged text: %v", err)
+	}
+	if len(paged.Results) != 1 || paged.NextPageToken == "" || len(paged.Results[0].Snippet) > 12 {
+		t.Fatalf("expected capped first page, got %#v", paged)
+	}
+	caseSensitive, err := svc.SearchSymbols(ctx, "example-service", SymbolFilter{NameContains: "Case", CaseSensitive: true}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("case-sensitive symbol search: %v", err)
+	}
+	if len(caseSensitive.Symbols) != 1 || caseSensitive.Symbols[0].Name != "CaseNeedle" {
+		t.Fatalf("expected only case-sensitive symbol match, got %#v", caseSensitive)
+	}
+}
+
 func TestSymbolSemanticEdgesDeletedWhenFileSkipped(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -1323,6 +1485,17 @@ func assertNoSearchLeak(t *testing.T, root string, value any, extraForbidden ...
 		if item != "" && strings.Contains(encoded, item) {
 			t.Fatalf("search result leaked %q: %#v", item, value)
 		}
+	}
+}
+
+func requireTextMatches(t *testing.T, ctx context.Context, svc *Service, query string, count int) {
+	t.Helper()
+	results, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: query, PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search text %q: %v", query, err)
+	}
+	if len(results.Results) != count {
+		t.Fatalf("expected %d text matches for %q, got %#v", count, query, results)
 	}
 }
 
