@@ -9,13 +9,18 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/httpapi"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/mcpapi"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/service"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/health"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
+	ladybugschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/logging"
 	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
+	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
 )
 
 const serviceName = "agent-server"
@@ -35,14 +40,27 @@ func run() error {
 	}
 
 	logger := logging.New(serviceName)
+	ctx := context.Background()
 
 	sqliteDB, err := sqliteplatform.Open(cfg.SQLitePath)
 	if err != nil {
 		return err
 	}
 	defer sqliteDB.Close()
+	if err := sqliteschema.Bootstrap(ctx, sqliteDB.SQLDB()); err != nil {
+		return err
+	}
 
-	taskService := agentcontrol.NewService(agentcontrol.NewMemoryStore())
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
+		return err
+	}
+	agentStore := store.NewLadybugStore(graph)
+	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
+	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
+		return err
+	}
+	agentService := service.New(agentStore, agentStore)
 
 	checker := health.NewChecker(
 		health.Check{
@@ -65,8 +83,8 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health.LivenessHandler)
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
-	agentcontrol.RegisterRESTRoutes(mux, taskService)
-	mux.Handle("/mcp", agentcontrol.NewMCPHandler(taskService, logger))
+	httpapi.RegisterRoutes(mux, agentService)
+	mux.Handle("/mcp", mcpapi.NewHandler(agentService, logger))
 
 	handler := httpserver.Chain(
 		mux,
