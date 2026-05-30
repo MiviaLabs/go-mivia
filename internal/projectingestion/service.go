@@ -101,7 +101,7 @@ func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger
 			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonStatError, 0, time.Time{}, true, run.StartedAt)
 			seen[state.RelativePathHash] = struct{}{}
-			markRunFileError(&run, state.SkippedReason)
+			recordRunReason(&run, state.SkippedReason)
 			return svc.saveSkipped(ctx, project, run, state, false)
 		}
 		if err := ctx.Err(); err != nil {
@@ -118,6 +118,7 @@ func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger
 			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonUnsafePath, 0, time.Time{}, true, run.StartedAt)
 			seen[state.RelativePathHash] = struct{}{}
+			recordRunReason(&run, state.SkippedReason)
 			return svc.saveSkipped(ctx, project, run, state, entry.IsDir())
 		}
 		if entry.IsDir() {
@@ -134,19 +135,21 @@ func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger
 			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonStatError, 0, time.Time{}, true, run.StartedAt)
 			seen[state.RelativePathHash] = struct{}{}
-			markRunFileError(&run, state.SkippedReason)
+			recordRunReason(&run, state.SkippedReason)
 			return svc.saveSkipped(ctx, project, run, state, false)
 		}
 		if !info.Mode().IsRegular() {
 			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonUnsafePath, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
 			seen[state.RelativePathHash] = struct{}{}
+			recordRunReason(&run, state.SkippedReason)
 			return svc.saveSkipped(ctx, project, run, state, false)
 		}
 		if !projectregistry.ProjectIncludesRelativePath(project, relative) {
 			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonDeniedPath, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
 			seen[state.RelativePathHash] = struct{}{}
+			recordRunReason(&run, state.SkippedReason)
 			return svc.saveSkipped(ctx, project, run, state, false)
 		}
 		state, chunks, symbols, _, err := svc.ingestExistingFile(ctx, project, relative, filePath, info, run)
@@ -159,7 +162,7 @@ func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger
 		} else {
 			run.FilesSkipped++
 		}
-		markRunFileError(&run, state.SkippedReason)
+		recordRunReason(&run, state.SkippedReason)
 		return err
 	})
 	if err != nil {
@@ -240,11 +243,13 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 		return run, fmt.Errorf("stat failed for relative path %q", relative)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || !info.Mode().IsRegular() || !projectregistry.ProjectIncludesRelativePath(project, relative) {
-		state := svc.skippedState(project, relative, SkipReasonUnsafePath, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
+		reason := SkipReasonUnsafePath
 		if !projectregistry.ProjectIncludesRelativePath(project, relative) {
-			state.SkippedReason = SkipReasonDeniedPath
+			reason = SkipReasonDeniedPath
 		}
+		state := svc.skippedState(project, relative, reason, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
 		run.FilesSkipped = 1
+		recordRunReason(&run, state.SkippedReason)
 		if err := svc.saveSkipped(ctx, project, run, state, false); err != nil {
 			return run, err
 		}
@@ -268,6 +273,7 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 	} else {
 		run.FilesSeen = 1
 		run.FilesSkipped = 1
+		recordRunReason(&run, state.SkippedReason)
 	}
 	run.Status = RunStatusCompleted
 	run.FinishedAt = svc.now().UTC()
@@ -537,7 +543,7 @@ func (svc *Service) tombstoneMissingFiles(ctx context.Context, project projectre
 		return err
 	}
 	for _, state := range states {
-		if !state.Present || state.Status != FileStatusEligible {
+		if !state.Present {
 			continue
 		}
 		if _, ok := seen[state.RelativePathHash]; ok {
@@ -632,11 +638,17 @@ func parseEligible(relative string, content []byte) ([]Symbol, []Heading, error)
 	}
 }
 
-func markRunFileError(run *Run, reason SkipReason) {
-	if run == nil || !isFileErrorReason(reason) {
+func recordRunReason(run *Run, reason SkipReason) {
+	if run == nil || reason == SkipReasonNone {
 		return
 	}
-	run.ErrorCategory = "file_errors"
+	if run.ReasonCounts == nil {
+		run.ReasonCounts = make(map[string]int)
+	}
+	run.ReasonCounts[string(reason)]++
+	if isFileErrorReason(reason) {
+		run.ErrorCategory = "file_errors"
+	}
 }
 
 func isFileErrorReason(reason SkipReason) bool {

@@ -107,6 +107,31 @@ func TestIngestProject_InvalidGoSyntaxDoesNotFailFullScan(t *testing.T) {
 	}
 }
 
+func TestRunMetadata_ExposesSafeReasonCounts(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "bad.go"), "package main\n\nfunc Broken(\n")
+	writeFile(t, filepath.Join(root, "cmd", "secret.go"), "package main\nvar access_token = placeholder\n")
+
+	svc, _, _ := newTestService(t, root)
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	metadata, err := svc.RunMetadata(ctx, "example-service", run.ID)
+	if err != nil {
+		t.Fatalf("run metadata: %v", err)
+	}
+	if metadata.ReasonCounts[string(SkipReasonParseError)] != 1 || metadata.ReasonCounts[string(SkipReasonSensitiveContent)] != 1 {
+		t.Fatalf("expected safe reason counts, got %#v", metadata.ReasonCounts)
+	}
+	for key := range metadata.ReasonCounts {
+		if strings.Contains(key, root) || strings.Contains(key, "access_token") {
+			t.Fatalf("reason count key leaked unsafe detail: %q", key)
+		}
+	}
+}
+
 func TestIngestProject_FileLocalReadAndChunkErrorsDoNotBlockUsefulFiles(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -320,6 +345,153 @@ func TestIngestProject_SensitiveContentSkipIsHashOnly(t *testing.T) {
 	}
 	if _, ok := repoFileNode.Properties["content_sha256"]; ok {
 		t.Fatalf("skipped sensitive file stored content hash: %#v", repoFileNode.Properties)
+	}
+}
+
+func TestIngestProject_DeletedSkippedSensitiveFileBecomesHashOnlyAbsent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	filePath := filepath.Join(root, "cmd", "main.go")
+	writeFile(t, filePath, "package main\nvar access_token = placeholder\n")
+
+	svc, graph, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("initial ingest: %v", err)
+	}
+	if err := os.Remove(filePath); err != nil {
+		t.Fatalf("remove sensitive file: %v", err)
+	}
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusAbsent})
+	if err != nil {
+		t.Fatalf("list absent states: %v", err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("expected one absent state, got %#v", states)
+	}
+	absent := states[0]
+	if absent.Present || absent.RelativePath != "" || absent.RelativePathSafe || absent.ContentSHA256 != "" {
+		t.Fatalf("deleted sensitive file must stay hash-only absent: %#v", absent)
+	}
+	repoFileNode, err := graph.GetNode(ctx, "RepoFile", repoFileID("example_ns", hashValue("cmd/main.go")))
+	if err != nil {
+		t.Fatalf("get absent repo file: %v", err)
+	}
+	if _, ok := repoFileNode.Properties["relative_path"]; ok {
+		t.Fatalf("absent sensitive file leaked path: %#v", repoFileNode.Properties)
+	}
+}
+
+func TestIngestProject_DeletedDeniedPathStateBecomesHashOnlyAbsent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	filePath := filepath.Join(root, ".env.local")
+	writeFile(t, filePath, "placeholder=value\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("initial ingest: %v", err)
+	}
+	if err := os.Remove(filePath); err != nil {
+		t.Fatalf("remove denied file: %v", err)
+	}
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusAbsent})
+	if err != nil {
+		t.Fatalf("list absent states: %v", err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("expected one absent state, got %#v", states)
+	}
+	if states[0].Present || states[0].RelativePath != "" || states[0].RelativePathSafe || states[0].ContentSHA256 != "" {
+		t.Fatalf("deleted denied file must stay hash-only absent: %#v", states[0])
+	}
+}
+
+func TestIngestProject_EligibleToSkippedRemovesDerivedGraphEntries(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	filePath := filepath.Join(root, "cmd", "main.go")
+	writeFile(t, filePath, "package main\n\nfunc Run() {}\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("initial ingest: %v", err)
+	}
+	eligible, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		t.Fatalf("list eligible states: %v", err)
+	}
+	goState := findState(t, eligible, "cmd/main.go")
+	fileID := repoFileID("example_ns", goState.RelativePathHash)
+	writeFile(t, filePath, "package main\nvar access_token = placeholder\n")
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+
+	chunks, err := svc.ListChunks(ctx, "example-service", fileID, Pagination{}, 0)
+	if err != nil {
+		t.Fatalf("list chunks: %v", err)
+	}
+	if len(chunks.Chunks) != 0 {
+		t.Fatalf("eligible-to-skipped retained stale chunks: %#v", chunks.Chunks)
+	}
+	symbols, err := svc.ListSymbols(ctx, "example-service", Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbols: %v", err)
+	}
+	for _, symbol := range symbols.Symbols {
+		if symbol.FileID == fileID {
+			t.Fatalf("eligible-to-skipped retained stale symbol: %#v", symbol)
+		}
+	}
+}
+
+func TestIngestProject_SkippedToEligibleStoresDerivedGraphEntries(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	filePath := filepath.Join(root, "cmd", "main.go")
+	writeFile(t, filePath, "package main\nvar access_token = placeholder\n")
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("initial ingest: %v", err)
+	}
+	writeFile(t, filePath, "package main\n\nfunc Run() {}\n")
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+
+	files, err := svc.ListFiles(ctx, "example-service", FileStateFilter{Status: FileStatusEligible, Extension: ".go"}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list files: %v", err)
+	}
+	if len(files.Files) != 1 || files.Files[0].RelativePath != "cmd/main.go" {
+		t.Fatalf("expected skipped file to become eligible, got %#v", files.Files)
+	}
+	chunks, err := svc.ListChunks(ctx, "example-service", files.Files[0].ID, Pagination{}, 0)
+	if err != nil {
+		t.Fatalf("list chunks: %v", err)
+	}
+	if len(chunks.Chunks) != 1 || !strings.Contains(chunks.Chunks[0].Text, "func Run") {
+		t.Fatalf("expected eligible chunks after skipped-to-eligible transition, got %#v", chunks.Chunks)
+	}
+	symbols, err := svc.ListSymbols(ctx, "example-service", Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbols: %v", err)
+	}
+	found := false
+	for _, symbol := range symbols.Symbols {
+		found = found || symbol.FileID == files.Files[0].ID && symbol.Name == "Run"
+	}
+	if !found {
+		t.Fatalf("expected Run symbol after skipped-to-eligible transition, got %#v", symbols.Symbols)
 	}
 }
 

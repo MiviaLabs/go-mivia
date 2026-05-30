@@ -25,7 +25,12 @@ func NewSQLiteStore(db *sql.DB) *SQLiteStore {
 }
 
 func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
-	_, err := store.db.ExecContext(ctx, `INSERT INTO project_ingestion_runs (
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO project_ingestion_runs (
 		run_id,
 		project_id,
 		trigger,
@@ -66,8 +71,26 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		run.ErrorCategory,
 		formatTime(run.StartedAt),
 		formatTime(run.FinishedAt),
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_ingestion_run_reason_counts WHERE project_id = ? AND run_id = ?`, run.ProjectID, run.ID); err != nil {
+		return err
+	}
+	for reason, count := range run.ReasonCounts {
+		if strings.TrimSpace(reason) == "" || count <= 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO project_ingestion_run_reason_counts (
+			project_id,
+			run_id,
+			reason,
+			count
+		) VALUES (?, ?, ?, ?)`, run.ProjectID, run.ID, reason, count); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (store *SQLiteStore) GetRun(ctx context.Context, projectID string, runID string) (Run, error) {
@@ -91,7 +114,44 @@ func (store *SQLiteStore) GetRun(ctx context.Context, projectID string, runID st
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, ErrRunNotFound
 	}
-	return run, err
+	if err != nil {
+		return Run{}, err
+	}
+	counts, err := store.loadRunReasonCounts(ctx, projectID, runID)
+	if err != nil {
+		return Run{}, err
+	}
+	run.ReasonCounts = counts
+	return run, nil
+}
+
+func (store *SQLiteStore) loadRunReasonCounts(ctx context.Context, projectID string, runID string) (map[string]int, error) {
+	rows, err := store.db.QueryContext(ctx, `SELECT reason, count
+	FROM project_ingestion_run_reason_counts
+	WHERE project_id = ? AND run_id = ?
+	ORDER BY reason`, projectID, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var reason string
+		var count int
+		if err := rows.Scan(&reason, &count); err != nil {
+			return nil, err
+		}
+		if count > 0 {
+			counts[reason] = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(counts) == 0 {
+		return nil, nil
+	}
+	return counts, nil
 }
 
 func (store *SQLiteStore) SaveFileState(ctx context.Context, state FileState) error {

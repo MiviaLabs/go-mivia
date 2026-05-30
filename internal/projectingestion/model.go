@@ -30,6 +30,7 @@ type Run struct {
 	ChunksStored  int
 	SymbolsStored int
 	ErrorCategory string
+	ReasonCounts  map[string]int
 	StartedAt     time.Time
 	FinishedAt    time.Time
 }

@@ -61,6 +61,7 @@ func TestBootstrap_IngestionTablesExist(t *testing.T) {
 
 	for _, table := range []string{
 		"project_ingestion_runs",
+		"project_ingestion_run_reason_counts",
 		"project_file_ingestion_state",
 		"project_watch_state",
 	} {

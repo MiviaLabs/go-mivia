@@ -23,19 +23,20 @@ type Pagination struct {
 }
 
 type RunMetadata struct {
-	ID            string    `json:"id"`
-	ProjectID     string    `json:"project_id"`
-	Trigger       string    `json:"trigger"`
-	Mode          string    `json:"mode"`
-	Status        string    `json:"status"`
-	FilesSeen     int       `json:"files_seen"`
-	FilesIngested int       `json:"files_ingested"`
-	FilesSkipped  int       `json:"files_skipped"`
-	ChunksStored  int       `json:"chunks_stored"`
-	SymbolsStored int       `json:"symbols_stored"`
-	ErrorCategory string    `json:"error_category,omitempty"`
-	StartedAt     time.Time `json:"started_at"`
-	FinishedAt    time.Time `json:"finished_at"`
+	ID            string         `json:"id"`
+	ProjectID     string         `json:"project_id"`
+	Trigger       string         `json:"trigger"`
+	Mode          string         `json:"mode"`
+	Status        string         `json:"status"`
+	FilesSeen     int            `json:"files_seen"`
+	FilesIngested int            `json:"files_ingested"`
+	FilesSkipped  int            `json:"files_skipped"`
+	ChunksStored  int            `json:"chunks_stored"`
+	SymbolsStored int            `json:"symbols_stored"`
+	ErrorCategory string         `json:"error_category,omitempty"`
+	ReasonCounts  map[string]int `json:"reason_counts,omitempty"`
+	StartedAt     time.Time      `json:"started_at"`
+	FinishedAt    time.Time      `json:"finished_at"`
 }
 
 type FileMetadata struct {
@@ -105,9 +106,23 @@ func MetadataForRun(run Run) RunMetadata {
 		ChunksStored:  run.ChunksStored,
 		SymbolsStored: run.SymbolsStored,
 		ErrorCategory: run.ErrorCategory,
+		ReasonCounts:  copyReasonCounts(run.ReasonCounts),
 		StartedAt:     run.StartedAt,
 		FinishedAt:    run.FinishedAt,
 	}
+}
+
+func copyReasonCounts(in map[string]int) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for reason, count := range in {
+		if count > 0 {
+			out[reason] = count
+		}
+	}
+	return out
 }
 
 func MetadataForFileState(project projectregistry.Project, state FileState) FileMetadata {

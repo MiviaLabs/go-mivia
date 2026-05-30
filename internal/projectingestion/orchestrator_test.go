@@ -2,6 +2,7 @@ package projectingestion
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -171,12 +172,81 @@ func TestOrchestrator_InitialScanAndDisabledProjectFiltering(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_WatcherFactoryFailureDegradesWithoutStartupFailure(t *testing.T) {
+	registry := newLiveRegistry(t)
+	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{
+		LiveUpdatesEnabled: true,
+		QueueDepth:         4,
+		WorkerCount:        1,
+	})
+	orchestrator.SetWatcherFactory(func() (FileWatcher, error) {
+		return nil, errors.New("watch unavailable")
+	})
+
+	if err := orchestrator.Start(context.Background()); err != nil {
+		t.Fatalf("start orchestrator must not fail on watcher factory error: %v", err)
+	}
+	defer orchestrator.Stop(context.Background())
+	state := findWatchState(t, orchestrator.WatchStates(), "live_project")
+	if state.Status != WatchStatusDegraded || state.LastErrorCategory != "watcher_create_failed" {
+		t.Fatalf("expected degraded watcher state, got %#v", state)
+	}
+}
+
+func TestOrchestrator_WatcherAddFailureDegradesWithoutStartupFailure(t *testing.T) {
+	registry := newLiveRegistry(t)
+	watcher := newFakeWatcher()
+	watcher.addErr = errors.New("watch add failed")
+	orchestrator := newTestOrchestrator(registry, &fakeIngestionRunner{}, watcher)
+
+	if err := orchestrator.Start(context.Background()); err != nil {
+		t.Fatalf("start orchestrator must not fail on add error: %v", err)
+	}
+	defer orchestrator.Stop(context.Background())
+	state := findWatchState(t, orchestrator.WatchStates(), "live_project")
+	if state.Status != WatchStatusDegraded || state.LastErrorCategory != "watch_add_failed" || state.FailedDirectoryCount == 0 {
+		t.Fatalf("expected degraded add-failure state, got %#v", state)
+	}
+}
+
+func TestOrchestrator_WatchDirectoryBudgetDegradesWithSkippedCount(t *testing.T) {
+	registry := newLiveRegistry(t)
+	project, _ := registry.Get("live_project")
+	if err := os.MkdirAll(filepath.Join(project.CanonicalRootPath, "src", "nested"), 0o700); err != nil {
+		t.Fatalf("mkdir source dirs: %v", err)
+	}
+	watcher := newFakeWatcher()
+	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{
+		LiveUpdatesEnabled:       true,
+		DebounceInterval:         10 * time.Millisecond,
+		QueueDepth:               8,
+		WorkerCount:              1,
+		MaxWatchedDirectoryCount: 1,
+	})
+	orchestrator.SetWatcherFactory(func() (FileWatcher, error) {
+		return watcher, nil
+	})
+
+	if err := orchestrator.Start(context.Background()); err != nil {
+		t.Fatalf("start orchestrator: %v", err)
+	}
+	defer orchestrator.Stop(context.Background())
+	state := findWatchState(t, orchestrator.WatchStates(), "live_project")
+	if state.Status != WatchStatusDegraded || state.LastErrorCategory != "watch_directory_budget_exceeded" || state.SkippedDirectoryCount == 0 {
+		t.Fatalf("expected degraded budget state, got %#v", state)
+	}
+	if len(watcher.addedPaths()) != 1 {
+		t.Fatalf("expected watch budget to cap added paths, got %#v", watcher.addedPaths())
+	}
+}
+
 type fakeWatcher struct {
 	events chan WatchEvent
 	errors chan error
 	closed chan struct{}
 	mu     sync.Mutex
 	added  []string
+	addErr error
 }
 
 func newFakeWatcher() *fakeWatcher {
@@ -190,6 +260,9 @@ func newFakeWatcher() *fakeWatcher {
 func (watcher *fakeWatcher) Add(path string) error {
 	watcher.mu.Lock()
 	defer watcher.mu.Unlock()
+	if watcher.addErr != nil {
+		return watcher.addErr
+	}
 	watcher.added = append(watcher.added, filepath.Clean(path))
 	return nil
 }
@@ -394,6 +467,17 @@ func containsString(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func findWatchState(t *testing.T, states []WatchState, projectID string) WatchState {
+	t.Helper()
+	for _, state := range states {
+		if state.ProjectID == projectID {
+			return state
+		}
+	}
+	t.Fatalf("watch state for %q not found in %#v", projectID, states)
+	return WatchState{}
 }
 
 func waitUntil(t *testing.T, condition func() bool) {

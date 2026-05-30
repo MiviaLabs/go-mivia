@@ -13,12 +13,13 @@ import (
 )
 
 type OrchestratorOptions struct {
-	LiveUpdatesEnabled bool
-	DebounceInterval   time.Duration
-	QueueDepth         int
-	WorkerCount        int
-	InitialScanOnStart bool
-	Logger             *slog.Logger
+	LiveUpdatesEnabled       bool
+	DebounceInterval         time.Duration
+	QueueDepth               int
+	WorkerCount              int
+	InitialScanOnStart       bool
+	MaxWatchedDirectoryCount int
+	Logger                   *slog.Logger
 }
 
 type ingestionRunner interface {
@@ -37,7 +38,25 @@ type Orchestrator struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	started bool
+	states  map[string]WatchState
 }
+
+type WatchState struct {
+	ProjectID             string
+	Status                string
+	WatchedDirectoryCount int
+	SkippedDirectoryCount int
+	FailedDirectoryCount  int
+	QueueDepth            int
+	LastErrorCategory     string
+	UpdatedAt             time.Time
+}
+
+const (
+	WatchStatusLive     = "live"
+	WatchStatusDegraded = "live_degraded"
+	WatchStatusDisabled = "disabled"
+)
 
 type projectWatcher struct {
 	project  projectregistry.Project
@@ -51,6 +70,14 @@ type projectWatcher struct {
 type ingestTask struct {
 	rescan       bool
 	relativePath string
+}
+
+type watchRegistrationStats struct {
+	watched       int
+	skipped       int
+	failed        int
+	degraded      bool
+	errorCategory string
 }
 
 func NewOrchestrator(registry *projectregistry.Registry, ingestion ingestionRunner, options OrchestratorOptions) *Orchestrator {
@@ -69,6 +96,7 @@ func NewOrchestrator(registry *projectregistry.Registry, ingestion ingestionRunn
 		options:        options,
 		logger:         options.Logger,
 		watcherFactory: NewFSNotifyWatcher,
+		states:         make(map[string]WatchState),
 	}
 }
 
@@ -82,6 +110,15 @@ func (orchestrator *Orchestrator) Start(ctx context.Context) error {
 	if orchestrator.started || !orchestrator.options.LiveUpdatesEnabled {
 		if !orchestrator.options.LiveUpdatesEnabled {
 			orchestrator.logInfo("live ingestion disabled")
+			if orchestrator.registry != nil {
+				for _, project := range orchestrator.registry.List() {
+					orchestrator.setWatchStateLocked(WatchState{
+						ProjectID: project.ID,
+						Status:    WatchStatusDisabled,
+						UpdatedAt: time.Now().UTC(),
+					})
+				}
+			}
 		}
 		return nil
 	}
@@ -96,9 +133,18 @@ func (orchestrator *Orchestrator) Start(ctx context.Context) error {
 		}
 		watcher, err := orchestrator.watcherFactory()
 		if err != nil {
-			cancel()
-			closeProjectWatchers(startedWatchers)
-			return err
+			orchestrator.setWatchStateLocked(WatchState{
+				ProjectID:         project.ID,
+				Status:            WatchStatusDegraded,
+				QueueDepth:        orchestrator.options.QueueDepth,
+				LastErrorCategory: "watcher_create_failed",
+				UpdatedAt:         time.Now().UTC(),
+			})
+			orchestrator.logWarn("live ingestion watcher degraded",
+				slog.String("project_id", project.ID),
+				slog.String("error_category", "watcher_create_failed"),
+			)
+			continue
 		}
 		projectWatcher := &projectWatcher{
 			project: project,
@@ -107,16 +153,38 @@ func (orchestrator *Orchestrator) Start(ctx context.Context) error {
 			rescans: make(chan struct{}, 1),
 			tasks:   make(chan ingestTask, orchestrator.options.QueueDepth),
 		}
-		watchedDirectoryCount, err := orchestrator.addProjectWatches(projectWatcher)
-		if err != nil {
-			cancel()
+		watchStats := orchestrator.addProjectWatches(projectWatcher)
+		status := WatchStatusLive
+		if watchStats.degraded {
+			status = WatchStatusDegraded
+		}
+		orchestrator.setWatchStateLocked(WatchState{
+			ProjectID:             project.ID,
+			Status:                status,
+			WatchedDirectoryCount: watchStats.watched,
+			SkippedDirectoryCount: watchStats.skipped,
+			FailedDirectoryCount:  watchStats.failed,
+			QueueDepth:            orchestrator.options.QueueDepth,
+			LastErrorCategory:     watchStats.errorCategory,
+			UpdatedAt:             time.Now().UTC(),
+		})
+		if watchStats.watched == 0 {
 			projectWatcher.close()
-			closeProjectWatchers(startedWatchers)
-			return err
+			orchestrator.logWarn("live ingestion watcher degraded",
+				slog.String("project_id", project.ID),
+				slog.String("error_category", watchStats.errorCategory),
+				slog.Int("watched_directory_count", watchStats.watched),
+				slog.Int("skipped_directory_count", watchStats.skipped),
+				slog.Int("failed_directory_count", watchStats.failed),
+			)
+			continue
 		}
 		orchestrator.logInfo("live ingestion watcher started",
 			slog.String("project_id", project.ID),
-			slog.Int("watched_directory_count", watchedDirectoryCount),
+			slog.String("watch_status", status),
+			slog.Int("watched_directory_count", watchStats.watched),
+			slog.Int("skipped_directory_count", watchStats.skipped),
+			slog.Int("failed_directory_count", watchStats.failed),
 			slog.Int("queue_depth", orchestrator.options.QueueDepth),
 			slog.Int("worker_count", orchestrator.options.WorkerCount),
 			slog.Duration("debounce_interval", orchestrator.options.DebounceInterval),
@@ -129,6 +197,16 @@ func (orchestrator *Orchestrator) Start(ctx context.Context) error {
 	orchestrator.started = true
 	orchestrator.logInfo("live ingestion orchestrator started", slog.Int("project_count", len(startedWatchers)))
 	return nil
+}
+
+func (orchestrator *Orchestrator) WatchStates() []WatchState {
+	orchestrator.mu.Lock()
+	defer orchestrator.mu.Unlock()
+	states := make([]WatchState, 0, len(orchestrator.states))
+	for _, state := range orchestrator.states {
+		states = append(states, state)
+	}
+	return states
 }
 
 func (orchestrator *Orchestrator) Stop(ctx context.Context) error {
@@ -207,11 +285,18 @@ func (orchestrator *Orchestrator) watchLoop(ctx context.Context, projectWatcher 
 
 func (orchestrator *Orchestrator) handleWatchEvent(projectWatcher *projectWatcher, event WatchEvent) {
 	if event.Op&WatchCreate != 0 && isDirectoryPath(event.Path) {
-		if added, err := orchestrator.addWatchesUnder(projectWatcher, event.Path); err == nil && added > 0 {
+		stats := orchestrator.addWatchesUnder(projectWatcher, event.Path)
+		if stats.watched > 0 {
 			orchestrator.logInfo("live ingestion watched new directories",
 				slog.String("project_id", projectWatcher.project.ID),
-				slog.Int("watched_directory_count", added),
+				slog.String("watch_status", watchStatusForStats(stats)),
+				slog.Int("watched_directory_count", stats.watched),
+				slog.Int("skipped_directory_count", stats.skipped),
+				slog.Int("failed_directory_count", stats.failed),
 			)
+		}
+		if stats.degraded {
+			orchestrator.updateWatchState(projectWatcher.project.ID, stats)
 		}
 	}
 	select {
@@ -321,7 +406,7 @@ func (orchestrator *Orchestrator) enqueueRescan(projectWatcher *projectWatcher) 
 	}
 }
 
-func (orchestrator *Orchestrator) addProjectWatches(projectWatcher *projectWatcher) (int, error) {
+func (orchestrator *Orchestrator) addProjectWatches(projectWatcher *projectWatcher) watchRegistrationStats {
 	root := projectWatcher.project.CanonicalRootPath
 	if root == "" {
 		root = projectWatcher.project.RootPath
@@ -329,13 +414,16 @@ func (orchestrator *Orchestrator) addProjectWatches(projectWatcher *projectWatch
 	return orchestrator.addWatchesUnder(projectWatcher, root)
 }
 
-func (orchestrator *Orchestrator) addWatchesUnder(projectWatcher *projectWatcher, root string) (int, error) {
+func (orchestrator *Orchestrator) addWatchesUnder(projectWatcher *projectWatcher, root string) watchRegistrationStats {
 	project := projectWatcher.project
 	walkRoot := filepath.Clean(root)
-	watched := 0
+	stats := watchRegistrationStats{}
 	err := filepath.WalkDir(walkRoot, func(current string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return fmt.Errorf("watch walk failed")
+			stats.failed++
+			stats.degraded = true
+			stats.errorCategory = "watch_walk_failed"
+			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			if entry.IsDir() {
@@ -348,7 +436,10 @@ func (orchestrator *Orchestrator) addWatchesUnder(projectWatcher *projectWatcher
 		}
 		relative, ok := safeRelativePath(project.CanonicalRootPath, current)
 		if !ok {
-			return ErrPathEscapesRoot
+			stats.failed++
+			stats.degraded = true
+			stats.errorCategory = "watch_path_escape"
+			return filepath.SkipDir
 		}
 		if relative != "" && projectregistry.ProjectExcludesRelativePath(project, relative) {
 			return filepath.SkipDir
@@ -356,13 +447,32 @@ func (orchestrator *Orchestrator) addWatchesUnder(projectWatcher *projectWatcher
 		if !projectregistry.ProjectMayIncludeRelativePath(project, relative) {
 			return filepath.SkipDir
 		}
-		if err := projectWatcher.watcher.Add(current); err != nil {
-			return err
+		if orchestrator.options.MaxWatchedDirectoryCount > 0 && stats.watched >= orchestrator.options.MaxWatchedDirectoryCount {
+			stats.skipped++
+			stats.degraded = true
+			stats.errorCategory = "watch_directory_budget_exceeded"
+			return filepath.SkipDir
 		}
-		watched++
+		if err := projectWatcher.watcher.Add(current); err != nil {
+			stats.failed++
+			stats.degraded = true
+			stats.errorCategory = "watch_add_failed"
+			return filepath.SkipDir
+		}
+		stats.watched++
 		return nil
 	})
-	return watched, err
+	if err != nil {
+		stats.failed++
+		stats.degraded = true
+		if stats.errorCategory == "" {
+			stats.errorCategory = "watch_walk_failed"
+		}
+	}
+	if stats.degraded && stats.errorCategory == "" {
+		stats.errorCategory = "watch_degraded"
+	}
+	return stats
 }
 
 func (orchestrator *Orchestrator) relativeEventPath(project projectregistry.Project, eventPath string) (string, bool) {
@@ -377,6 +487,35 @@ func (orchestrator *Orchestrator) relativeEventPath(project projectregistry.Proj
 		return "", false
 	}
 	return relative, true
+}
+
+func (orchestrator *Orchestrator) updateWatchState(projectID string, stats watchRegistrationStats) {
+	orchestrator.mu.Lock()
+	defer orchestrator.mu.Unlock()
+	state := orchestrator.states[projectID]
+	state.ProjectID = projectID
+	state.Status = watchStatusForStats(stats)
+	state.WatchedDirectoryCount += stats.watched
+	state.SkippedDirectoryCount += stats.skipped
+	state.FailedDirectoryCount += stats.failed
+	state.QueueDepth = orchestrator.options.QueueDepth
+	state.LastErrorCategory = stats.errorCategory
+	state.UpdatedAt = time.Now().UTC()
+	orchestrator.setWatchStateLocked(state)
+}
+
+func (orchestrator *Orchestrator) setWatchStateLocked(state WatchState) {
+	if orchestrator.states == nil {
+		orchestrator.states = make(map[string]WatchState)
+	}
+	orchestrator.states[state.ProjectID] = state
+}
+
+func watchStatusForStats(stats watchRegistrationStats) string {
+	if stats.degraded {
+		return WatchStatusDegraded
+	}
+	return WatchStatusLive
 }
 
 func closeProjectWatchers(watchers []*projectWatcher) {

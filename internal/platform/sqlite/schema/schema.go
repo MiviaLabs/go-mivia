@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 4
+const Version = 5
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -70,6 +70,14 @@ var statements = []string{
 		started_at TEXT NOT NULL,
 		finished_at TEXT NOT NULL,
 		FOREIGN KEY(project_id) REFERENCES configured_projects(id)
+	)`,
+	`CREATE TABLE IF NOT EXISTS project_ingestion_run_reason_counts (
+		project_id TEXT NOT NULL,
+		run_id TEXT NOT NULL,
+		reason TEXT NOT NULL,
+		count INTEGER NOT NULL DEFAULT 0 CHECK (count >= 0),
+		PRIMARY KEY(project_id, run_id, reason),
+		FOREIGN KEY(run_id) REFERENCES project_ingestion_runs(run_id)
 	)`,
 	`CREATE TABLE IF NOT EXISTS project_file_ingestion_state (
 		project_id TEXT NOT NULL,

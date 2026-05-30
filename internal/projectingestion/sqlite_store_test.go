@@ -73,6 +73,39 @@ func TestSQLiteStore_GetFileStateByHash(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_SaveRunPersistsReasonCounts(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	run := Run{
+		ID:        "run-1",
+		ProjectID: "project-1",
+		Trigger:   TriggerManual,
+		Mode:      "content_graph",
+		Status:    RunStatusCompleted,
+		ReasonCounts: map[string]int{
+			string(SkipReasonSensitiveContent): 2,
+			string(SkipReasonParseError):       1,
+			"":                                 99,
+		},
+		StartedAt:  time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
+		FinishedAt: time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC),
+	}
+	if err := store.SaveRun(ctx, run); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+
+	got, err := store.GetRun(ctx, "project-1", "run-1")
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.ReasonCounts[string(SkipReasonSensitiveContent)] != 2 || got.ReasonCounts[string(SkipReasonParseError)] != 1 {
+		t.Fatalf("expected persisted reason counts, got %#v", got.ReasonCounts)
+	}
+	if _, ok := got.ReasonCounts[""]; ok {
+		t.Fatalf("empty reason must not persist: %#v", got.ReasonCounts)
+	}
+}
+
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	db, err := sqliteplatform.Open(":memory:")
