@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 5
+const Version = 6
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -109,6 +109,12 @@ var statements = []string{
 		ON project_file_ingestion_state(project_id, status, relative_path_hash)`,
 	`CREATE INDEX IF NOT EXISTS idx_project_file_ingestion_state_project_hash
 		ON project_file_ingestion_state(project_id, relative_path_hash)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_file_ingestion_state_project_present_reason
+		ON project_file_ingestion_state(project_id, present, skipped_reason, relative_path_hash)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_file_ingestion_state_project_relative_path
+		ON project_file_ingestion_state(project_id, relative_path_safe, relative_path)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_file_ingestion_state_project_modified
+		ON project_file_ingestion_state(project_id, modified_at, relative_path_hash)`,
 }
 
 const versionStatement = `INSERT INTO schema_versions (component, version)

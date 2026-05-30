@@ -1,11 +1,14 @@
 package projectingestion
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -240,6 +243,42 @@ func TestOrchestrator_WatchDirectoryBudgetDegradesWithSkippedCount(t *testing.T)
 	}
 }
 
+func TestOrchestrator_SlowPathEventLogsDiagnosticWithoutRawPath(t *testing.T) {
+	registry := newLiveRegistry(t)
+	project, _ := registry.Get("live_project")
+	watcher := newFakeWatcher()
+	ingestion := &blockingIngestionRunner{release: make(chan struct{})}
+	var logs bytes.Buffer
+	orchestrator := NewOrchestrator(registry, ingestion, OrchestratorOptions{
+		LiveUpdatesEnabled: true,
+		DebounceInterval:   10 * time.Millisecond,
+		QueueDepth:         8,
+		WorkerCount:        1,
+		TaskWarnAfter:      10 * time.Millisecond,
+		Logger:             slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+	orchestrator.SetWatcherFactory(func() (FileWatcher, error) {
+		return watcher, nil
+	})
+
+	if err := orchestrator.Start(context.Background()); err != nil {
+		t.Fatalf("start orchestrator: %v", err)
+	}
+	watcher.events <- WatchEvent{Path: filepath.Join(project.CanonicalRootPath, "slow.go"), Op: WatchWrite}
+	waitUntil(t, func() bool {
+		return strings.Contains(logs.String(), "live ingestion task still running")
+	})
+	if strings.Contains(logs.String(), "slow.go") || strings.Contains(logs.String(), project.CanonicalRootPath) {
+		t.Fatalf("slow diagnostic leaked raw path/root: %s", logs.String())
+	}
+	close(ingestion.release)
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orchestrator.Stop(stopCtx); err != nil {
+		t.Fatalf("stop orchestrator: %v", err)
+	}
+}
+
 type fakeWatcher struct {
 	events chan WatchEvent
 	errors chan error
@@ -353,6 +392,23 @@ func (errFakeOverflow) Error() string {
 
 func (errFakeOverflow) Is(target error) bool {
 	return target != nil && target.Error() == "fsnotify: queue or buffer overflow"
+}
+
+type blockingIngestionRunner struct {
+	release chan struct{}
+}
+
+func (runner *blockingIngestionRunner) IngestProject(context.Context, string, Trigger) (Run, error) {
+	return Run{}, nil
+}
+
+func (runner *blockingIngestionRunner) IngestPath(ctx context.Context, _ string, _ string, _ Trigger) (Run, error) {
+	select {
+	case <-runner.release:
+		return Run{Status: RunStatusCompleted}, nil
+	case <-ctx.Done():
+		return Run{}, ctx.Err()
+	}
 }
 
 func newTestOrchestrator(registry *projectregistry.Registry, ingestion *fakeIngestionRunner, watcher *fakeWatcher) *Orchestrator {

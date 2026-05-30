@@ -165,8 +165,11 @@ After registration, new Codex Desktop sessions can discover these tools:
 - `projects.ingest`
 - `projects.ingestion_status`
 - `projects.files.list`
+- `projects.files.get`
 - `projects.file.chunks`
 - `projects.symbols.list`
+- `projects.headings.list`
+- `projects.file.outline`
 
 Codex may expose underscore-normalized callable names such as `tasks_create`, `projects_digest`, or `projects_ingest`; the server accepts both dotted MCP tool names and underscore aliases.
 

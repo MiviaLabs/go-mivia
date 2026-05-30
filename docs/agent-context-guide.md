@@ -65,10 +65,12 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Run metadata-only digest | `POST /projects/{id}/digest-runs` | `projects.digest` |
 | Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
 | Get ingestion run | `GET /projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
-| List indexed files | `GET /projects/{id}/files?status=eligible&extension=.go` | `projects.files.list` |
+| List indexed files | `GET /projects/{id}/files?status=eligible&extension=.go&path_prefix=cmd/` | `projects.files.list` |
 | Get indexed file metadata | `GET /projects/{id}/files/{file_id}` | `projects.files.get` |
 | Read bounded chunks | `GET /projects/{id}/files/{file_id}/chunks` | `projects.file.chunks` |
-| List symbols | `GET /projects/{id}/symbols` | `projects.symbols.list` |
+| List symbols | `GET /projects/{id}/symbols?kind=function&name_prefix=Run` | `projects.symbols.list` |
+| List document headings | `GET /projects/{id}/headings?file_id={file_id}` | `projects.headings.list` |
+| Get file outline without chunk text | `GET /projects/{id}/files/{file_id}/outline` | `projects.file.outline` |
 
 MCP resources also expose stable IDs:
 
@@ -76,6 +78,7 @@ MCP resources also expose stable IDs:
 - `mivialabs://projects/{id}/digest-runs/{run_id}`
 - `mivialabs://projects/{id}/files/{file_id}`
 - `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`
+- `mivialabs://projects/{id}/files/{file_id}/outline`
 - `mivialabs://projects/{id}/symbols/{symbol_id}`
 
 ## Common Workflows

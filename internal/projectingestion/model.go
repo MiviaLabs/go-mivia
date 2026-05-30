@@ -92,11 +92,18 @@ type Chunk struct {
 type SymbolKind string
 
 const (
-	SymbolKindPackage  SymbolKind = "package"
-	SymbolKindImport   SymbolKind = "import"
-	SymbolKindFunction SymbolKind = "function"
-	SymbolKindMethod   SymbolKind = "method"
-	SymbolKindType     SymbolKind = "type"
+	SymbolKindPackage   SymbolKind = "package"
+	SymbolKindImport    SymbolKind = "import"
+	SymbolKindFunction  SymbolKind = "function"
+	SymbolKindMethod    SymbolKind = "method"
+	SymbolKindType      SymbolKind = "type"
+	SymbolKindClass     SymbolKind = "class"
+	SymbolKindExport    SymbolKind = "export"
+	SymbolKindStage     SymbolKind = "stage"
+	SymbolKindTarget    SymbolKind = "target"
+	SymbolKindPath      SymbolKind = "path"
+	SymbolKindKey       SymbolKind = "key"
+	SymbolKindMigration SymbolKind = "migration"
 )
 
 type Symbol struct {

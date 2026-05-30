@@ -120,6 +120,59 @@ func TestCallToolWithIngestion_ListFilesFiltersByExtension(t *testing.T) {
 	}
 }
 
+func TestCallToolWithIngestion_P2DiscoveryTools(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+
+	if _, err := ingestion.IngestProject(context.Background(), "example-service", projectingestion.TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	filesResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.files.list", json.RawMessage(`{"id":"example-service","path_prefix":"docs/","present":true,"page_size":10}`))
+	if err != nil {
+		t.Fatalf("call files list tool: %v", err)
+	}
+	files := filesResult["structuredContent"].(projectingestion.FileList)
+	if len(files.Files) != 1 || files.Files[0].RelativePath != "docs/guide.md" {
+		t.Fatalf("unexpected path-prefix filtered files: %#v", files)
+	}
+
+	symbolsResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.symbols.list", json.RawMessage(`{"id":"example-service","kind":"function","name_prefix":"load","extension":"ts","page_size":10}`))
+	if err != nil {
+		t.Fatalf("call symbols list tool: %v", err)
+	}
+	symbols := symbolsResult["structuredContent"].(projectingestion.SymbolList)
+	if len(symbols.Symbols) != 1 || symbols.Symbols[0].Name != "load" {
+		t.Fatalf("unexpected filtered symbols: %#v", symbols)
+	}
+
+	headingsResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.headings.list", marshalArgs(t, map[string]any{
+		"id":      "example-service",
+		"file_id": files.Files[0].ID,
+	}))
+	if err != nil {
+		t.Fatalf("call headings list tool: %v", err)
+	}
+	headings := headingsResult["structuredContent"].(projectingestion.HeadingList)
+	if len(headings.Headings) != 2 || headings.Headings[0].Text != "Guide" {
+		t.Fatalf("unexpected headings: %#v", headings)
+	}
+
+	outlineResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.file.outline", marshalArgs(t, map[string]string{
+		"id":      "example-service",
+		"file_id": files.Files[0].ID,
+	}))
+	if err != nil {
+		t.Fatalf("call outline tool: %v", err)
+	}
+	body := marshalResult(t, outlineResult)
+	if strings.Contains(body, "## Setup") {
+		t.Fatalf("outline leaked chunk text: %s", body)
+	}
+	outline := outlineResult["structuredContent"].(projectingestion.FileOutline)
+	if outline.File.ID != files.Files[0].ID || len(outline.Headings) != 2 || len(outline.Chunks) == 0 {
+		t.Fatalf("unexpected outline: %#v", outline)
+	}
+}
+
 func newServices(t *testing.T) (*projectregistry.Registry, *projectregistry.DigestService) {
 	t.Helper()
 	root := t.TempDir()
@@ -153,8 +206,9 @@ func newIngestionServices(t *testing.T) (*projectregistry.Registry, *projectregi
 	t.Helper()
 	root := t.TempDir()
 	for name, content := range map[string]string{
-		"cmd/main.go": "package main\nfunc main() {}\n",
-		"README.md":   "# example\n",
+		"cmd/main.go":   "package main\nfunc main() {}\n",
+		"docs/guide.md": "# Guide\n\n## Setup\n",
+		"web/app.ts":    "export class Widget {}\nexport const load = () => true\n",
 	} {
 		fullPath := filepath.Join(root, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {

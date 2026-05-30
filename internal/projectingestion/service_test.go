@@ -442,7 +442,7 @@ func TestIngestProject_EligibleToSkippedRemovesDerivedGraphEntries(t *testing.T)
 	if len(chunks.Chunks) != 0 {
 		t.Fatalf("eligible-to-skipped retained stale chunks: %#v", chunks.Chunks)
 	}
-	symbols, err := svc.ListSymbols(ctx, "example-service", Pagination{PageSize: MaxPageSize})
+	symbols, err := svc.ListSymbols(ctx, "example-service", SymbolFilter{}, Pagination{PageSize: MaxPageSize})
 	if err != nil {
 		t.Fatalf("list symbols: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestIngestProject_SkippedToEligibleStoresDerivedGraphEntries(t *testing.T) 
 	if len(chunks.Chunks) != 1 || !strings.Contains(chunks.Chunks[0].Text, "func Run") {
 		t.Fatalf("expected eligible chunks after skipped-to-eligible transition, got %#v", chunks.Chunks)
 	}
-	symbols, err := svc.ListSymbols(ctx, "example-service", Pagination{PageSize: MaxPageSize})
+	symbols, err := svc.ListSymbols(ctx, "example-service", SymbolFilter{}, Pagination{PageSize: MaxPageSize})
 	if err != nil {
 		t.Fatalf("list symbols: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestIngestProject_ReplacesStaleGraphEntriesForChangedFile(t *testing.T) {
 		t.Fatalf("second ingest: %v", err)
 	}
 
-	symbols, err := svc.ListSymbols(ctx, "example-service", Pagination{PageSize: MaxPageSize})
+	symbols, err := svc.ListSymbols(ctx, "example-service", SymbolFilter{}, Pagination{PageSize: MaxPageSize})
 	if err != nil {
 		t.Fatalf("list symbols: %v", err)
 	}
@@ -634,6 +634,132 @@ func TestIngestPath_RejectsPathEscape(t *testing.T) {
 	}
 }
 
+func TestListFiles_P2FiltersUseSafeStateMetadata(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "src", "app.go"), "package main\n")
+	writeFile(t, filepath.Join(root, "docs", "guide.md"), "# Guide\n")
+	writeFile(t, filepath.Join(root, "docs", "secret.txt"), "access_token = placeholder\n")
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	present := true
+	files, err := svc.ListFiles(ctx, "example-service", FileStateFilter{
+		PathPrefix: "docs/",
+		Present:    &present,
+	}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list docs files: %v", err)
+	}
+	if len(files.Files) != 1 || files.Files[0].RelativePath != "docs/guide.md" {
+		t.Fatalf("expected docs prefix filter to return safe present docs file, got %#v", files.Files)
+	}
+	skipped, err := svc.ListFiles(ctx, "example-service", FileStateFilter{
+		Status:        FileStatusSkipped,
+		SkippedReason: SkipReasonSensitiveContent,
+	}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list sensitive skips: %v", err)
+	}
+	if len(skipped.Files) != 1 || skipped.Files[0].RelativePath != "" || skipped.Files[0].SkippedReason != string(SkipReasonSensitiveContent) {
+		t.Fatalf("expected one safe sensitive skip without relative path, got %#v", skipped.Files)
+	}
+	recent, err := svc.ListFiles(ctx, "example-service", FileStateFilter{ModifiedSince: time.Date(2026, 5, 30, 0, 0, 0, 0, time.UTC)}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list recently modified files: %v", err)
+	}
+	if len(recent.Files) == 0 {
+		t.Fatalf("expected modified-since filter to keep ingested files")
+	}
+}
+
+func TestSymbolsHeadingsAndOutline_P2DiscoveryFlows(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc Run() {}\n")
+	writeFile(t, filepath.Join(root, "docs", "guide.md"), "# Guide\n\n## Setup\n")
+	writeFile(t, filepath.Join(root, "web", "app.ts"), "export class Widget {}\nexport const load = () => true\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	goFileID := repoFileID("example_ns", findState(t, states, "cmd/main.go").RelativePathHash)
+	mdFileID := repoFileID("example_ns", findState(t, states, "docs/guide.md").RelativePathHash)
+
+	filtered, err := svc.ListSymbols(ctx, "example-service", SymbolFilter{
+		Kind:       SymbolKindFunction,
+		NamePrefix: "R",
+		FileID:     goFileID,
+		Extension:  ".go",
+		Package:    "main",
+	}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list filtered symbols: %v", err)
+	}
+	if len(filtered.Symbols) != 1 || filtered.Symbols[0].Name != "Run" {
+		t.Fatalf("expected filtered Run symbol, got %#v", filtered.Symbols)
+	}
+	tsSymbols, err := svc.ListSymbols(ctx, "example-service", SymbolFilter{Extension: ".ts"}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list ts symbols: %v", err)
+	}
+	if len(tsSymbols.Symbols) < 2 {
+		t.Fatalf("expected TypeScript class/function symbols, got %#v", tsSymbols.Symbols)
+	}
+	headings, err := svc.ListHeadings(ctx, "example-service", mdFileID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list headings: %v", err)
+	}
+	if len(headings.Headings) != 2 || headings.Headings[0].Text != "Guide" {
+		t.Fatalf("expected markdown headings, got %#v", headings.Headings)
+	}
+	outline, err := svc.GetFileOutline(ctx, "example-service", mdFileID)
+	if err != nil {
+		t.Fatalf("get file outline: %v", err)
+	}
+	if outline.File.ID != mdFileID || len(outline.Headings) != 2 || len(outline.Chunks) == 0 {
+		t.Fatalf("unexpected outline: %#v", outline)
+	}
+}
+
+func TestInfraParsers_ExtractDependencyFreeSymbols(t *testing.T) {
+	cases := []struct {
+		name     string
+		parse    func() ([]Symbol, error)
+		want     string
+		wantKind SymbolKind
+	}{
+		{name: "docker", parse: func() ([]Symbol, error) { return ParseDockerfileSymbols([]byte("FROM alpine AS build\n")) }, want: "build", wantKind: SymbolKindStage},
+		{name: "make", parse: func() ([]Symbol, error) { return ParseMakefileSymbols([]byte("test:\n\tgo test ./...\n")) }, want: "test", wantKind: SymbolKindTarget},
+		{name: "openapi", parse: func() ([]Symbol, error) {
+			return ParseOpenAPIPathSymbols([]byte("openapi: 3.0.0\npaths:\n  /healthz:\n    get: {}\n"))
+		}, want: "/healthz", wantKind: SymbolKindPath},
+		{name: "json", parse: func() ([]Symbol, error) { return ParseJSONTopLevelKeys([]byte(`{"scripts":{},"name":"app"}`)) }, want: "name", wantKind: SymbolKindKey},
+		{name: "config", parse: func() ([]Symbol, error) { return ParseConfigTopLevelKeys([]byte("services:\n  api: {}\n")) }, want: "services", wantKind: SymbolKindKey},
+		{name: "sql", parse: func() ([]Symbol, error) {
+			return ParseSQLMigrationSymbols("db/001_create_users.sql", []byte("create table users(id int);\n"))
+		}, want: "001_create_users", wantKind: SymbolKindMigration},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			symbols, err := tc.parse()
+			if err != nil {
+				t.Fatalf("parse symbols: %v", err)
+			}
+			if len(symbols) == 0 || symbols[0].Name != tc.want || symbols[0].Kind != tc.wantKind {
+				t.Fatalf("expected %s/%s, got %#v", tc.wantKind, tc.want, symbols)
+			}
+		})
+	}
+}
+
 func newTestService(t *testing.T, root string) (*Service, *ladybug.MemoryGraph, *SQLiteStore) {
 	t.Helper()
 	return newTestServiceWithOptions(t, root, projectregistry.UpdatePolicyManual, 1024)
@@ -660,7 +786,7 @@ func newTestServiceWithOptions(t *testing.T, root string, updatePolicy string, m
 		GraphNamespace:        "example_ns",
 		DigestMode:            projectregistry.DigestModeContentGraph,
 		UpdatePolicy:          updatePolicy,
-		Include:               []string{"**/*.go", "**/*.md", "**/*.txt"},
+		Include:               []string{"**/*"},
 		FollowSymlinks:        false,
 		MaxFileBytes:          4096,
 		MaxChunkBytes:         maxChunkBytes,

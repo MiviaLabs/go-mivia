@@ -12,8 +12,12 @@ import (
 var ErrRunNotFound = errors.New("ingestion run not found")
 
 type FileStateFilter struct {
-	Status    FileStatus
-	Extension string
+	Status        FileStatus
+	Extension     string
+	PathPrefix    string
+	SkippedReason SkipReason
+	Present       *bool
+	ModifiedSince time.Time
 }
 
 type SQLiteStore struct {
@@ -283,6 +287,22 @@ func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string,
 	if filter.Extension != "" {
 		query += ` AND lower(relative_path) LIKE ?`
 		args = append(args, "%"+strings.ToLower(filter.Extension))
+	}
+	if filter.PathPrefix != "" {
+		query += ` AND relative_path_safe = 1 AND relative_path LIKE ?`
+		args = append(args, filter.PathPrefix+"%")
+	}
+	if filter.SkippedReason != "" {
+		query += ` AND skipped_reason = ?`
+		args = append(args, string(filter.SkippedReason))
+	}
+	if filter.Present != nil {
+		query += ` AND present = ?`
+		args = append(args, boolToInt(*filter.Present))
+	}
+	if !filter.ModifiedSince.IsZero() {
+		query += ` AND modified_at >= ?`
+		args = append(args, formatTime(filter.ModifiedSince))
 	}
 	query += ` ORDER BY relative_path_hash`
 	if limit > 0 {

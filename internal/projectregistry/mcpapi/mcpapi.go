@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
@@ -146,12 +147,16 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		return toolResult(run), err
 	case "projects.files.list", "projects_files_list":
 		var input struct {
-			ID        string          `json:"id"`
-			Status    string          `json:"status,omitempty"`
-			Extension string          `json:"extension,omitempty"`
-			PageSize  int             `json:"page_size,omitempty"`
-			PageToken string          `json:"page_token,omitempty"`
-			Meta      json.RawMessage `json:"_meta,omitempty"`
+			ID            string          `json:"id"`
+			Status        string          `json:"status,omitempty"`
+			Extension     string          `json:"extension,omitempty"`
+			PathPrefix    string          `json:"path_prefix,omitempty"`
+			SkippedReason string          `json:"skipped_reason,omitempty"`
+			Present       *bool           `json:"present,omitempty"`
+			ModifiedSince string          `json:"modified_since,omitempty"`
+			PageSize      int             `json:"page_size,omitempty"`
+			PageToken     string          `json:"page_token,omitempty"`
+			Meta          json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
@@ -159,7 +164,7 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		if ingestion == nil {
 			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
 		}
-		filter, err := fileFilter(input.Status, input.Extension)
+		filter, err := fileFilter(input.Status, input.Extension, input.PathPrefix, input.SkippedReason, input.Present, input.ModifiedSince)
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +203,34 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		return toolResult(chunks), err
 	case "projects.symbols.list", "projects_symbols_list":
 		var input struct {
+			ID         string          `json:"id"`
+			Kind       string          `json:"kind,omitempty"`
+			NamePrefix string          `json:"name_prefix,omitempty"`
+			FileID     string          `json:"file_id,omitempty"`
+			Extension  string          `json:"extension,omitempty"`
+			Package    string          `json:"package,omitempty"`
+			PageSize   int             `json:"page_size,omitempty"`
+			PageToken  string          `json:"page_token,omitempty"`
+			Meta       json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		symbols, err := ingestion.ListSymbols(ctx, strings.TrimSpace(input.ID), projectingestion.SymbolFilter{
+			Kind:       projectingestion.SymbolKind(strings.TrimSpace(input.Kind)),
+			NamePrefix: input.NamePrefix,
+			FileID:     strings.TrimSpace(input.FileID),
+			Extension:  input.Extension,
+			Package:    input.Package,
+		}, projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
+		return toolResult(symbols), err
+	case "projects.headings.list", "projects_headings_list":
+		var input struct {
 			ID        string          `json:"id"`
+			FileID    string          `json:"file_id,omitempty"`
 			PageSize  int             `json:"page_size,omitempty"`
 			PageToken string          `json:"page_token,omitempty"`
 			Meta      json.RawMessage `json:"_meta,omitempty"`
@@ -209,8 +241,22 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		if ingestion == nil {
 			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
 		}
-		symbols, err := ingestion.ListSymbols(ctx, strings.TrimSpace(input.ID), projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
-		return toolResult(symbols), err
+		headings, err := ingestion.ListHeadings(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.FileID), projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
+		return toolResult(headings), err
+	case "projects.file.outline", "projects_file_outline":
+		var input struct {
+			ID     string          `json:"id"`
+			FileID string          `json:"file_id"`
+			Meta   json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		outline, err := ingestion.GetFileOutline(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.FileID))
+		return toolResult(outline), err
 	default:
 		return nil, projectregistry.ErrProjectNotFound
 	}
@@ -261,6 +307,13 @@ func ReadResourceWithIngestion(ctx context.Context, registry *projectregistry.Re
 		}
 		return resourceResult(uri, symbol)
 	}
+	if ingestion != nil && len(parts) == 4 && parts[1] == "files" && parts[3] == "outline" {
+		outline, err := ingestion.GetFileOutline(ctx, parts[0], parts[2])
+		if err != nil {
+			return nil, err
+		}
+		return resourceResult(uri, outline)
+	}
 	return nil, projectregistry.ErrProjectNotFound
 }
 
@@ -292,9 +345,13 @@ func ingestionToolDefinitions() []map[string]any {
 			"title":       "List Project Files",
 			"description": "List bounded file ingestion metadata without root paths or skipped sensitive content.",
 			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
-				"id":        map[string]any{"type": "string", "minLength": 1},
-				"status":    map[string]any{"type": "string", "enum": []string{"eligible", "skipped", "absent"}},
-				"extension": map[string]any{"type": "string", "description": "File extension filter, with or without a leading dot. Whitespace and path separators are invalid."},
+				"id":             map[string]any{"type": "string", "minLength": 1},
+				"status":         map[string]any{"type": "string", "enum": []string{"eligible", "skipped", "absent"}},
+				"extension":      map[string]any{"type": "string", "description": "File extension filter, with or without a leading dot. Whitespace and path separators are invalid."},
+				"path_prefix":    map[string]any{"type": "string", "description": "Safe project-relative path prefix. Absolute paths and parent traversal are invalid."},
+				"skipped_reason": map[string]any{"type": "string"},
+				"present":        map[string]any{"type": "boolean"},
+				"modified_since": map[string]any{"type": "string", "format": "date-time"},
 			}), []string{"id"}),
 		},
 		{
@@ -321,8 +378,31 @@ func ingestionToolDefinitions() []map[string]any {
 			"title":       "List Project Symbols",
 			"description": "List bounded symbol metadata for an opted-in content graph project.",
 			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
-				"id": map[string]any{"type": "string", "minLength": 1},
+				"id":          map[string]any{"type": "string", "minLength": 1},
+				"kind":        map[string]any{"type": "string"},
+				"name_prefix": map[string]any{"type": "string"},
+				"file_id":     map[string]any{"type": "string"},
+				"extension":   map[string]any{"type": "string"},
+				"package":     map[string]any{"type": "string"},
 			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.headings.list",
+			"title":       "List Project Document Headings",
+			"description": "List bounded Markdown/document heading metadata without chunk text.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":      map[string]any{"type": "string", "minLength": 1},
+				"file_id": map[string]any{"type": "string"},
+			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.file.outline",
+			"title":       "Get Project File Outline",
+			"description": "Fetch bounded file metadata, headings, symbols, and chunk ids without full chunk text.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":      map[string]any{"type": "string", "minLength": 1},
+				"file_id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id", "file_id"}),
 		},
 	}
 }
@@ -350,10 +430,17 @@ func ingestionResourceTemplates() []map[string]any {
 			"description": "Project symbol metadata by opaque symbol id.",
 			"mimeType":    "application/json",
 		},
+		{
+			"uriTemplate": "mivialabs://projects/{id}/files/{file_id}/outline",
+			"name":        "project_file_outline",
+			"title":       "Project File Outline",
+			"description": "Bounded project file outline without full chunk text.",
+			"mimeType":    "application/json",
+		},
 	}
 }
 
-func fileFilter(rawStatus string, rawExtension string) (projectingestion.FileStateFilter, error) {
+func fileFilter(rawStatus string, rawExtension string, rawPathPrefix string, rawSkippedReason string, present *bool, rawModifiedSince string) (projectingestion.FileStateFilter, error) {
 	filter := projectingestion.FileStateFilter{}
 	status := strings.TrimSpace(rawStatus)
 	if status != "" {
@@ -369,6 +456,24 @@ func fileFilter(rawStatus string, rawExtension string) (projectingestion.FileSta
 		return projectingestion.FileStateFilter{}, err
 	}
 	filter.Extension = extension
+	pathPrefix, err := projectingestion.NormalizePathPrefix(rawPathPrefix)
+	if err != nil {
+		return projectingestion.FileStateFilter{}, err
+	}
+	filter.PathPrefix = pathPrefix
+	skippedReason := strings.TrimSpace(rawSkippedReason)
+	if skippedReason != "" {
+		filter.SkippedReason = projectingestion.SkipReason(skippedReason)
+	}
+	filter.Present = present
+	modifiedSince := strings.TrimSpace(rawModifiedSince)
+	if modifiedSince != "" {
+		parsed, err := time.Parse(time.RFC3339, modifiedSince)
+		if err != nil {
+			return projectingestion.FileStateFilter{}, projectregistry.ErrInvalidInput
+		}
+		filter.ModifiedSince = parsed.UTC()
+	}
 	return filter, nil
 }
 

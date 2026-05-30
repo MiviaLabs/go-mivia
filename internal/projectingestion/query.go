@@ -22,6 +22,14 @@ type Pagination struct {
 	PageToken string
 }
 
+type SymbolFilter struct {
+	Kind       SymbolKind
+	NamePrefix string
+	FileID     string
+	Extension  string
+	Package    string
+}
+
 type RunMetadata struct {
 	ID            string         `json:"id"`
 	ProjectID     string         `json:"project_id"`
@@ -91,6 +99,40 @@ type SymbolMetadata struct {
 type SymbolList struct {
 	Symbols       []SymbolMetadata `json:"symbols"`
 	NextPageToken string           `json:"next_page_token,omitempty"`
+}
+
+type HeadingMetadata struct {
+	ID          string `json:"id"`
+	FileID      string `json:"file_id"`
+	ProjectID   string `json:"project_id"`
+	Level       int    `json:"level"`
+	Text        string `json:"text"`
+	ParentIndex int    `json:"parent_index"`
+	StartLine   int    `json:"start_line"`
+	EndLine     int    `json:"end_line"`
+}
+
+type HeadingList struct {
+	Headings      []HeadingMetadata `json:"headings"`
+	NextPageToken string            `json:"next_page_token,omitempty"`
+}
+
+type OutlineChunkMetadata struct {
+	ID        string `json:"id"`
+	FileID    string `json:"file_id"`
+	ProjectID string `json:"project_id"`
+	Index     int    `json:"index"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	ByteStart int    `json:"byte_start"`
+	ByteEnd   int    `json:"byte_end"`
+}
+
+type FileOutline struct {
+	File     FileMetadata           `json:"file"`
+	Headings []HeadingMetadata      `json:"headings,omitempty"`
+	Symbols  []SymbolMetadata       `json:"symbols,omitempty"`
+	Chunks   []OutlineChunkMetadata `json:"chunks,omitempty"`
 }
 
 func MetadataForRun(run Run) RunMetadata {

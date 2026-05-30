@@ -19,6 +19,7 @@ type OrchestratorOptions struct {
 	WorkerCount              int
 	InitialScanOnStart       bool
 	MaxWatchedDirectoryCount int
+	TaskWarnAfter            time.Duration
 	Logger                   *slog.Logger
 }
 
@@ -89,6 +90,9 @@ func NewOrchestrator(registry *projectregistry.Registry, ingestion ingestionRunn
 	}
 	if options.WorkerCount <= 0 {
 		options.WorkerCount = 1
+	}
+	if options.TaskWarnAfter <= 0 {
+		options.TaskWarnAfter = 30 * time.Second
 	}
 	return &Orchestrator{
 		registry:       registry,
@@ -364,17 +368,21 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 				continue
 			}
 			pathHash := shortHash(task.relativePath)
+			startedAt := time.Now()
 			orchestrator.logInfo("live ingestion path event started",
 				slog.String("project_id", projectWatcher.project.ID),
 				slog.String("relative_path_hash", pathHash),
 			)
+			done := orchestrator.monitorLiveTask(ctx, projectWatcher.project.ID, pathHash, "path", startedAt)
 			run, err := orchestrator.ingestion.IngestPath(ctx, projectWatcher.project.ID, task.relativePath, TriggerLive)
+			close(done)
 			if err != nil {
 				orchestrator.logWarn("live ingestion path event failed",
 					slog.String("project_id", projectWatcher.project.ID),
 					slog.String("relative_path_hash", pathHash),
 					slog.String("error_category", "ingest_failed"),
 					slog.String("error", err.Error()),
+					slog.Duration("elapsed", time.Since(startedAt)),
 				)
 				continue
 			}
@@ -385,6 +393,7 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 				slog.String("status", string(run.Status)),
 				slog.Int("files_ingested", run.FilesIngested),
 				slog.Int("files_skipped", run.FilesSkipped),
+				slog.Duration("elapsed", time.Since(startedAt)),
 			)
 		}
 	}
@@ -395,8 +404,30 @@ func (orchestrator *Orchestrator) enqueueTask(ctx context.Context, projectWatche
 	case projectWatcher.tasks <- task:
 	case <-ctx.Done():
 	default:
+		orchestrator.logWarn("live ingestion task queue full; rescan queued", slog.String("project_id", projectWatcher.project.ID))
 		orchestrator.enqueueRescan(projectWatcher)
 	}
+}
+
+func (orchestrator *Orchestrator) monitorLiveTask(ctx context.Context, projectID string, relativePathHash string, taskType string, startedAt time.Time) chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(orchestrator.options.TaskWarnAfter)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-done:
+		case <-timer.C:
+			orchestrator.logWarn("live ingestion task still running",
+				slog.String("project_id", projectID),
+				slog.String("relative_path_hash", relativePathHash),
+				slog.String("task_type", taskType),
+				slog.String("error_category", "live_task_slow"),
+				slog.Duration("elapsed", time.Since(startedAt)),
+			)
+		}
+	}()
+	return done
 }
 
 func (orchestrator *Orchestrator) enqueueRescan(projectWatcher *projectWatcher) {

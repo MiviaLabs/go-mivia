@@ -38,10 +38,10 @@ Use the smallest sequence that answers the task:
 1. Confirm the MCP endpoint is localhost or loopback.
 2. Call `tools/list`.
 3. Call `projects.list` or `projects.get` to confirm `enabled`, `digest_mode`, `update_policy`, and `graph_storage`.
-4. Call `projects.files.list` or `projects.symbols.list` with small `page_size` to confirm indexed content exists and narrow to stable opaque IDs.
+4. Call `projects.files.list`, `projects.symbols.list`, or `projects.headings.list` with small `page_size` to confirm indexed content exists and narrow to stable opaque IDs.
 5. Call `projects.ingest` only when a manual rescan is needed; then call `projects.ingestion_status` with the returned `run_id`.
 6. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
-7. Call `projects.file.chunks` only after a `file_id` is known; keep `page_size` and `max_chunk_bytes` bounded.
+7. Call `projects.file.outline` first when file structure is enough; call `projects.file.chunks` only after a `file_id` is known and chunk text is needed. Keep `page_size` and `max_chunk_bytes` bounded.
 8. Switch to semantic tools for symbol bodies, references, and edit planning.
 9. Switch to shell for tests, diffs, logs, generated files, and anything changed after the last ingestion.
 
@@ -57,7 +57,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Research metadata only | `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get` |
 | Project registry | `projects.list`, `projects.get` |
 | Metadata digest | `projects.digest` |
-| Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list` |
+| Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.headings.list`, `projects.file.outline` |
 
 Resources:
 

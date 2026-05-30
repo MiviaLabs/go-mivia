@@ -304,6 +304,13 @@ func (svc *Service) ListFiles(ctx context.Context, projectID string, filter File
 		}
 		filter.Extension = normalized
 	}
+	if filter.PathPrefix != "" {
+		normalized, err := NormalizePathPrefix(filter.PathPrefix)
+		if err != nil {
+			return FileList{}, err
+		}
+		filter.PathPrefix = normalized
+	}
 	project, err := svc.projectForQuery(projectID)
 	if err != nil {
 		return FileList{}, err
@@ -317,6 +324,27 @@ func (svc *Service) ListFiles(ctx context.Context, projectID string, filter File
 		files = append(files, MetadataForFileState(project, state))
 	}
 	return FileList{Files: files, NextPageToken: nextToken}, nil
+}
+
+func NormalizePathPrefix(raw string) (string, error) {
+	prefix := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	if prefix == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(prefix, "/") || strings.Contains(prefix, "\x00") {
+		return "", ErrInvalidInput
+	}
+	cleaned := path.Clean(prefix)
+	if cleaned == "." {
+		return "", nil
+	}
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", ErrInvalidInput
+	}
+	if strings.HasSuffix(prefix, "/") && !strings.HasSuffix(cleaned, "/") {
+		cleaned += "/"
+	}
+	return cleaned, nil
 }
 
 func NormalizeFileExtension(raw string) (string, error) {
@@ -389,12 +417,76 @@ func (svc *Service) GetChunk(ctx context.Context, projectID string, fileID strin
 	return svc.graph.GetChunk(ctx, project, fileID, chunkID, effectiveMaxChunkBytes(project, maxChunkBytes))
 }
 
-func (svc *Service) ListSymbols(ctx context.Context, projectID string, pagination Pagination) (SymbolList, error) {
+func (svc *Service) ListSymbols(ctx context.Context, projectID string, filter SymbolFilter, pagination Pagination) (SymbolList, error) {
+	normalized, err := NormalizeSymbolFilter(filter)
+	if err != nil {
+		return SymbolList{}, err
+	}
 	project, err := svc.projectForQuery(projectID)
 	if err != nil {
 		return SymbolList{}, err
 	}
-	return svc.graph.ListSymbols(ctx, project, pagination)
+	return svc.graph.ListSymbols(ctx, project, normalized, pagination)
+}
+
+func (svc *Service) ListHeadings(ctx context.Context, projectID string, fileID string, pagination Pagination) (HeadingList, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return HeadingList{}, err
+	}
+	return svc.graph.ListHeadings(ctx, project, strings.TrimSpace(fileID), pagination)
+}
+
+func (svc *Service) GetFileOutline(ctx context.Context, projectID string, fileID string) (FileOutline, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return FileOutline{}, err
+	}
+	if !validOpaqueID(fileID) {
+		return FileOutline{}, ErrInvalidInput
+	}
+	prefix := project.GraphNamespace + ":"
+	if !strings.HasPrefix(fileID, prefix) {
+		return FileOutline{}, ErrIngestionNotFound
+	}
+	return svc.graph.GetFileOutline(ctx, project, strings.TrimSpace(fileID))
+}
+
+func NormalizeSymbolFilter(filter SymbolFilter) (SymbolFilter, error) {
+	filter.NamePrefix = strings.TrimSpace(filter.NamePrefix)
+	filter.FileID = strings.TrimSpace(filter.FileID)
+	filter.Package = strings.TrimSpace(filter.Package)
+	if filter.Extension != "" {
+		extension, err := NormalizeFileExtension(filter.Extension)
+		if err != nil {
+			return SymbolFilter{}, err
+		}
+		filter.Extension = extension
+	}
+	if filter.Kind != "" && !validSymbolKind(filter.Kind) {
+		return SymbolFilter{}, ErrInvalidInput
+	}
+	if filter.NamePrefix != "" && strings.Contains(filter.NamePrefix, "\x00") {
+		return SymbolFilter{}, ErrInvalidInput
+	}
+	if filter.FileID != "" && !validOpaqueID(filter.FileID) {
+		return SymbolFilter{}, ErrInvalidInput
+	}
+	if filter.Package != "" && strings.ContainsAny(filter.Package, "\x00/\\") {
+		return SymbolFilter{}, ErrInvalidInput
+	}
+	return filter, nil
+}
+
+func validSymbolKind(kind SymbolKind) bool {
+	switch kind {
+	case SymbolKindPackage, SymbolKindImport, SymbolKindFunction, SymbolKindMethod, SymbolKindType,
+		SymbolKindClass, SymbolKindExport, SymbolKindStage, SymbolKindTarget, SymbolKindPath,
+		SymbolKindKey, SymbolKindMigration:
+		return true
+	default:
+		return false
+	}
 }
 
 func (svc *Service) GetSymbol(ctx context.Context, projectID string, symbolID string) (SymbolMetadata, error) {
@@ -626,13 +718,44 @@ func fileStateFromSafety(project projectregistry.Project, originalRelative strin
 }
 
 func parseEligible(relative string, content []byte) ([]Symbol, []Heading, error) {
-	switch strings.ToLower(path.Ext(relative)) {
+	extension := strings.ToLower(path.Ext(relative))
+	base := strings.ToLower(path.Base(relative))
+	switch base {
+	case "dockerfile", "containerfile":
+		symbols, err := ParseDockerfileSymbols(content)
+		return symbols, nil, err
+	case "makefile":
+		symbols, err := ParseMakefileSymbols(content)
+		return symbols, nil, err
+	case "openapi.yaml", "openapi.yml", "openapi.json", "swagger.yaml", "swagger.yml", "swagger.json":
+		symbols, err := ParseOpenAPIPathSymbols(content)
+		return symbols, nil, err
+	}
+	switch extension {
 	case ".go":
 		symbols, err := ParseGoFile(relative, content)
+		return symbols, nil, err
+	case ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts":
+		symbols, err := ParseJavaScriptLikeSymbols(content)
 		return symbols, nil, err
 	case ".md", ".markdown":
 		headings, err := ParseMarkdownHeadings(content)
 		return nil, headings, err
+	case ".dockerfile":
+		symbols, err := ParseDockerfileSymbols(content)
+		return symbols, nil, err
+	case ".mk":
+		symbols, err := ParseMakefileSymbols(content)
+		return symbols, nil, err
+	case ".sql":
+		symbols, err := ParseSQLMigrationSymbols(relative, content)
+		return symbols, nil, err
+	case ".json":
+		symbols, err := ParseJSONTopLevelKeys(content)
+		return symbols, nil, err
+	case ".yaml", ".yml", ".toml":
+		symbols, err := ParseConfigTopLevelKeys(content)
+		return symbols, nil, err
 	default:
 		return nil, nil, nil
 	}

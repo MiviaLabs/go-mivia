@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
@@ -25,7 +26,9 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("GET /api/v1/projects/{id}/files", listFilesHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}", getFileHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}/chunks", listChunksHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}/outline", getFileOutlineHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols", listSymbolsHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/headings", listHeadingsHandler(ingestion))
 	}
 }
 
@@ -127,8 +130,32 @@ func listSymbolsHandler(ingestion *projectingestion.Service) http.Handler {
 			writeIngestionResult(w, nil, err, http.StatusOK)
 			return
 		}
-		symbols, err := ingestion.ListSymbols(r.Context(), strings.TrimSpace(r.PathValue("id")), pagination)
+		filter, err := symbolFilter(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		symbols, err := ingestion.ListSymbols(r.Context(), strings.TrimSpace(r.PathValue("id")), filter, pagination)
 		writeIngestionResult(w, symbols, err, http.StatusOK)
+	})
+}
+
+func listHeadingsHandler(ingestion *projectingestion.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pagination, err := paginationFromRequest(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		headings, err := ingestion.ListHeadings(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.URL.Query().Get("file_id")), pagination)
+		writeIngestionResult(w, headings, err, http.StatusOK)
+	})
+}
+
+func getFileOutlineHandler(ingestion *projectingestion.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		outline, err := ingestion.GetFileOutline(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("file_id")))
+		writeIngestionResult(w, outline, err, http.StatusOK)
 	})
 }
 
@@ -190,6 +217,28 @@ func fileFilter(r *http.Request) (projectingestion.FileStateFilter, error) {
 		return projectingestion.FileStateFilter{}, err
 	}
 	filter.Extension = extension
+	pathPrefix, err := projectingestion.NormalizePathPrefix(r.URL.Query().Get("path_prefix"))
+	if err != nil {
+		return projectingestion.FileStateFilter{}, err
+	}
+	filter.PathPrefix = pathPrefix
+	if skippedReason := strings.TrimSpace(r.URL.Query().Get("skipped_reason")); skippedReason != "" {
+		filter.SkippedReason = projectingestion.SkipReason(skippedReason)
+	}
+	if presentRaw := strings.TrimSpace(r.URL.Query().Get("present")); presentRaw != "" {
+		present, err := strconv.ParseBool(presentRaw)
+		if err != nil {
+			return projectingestion.FileStateFilter{}, projectregistry.ErrInvalidInput
+		}
+		filter.Present = &present
+	}
+	if modifiedSinceRaw := strings.TrimSpace(r.URL.Query().Get("modified_since")); modifiedSinceRaw != "" {
+		modifiedSince, err := time.Parse(time.RFC3339, modifiedSinceRaw)
+		if err != nil {
+			return projectingestion.FileStateFilter{}, projectregistry.ErrInvalidInput
+		}
+		filter.ModifiedSince = modifiedSince.UTC()
+	}
 	rawStatus := strings.TrimSpace(r.URL.Query().Get("status"))
 	if rawStatus == "" {
 		return filter, nil
@@ -201,6 +250,16 @@ func fileFilter(r *http.Request) (projectingestion.FileStateFilter, error) {
 	default:
 		return projectingestion.FileStateFilter{}, projectregistry.ErrInvalidInput
 	}
+}
+
+func symbolFilter(r *http.Request) (projectingestion.SymbolFilter, error) {
+	return projectingestion.NormalizeSymbolFilter(projectingestion.SymbolFilter{
+		Kind:       projectingestion.SymbolKind(strings.TrimSpace(r.URL.Query().Get("kind"))),
+		NamePrefix: r.URL.Query().Get("name_prefix"),
+		FileID:     strings.TrimSpace(r.URL.Query().Get("file_id")),
+		Extension:  r.URL.Query().Get("extension"),
+		Package:    r.URL.Query().Get("package"),
+	})
 }
 
 func positiveIntQuery(r *http.Request, name string) (int, error) {

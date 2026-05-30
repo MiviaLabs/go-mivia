@@ -309,10 +309,29 @@ func (store *GraphStore) GetChunk(ctx context.Context, project projectregistry.P
 	return chunkMetadataFromNode(node, maxChunkBytes)
 }
 
-func (store *GraphStore) ListSymbols(ctx context.Context, project projectregistry.Project, pagination Pagination) (SymbolList, error) {
-	nodes, err := store.graph.ListNodes(ctx, "CodeSymbol", map[string]string{"project_id": project.ID})
+func (store *GraphStore) ListSymbols(ctx context.Context, project projectregistry.Project, filter SymbolFilter, pagination Pagination) (SymbolList, error) {
+	nodeFilter := map[string]string{"project_id": project.ID}
+	if filter.Kind != "" {
+		nodeFilter["kind"] = string(filter.Kind)
+	}
+	if filter.FileID != "" {
+		if !validOpaqueID(filter.FileID) {
+			return SymbolList{}, ErrInvalidInput
+		}
+		nodeFilter["repo_file_id"] = filter.FileID
+	}
+	if filter.Package != "" {
+		nodeFilter["package"] = filter.Package
+	}
+	nodes, err := store.graph.ListNodes(ctx, "CodeSymbol", nodeFilter)
 	if err != nil {
 		return SymbolList{}, err
+	}
+	if filter.NamePrefix != "" || filter.Extension != "" {
+		nodes, err = store.filterSymbolNodes(ctx, project, nodes, filter)
+		if err != nil {
+			return SymbolList{}, err
+		}
 	}
 	sort.Slice(nodes, func(i, j int) bool {
 		if nodes[i].Properties["name"] == nodes[j].Properties["name"] {
@@ -333,6 +352,132 @@ func (store *GraphStore) ListSymbols(ctx context.Context, project projectregistr
 		symbols = append(symbols, symbol)
 	}
 	return SymbolList{Symbols: symbols, NextPageToken: nextToken}, nil
+}
+
+func (store *GraphStore) filterSymbolNodes(ctx context.Context, project projectregistry.Project, nodes []ladybug.Node, filter SymbolFilter) ([]ladybug.Node, error) {
+	out := make([]ladybug.Node, 0, len(nodes))
+	fileExtension := make(map[string]string)
+	for _, node := range nodes {
+		if filter.NamePrefix != "" && !strings.HasPrefix(node.Properties["name"], filter.NamePrefix) {
+			continue
+		}
+		if filter.Extension != "" {
+			fileID := node.Properties["repo_file_id"]
+			extension, ok := fileExtension[fileID]
+			if !ok {
+				file, err := store.GetFile(ctx, project, fileID)
+				if errors.Is(err, ErrIngestionNotFound) {
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				extension = strings.ToLower(file.Extension)
+				fileExtension[fileID] = extension
+			}
+			if extension != filter.Extension {
+				continue
+			}
+		}
+		out = append(out, node)
+	}
+	return out, nil
+}
+
+func (store *GraphStore) ListHeadings(ctx context.Context, project projectregistry.Project, fileID string, pagination Pagination) (HeadingList, error) {
+	filter := map[string]string{"project_id": project.ID}
+	if strings.TrimSpace(fileID) != "" {
+		if !validOpaqueID(fileID) {
+			return HeadingList{}, ErrInvalidInput
+		}
+		filter["repo_file_id"] = fileID
+	}
+	nodes, err := store.graph.ListNodes(ctx, "DocumentHeading", filter)
+	if err != nil {
+		return HeadingList{}, err
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		leftFile := nodes[i].Properties["repo_file_id"]
+		rightFile := nodes[j].Properties["repo_file_id"]
+		if leftFile != rightFile {
+			return leftFile < rightFile
+		}
+		leftLine, _ := strconv.Atoi(nodes[i].Properties["start_line"])
+		rightLine, _ := strconv.Atoi(nodes[j].Properties["start_line"])
+		if leftLine == rightLine {
+			return nodes[i].ID < nodes[j].ID
+		}
+		return leftLine < rightLine
+	})
+	window, nextToken, err := paginate(nodes, pagination)
+	if err != nil {
+		return HeadingList{}, err
+	}
+	headings := make([]HeadingMetadata, 0, len(window))
+	for _, node := range window {
+		heading, err := headingMetadataFromNode(node)
+		if err != nil {
+			return HeadingList{}, err
+		}
+		headings = append(headings, heading)
+	}
+	return HeadingList{Headings: headings, NextPageToken: nextToken}, nil
+}
+
+func (store *GraphStore) GetFileOutline(ctx context.Context, project projectregistry.Project, fileID string) (FileOutline, error) {
+	file, err := store.GetFile(ctx, project, fileID)
+	if err != nil {
+		return FileOutline{}, err
+	}
+	headings, err := store.ListHeadings(ctx, project, fileID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		return FileOutline{}, err
+	}
+	symbols, err := store.ListSymbols(ctx, project, SymbolFilter{FileID: fileID}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		return FileOutline{}, err
+	}
+	chunks, err := store.listOutlineChunks(ctx, project, fileID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		return FileOutline{}, err
+	}
+	return FileOutline{
+		File:     file,
+		Headings: headings.Headings,
+		Symbols:  symbols.Symbols,
+		Chunks:   chunks,
+	}, nil
+}
+
+func (store *GraphStore) listOutlineChunks(ctx context.Context, project projectregistry.Project, fileID string, pagination Pagination) ([]OutlineChunkMetadata, error) {
+	nodes, err := store.graph.ListNodes(ctx, "ContentChunk", map[string]string{
+		"project_id":   project.ID,
+		"repo_file_id": fileID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		left, _ := strconv.Atoi(nodes[i].Properties["chunk_index"])
+		right, _ := strconv.Atoi(nodes[j].Properties["chunk_index"])
+		if left == right {
+			return nodes[i].ID < nodes[j].ID
+		}
+		return left < right
+	})
+	window, _, err := paginate(nodes, pagination)
+	if err != nil {
+		return nil, err
+	}
+	chunks := make([]OutlineChunkMetadata, 0, len(window))
+	for _, node := range window {
+		chunk, err := outlineChunkMetadataFromNode(node)
+		if err != nil {
+			return nil, err
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks, nil
 }
 
 func (store *GraphStore) GetSymbol(ctx context.Context, project projectregistry.Project, symbolID string) (SymbolMetadata, error) {
@@ -535,6 +680,23 @@ func chunkMetadataFromNode(node ladybug.Node, maxChunkBytes int) (ChunkMetadata,
 	}, nil
 }
 
+func outlineChunkMetadataFromNode(node ladybug.Node) (OutlineChunkMetadata, error) {
+	chunk, err := chunkMetadataFromNode(node, 0)
+	if err != nil {
+		return OutlineChunkMetadata{}, err
+	}
+	return OutlineChunkMetadata{
+		ID:        chunk.ID,
+		FileID:    chunk.FileID,
+		ProjectID: chunk.ProjectID,
+		Index:     chunk.Index,
+		StartLine: chunk.StartLine,
+		EndLine:   chunk.EndLine,
+		ByteStart: chunk.ByteStart,
+		ByteEnd:   chunk.ByteEnd,
+	}, nil
+}
+
 func symbolMetadataFromNode(node ladybug.Node) (SymbolMetadata, error) {
 	startLine, err := strconv.Atoi(node.Properties["start_line"])
 	if err != nil {
@@ -553,6 +715,35 @@ func symbolMetadataFromNode(node ladybug.Node) (SymbolMetadata, error) {
 		PackageName: node.Properties["package"],
 		ImportPath:  node.Properties["import_path"],
 		Receiver:    node.Properties["receiver"],
+		StartLine:   startLine,
+		EndLine:     endLine,
+	}, nil
+}
+
+func headingMetadataFromNode(node ladybug.Node) (HeadingMetadata, error) {
+	level, err := strconv.Atoi(node.Properties["level"])
+	if err != nil {
+		return HeadingMetadata{}, err
+	}
+	parentIndex, err := strconv.Atoi(node.Properties["parent_index"])
+	if err != nil {
+		return HeadingMetadata{}, err
+	}
+	startLine, err := strconv.Atoi(node.Properties["start_line"])
+	if err != nil {
+		return HeadingMetadata{}, err
+	}
+	endLine, err := strconv.Atoi(node.Properties["end_line"])
+	if err != nil {
+		return HeadingMetadata{}, err
+	}
+	return HeadingMetadata{
+		ID:          node.ID,
+		FileID:      node.Properties["repo_file_id"],
+		ProjectID:   node.Properties["project_id"],
+		Level:       level,
+		Text:        node.Properties["text"],
+		ParentIndex: parentIndex,
 		StartLine:   startLine,
 		EndLine:     endLine,
 	}, nil
