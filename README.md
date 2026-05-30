@@ -2,6 +2,8 @@
 
 Generic Go microservices monorepo for AI-agent work.
 
+![Go Mivia overview](docs/go-mivia-info.png)
+
 ## Overview
 
 This repository contains the local Mivia service platform. The current service is `mivia-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, research metadata, project registry, project ingestion, and semantic code-context workflows.
