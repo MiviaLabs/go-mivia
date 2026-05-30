@@ -2,7 +2,7 @@
 
 Status: Local registry, content graph ingestion, and live update support
 Date: 2026-05-30
-Classification: Internal; PII-prohibited
+Classification: Internal; local project-integration rich-content exception only
 
 Local project configuration is optional. If no local config exists, `agent-server` starts with environment-only defaults and an empty project list.
 
@@ -99,6 +99,69 @@ Persisted ingestion runs in `pending` or `running` state are local in-memory que
 | `projects.max_chunk_bytes` | No | Per-project chunk cap for storage and response truncation. |
 | `projects.sensitive_marker_policy` | No | Only `skip_file` is accepted. |
 
+## Project Integrations
+
+Project integrations are optional per-project Atlassian Cloud providers under `[projects.integrations.jira]` and `[projects.integrations.confluence]`. They are localhost-only, polling-only, and scoped by explicit allowlists. See [Project integrations security policy](../security/project-integrations.md) for the approved local rich-content and PII boundary.
+
+Credentials are references only. Use either `credentials_file`, or exactly one email ref plus exactly one API-token ref:
+
+- `credentials_file`
+- `email_env`
+- `email_file`
+- `api_token_env`
+- `api_token_file`
+
+Do not put raw email addresses, API tokens, passwords, Basic auth values, or real Atlassian content in TOML, examples, fixtures, logs, SQLite, LadybugDB, or MCP status responses. `credentials_file` points to an ignored local JSON file and its path/content must not be exposed in MCP/status/errors.
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `projects.integrations.jira.enabled` | No | Enables configured Jira Cloud provider metadata; default `false`. |
+| `projects.integrations.jira.site_url` | When enabled | HTTPS Atlassian Cloud host only. |
+| `projects.integrations.jira.cloud_id` | No | Optional Atlassian Cloud ID. |
+| `projects.integrations.jira.auth_mode` | When enabled | Must be `api_token_basic`. |
+| `projects.integrations.jira.project_keys` | When enabled | Required Jira project allowlist. |
+| `projects.integrations.jira.credentials_file` | Conditional | Ignored local credential file reference; do not combine with email/token refs. |
+| `projects.integrations.jira.email_env` / `email_file` | Conditional | Email reference; required with API-token ref when `credentials_file` is absent. |
+| `projects.integrations.jira.api_token_env` / `api_token_file` | Conditional | API-token reference; required with email ref when `credentials_file` is absent. |
+| `projects.integrations.jira.ingestion_enabled` | No | Allows scheduler/manual polling for this provider; default `false`. |
+| `projects.integrations.jira.initial_full_sync` | No | `manual` or `on_start`; default `manual`. |
+| `projects.integrations.jira.incremental_interval` | No | Incremental polling period; default `1m`. |
+| `projects.integrations.jira.empty_poll_sleep` | No | Idle sleep after empty incremental polls; default `10m`. |
+| `projects.integrations.jira.max_idle_sleep` | No | Upper bound for empty-poll sleep; default `30m`. |
+| `projects.integrations.jira.overlap_window` | No | Incremental overlap window; default `2m`. |
+| `projects.integrations.jira.initial_page_size` | No | Initial full-sync page size; default `100`. |
+| `projects.integrations.jira.incremental_page_size` | No | Incremental page size; default `100`. |
+| `projects.integrations.jira.max_results` | No | Per-run result cap; default `100`. |
+| `projects.integrations.jira.default_fields` | No | Base Jira fields; defaults include summary/status/updated/type/project. |
+| `projects.integrations.jira.allowed_fields` | No | Explicit rich/custom fields eligible for local ingestion. Include `comment` to ingest comments. |
+| `projects.integrations.jira.include_rich_fields` | No | Ingest configured `allowed_fields`; default `false`. |
+| `projects.integrations.jira.include_comments` | No | Ingest comments only when `comment` is also in `allowed_fields`; default `false`. |
+| `projects.integrations.jira.jql_extra_filter` | No | Extra local polling filter appended to allowlisted project query. |
+| `projects.integrations.confluence.enabled` | No | Enables configured Confluence Cloud provider metadata; default `false`. |
+| `projects.integrations.confluence.site_url` | When enabled | HTTPS Atlassian Cloud host only. |
+| `projects.integrations.confluence.cloud_id` | No | Optional Atlassian Cloud ID. |
+| `projects.integrations.confluence.auth_mode` | When enabled | Must be `api_token_basic`. |
+| `projects.integrations.confluence.space_keys` | When enabled | Required Confluence space allowlist. |
+| `projects.integrations.confluence.credentials_file` | Conditional | Ignored local credential file reference; do not combine with email/token refs. |
+| `projects.integrations.confluence.email_env` / `email_file` | Conditional | Email reference; required with API-token ref when `credentials_file` is absent. |
+| `projects.integrations.confluence.api_token_env` / `api_token_file` | Conditional | API-token reference; required with email ref when `credentials_file` is absent. |
+| `projects.integrations.confluence.ingestion_enabled` | No | Allows scheduler/manual polling for this provider; default `false`. |
+| `projects.integrations.confluence.initial_full_sync` | No | `manual` or `on_start`; default `manual`. |
+| `projects.integrations.confluence.incremental_interval` | No | Incremental polling period; default `1m`. |
+| `projects.integrations.confluence.empty_poll_sleep` | No | Idle sleep after empty incremental polls; default `10m`. |
+| `projects.integrations.confluence.max_idle_sleep` | No | Upper bound for empty-poll sleep; default `30m`. |
+| `projects.integrations.confluence.overlap_window` | No | Incremental overlap window; default `2m`. |
+| `projects.integrations.confluence.initial_page_size` | No | Initial full-sync page size; default `100`. |
+| `projects.integrations.confluence.incremental_page_size` | No | Incremental page size; default `100`. |
+| `projects.integrations.confluence.max_results` | No | Per-run result cap; default `100`. |
+| `projects.integrations.confluence.body_representation` | No | Page body representation flag passed to the provider client; default `storage`. |
+| `projects.integrations.confluence.include_body` | No | Ingest configured page body text; default `false`. |
+| `projects.integrations.confluence.include_comments` | No | Ingest comments; default `false`. |
+| `projects.integrations.confluence.include_labels` | No | Ingest labels; default `false`. |
+| `projects.integrations.confluence.include_properties` | No | Ingest properties; default `false`. |
+| `projects.integrations.confluence.root_page_ids` | No | Optional configured page ID scope metadata. |
+| `projects.integrations.confluence.cql_extra_filter` | No | Extra local polling filter appended to allowlisted space query. |
+
 ## Safe Path Examples
 
 Use local Linux or WSL absolute paths:
@@ -130,6 +193,11 @@ Current validation rejects:
 - non-positive timeout and request-size values
 - missing enabled project roots
 - non-directory enabled project roots
+- raw credential-like fields in integration config
+- enabled Jira integration without `project_keys`
+- enabled Confluence integration without `space_keys`
+- enabled integration without valid env/file credential references
+- integration `credentials_file` combined with email/token refs
 - duplicate project IDs
 - duplicate graph namespaces
 - unsafe include/exclude patterns
@@ -170,10 +238,12 @@ The server exposes bounded project metadata on localhost only:
 - `GET /api/v1/projects/{id}/workspace/git/diff`
 - `GET /api/v1/projects/{id}/workspace/files/read`
 - `POST /api/v1/projects/{id}/workspace/files/edit`
-- MCP tools: `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`
+- MCP tools: `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.poll`, `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get`
 - MCP resources: `mivialabs://projects/{id}`, `mivialabs://projects/{id}/digest-runs/{run_id}`, `mivialabs://projects/{id}/files/{file_id}`, `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`, `mivialabs://projects/{id}/files/{file_id}/outline`, `mivialabs://projects/{id}/symbols/{symbol_id}`
 
 Project responses omit local root paths and datastore paths by default. Digest runs are manual and metadata-only: graph writes store relative path, extension/language hint, file size, mtime, and a metadata fingerprint. Content graph ingestion stores eligible local source chunks only after all gates pass. SQLite FTS5 rows are maintained for eligible chunks, files, symbols, references, and calls; text search is literal-only and raw FTS syntax is not exposed. AST metadata is promoted for Go, JS, JSX, TS, TSX, C#, Python, Markdown, and lightweight infrastructure/config files. Named AST structural search supports Go, Python, JavaScript, JSX, TypeScript, TSX, and C# through `projects.search.ast.queries` and `projects.search.ast`. TS/JS/TSX/JSX, C#, and Python parsing is mandatory Tree-sitter; startup validation fails with `extractor_initialization_failed` if a promoted grammar or query cannot initialize.
+
+Project integration MCP tools expose configured provider listing/status, manual one-shot polling, and local graph search/read for Jira and Confluence content. Status tools are redacted metadata only. Polling tools resolve credentials at call time from env/file refs, call Atlassian Cloud only for configured allowlists, and write approved local metadata/content according to provider config. Search/read tools never call Atlassian and return only bounded content already stored in the local graph.
 
 Extractor cache data is stored in SQLite table `project_extractor_cache`. It stores symbols, headings, references, and calls only; it does not store raw source, AST text, chunks, absolute paths, skipped sensitive data, or matched sensitive text. Cache rows are keyed by project, relative-path hash, content hash, extractor name, and extractor version, and are removed when a file becomes skipped or absent. Symbol source responses derive text only from eligible indexed chunks and enforce request/project caps.
 

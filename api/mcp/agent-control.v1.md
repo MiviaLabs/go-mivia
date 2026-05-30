@@ -3,7 +3,7 @@
 Version: 0.1.0
 Protocol target: MCP 2025-06-18 Streamable HTTP
 Endpoint: `/mcp`
-Classification: Internal; PII-prohibited
+Classification: Internal; local project-integration rich-content exception only
 
 ## Transport
 
@@ -185,6 +185,126 @@ Workspace tools are available only when `[workspace].enabled = true` and the tar
 - `projects.workspace.file_edit` / `projects_workspace_file_edit`: `workspace_mode = "edit"` only; applies ordered exact byte-span edits with `edit_token`, `old_text`, and `new_text`. Successful non-dry-run edits queue path ingestion.
 
 No workspace tool executes arbitrary shell commands, accepts raw patches, or performs git commit, push, checkout, reset, branch, merge, rebase, stash, clean, or restore operations. Shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories.
+
+### Project Integration Tools
+
+Project integration tools are available for configured Jira Cloud and Confluence Cloud providers only. They are local, polling-backed, and use local SQLite/LadybugDB state. Status responses are redacted. Search/read responses return only locally ingested, bounded graph content and never call Atlassian or resolve credentials.
+
+Integration status responses omit raw site URLs, raw allowlists, env var names, file paths, credentials, auth headers, local roots, raw provider payloads, and raw cursor values. Local rich-content search/read responses may include approved Jira/Confluence content and PII under [Project Integrations Security Policy](../../docs/security/project-integrations.md), but still omit credentials, auth headers, raw provider payload blobs, local roots, datastore paths, and credential refs.
+
+### `projects.integrations.list`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: configured provider summaries for one local project, including provider name, enabled flag, auth mode, credential source type, allowlist kind/count, ingestion flag, and polling interval. Raw allowlist values and credential refs are not returned.
+
+### `projects.integrations.status`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "provider"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "enum": ["jira", "confluence"] }
+  }
+}
+```
+
+Output: redacted config-derived provider status plus local source/sync metadata when available. Cursor presence may be reported as a boolean, but raw cursors are not returned.
+
+### `projects.integrations.poll`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "provider"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "enum": ["jira", "confluence"] },
+    "kind": { "type": "string", "enum": ["initial_full", "incremental"] }
+  }
+}
+```
+
+Output: redacted run metadata and sync state after one manual provider poll. The tool uses configured env/file credential refs at execution time, but does not return credentials, credential refs, raw provider payloads, raw cursors, raw roots, or datastore paths.
+
+### `projects.integrations.search`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "query"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "enum": ["jira", "confluence"] },
+    "query": { "type": "string", "minLength": 1 },
+    "max_results": { "type": "integer", "minimum": 1, "maximum": 50 },
+    "max_snippet_bytes": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "case_sensitive": { "type": "boolean" }
+  }
+}
+```
+
+Output: bounded local graph matches across locally ingested integration chunks. The response includes artifact/chunk metadata and capped snippets only. No remote provider call is made.
+
+### `projects.jira.issue.get`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "key"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "key": { "type": "string", "minLength": 1 },
+    "max_chunk_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 }
+  }
+}
+```
+
+Output: one locally ingested Jira issue artifact and bounded chunks by issue key or ID. The tool reads local graph state only.
+
+### `projects.confluence.page.get`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "page_id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "page_id": { "type": "string", "minLength": 1 },
+    "max_chunk_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 }
+  }
+}
+```
+
+Output: one locally ingested Confluence page artifact and bounded chunks by page ID. The tool reads local graph state only.
 
 ### `projects.ingest`
 
@@ -475,7 +595,8 @@ Codex Desktop exposes the tools through generated callable names. In this enviro
 ## Security And Privacy Constraints
 
 - No raw LadybugDB or SQLite query execution is exposed.
-- Raw prompts, skipped sensitive source content, fetched provider payloads, secrets, tokens, credentials, and PII are prohibited in requests, responses, fixtures, logs, and stores.
+- Raw prompts, skipped sensitive source content, fetched provider payload blobs, secrets, tokens, and credentials are prohibited in requests, responses, fixtures, logs, and stores.
+- Approved local Jira/Confluence rich content, including possible PII, is allowed only under [Project Integrations Security Policy](../../docs/security/project-integrations.md), in ignored local stores, through bounded local MCP search/read responses.
 - Research-run create accepts only a redacted `goal_summary`; live provider execution and broad crawling are out of scope.
 - Project responses omit local root paths by default.
 - Project responses include `graph_storage` as `persistent` or `in_memory`; they do not expose datastore paths.

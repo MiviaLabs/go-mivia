@@ -11,7 +11,7 @@ import (
 var emailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
 var phonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
 var privateKeyPattern = regexp.MustCompile(`(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
-var tokenAssignmentPattern = regexp.MustCompile(`(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^,\s]+`)
+var tokenAssignmentPattern = regexp.MustCompile(`(?i)\b(api[_-]?key|token|secret|password)\s*(=|:\s*)\s*["']?[^=,\s]+`)
 
 var sensitiveQueryKeys = map[string]struct{}{
 	"api_key":      {},
@@ -29,8 +29,21 @@ func Redact(value string) string {
 	value = privateKeyPattern.ReplaceAllString(value, "[REDACTED_PRIVATE_KEY]")
 	value = tokenAssignmentPattern.ReplaceAllString(value, "$1=[REDACTED_SECRET]")
 	value = emailPattern.ReplaceAllString(value, "[REDACTED_EMAIL]")
-	value = phonePattern.ReplaceAllString(value, "[REDACTED_PHONE]")
+	value = phonePattern.ReplaceAllStringFunc(value, redactPhoneCandidate)
 	return value
+}
+
+func redactPhoneCandidate(candidate string) string {
+	digits := 0
+	for _, r := range candidate {
+		if r >= '0' && r <= '9' {
+			digits++
+		}
+	}
+	if digits < 10 {
+		return candidate
+	}
+	return "[REDACTED_PHONE]"
 }
 
 func RedactURL(raw string) string {

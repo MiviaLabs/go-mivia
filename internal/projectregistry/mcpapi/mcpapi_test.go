@@ -189,6 +189,21 @@ func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 	if err := os.WriteFile(fullPath, []byte("package main\n"), 0o600); err != nil {
 		t.Fatalf("write source fixture: %v", err)
 	}
+	workspaceFiles := map[string]string{
+		"README.md":                            "Localhost endpoint: http://127.0.0.1:8080/mcp\n",
+		"api/mcp/agent-control.v1.md":          "MCP-Protocol-Version: 2025-06-18\n",
+		"docs/configuration/local-projects.md": "Workspace file reads are token-guarded and localhost-only.\n",
+		"configs/agent-server.example.toml":    "credential_ref = \"env:MIVIA_EXAMPLE_TOKEN\"\n",
+	}
+	for relativePath, content := range workspaceFiles {
+		path := filepath.Join(root, filepath.FromSlash(relativePath))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("create fixture dir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write workspace fixture %s: %v", relativePath, err)
+		}
+	}
 	registry, err := projectregistry.NewRegistry([]config.Project{{
 		ID:                    "example-service",
 		DisplayName:           "Example Service",
@@ -199,7 +214,7 @@ func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 		DigestMode:            projectregistry.DigestModeContentGraph,
 		UpdatePolicy:          projectregistry.UpdatePolicyManual,
 		WorkspaceMode:         projectregistry.WorkspaceModeEdit,
-		Include:               []string{"**/*.go"},
+		Include:               []string{"**/*"},
 		FollowSymlinks:        false,
 		MaxFileBytes:          4096,
 		MaxChunkBytes:         1024,
@@ -225,6 +240,24 @@ func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 	file := readResult["structuredContent"].(projectworkspace.WorkspaceFile)
 	if file.EditToken == "" || strings.Contains(marshalResult(t, readResult), "content_sha256") || strings.Contains(marshalResult(t, readResult), root) {
 		t.Fatalf("unsafe workspace read result: %s", marshalResult(t, readResult))
+	}
+
+	for relativePath := range workspaceFiles {
+		readResult, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects_workspace_file_read", marshalArgs(t, map[string]any{
+			"id":            "example-service",
+			"relative_path": relativePath,
+			"max_bytes":     128,
+		}))
+		if err != nil {
+			t.Fatalf("workspace read %s: %v", relativePath, err)
+		}
+		file := readResult["structuredContent"].(projectworkspace.WorkspaceFile)
+		if file.RelativePath != relativePath || file.EditToken == "" {
+			t.Fatalf("unexpected workspace read result for %s: %#v", relativePath, file)
+		}
+		if strings.Contains(marshalResult(t, readResult), root) || strings.Contains(marshalResult(t, readResult), "content_sha256") {
+			t.Fatalf("unsafe workspace read result for %s: %s", relativePath, marshalResult(t, readResult))
+		}
 	}
 
 	editResult, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects_workspace_file_edit", marshalArgs(t, map[string]any{

@@ -88,6 +88,23 @@ func TestEvaluateSafety_RejectsContentWithoutReturningMatchedTextOrHash(t *testi
 	}
 }
 
+func TestEvaluateSafety_AllowsOperationalDocsAndCodeMarkers(t *testing.T) {
+	content := []byte(`MCP-Protocol-Version: 2025-06-18
+Use http://127.0.0.1:8080/mcp for localhost-only development.
+The workspace uses token-guarded exact edits and no raw patch endpoint.
+`)
+	result := EvaluateSafety("docs/configuration/local-projects.md", content, DefaultSafetyOptions())
+	if !result.Eligible {
+		t.Fatalf("expected operational docs to be eligible, got %#v", result)
+	}
+
+	code := []byte("secret := make([]byte, 32)\n")
+	result = EvaluateSafety("internal/projectworkspace/service.go", code, DefaultSafetyOptions())
+	if !result.Eligible {
+		t.Fatalf("expected code declaration to be eligible, got %#v", result)
+	}
+}
+
 func TestEvaluateSafety_RejectsBinaryInvalidUTF8AndOversizedContent(t *testing.T) {
 	tests := []struct {
 		name    string

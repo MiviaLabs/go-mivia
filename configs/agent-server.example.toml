@@ -91,6 +91,8 @@ sensitive_marker_policy = "skip_file"
 # overlap_window = "2m"
 # initial_page_size = 100
 # incremental_page_size = 100
+# default_fields = ["summary", "status", "updated", "issuetype", "project"]
+# allowed_fields = ["description", "comment"]
 # include_rich_fields = true
 # include_comments = true
 #

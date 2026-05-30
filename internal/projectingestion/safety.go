@@ -48,7 +48,7 @@ var deniedPathSegments = map[string]struct{}{
 }
 
 var contentMarkerPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|secret|password)\s*[:=]`),
+	regexp.MustCompile(`(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|secret|password)\s*(=|:\s*)\s*["']?[^=,\s]+`),
 	regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]{8,}`),
 	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----`),
 	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),

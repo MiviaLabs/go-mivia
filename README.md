@@ -6,7 +6,7 @@ Generic Go microservices monorepo for AI-agent work.
 
 This repository contains the local MiviaLabs agent service platform. The current service is `agent-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, research metadata, project registry, project ingestion, and semantic code-context workflows.
 
-The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion with governed FTS, named AST search, git status/diff, and exact token-guarded file edits. It does not ingest PII, call live AI or browsing providers, expose public APIs, run embeddings/vector storage, crawl arbitrary roots, expose arbitrary shell, or use production database infrastructure.
+The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion with governed FTS, named AST search, git status/diff, and exact token-guarded file edits. It also supports approved local Jira/Confluence project integrations with polling-only ingestion and bounded local graph search/read. It does not call live AI or browsing providers, expose public APIs, run embeddings/vector storage, crawl arbitrary roots, expose arbitrary shell, or use production database infrastructure.
 
 Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only.
 
@@ -32,7 +32,8 @@ flowchart TB
   AST["Named AST search catalog"]
   Queries["Bounded query APIs: files, chunks, outlines, FTS search, symbol source, refs, callers, callees, call graph, AST search"]
   Workspace["Workspace APIs: governed git status/diff, current file read, token-guarded exact edit"]
-  Boundaries["No public exposure, auth changes, provider calls, crawling, embeddings, raw DB queries, arbitrary shell, raw patches, git write tools, PII, secrets, roots, prompts, or skipped sensitive content"]
+  Integrations["Project integrations: Jira and Confluence polling, local rich-content graph search/read"]
+  Boundaries["No public exposure, auth changes, AI provider calls, crawling, embeddings, raw DB queries, arbitrary shell, raw patches, git write tools, secrets, roots, prompts, or skipped sensitive content"]
 
   Client --> Server
   Server --> REST
@@ -61,6 +62,10 @@ flowchart TB
   Queries --> MCP
   Workspace --> REST
   Workspace --> MCP
+  Registry --> Integrations
+  Integrations --> Graph
+  Integrations --> SQLite
+  Integrations --> MCP
   Server --> Boundaries
   Safety --> Boundaries
 ```
@@ -76,6 +81,7 @@ flowchart TB
 | Search index | SQLite FTS5 rows for eligible chunks, files, symbols, references, and calls; async rebuild repair through ingestion scheduler | Raw FTS syntax and raw SQLite errors are never exposed |
 | Query APIs | Files, chunks, outlines, text/file/symbol/reference/call search, AST query catalog, named AST search, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned; raw FTS and raw Tree-sitter syntax are not exposed |
 | Workspace APIs | Governed git status/diff, current eligible file read, token-guarded exact byte-span edits | Disabled by default; requires global workspace gate plus per-project `workspace_mode`; no arbitrary shell, raw patch, or git commit/push/reset/checkout tools |
+| Project integrations | Jira/Confluence configured provider status, manual/scheduled polling, local rich-content graph search/read | Atlassian Cloud only; polling-only; env/file credential refs; explicit project/space allowlists; rich content stays in ignored local stores |
 
 ## Start Here
 
@@ -91,7 +97,7 @@ Use this repo as a local context server for engineers and AI agents:
 
 ## Business View
 
-`agent-server` is a local control and context service for engineers and AI agents. It gives agents a safe, structured way to understand a developer's local projects, remember approved local metadata, run bounded project ingestion, and expose that context through REST and MCP without sending source code to external providers.
+`agent-server` is a local control and context service for engineers and AI agents. It gives agents a safe, structured way to understand a developer's local projects, remember approved local metadata, run bounded project and integration ingestion, and expose that context through REST and MCP without sending source code to AI providers.
 
 ```mermaid
 flowchart LR
@@ -99,20 +105,28 @@ flowchart LR
   Agent["AI agent or Codex Desktop"]
   Server["agent-server on localhost"]
   Projects["Local projects"]
+  Atlassian["Configured Jira and Confluence Cloud"]
   Scheduler["Fair scheduler and live watcher"]
+  Poller["Integration poller"]
   Safety["Safety gates"]
   Graph["Local semantic graph"]
   SQLite["Local run, file, config, and cache state"]
   APIs["REST and MCP bounded APIs"]
   Workspace["Governed workspace status/diff/read/edit"]
+  IntegrationTools["Integration MCP tools: status, poll, search, read"]
 
   Engineer --> Agent
   Agent --> Server
   Server --> APIs
   APIs --> Workspace
+  APIs --> IntegrationTools
   APIs --> Scheduler
   Scheduler --> Projects
   Projects --> Safety
+  IntegrationTools --> Poller
+  Poller --> Atlassian
+  Poller --> Graph
+  Poller --> SQLite
   Safety --> Workspace
   Safety --> Graph
   Safety --> SQLite
@@ -124,23 +138,26 @@ flowchart LR
   Graph --> Value["Faster, safer codebase understanding"]
   SQLite --> Value
   Workspace --> Value
+  IntegrationTools --> Value
   Value --> Engineer
 ```
 
 What this enables:
 
 - Engineers can opt local projects into metadata-only digest or content graph ingestion.
+- Engineers can opt project-specific Jira/Confluence allowlists into polling-only ingestion so issue/page context lands in the same local graph as source context.
 - Agents can ask for bounded project files, chunks, outlines, search results, symbols, symbol source, references, direct call edges, call graphs, the supported AST query catalog, named AST structural matches, and ingestion status through MCP instead of guessing from stale chat context.
+- Agents can ask local MCP tools for configured integration status, trigger a one-shot provider poll, search locally ingested Jira/Confluence chunks, and read bounded Jira issue or Confluence page content without calling Atlassian during search/read.
 - Agents can use MCP/REST for governed git status/diff and exact current-file edits on opted-in workspaces; shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
 - Local state can persist per project when `graph_storage = "persistent"`, or stay process-local with `graph_storage = "in_memory"`.
-- The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, provider calls, embeddings, vectors, arbitrary shell, raw patches, git commit/push/reset/checkout tools, skipped sensitive content, secrets, raw prompts, provider payloads, and PII.
+- The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, AI provider calls, embeddings, vectors, arbitrary shell, raw patches, git commit/push/reset/checkout tools, skipped sensitive content, secrets, raw prompts, and raw provider payload blobs. Approved Jira/Confluence rich content and possible PII are limited to ignored local stores and bounded local MCP responses.
 
 ## Agent Reliability Model
 
 `agent-server`, Serena, and shell solve different parts of reliable agent work:
 
-- `agent-server` is first choice for indexed project discovery, ingestion freshness, files, chunks, symbols, references, calls, FTS search, symbol source, call graph, and named AST search.
+- `agent-server` is first choice for indexed project discovery, ingestion freshness, files, chunks, symbols, references, calls, FTS search, symbol source, call graph, named AST search, and locally ingested Jira/Confluence context.
 - Serena remains useful when MCP is unavailable, stale, missing the project, or lacks the edit-time semantic operation needed for a precise code change.
 - MCP can handle governed git status/diff and exact edits for opted-in workspaces; shell remains the source of truth for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repositories.
 - This routing reduces blind file scanning, stale assumptions, and unsafe over-broad context collection.
@@ -153,9 +170,12 @@ flowchart TB
   Shell["Shell for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repos"]
   Source["Source files"]
   Workspace["Governed workspace status/diff/read/edit"]
+  Integrations["Local Jira/Confluence status, polling, graph search/read"]
   Indexed["Files, chunks, symbols, refs, calls, AST matches"]
+  IntegrationContext["Issue/page artifacts and chunks"]
   Registry["Project registry and ingestion status"]
   Ingestion["Live and manual content graph ingestion"]
+  Polling["Polling-only integration ingestion"]
   Store["Local graph, SQLite state, and FTS index"]
   Guardrails["Safety gates and policy boundaries"]
 
@@ -163,11 +183,16 @@ flowchart TB
   MCP --> Registry
   MCP --> Ingestion
   MCP --> Workspace
+  MCP --> Integrations
   Ingestion --> Guardrails
+  Integrations --> Polling
+  Polling --> Guardrails
   Workspace --> Guardrails
   Guardrails --> Store
   Store --> Indexed
+  Store --> IntegrationContext
   Indexed --> MCP
+  IntegrationContext --> MCP
   Store --> MCP
   Agent --> Serena
   Serena --> Source
@@ -190,12 +215,15 @@ sequenceDiagram
   participant Serena
   participant Shell
   participant Project as Local project
+  participant Atlassian as Jira/Confluence Cloud
   participant Store as Local graph, SQLite, and FTS
 
   Engineer->>Agent: Ask for implementation or review
-  Agent->>Server: Query project metadata, ingestion state, search, symbols, refs, calls, AST, bounded chunks, and workspace status/diff/read/edit
+  Agent->>Server: Query project metadata, ingestion state, search, symbols, refs, calls, AST, bounded chunks, integration context, and workspace status/diff/read/edit
   Server->>Project: Read only eligible local files after safety gates
   Server->>Store: Persist approved local metadata and graph context
+  Server->>Atlassian: Poll configured project/space allowlists only when manually or locally scheduled
+  Server->>Store: Persist approved integration metadata and bounded rich-content chunks
   Store-->>Server: Return bounded context
   Server-->>Agent: Return governed project context
   Agent->>Serena: Fall back for edit-time semantic gaps
@@ -315,7 +343,7 @@ wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored
 wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivialabs-agent-server
 ```
 
-The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, and `projects.workspace.file_edit`. Codex Desktop may show underscore-normalized callable names such as `tasks_create`, `projects_search_text`, or `projects_workspace_file_read`; the server accepts both forms.
+The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.poll`, `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get`. Codex Desktop may show underscore-normalized callable names such as `tasks_create`, `projects_search_text`, or `projects_workspace_file_read`; the server accepts both forms.
 
 ## Local Project APIs
 
@@ -350,6 +378,12 @@ Use REST for scripts, smoke tests, and direct local checks. Use MCP first when a
 | Governed git diff | `GET /api/v1/projects/{id}/workspace/git/diff` | `projects.workspace.git_diff` |
 | Current eligible file read | `GET /api/v1/projects/{id}/workspace/files/read` | `projects.workspace.file_read` |
 | Exact token-guarded file edit | `POST /api/v1/projects/{id}/workspace/files/edit` | `projects.workspace.file_edit` |
+| Integration providers | Not exposed over REST | `projects.integrations.list` |
+| Integration status | Not exposed over REST | `projects.integrations.status` |
+| Manual integration poll | Not exposed over REST | `projects.integrations.poll` |
+| Integration rich-content search | Not exposed over REST | `projects.integrations.search` |
+| Jira issue local read | Not exposed over REST | `projects.jira.issue.get` |
+| Confluence page local read | Not exposed over REST | `projects.confluence.page.get` |
 
 Manual content graph ingestion and search index repair are asynchronous. `POST /ingestion-runs`, `POST /search-index/rebuild`, `projects.ingest`, and `projects.search_index.rebuild` submit work through the fair scheduler and return queued run metadata quickly; clients poll by `run_id` or check latest status before relying on indexed data. Agents should use indexed search tools first for routine text, path, symbol, reference, and call discovery, and workspace tools first for opted-in git status/diff/current eligible file reads/exact edits. Live ingestion is the normal freshness path after workspace edits. Use Serena only for edit-time semantic gaps that MCP cannot answer, and `ast-grep` only for structural search or rewrite work not covered by indexed search. Full task, research, project, REST, and MCP method mapping is in the [agent context server guide](docs/agent-context-guide.md).
 
@@ -363,8 +397,10 @@ Extractor cache rows live in the local SQLite app DB and store only serialized s
 
 Live project updates require both global live enablement and per-project `update_policy = "live"`. The watcher is directory-based, non-recursive at the OS API level, and registers each eligible directory; overflow or full queues trigger a scheduled bounded project rescan. Manual and live full scans run through the fair scheduler. Live path events have priority over full-scan continuations, and per-project limits prevent one project from monopolizing workers. File outlines support symbol `kind`, `name_prefix`, symbol pagination, and opt-in bounded chunk text for eligible files.
 
+Project integrations are configured per project under `[projects.integrations.jira]` and `[projects.integrations.confluence]`. They require Atlassian Cloud hosts, explicit Jira `project_keys` or Confluence `space_keys`, and env/file credential refs. Rich fields and comments are ingested only when configured; search/read tools use local graph data only and do not call Atlassian.
+
 LadybugDB native imports remain gated behind `scripts/ladybug-libs.sh` and the `ladybug_native system_ladybug` tags. SQLite configuration and persistent graph files must stay local, non-secret, and ignored under `data/` by default.
 
 ## Security And Privacy
 
-Do not commit real `.env` files, secrets, credentials, raw prompts, raw fetched content, provider payloads, or personal data. PII ingestion remains prohibited until the Security/DPO owner approves purpose, legal basis, access model, retention, deletion path, and audit trail.
+Do not commit real `.env` files, secrets, credentials, raw prompts, raw fetched content, provider payloads, or personal data. General PII ingestion remains prohibited. The only approved exception is local Jira/Confluence rich-content handling under [Project integrations security policy](docs/security/project-integrations.md).

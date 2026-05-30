@@ -18,6 +18,18 @@ func TestRedact_RemovesSecretsAndPII(t *testing.T) {
 	}
 }
 
+func TestRedact_DoesNotTreatDatesIPsOrCodeDeclarationsAsPII(t *testing.T) {
+	input := `protocol = "2025-06-18"
+endpoint = "127.0.0.1:8080"
+secret := make([]byte, 32)
+token-guarded exact edit`
+
+	got := redaction.Redact(input)
+	if got != input {
+		t.Fatalf("expected non-sensitive operational text to remain unchanged: %q", got)
+	}
+}
+
 func TestRedactURL_RemovesSensitiveQueryValues(t *testing.T) {
 	got := redaction.RedactURL("https://example.test/path?token=abc123&q=public")
 	if strings.Contains(got, "abc123") {
