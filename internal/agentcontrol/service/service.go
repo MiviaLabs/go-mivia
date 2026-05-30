@@ -65,6 +65,39 @@ func (svc *Service) GetTask(ctx context.Context, id string) (model.Task, error) 
 	return svc.tasks.GetTask(ctx, id)
 }
 
+func (svc *Service) StartTask(ctx context.Context, id string) (model.Task, error) {
+	task, err := svc.GetTask(ctx, id)
+	if err != nil {
+		return model.Task{}, err
+	}
+	if task.Status != model.TaskStatusPending {
+		return model.Task{}, fmt.Errorf("%w: task can start only from pending", ErrInvalidInput)
+	}
+	return svc.updateTaskStatus(ctx, task, model.TaskStatusRunning)
+}
+
+func (svc *Service) CompleteTask(ctx context.Context, id string) (model.Task, error) {
+	task, err := svc.GetTask(ctx, id)
+	if err != nil {
+		return model.Task{}, err
+	}
+	if task.Status != model.TaskStatusRunning {
+		return model.Task{}, fmt.Errorf("%w: task can complete only from running", ErrInvalidInput)
+	}
+	return svc.updateTaskStatus(ctx, task, model.TaskStatusDone)
+}
+
+func (svc *Service) FailTask(ctx context.Context, id string) (model.Task, error) {
+	task, err := svc.GetTask(ctx, id)
+	if err != nil {
+		return model.Task{}, err
+	}
+	if task.Status != model.TaskStatusPending && task.Status != model.TaskStatusRunning {
+		return model.Task{}, fmt.Errorf("%w: task can fail only from pending or running", ErrInvalidInput)
+	}
+	return svc.updateTaskStatus(ctx, task, model.TaskStatusFailed)
+}
+
 func (svc *Service) CreateResearchRun(ctx context.Context, input model.CreateResearchRunInput) (model.ResearchRun, error) {
 	taskID := strings.TrimSpace(input.TaskID)
 	if taskID == "" {
@@ -101,6 +134,12 @@ func (svc *Service) GetResearchRun(ctx context.Context, id string) (model.Resear
 		return model.ResearchRun{}, fmt.Errorf("%w: id is required", ErrInvalidInput)
 	}
 	return svc.researchRuns.GetResearchRun(ctx, id)
+}
+
+func (svc *Service) updateTaskStatus(ctx context.Context, task model.Task, status string) (model.Task, error) {
+	task.Status = status
+	task.UpdatedAt = svc.now()
+	return svc.tasks.UpdateTask(ctx, task)
 }
 
 func containsProhibitedData(value string) bool {

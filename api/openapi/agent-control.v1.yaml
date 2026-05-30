@@ -74,6 +74,48 @@ paths:
                 $ref: '#/components/schemas/ResearchRun'
         '404':
           $ref: '#/components/responses/NotFound'
+  /research-runs/{id}/sources:
+    post:
+      operationId: createResearchSource
+      summary: Create redacted research source metadata
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateResearchSourceRequest'
+      responses:
+        '201':
+          description: Created research source metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResearchSource'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /research-runs/{id}/sources/{source_id}:
+    get:
+      operationId: getResearchSource
+      summary: Get redacted research source metadata
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: source_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: Research source metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResearchSource'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   parameters:
     ID:
@@ -157,6 +199,50 @@ components:
         updated_at:
           type: string
           format: date-time
+    CreateResearchSourceRequest:
+      type: object
+      additionalProperties: false
+      required: [artifact_ref, source_type, summary]
+      properties:
+        artifact_ref:
+          type: string
+          minLength: 1
+          description: URL or artifact reference; sensitive query values are redacted before storage.
+        source_type:
+          type: string
+          minLength: 1
+        summary:
+          type: string
+          minLength: 1
+          description: Summary is redacted before storage; raw source content is not accepted.
+        policy_metadata:
+          type: object
+          additionalProperties:
+            type: string
+    ResearchSource:
+      type: object
+      additionalProperties: false
+      required: [id, research_run_id, artifact_ref, source_type, summary, content_hash, retrieved_at, policy_metadata]
+      properties:
+        id:
+          type: string
+        research_run_id:
+          type: string
+        artifact_ref:
+          type: string
+        source_type:
+          type: string
+        summary:
+          type: string
+        content_hash:
+          type: string
+        retrieved_at:
+          type: string
+          format: date-time
+        policy_metadata:
+          type: object
+          additionalProperties:
+            type: string
     ErrorResponse:
       type: object
       additionalProperties: false

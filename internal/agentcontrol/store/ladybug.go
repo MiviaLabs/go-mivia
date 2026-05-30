@@ -43,6 +43,13 @@ func (store *LadybugStore) GetTask(ctx context.Context, id string) (model.Task, 
 	return taskFromNode(node)
 }
 
+func (store *LadybugStore) UpdateTask(ctx context.Context, task model.Task) (model.Task, error) {
+	if _, err := store.GetTask(ctx, task.ID); err != nil {
+		return model.Task{}, err
+	}
+	return store.CreateTask(ctx, task)
+}
+
 func (store *LadybugStore) CreateResearchRun(ctx context.Context, run model.ResearchRun) (model.ResearchRun, error) {
 	err := store.graph.PutNode(ctx, ladybug.Node{
 		Label: "ResearchRun",

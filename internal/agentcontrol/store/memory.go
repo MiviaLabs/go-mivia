@@ -37,6 +37,16 @@ func (store *MemoryStore) GetTask(_ context.Context, id string) (model.Task, err
 	return task, nil
 }
 
+func (store *MemoryStore) UpdateTask(_ context.Context, task model.Task) (model.Task, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, ok := store.tasks[task.ID]; !ok {
+		return model.Task{}, ErrNotFound
+	}
+	store.tasks[task.ID] = task
+	return task, nil
+}
+
 func (store *MemoryStore) CreateResearchRun(_ context.Context, run model.ResearchRun) (model.ResearchRun, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()

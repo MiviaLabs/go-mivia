@@ -16,13 +16,17 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/service"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
+	researchmcpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/mcpapi"
+	researchstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
 )
 
 const ProtocolVersion = "2025-06-18"
 
 type Handler struct {
-	service *service.Service
-	logger  *slog.Logger
+	service  *service.Service
+	research *research.Service
+	logger   *slog.Logger
 }
 
 type jsonRPCRequest struct {
@@ -34,6 +38,10 @@ type jsonRPCRequest struct {
 
 func NewHandler(service *service.Service, logger *slog.Logger) http.Handler {
 	return &Handler{service: service, logger: logger}
+}
+
+func NewHandlerWithResearch(service *service.Service, research *research.Service, logger *slog.Logger) http.Handler {
+	return &Handler{service: service, research: research, logger: logger}
 }
 
 func (handler *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +171,9 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		run, err := handler.service.GetResearchRun(r.Context(), input.ID)
 		return toolResult(run), err
 	default:
+		if handler.research != nil {
+			return researchmcpapi.CallTool(r.Context(), handler.research, params.Name, params.Arguments)
+		}
 		return nil, fmt.Errorf("%w: unknown tool", service.ErrInvalidInput)
 	}
 }
@@ -192,6 +203,9 @@ func (handler *Handler) readResource(r *http.Request, raw json.RawMessage) (map[
 		}
 		return resourceResult(params.URI, run)
 	default:
+		if handler.research != nil {
+			return researchmcpapi.ReadResource(r.Context(), handler.research, params.URI)
+		}
 		return nil, store.ErrNotFound
 	}
 }
@@ -205,7 +219,15 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
+	if errors.Is(err, research.ErrInvalidInput) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, researchstore.ErrNotFound) {
 		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
 	}
@@ -213,7 +235,7 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 }
 
 func toolDefinitions() []map[string]any {
-	return []map[string]any{
+	tools := []map[string]any{
 		{
 			"name":        "tasks.create",
 			"title":       "Create Task",
@@ -248,10 +270,11 @@ func toolDefinitions() []map[string]any {
 			}, []string{"id"}),
 		},
 	}
+	return append(tools, researchmcpapi.ToolDefinitions()...)
 }
 
 func resourceTemplates() []map[string]any {
-	return []map[string]any{
+	templates := []map[string]any{
 		{
 			"uriTemplate": "mivialabs://tasks/{id}",
 			"name":        "task",
@@ -267,6 +290,7 @@ func resourceTemplates() []map[string]any {
 			"mimeType":    "application/json",
 		},
 	}
+	return append(templates, researchmcpapi.ResourceTemplates()...)
 }
 
 func objectSchema(properties map[string]any, required []string) map[string]any {

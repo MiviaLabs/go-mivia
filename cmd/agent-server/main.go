@@ -21,6 +21,9 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/logging"
 	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
+	researchhttpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/httpapi"
+	researchstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
 )
 
 const serviceName = "agent-server"
@@ -56,6 +59,7 @@ func run() error {
 		return err
 	}
 	agentStore := store.NewLadybugStore(graph)
+	researchService := research.NewService(researchstore.NewLadybugMetadataStore(graph))
 	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
 	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
 		return err
@@ -84,7 +88,8 @@ func run() error {
 	mux.HandleFunc("GET /healthz", health.LivenessHandler)
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
 	httpapi.RegisterRoutes(mux, agentService)
-	mux.Handle("/mcp", mcpapi.NewHandler(agentService, logger))
+	researchhttpapi.RegisterRoutes(mux, researchService)
+	mux.Handle("/mcp", mcpapi.NewHandlerWithResearch(agentService, researchService, logger))
 
 	handler := httpserver.Chain(
 		mux,
