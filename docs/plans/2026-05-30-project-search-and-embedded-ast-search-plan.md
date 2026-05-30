@@ -285,7 +285,18 @@ Add focused tests for:
 
 ## 8. Phase 4: Embedded AST Structural Search
 
-### 8.1 Structural Search Contract
+### 8.1 Pre-Hardening Checkpoint
+
+Before adding `projects.search.ast`, verify Phase 3 behavior against a real large TypeScript/C# project after deploy/restart and re-ingestion:
+
+- Confirm `projects.symbol.source` returns bounded source for representative Go, Python, JavaScript, TypeScript, TSX/JSX, C#, and line-only infra/config symbols.
+- Confirm `projects.search.calls`, `projects.symbol.callers`, and `projects.symbol.callees` return expected call edges for TypeScript and C# fixtures from the real project.
+- Confirm `projects.file.chunks` still returns bounded eligible chunk text for the same files.
+- Confirm `projects.digest` accepts the documented project identifier shape and is not blocked by active ingestion unless the request itself is invalid.
+- Confirm search metadata reports current ingestion/index status without leaking roots, content hashes, skipped sensitive text, raw parser errors, raw SQLite/FTS errors, secrets, PII, raw prompts, or provider payloads.
+- If any discrepancy appears, fix extractor/indexing behavior before exposing the AST search surface.
+
+### 8.2 Structural Search Contract
 
 Add `projects.search.ast` only after Phase 1 is stable and Phase 3 FTS does not need public contract changes.
 
@@ -308,7 +319,7 @@ Outputs:
 - `query_version`
 - `result_truncated`
 
-### 8.2 Query Safety
+### 8.3 Query Safety
 
 Validation:
 
@@ -326,7 +337,7 @@ Privacy:
 - Do not return raw parser errors that include absolute paths or source text.
 - Do not query skipped/sensitive/absent files.
 
-### 8.3 Parser Support
+### 8.4 Parser Support
 
 Supported immediately from existing dependencies:
 
@@ -341,7 +352,7 @@ Go decision:
 - To replace `ast-grep` for Go structural search, add an embedded Go Tree-sitter grammar for structural search only, or build a separate Go AST predicate/query layer.
 - Recommended: add Tree-sitter Go grammar for structural search, while keeping stdlib AST extraction as-is until there is a separate reason to migrate extractor behavior.
 
-### 8.4 Named Query Catalog
+### 8.5 Named Query Catalog
 
 Do not expose only raw query text. Add a curated query catalog for common agent tasks:
 

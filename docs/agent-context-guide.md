@@ -64,6 +64,7 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Get project | `GET /projects/{id}` | `projects.get` |
 | Run metadata-only digest | `POST /projects/{id}/digest-runs` | `projects.digest` |
 | Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
+| Rebuild local search index | `POST /projects/{id}/search-index/rebuild` | `projects.search_index.rebuild` |
 | Get ingestion run | `GET /projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
 | Get latest ingestion run | `GET /projects/{id}/ingestion-runs/latest` | `projects.ingestion_status_latest` |
 | List indexed files | `GET /projects/{id}/files?status=eligible&extension=.go&path_prefix=cmd/` | `projects.files.list` |
@@ -83,7 +84,7 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | List document headings | `GET /projects/{id}/headings?file_id={file_id}` | `projects.headings.list` |
 | Get file outline, optionally with bounded eligible chunk text | `GET /projects/{id}/files/{file_id}/outline` | `projects.file.outline` |
 
-`projects.ingest` and `POST /ingestion-runs` are asynchronous submissions. They return queued run metadata with a `run_id`; poll `projects.ingestion_status` or use latest status before trusting indexed content.
+`projects.ingest`, `projects.search_index.rebuild`, `POST /ingestion-runs`, and `POST /search-index/rebuild` are asynchronous submissions. They return queued run metadata with a `run_id`; poll `projects.ingestion_status` or use latest status before trusting indexed content.
 
 MCP resources also expose stable IDs:
 
