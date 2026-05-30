@@ -150,7 +150,9 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 	handler := newHandlerWithProjectIntegrations(t)
 
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.list"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.status"`)) {
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.list"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.status"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.poll"`)) {
 		t.Fatalf("expected integration tools, got %s", list.Body.String())
 	}
 	for _, forbidden := range [][]byte{
@@ -178,6 +180,14 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 	if !bytes.Contains(status.Body.Bytes(), []byte(`"CursorHashPresent":true`)) || !bytes.Contains(status.Body.Bytes(), []byte(`"Status":"no_op"`)) {
 		t.Fatalf("expected sync state and run status, got %s", status.Body.String())
 	}
+
+	poll := postMCP(t, handler, `{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"projects.integrations.poll","arguments":{"id":"project-1","provider":"jira","kind":"incremental"}}}`)
+	if bytes.Contains(poll.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected poll success, got %s", poll.Body.String())
+	}
+	if !bytes.Contains(poll.Body.Bytes(), []byte(`"Provider":"jira"`)) || !bytes.Contains(poll.Body.Bytes(), []byte(`"Status":"completed"`)) || !bytes.Contains(poll.Body.Bytes(), []byte(`"CursorHashPresent":true`)) {
+		t.Fatalf("expected redacted poll status, got %s", poll.Body.String())
+	}
 	for _, forbidden := range []string{
 		"https://tenant.atlassian.net",
 		"ACME",
@@ -191,11 +201,14 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 		"/home/mac/mivialabs/mivialabs-agents-monorepo",
 		"raw-provider-cursor-token",
 		"sha256:",
+		"ISSUE-1",
 		"jira rich description",
 		"confluence page body",
 	} {
-		if bytes.Contains(status.Body.Bytes(), []byte(forbidden)) || bytes.Contains(providers.Body.Bytes(), []byte(forbidden)) {
-			t.Fatalf("integration MCP response leaked %q: providers=%s status=%s", forbidden, providers.Body.String(), status.Body.String())
+		if bytes.Contains(status.Body.Bytes(), []byte(forbidden)) ||
+			bytes.Contains(providers.Body.Bytes(), []byte(forbidden)) ||
+			bytes.Contains(poll.Body.Bytes(), []byte(forbidden)) {
+			t.Fatalf("integration MCP response leaked %q: providers=%s status=%s poll=%s", forbidden, providers.Body.String(), status.Body.String(), poll.Body.String())
 		}
 	}
 
@@ -471,7 +484,30 @@ func newHandlerWithProjectIntegrations(t *testing.T) http.Handler {
 			},
 		},
 	}
-	integrations, err := projectintegrations.NewService([]config.Project{project}, integrationStore)
+	runner := &fakeIntegrationPollRunner{
+		result: projectintegrations.PollRunResult{
+			Run: projectintegrations.SyncRun{
+				ID:            "run-2",
+				ProjectID:     "project-1",
+				Provider:      projectintegrations.ProviderJira,
+				Kind:          projectintegrations.SyncKindIncremental,
+				Status:        projectintegrations.SyncRunStatusCompleted,
+				ItemsSeen:     1,
+				ItemsUpserted: 1,
+				StartedAt:     time.Date(2026, 5, 31, 10, 2, 0, 0, time.UTC),
+				FinishedAt:    time.Date(2026, 5, 31, 10, 3, 0, 0, time.UTC),
+			},
+			State: projectintegrations.SyncState{
+				ProjectID:           "project-1",
+				Provider:            projectintegrations.ProviderJira,
+				LastRunID:           "run-2",
+				LastSuccessfulRunID: "run-2",
+				CursorHash:          "sha256:raw-provider-cursor-token",
+				UpdatedAt:           time.Date(2026, 5, 31, 10, 3, 0, 0, time.UTC),
+			},
+		},
+	}
+	integrations, err := projectintegrations.NewServiceWithOptions([]config.Project{project}, integrationStore, projectintegrations.ServiceOptions{Runner: runner})
 	if err != nil {
 		t.Fatalf("new integration service: %v", err)
 	}
@@ -509,6 +545,18 @@ func newHandlerWithProjectIntegrations(t *testing.T) http.Handler {
 		t.Fatalf("update sync state: %v", err)
 	}
 	return mcpapi.NewHandlerWithResearchProjectsIngestionWorkspaceAndIntegrations(svc, nil, nil, nil, nil, nil, integrations, slog.Default())
+}
+
+type fakeIntegrationPollRunner struct {
+	result projectintegrations.PollRunResult
+	err    error
+}
+
+func (runner *fakeIntegrationPollRunner) RunProviderPoll(context.Context, string, projectintegrations.Provider, projectintegrations.SyncKind) (projectintegrations.PollRunResult, error) {
+	if runner.err != nil {
+		return projectintegrations.PollRunResult{}, runner.err
+	}
+	return runner.result, nil
 }
 
 func newHandlerWithProjectIngestion(t *testing.T) (http.Handler, string) {

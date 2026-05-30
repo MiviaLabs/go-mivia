@@ -23,6 +23,8 @@ import (
 	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations"
+	integrationconfluence "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations/confluence"
+	integrationjira "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations/jira"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	projecthttpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/httpapi"
 	projectstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/store"
@@ -97,7 +99,18 @@ func run() error {
 	projectIngestionService.SetFullScanBatchSize(cfg.Ingestion.FullScanBatchSize)
 	projectIngestionService.SetFullScanWorkerCount(cfg.Ingestion.PerProjectWorkerLimit)
 	projectIngestionService.SetExtractorCacheEnabled(cfg.Ingestion.ExtractorCacheEnabled)
-	projectIntegrationService, err := projectintegrations.NewService(cfg.Projects, projectintegrations.NewSQLiteStore(sqliteDB.SQLDB()))
+	projectIntegrationStore := projectintegrations.NewSQLiteStore(sqliteDB.SQLDB())
+	projectIntegrationRunner, err := projectintegrations.NewRunner(projectintegrations.RunnerOptions{
+		Projects:           cfg.Projects,
+		Store:              projectIntegrationStore,
+		CredentialResolver: projectintegrations.NewCredentialResolver(),
+		JiraClient:         newJiraPollerByProject(cfg.Projects),
+		ConfluenceClient:   newConfluencePollerByProject(cfg.Projects),
+	})
+	if err != nil {
+		return err
+	}
+	projectIntegrationService, err := projectintegrations.NewServiceWithOptions(cfg.Projects, projectIntegrationStore, projectintegrations.ServiceOptions{Runner: projectIntegrationRunner})
 	if err != nil {
 		return err
 	}
@@ -211,4 +224,58 @@ func run() error {
 		}
 		return err
 	}
+}
+
+type jiraPollerByProject struct {
+	pollers map[string]projectintegrations.JiraPoller
+}
+
+func newJiraPollerByProject(projects []config.Project) jiraPollerByProject {
+	pollers := make(map[string]projectintegrations.JiraPoller)
+	for _, project := range projects {
+		if project.Integrations.Jira == nil {
+			continue
+		}
+		cfg := *project.Integrations.Jira
+		pollers[project.ID] = integrationjira.NewPoller(integrationjira.NewClient(integrationjira.Options{
+			BaseURL: cfg.SiteURL,
+			Timeout: cfg.ReadTimeout,
+		}))
+	}
+	return jiraPollerByProject{pollers: pollers}
+}
+
+func (poller jiraPollerByProject) PollJira(ctx context.Context, credentials projectintegrations.Credentials, plan projectintegrations.JiraQueryPlan) (projectintegrations.PollResult, error) {
+	projectPoller, ok := poller.pollers[plan.ProjectID]
+	if !ok {
+		return projectintegrations.PollResult{}, projectintegrations.ErrNotFound
+	}
+	return projectPoller.PollJira(ctx, credentials, plan)
+}
+
+type confluencePollerByProject struct {
+	pollers map[string]projectintegrations.ConfluencePoller
+}
+
+func newConfluencePollerByProject(projects []config.Project) confluencePollerByProject {
+	pollers := make(map[string]projectintegrations.ConfluencePoller)
+	for _, project := range projects {
+		if project.Integrations.Confluence == nil {
+			continue
+		}
+		cfg := *project.Integrations.Confluence
+		pollers[project.ID] = integrationconfluence.NewPoller(integrationconfluence.NewClient(integrationconfluence.Options{
+			BaseURL: cfg.SiteURL,
+			Timeout: cfg.ReadTimeout,
+		}))
+	}
+	return confluencePollerByProject{pollers: pollers}
+}
+
+func (poller confluencePollerByProject) PollConfluence(ctx context.Context, credentials projectintegrations.Credentials, plan projectintegrations.ConfluenceQueryPlan) (projectintegrations.PollResult, error) {
+	projectPoller, ok := poller.pollers[plan.ProjectID]
+	if !ok {
+		return projectintegrations.PollResult{}, projectintegrations.ErrNotFound
+	}
+	return projectPoller.PollConfluence(ctx, credentials, plan)
 }

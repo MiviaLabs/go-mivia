@@ -31,6 +31,16 @@ func ToolDefinitions() []map[string]any {
 				"provider": map[string]any{"type": "string", "enum": []string{string(projectintegrations.ProviderJira), string(projectintegrations.ProviderConfluence)}},
 			}, []string{"id", "provider"}),
 		},
+		{
+			"name":        "projects.integrations.poll",
+			"title":       "Run Project Integration Poll",
+			"description": "Run one manual provider poll and return redacted local sync metadata only.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":       map[string]any{"type": "string", "minLength": 1},
+				"provider": map[string]any{"type": "string", "enum": []string{string(projectintegrations.ProviderJira), string(projectintegrations.ProviderConfluence)}},
+				"kind":     map[string]any{"type": "string", "enum": []string{string(projectintegrations.SyncKindInitialFull), string(projectintegrations.SyncKindIncremental)}},
+			}, []string{"id", "provider"}),
+		},
 	}
 }
 
@@ -62,6 +72,21 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			return nil, fmt.Errorf("%w: invalid integration arguments", projectintegrations.ErrInvalidInput)
 		}
 		status, err := service.Status(ctx, strings.TrimSpace(input.ID), projectintegrations.Provider(strings.TrimSpace(input.Provider)))
+		if err != nil {
+			return nil, err
+		}
+		return toolResult(status), nil
+	case "projects.integrations.poll", "projects_integrations_poll":
+		var input struct {
+			ID       string          `json:"id"`
+			Provider string          `json:"provider"`
+			Kind     string          `json:"kind,omitempty"`
+			Meta     json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid integration arguments", projectintegrations.ErrInvalidInput)
+		}
+		status, err := service.PollProvider(ctx, strings.TrimSpace(input.ID), projectintegrations.Provider(strings.TrimSpace(input.Provider)), projectintegrations.SyncKind(strings.TrimSpace(input.Kind)))
 		if err != nil {
 			return nil, err
 		}

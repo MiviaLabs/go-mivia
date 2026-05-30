@@ -75,6 +75,48 @@ func TestCallToolStatusIncludesSyncMetadataWithoutRawCursor(t *testing.T) {
 	assertOmits(t, body, append(forbiddenIntegrationStrings(), "raw-provider-cursor-token", "sha256:")...)
 }
 
+func TestCallToolPollReturnsRedactedRunMetadata(t *testing.T) {
+	runner := &fakePollRunner{
+		result: projectintegrations.PollRunResult{
+			Run: projectintegrations.SyncRun{
+				ID:            "run-1",
+				ProjectID:     "project-1",
+				Provider:      projectintegrations.ProviderJira,
+				Kind:          projectintegrations.SyncKindIncremental,
+				Status:        projectintegrations.SyncRunStatusCompleted,
+				ItemsSeen:     1,
+				ItemsUpserted: 1,
+				StartedAt:     testTime(),
+				FinishedAt:    testTime().Add(time.Minute),
+			},
+			State: projectintegrations.SyncState{
+				ProjectID:           "project-1",
+				Provider:            projectintegrations.ProviderJira,
+				LastRunID:           "run-1",
+				LastSuccessfulRunID: "run-1",
+				CursorHash:          "sha256:raw-provider-cursor-token",
+				UpdatedAt:           testTime().Add(time.Minute),
+			},
+		},
+	}
+	service := newIntegrationServiceWithRunner(t, nil, runner)
+
+	result, err := mcpapi.CallTool(context.Background(), service, "projects.integrations.poll", json.RawMessage(`{"id":"project-1","provider":"jira","kind":"incremental"}`))
+	if err != nil {
+		t.Fatalf("poll integration: %v", err)
+	}
+	if runner.projectID != "project-1" || runner.provider != projectintegrations.ProviderJira || runner.kind != projectintegrations.SyncKindIncremental {
+		t.Fatalf("runner received unexpected input: %#v", runner)
+	}
+	body := mustJSON(t, result)
+	for _, expected := range []string{`"Provider":"jira"`, `"Status":"completed"`, `"ItemsUpserted":1`, `"CursorHashPresent":true`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in poll response: %s", expected, body)
+		}
+	}
+	assertOmits(t, body, append(forbiddenIntegrationStrings(), "raw-provider-cursor-token", "sha256:", "ISSUE-1", "PAGE-1")...)
+}
+
 func TestCallToolMissingErrorsAreStableAndRedacted(t *testing.T) {
 	service := newIntegrationService(t, nil)
 
@@ -93,7 +135,12 @@ func TestCallToolMissingErrorsAreStableAndRedacted(t *testing.T) {
 
 func newIntegrationService(t *testing.T, store projectintegrations.Store) *projectintegrations.Service {
 	t.Helper()
-	service, err := projectintegrations.NewService([]config.Project{testIntegrationProject()}, store)
+	return newIntegrationServiceWithRunner(t, store, nil)
+}
+
+func newIntegrationServiceWithRunner(t *testing.T, store projectintegrations.Store, runner projectintegrations.PollRunner) *projectintegrations.Service {
+	t.Helper()
+	service, err := projectintegrations.NewServiceWithOptions([]config.Project{testIntegrationProject()}, store, projectintegrations.ServiceOptions{Runner: runner})
 	if err != nil {
 		t.Fatalf("new integration service: %v", err)
 	}
@@ -191,6 +238,24 @@ func assertOmits(t *testing.T, body string, forbidden ...string) {
 
 func testTime() time.Time {
 	return time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC)
+}
+
+type fakePollRunner struct {
+	projectID string
+	provider  projectintegrations.Provider
+	kind      projectintegrations.SyncKind
+	result    projectintegrations.PollRunResult
+	err       error
+}
+
+func (runner *fakePollRunner) RunProviderPoll(_ context.Context, projectID string, provider projectintegrations.Provider, kind projectintegrations.SyncKind) (projectintegrations.PollRunResult, error) {
+	runner.projectID = projectID
+	runner.provider = provider
+	runner.kind = kind
+	if runner.err != nil {
+		return projectintegrations.PollRunResult{}, runner.err
+	}
+	return runner.result, nil
 }
 
 type fakeStore struct {

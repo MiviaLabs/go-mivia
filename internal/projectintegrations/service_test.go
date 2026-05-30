@@ -90,6 +90,83 @@ func TestService_StatusRedactsCombinedCredentialsFileRef(t *testing.T) {
 	}
 }
 
+func TestService_PollProviderRunsManualOneShotAndReturnsRedactedMetadata(t *testing.T) {
+	runner := &fakePollRunner{
+		result: PollRunResult{
+			Run: SyncRun{
+				ID:            "run-1",
+				ProjectID:     "project-1",
+				Provider:      ProviderJira,
+				Kind:          SyncKindIncremental,
+				Status:        SyncRunStatusCompleted,
+				ItemsSeen:     1,
+				ItemsUpserted: 1,
+				StartedAt:     testTime(),
+				FinishedAt:    testTime().Add(time.Minute),
+			},
+			State: SyncState{
+				ProjectID:           "project-1",
+				Provider:            ProviderJira,
+				LastRunID:           "run-1",
+				LastSuccessfulRunID: "run-1",
+				CursorHash:          "sha256:raw-provider-cursor-token",
+				UpdatedAt:           testTime().Add(time.Minute),
+			},
+		},
+	}
+	project := testIntegrationProject()
+	project.Integrations.Jira.CredentialRefs = config.AtlassianCredentialRefs{
+		CredentialsFile: "/home/mac/secret-atlassian-credentials.json",
+	}
+	service := newTestServiceWithOptions(t, nil, ServiceOptions{Runner: runner}, project)
+
+	status, err := service.PollProvider(context.Background(), "project-1", ProviderJira, SyncKindIncremental)
+	if err != nil {
+		t.Fatalf("poll provider: %v", err)
+	}
+	if runner.projectID != "project-1" || runner.provider != ProviderJira || runner.kind != SyncKindIncremental {
+		t.Fatalf("runner received unexpected input: %#v", runner)
+	}
+	if status.Run.Status != SyncRunStatusCompleted || status.Run.ItemsUpserted != 1 || !status.SyncState.CursorHashPresent {
+		t.Fatalf("unexpected poll status: %#v", status)
+	}
+	assertOmits(t, mustJSON(t, status),
+		"https://tenant.atlassian.net",
+		"tenant-cloud-id",
+		"ACME",
+		"OPS",
+		"/home/mac/secret-atlassian-credentials.json",
+		"raw-provider-cursor-token",
+		"sha256:",
+	)
+}
+
+func TestService_PollProviderRejectsDisabledProviderBeforeRunner(t *testing.T) {
+	project := testIntegrationProject()
+	project.Integrations.Jira.Enabled = false
+	runner := &fakePollRunner{}
+	service := newTestServiceWithOptions(t, nil, ServiceOptions{Runner: runner}, project)
+
+	_, err := service.PollProvider(context.Background(), "project-1", ProviderJira, SyncKindIncremental)
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "provider disabled") {
+		t.Fatalf("expected disabled provider error, got %v", err)
+	}
+	if runner.called {
+		t.Fatalf("runner was called for disabled provider")
+	}
+	assertOmits(t, err.Error(), "tenant.atlassian.net", "ACME", "MIVIA_ATLASSIAN", "/home/mac")
+}
+
+func TestService_PollProviderRequiresConfiguredRunner(t *testing.T) {
+	service := newTestService(t, nil, testIntegrationProject())
+
+	_, err := service.PollProvider(context.Background(), "project-1", ProviderJira, SyncKindIncremental)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected missing runner error, got %v", err)
+	}
+	assertOmits(t, err.Error(), "tenant.atlassian.net", "ACME", "MIVIA_ATLASSIAN", "/home/mac")
+}
+
 func TestService_UpsertConfiguredSourcesStoresHashesAndCountsOnly(t *testing.T) {
 	ctx := context.Background()
 	store, db := newTestSQLiteStore(t)
@@ -212,6 +289,35 @@ func newTestService(t *testing.T, store Store, projects ...config.Project) *Serv
 		t.Fatalf("new service: %v", err)
 	}
 	return service
+}
+
+func newTestServiceWithOptions(t *testing.T, store Store, options ServiceOptions, projects ...config.Project) *Service {
+	t.Helper()
+	service, err := NewServiceWithOptions(projects, store, options)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	return service
+}
+
+type fakePollRunner struct {
+	called    bool
+	projectID string
+	provider  Provider
+	kind      SyncKind
+	result    PollRunResult
+	err       error
+}
+
+func (runner *fakePollRunner) RunProviderPoll(_ context.Context, projectID string, provider Provider, kind SyncKind) (PollRunResult, error) {
+	runner.called = true
+	runner.projectID = projectID
+	runner.provider = provider
+	runner.kind = kind
+	if runner.err != nil {
+		return PollRunResult{}, runner.err
+	}
+	return runner.result, nil
 }
 
 func testIntegrationProject() config.Project {

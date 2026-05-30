@@ -16,9 +16,18 @@ type Store interface {
 	GetSyncRun(context.Context, string, Provider, string) (SyncRun, error)
 }
 
+type PollRunner interface {
+	RunProviderPoll(context.Context, string, Provider, SyncKind) (PollRunResult, error)
+}
+
+type ServiceOptions struct {
+	Runner PollRunner
+}
+
 type Service struct {
 	projects map[string]config.Project
 	store    Store
+	runner   PollRunner
 	now      func() time.Time
 }
 
@@ -85,7 +94,18 @@ type SyncRunStatusView struct {
 	FinishedAt    time.Time
 }
 
+type ProviderPollStatus struct {
+	ProjectID string
+	Provider  Provider
+	Run       SyncRunStatusView
+	SyncState SyncStateStatus
+}
+
 func NewService(projects []config.Project, store Store) (*Service, error) {
+	return NewServiceWithOptions(projects, store, ServiceOptions{})
+}
+
+func NewServiceWithOptions(projects []config.Project, store Store, options ServiceOptions) (*Service, error) {
 	byID := make(map[string]config.Project, len(projects))
 	for _, project := range projects {
 		id := strings.TrimSpace(project.ID)
@@ -100,6 +120,7 @@ func NewService(projects []config.Project, store Store) (*Service, error) {
 	return &Service{
 		projects: byID,
 		store:    store,
+		runner:   options.Runner,
 		now:      time.Now,
 	}, nil
 }
@@ -183,6 +204,36 @@ func (service *Service) UpsertConfiguredSources(ctx context.Context, projectID s
 	return sources, nil
 }
 
+func (service *Service) PollProvider(ctx context.Context, projectID string, provider Provider, kind SyncKind) (ProviderPollStatus, error) {
+	if service == nil {
+		return ProviderPollStatus{}, fmt.Errorf("%w: service is nil", ErrInvalidInput)
+	}
+	if service.runner == nil {
+		return ProviderPollStatus{}, fmt.Errorf("%w: integration runner unavailable", ErrNotFound)
+	}
+	project, err := service.project(projectID)
+	if err != nil {
+		return ProviderPollStatus{}, err
+	}
+	statusCfg, err := providerStatusConfig(project, provider)
+	if err != nil {
+		return ProviderPollStatus{}, err
+	}
+	if !statusCfg.enabled {
+		return ProviderPollStatus{}, fmt.Errorf("%w: provider disabled", ErrInvalidInput)
+	}
+	result, err := service.runner.RunProviderPoll(ctx, project.ID, provider, kind)
+	if err != nil {
+		return ProviderPollStatus{}, err
+	}
+	return ProviderPollStatus{
+		ProjectID: project.ID,
+		Provider:  provider,
+		Run:       syncRunStatusView(result.Run),
+		SyncState: syncStateStatus(result.State),
+	}, nil
+}
+
 func (service *Service) project(projectID string) (config.Project, error) {
 	if service == nil {
 		return config.Project{}, fmt.Errorf("%w: service is nil", ErrInvalidInput)
@@ -213,7 +264,25 @@ func (status *ProviderStatus) addStoredMetadata(ctx context.Context, store Store
 		}
 		return err
 	}
-	status.SyncState = &SyncStateStatus{
+	stateStatus := syncStateStatus(state)
+	status.SyncState = &stateStatus
+	if state.LastRunID == "" {
+		return nil
+	}
+	run, err := store.GetSyncRun(ctx, status.ProjectID, status.Provider, state.LastRunID)
+	if err != nil {
+		if err == ErrNotFound {
+			return nil
+		}
+		return err
+	}
+	runStatus := syncRunStatusView(run)
+	status.LastRun = &runStatus
+	return nil
+}
+
+func syncStateStatus(state SyncState) SyncStateStatus {
+	return SyncStateStatus{
 		LastRunID:             state.LastRunID,
 		LastSuccessfulRunID:   state.LastSuccessfulRunID,
 		LastSuccessAt:         state.LastSuccessAt,
@@ -225,17 +294,10 @@ func (status *ProviderStatus) addStoredMetadata(ctx context.Context, store Store
 		CursorHashPresent:     state.CursorHash != "",
 		UpdatedAt:             state.UpdatedAt,
 	}
-	if state.LastRunID == "" {
-		return nil
-	}
-	run, err := store.GetSyncRun(ctx, status.ProjectID, status.Provider, state.LastRunID)
-	if err != nil {
-		if err == ErrNotFound {
-			return nil
-		}
-		return err
-	}
-	status.LastRun = &SyncRunStatusView{
+}
+
+func syncRunStatusView(run SyncRun) SyncRunStatusView {
+	return SyncRunStatusView{
 		ID:            run.ID,
 		Kind:          run.Kind,
 		Status:        run.Status,
@@ -247,7 +309,6 @@ func (status *ProviderStatus) addStoredMetadata(ctx context.Context, store Store
 		StartedAt:     run.StartedAt,
 		FinishedAt:    run.FinishedAt,
 	}
-	return nil
 }
 
 type statusConfig struct {
