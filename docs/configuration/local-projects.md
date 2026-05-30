@@ -140,6 +140,8 @@ The server exposes bounded project metadata on localhost only:
 
 Project responses omit local root paths and datastore paths by default. Digest runs are manual and metadata-only: graph writes store relative path, extension/language hint, file size, mtime, and a metadata fingerprint. Content graph ingestion stores eligible local source chunks only after all gates pass. Skipped sensitive files are represented only by reason codes and hash-only state where required.
 
+File listing accepts optional `status`, `extension`, `page_size`, and `page_token` filters. Extension values may be `go` or `.go`; matching is case-insensitive and invalidates whitespace or path separators.
+
 ## Live Update Mode
 
 Live mode is disabled by default. To use it locally, enable both global gates and configure a project with `digest_mode = "content_graph"` and `update_policy = "live"`. The watcher registers directories, not files. It walks eligible directories because the underlying filesystem notification API is not recursive. New directories created under included paths are watched when observed.

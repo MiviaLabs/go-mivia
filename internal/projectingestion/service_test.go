@@ -77,6 +77,82 @@ func TestIngestProject_StoresEligibleContentGraphState(t *testing.T) {
 	}
 }
 
+func TestListFiles_FiltersByExtensionBeforePagination(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc Run() {}\n")
+	writeFile(t, filepath.Join(root, "internal", "helper.go"), "package internal\n\nfunc Help() {}\n")
+	writeFile(t, filepath.Join(root, "docs", "guide.md"), "# Guide\n\n## Setup\n")
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+
+	first, err := svc.ListFiles(ctx, "example-service", FileStateFilter{
+		Status:    FileStatusEligible,
+		Extension: "GO",
+	}, Pagination{PageSize: 1})
+	if err != nil {
+		t.Fatalf("list first page: %v", err)
+	}
+	if len(first.Files) != 1 || !strings.HasSuffix(first.Files[0].RelativePath, ".go") || first.NextPageToken == "" {
+		t.Fatalf("unexpected first page: %#v", first)
+	}
+
+	second, err := svc.ListFiles(ctx, "example-service", FileStateFilter{
+		Status:    FileStatusEligible,
+		Extension: ".go",
+	}, Pagination{PageSize: 1, PageToken: first.NextPageToken})
+	if err != nil {
+		t.Fatalf("list second page: %v", err)
+	}
+	if len(second.Files) != 1 || !strings.HasSuffix(second.Files[0].RelativePath, ".go") || second.NextPageToken != "" {
+		t.Fatalf("unexpected second page: %#v", second)
+	}
+
+	if _, err := svc.ListFiles(ctx, "example-service", FileStateFilter{Extension: "bad/path"}, Pagination{}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected invalid extension input, got %v", err)
+	}
+}
+
+func TestNormalizeFileExtension(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty", raw: "", want: ""},
+		{name: "without dot", raw: "GO", want: ".go"},
+		{name: "with dot", raw: ".Md", want: ".md"},
+		{name: "digits", raw: "ts1", want: ".ts1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := NormalizeFileExtension(tc.raw)
+			if err != nil {
+				t.Fatalf("normalize extension: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestNormalizeFileExtensionRejectsInvalidInput(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{".", "bad/path", `bad\path`, "go test", " go", "go ", "g_o", "g%", "g*", "go.md"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			if _, err := NormalizeFileExtension(raw); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected ErrInvalidInput for %q, got %v", raw, err)
+			}
+		})
+	}
+}
+
 func TestIngestProject_SensitiveContentSkipIsHashOnly(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

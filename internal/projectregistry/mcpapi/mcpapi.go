@@ -148,6 +148,7 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		var input struct {
 			ID        string          `json:"id"`
 			Status    string          `json:"status,omitempty"`
+			Extension string          `json:"extension,omitempty"`
 			PageSize  int             `json:"page_size,omitempty"`
 			PageToken string          `json:"page_token,omitempty"`
 			Meta      json.RawMessage `json:"_meta,omitempty"`
@@ -158,7 +159,7 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		if ingestion == nil {
 			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
 		}
-		filter, err := fileFilter(input.Status)
+		filter, err := fileFilter(input.Status, input.Extension)
 		if err != nil {
 			return nil, err
 		}
@@ -277,8 +278,9 @@ func ingestionToolDefinitions() []map[string]any {
 			"title":       "List Project Files",
 			"description": "List bounded file ingestion metadata without root paths or skipped sensitive content.",
 			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
-				"id":     map[string]any{"type": "string", "minLength": 1},
-				"status": map[string]any{"type": "string", "enum": []string{"eligible", "skipped", "absent"}},
+				"id":        map[string]any{"type": "string", "minLength": 1},
+				"status":    map[string]any{"type": "string", "enum": []string{"eligible", "skipped", "absent"}},
+				"extension": map[string]any{"type": "string", "description": "File extension filter, with or without a leading dot. Whitespace and path separators are invalid."},
 			}), []string{"id"}),
 		},
 		{
@@ -328,17 +330,23 @@ func ingestionResourceTemplates() []map[string]any {
 	}
 }
 
-func fileFilter(raw string) (projectingestion.FileStateFilter, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return projectingestion.FileStateFilter{}, nil
+func fileFilter(rawStatus string, rawExtension string) (projectingestion.FileStateFilter, error) {
+	filter := projectingestion.FileStateFilter{}
+	status := strings.TrimSpace(rawStatus)
+	if status != "" {
+		switch projectingestion.FileStatus(status) {
+		case projectingestion.FileStatusEligible, projectingestion.FileStatusSkipped, projectingestion.FileStatusAbsent:
+			filter.Status = projectingestion.FileStatus(status)
+		default:
+			return projectingestion.FileStateFilter{}, projectregistry.ErrInvalidInput
+		}
 	}
-	switch projectingestion.FileStatus(raw) {
-	case projectingestion.FileStatusEligible, projectingestion.FileStatusSkipped, projectingestion.FileStatusAbsent:
-		return projectingestion.FileStateFilter{Status: projectingestion.FileStatus(raw)}, nil
-	default:
-		return projectingestion.FileStateFilter{}, projectregistry.ErrInvalidInput
+	extension, err := projectingestion.NormalizeFileExtension(rawExtension)
+	if err != nil {
+		return projectingestion.FileStateFilter{}, err
 	}
+	filter.Extension = extension
+	return filter, nil
 }
 
 func mergeProperties(base map[string]any, extra map[string]any) map[string]any {

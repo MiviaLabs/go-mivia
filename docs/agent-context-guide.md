@@ -65,7 +65,7 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Run metadata-only digest | `POST /projects/{id}/digest-runs` | `projects.digest` |
 | Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
 | Get ingestion run | `GET /projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
-| List indexed files | `GET /projects/{id}/files` | `projects.files.list` |
+| List indexed files | `GET /projects/{id}/files?status=eligible&extension=.go` | `projects.files.list` |
 | Read bounded chunks | `GET /projects/{id}/files/{file_id}/chunks` | `projects.file.chunks` |
 | List symbols | `GET /projects/{id}/symbols` | `projects.symbols.list` |
 

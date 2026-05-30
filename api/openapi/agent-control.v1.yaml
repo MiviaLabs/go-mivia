@@ -198,7 +198,7 @@ paths:
     get:
       operationId: listProjectFiles
       summary: List project ingestion file metadata
-      description: Returns bounded file metadata only. Sensitive skips omit relative paths and content hashes.
+      description: Returns bounded file metadata only. Sensitive skips omit relative paths and content hashes. Optional extension filtering is case-insensitive and normalizes to a leading dot.
       parameters:
         - $ref: '#/components/parameters/ID'
         - $ref: '#/components/parameters/PageSize'
@@ -208,6 +208,12 @@ paths:
           schema:
             type: string
             enum: [eligible, skipped, absent]
+        - name: extension
+          in: query
+          description: Optional file extension filter, with or without a leading dot. Path separators and whitespace are invalid.
+          schema:
+            type: string
+            minLength: 1
       responses:
         '200':
           description: Project files

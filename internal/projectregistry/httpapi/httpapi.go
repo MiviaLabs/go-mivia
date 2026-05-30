@@ -172,13 +172,20 @@ func paginationFromRequest(r *http.Request) (projectingestion.Pagination, error)
 }
 
 func fileFilter(r *http.Request) (projectingestion.FileStateFilter, error) {
-	raw := strings.TrimSpace(r.URL.Query().Get("status"))
-	if raw == "" {
-		return projectingestion.FileStateFilter{}, nil
+	filter := projectingestion.FileStateFilter{}
+	extension, err := projectingestion.NormalizeFileExtension(r.URL.Query().Get("extension"))
+	if err != nil {
+		return projectingestion.FileStateFilter{}, err
 	}
-	switch projectingestion.FileStatus(raw) {
+	filter.Extension = extension
+	rawStatus := strings.TrimSpace(r.URL.Query().Get("status"))
+	if rawStatus == "" {
+		return filter, nil
+	}
+	switch projectingestion.FileStatus(rawStatus) {
 	case projectingestion.FileStatusEligible, projectingestion.FileStatusSkipped, projectingestion.FileStatusAbsent:
-		return projectingestion.FileStateFilter{Status: projectingestion.FileStatus(raw)}, nil
+		filter.Status = projectingestion.FileStatus(rawStatus)
+		return filter, nil
 	default:
 		return projectingestion.FileStateFilter{}, projectregistry.ErrInvalidInput
 	}

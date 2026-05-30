@@ -4,13 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
 var ErrRunNotFound = errors.New("ingestion run not found")
 
 type FileStateFilter struct {
-	Status FileStatus
+	Status    FileStatus
+	Extension string
 }
 
 type SQLiteStore struct {
@@ -162,6 +164,10 @@ func (store *SQLiteStore) ListFileStates(ctx context.Context, projectID string, 
 	if filter.Status != "" {
 		query += ` AND status = ?`
 		args = append(args, string(filter.Status))
+	}
+	if filter.Extension != "" {
+		query += ` AND lower(relative_path) LIKE ?`
+		args = append(args, "%"+strings.ToLower(filter.Extension))
 	}
 	query += ` ORDER BY relative_path_hash`
 

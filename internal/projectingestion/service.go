@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 )
@@ -266,6 +268,13 @@ func (svc *Service) ListFileStates(ctx context.Context, projectID string, filter
 }
 
 func (svc *Service) ListFiles(ctx context.Context, projectID string, filter FileStateFilter, pagination Pagination) (FileList, error) {
+	if filter.Extension != "" {
+		normalized, err := NormalizeFileExtension(filter.Extension)
+		if err != nil {
+			return FileList{}, err
+		}
+		filter.Extension = normalized
+	}
 	project, err := svc.projectForQuery(projectID)
 	if err != nil {
 		return FileList{}, err
@@ -283,6 +292,35 @@ func (svc *Service) ListFiles(ctx context.Context, projectID string, filter File
 		files = append(files, MetadataForFileState(project, state))
 	}
 	return FileList{Files: files, NextPageToken: nextToken}, nil
+}
+
+func NormalizeFileExtension(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(raw, `/\`) {
+		return "", ErrInvalidInput
+	}
+	if strings.ContainsFunc(raw, unicode.IsSpace) {
+		return "", ErrInvalidInput
+	}
+	extension := strings.ToLower(raw)
+	if !strings.HasPrefix(extension, ".") {
+		extension = "." + extension
+	}
+	if extension == "." {
+		return "", ErrInvalidInput
+	}
+	for _, value := range extension[1:] {
+		if !isExtensionChar(value) {
+			return "", ErrInvalidInput
+		}
+	}
+	return extension, nil
+}
+
+func isExtensionChar(value rune) bool {
+	return utf8.RuneLen(value) == 1 && (value >= 'a' && value <= 'z' || value >= '0' && value <= '9')
 }
 
 func (svc *Service) GetFile(ctx context.Context, projectID string, fileID string) (FileMetadata, error) {

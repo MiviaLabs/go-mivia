@@ -221,13 +221,14 @@ Input schema:
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "status": { "type": "string", "enum": ["eligible", "skipped", "absent"] },
+    "extension": { "type": "string", "minLength": 1 },
     "page_size": { "type": "integer", "minimum": 1, "maximum": 100 },
     "page_token": { "type": "string" }
   }
 }
 ```
 
-Output: bounded file metadata using stable opaque `file_id` values. Sensitive skips return reason codes only and omit relative paths.
+Output: bounded file metadata using stable opaque `file_id` values. `extension` accepts values with or without a leading dot, matches case-insensitively, and rejects whitespace or path separators. Sensitive skips return reason codes only and omit relative paths.
 
 ### `projects.file.chunks`
 

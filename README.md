@@ -235,7 +235,7 @@ Use REST for scripts, smoke tests, and direct local checks. Use MCP when an agen
 | Metadata digest | `POST /api/v1/projects/{id}/digest-runs` | `projects.digest` |
 | Content graph ingestion | `POST /api/v1/projects/{id}/ingestion-runs` | `projects.ingest` |
 | Ingestion run status | `GET /api/v1/projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
-| Indexed files | `GET /api/v1/projects/{id}/files` | `projects.files.list` |
+| Indexed files | `GET /api/v1/projects/{id}/files?status=eligible&extension=.go` | `projects.files.list` |
 | Bounded chunks | `GET /api/v1/projects/{id}/files/{file_id}/chunks` | `projects.file.chunks` |
 | Symbols | `GET /api/v1/projects/{id}/symbols` | `projects.symbols.list` |
 

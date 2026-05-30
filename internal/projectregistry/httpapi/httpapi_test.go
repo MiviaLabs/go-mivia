@@ -157,6 +157,40 @@ func TestProjectIngestionRoutes_SkippedSensitiveContentDoesNotLeak(t *testing.T)
 	}
 }
 
+func TestProjectIngestionRoutes_ListFilesFiltersByExtension(t *testing.T) {
+	mux, projectID, _ := newIngestionMuxWithFiles(t, map[string]string{
+		"cmd/main.go": "package main\nfunc main() {}\n",
+		"README.md":   "# example\n",
+	}, []string{"**/*"})
+
+	created := httptest.NewRecorder()
+	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/ingestion-runs", nil))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", created.Code, created.Body.String())
+	}
+
+	files := httptest.NewRecorder()
+	mux.ServeHTTP(files, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files?status=eligible&extension=GO&page_size=1", nil))
+	if files.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", files.Code, files.Body.String())
+	}
+	var fileList projectingestion.FileList
+	if err := json.Unmarshal(files.Body.Bytes(), &fileList); err != nil {
+		t.Fatalf("decode files: %v", err)
+	}
+	if len(fileList.Files) != 1 || fileList.Files[0].RelativePath != "cmd/main.go" || fileList.NextPageToken != "" {
+		t.Fatalf("unexpected filtered file list: %#v", fileList)
+	}
+
+	for _, query := range []string{"extension=bad/path", "extension=bad%20path", "extension=go.md", "extension=g*"} {
+		invalid := httptest.NewRecorder()
+		mux.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files?"+query, nil))
+		if invalid.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid extension query %q, got %d: %s", query, invalid.Code, invalid.Body.String())
+		}
+	}
+}
+
 func newMux(t *testing.T) (*http.ServeMux, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -190,13 +224,20 @@ func newMux(t *testing.T) (*http.ServeMux, string) {
 }
 
 func newIngestionMux(t *testing.T, content string) (*http.ServeMux, string, string) {
+	return newIngestionMuxWithFiles(t, map[string]string{"cmd/main.go": content}, []string{"**/*.go"})
+}
+
+func newIngestionMuxWithFiles(t *testing.T, files map[string]string, include []string) (*http.ServeMux, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "cmd"), 0o700); err != nil {
-		t.Fatalf("create source dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "cmd", "main.go"), []byte(content), 0o600); err != nil {
-		t.Fatalf("write source fixture: %v", err)
+	for name, content := range files {
+		fullPath := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+			t.Fatalf("create source dir: %v", err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
+			t.Fatalf("write source fixture: %v", err)
+		}
 	}
 	registry, err := projectregistry.NewRegistry([]config.Project{{
 		ID:                    "example-service",
@@ -207,7 +248,7 @@ func newIngestionMux(t *testing.T, content string) (*http.ServeMux, string, stri
 		GraphNamespace:        "example-service",
 		DigestMode:            projectregistry.DigestModeContentGraph,
 		UpdatePolicy:          projectregistry.UpdatePolicyManual,
-		Include:               []string{"**/*.go"},
+		Include:               include,
 		FollowSymlinks:        false,
 		MaxFileBytes:          4096,
 		MaxChunkBytes:         1024,

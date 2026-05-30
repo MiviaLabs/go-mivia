@@ -1,64 +1,54 @@
 ---
 name: mivialabs-agent-mcp
-description: Use for this repo's localhost MCP server when an agent needs indexed project context, ingestion status, bounded file chunks, or MCP contract verification.
+description: Use with the MiviaLabs localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, bounded file chunks, or symbol lists.
 ---
 
 # MiviaLabs Agent MCP
 
-Repo-local only. Do not promote globally until the MCP contract and operating pattern are explicitly approved.
+Portable skill. It can be copied into any repository indexed by a running MiviaLabs `agent-server`.
+
+## Inputs
+
+Know or discover:
+
+- MCP endpoint, default `http://127.0.0.1:8080/mcp`.
+- Project ID, from the user or `projects.list`.
+- Host repository rules, tests, and privacy/security boundaries.
+
+Do not assume the current repository is the server repo. Do not assume any specific language or directory layout.
 
 ## Tool Choice
 
-Use the right source first:
-
-| Need | Use | Do not use |
+| Need | First choice | Avoid |
 | --- | --- | --- |
-| Code symbols, references, call sites, edit targets | Serena | MCP file chunks as a substitute for semantic navigation |
-| Indexed project map, ingestion status, file IDs, bounded chunks, symbol lists | MiviaLabs MCP | Raw DB queries, absolute paths, broad shell scans |
-| Git state, unindexed new files, tests, builds, logs, generated artifacts | Shell | MCP as proof of current working-tree state |
+| Code symbols, references, call sites, edit targets | Serena or host semantic tool | MCP chunks as a substitute for semantic navigation |
+| Indexed project map, ingestion state, file IDs, chunks, symbols | MiviaLabs MCP | Raw DB queries, absolute paths, broad shell scans |
+| Current git/disk/runtime state, tests, builds, logs, unindexed edits | Shell or host tooling | MCP as proof of current working-tree state |
 
-If the choice is unclear:
+If unclear:
 
-1. Code structure -> Serena.
-2. Indexed repo discovery -> MCP.
-3. Current disk/git/runtime fact -> shell.
-
-## Required Reads
-
-For normal MCP use:
-
-- `.ai/INDEX.md`
-- `.ai/rules/10-security-privacy.md`
-- This skill.
-
-For MCP behavior, contract, or API changes also read:
-
-- `api/mcp/agent-control.v1.md`
-- `api/openapi/agent-control.v1.yaml`
-- `internal/agentcontrol/mcpapi`
-- `internal/projectregistry/mcpapi`
-- `internal/projectregistry/httpapi`
-- `internal/projectingestion`
-
-Do not use Jira or Confluence unless the user explicitly overrides that repo rule in the same request.
+1. Code structure -> Serena or host semantic tool.
+2. Indexed project discovery -> MCP.
+3. Current local state -> shell.
 
 ## Safe Sequence
 
 Use the smallest sequence that answers the task:
 
-1. Confirm `/mcp` is localhost or loopback.
-2. Use `projects.list` or `projects.get` to confirm `enabled`, `digest_mode`, `update_policy`, and `graph_storage`.
-3. Use `projects.files.list` or `projects.symbols.list` with small `page_size` to confirm indexed content exists.
-4. Use `projects.ingest` only when a manual rescan is needed; then use `projects.ingestion_status` with that returned `run_id`.
-5. Use `projects.file.chunks` only after a `file_id` is known; keep `max_chunk_bytes` bounded.
-6. Switch to Serena for symbol bodies, references, and edit planning.
-7. Switch to shell for tests, diffs, logs, generated files, or anything changed after the last ingestion.
+1. Confirm the MCP endpoint is localhost or loopback.
+2. Call `tools/list`.
+3. Call `projects.list` or `projects.get` to confirm `enabled`, `digest_mode`, `update_policy`, and `graph_storage`.
+4. Call `projects.files.list` or `projects.symbols.list` with small `page_size` to confirm indexed content exists.
+5. Call `projects.ingest` only when a manual rescan is needed; then call `projects.ingestion_status` with the returned `run_id`.
+6. Call `projects.file.chunks` only after a `file_id` is known; keep `max_chunk_bytes` bounded.
+7. Switch to semantic tools for symbol bodies, references, and edit planning.
+8. Switch to shell for tests, diffs, logs, generated files, and anything changed after the last ingestion.
 
-If MCP is down or the project is not indexed, say so and fall back to Serena plus shell. Do not invent MCP facts.
+If MCP is down, the project is not listed, or indexed content is stale for the task, say so and fall back to semantic tools plus shell. Do not invent MCP facts.
 
 ## Tools
 
-Use dotted names when available; Codex-style underscore aliases are accepted.
+Use dotted names when available. Codex-style underscore aliases are accepted by the server.
 
 | Purpose | Tools |
 | --- | --- |
@@ -79,24 +69,36 @@ Resources:
 - `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`
 - `mivialabs://projects/{id}/symbols/{symbol_id}`
 
-## Raw HTTP Check
+## Raw HTTP Fallback
 
-Only when no native MCP client is available:
+Use raw HTTP only when no native MCP client is available:
 
 - `POST http://127.0.0.1:<port>/mcp`
 - `Content-Type: application/json`
 - `Accept: application/json, text/event-stream`
 - Optional `MCP-Protocol-Version: 2025-06-18`
 
-Start with `tools/list`, then use tool calls. Do not use raw HTTP to bypass MCP boundaries.
+Start with `tools/list`, then use `tools/call`. Do not use raw HTTP to bypass MCP boundaries.
+
+## A/B Agent Tests
+
+When measuring MCP impact:
+
+1. Create two clean worktrees from the same commit.
+2. Give both agents the same task and acceptance criteria.
+3. MCP run: require `tools/list`, `projects.get`, and small `projects.files.list` or `projects.symbols.list` before broad shell reads.
+4. Non-MCP run: forbid MCP and raw `/mcp` HTTP.
+5. Require each agent to save a run log with elapsed time, tool calls, files changed, diff stats, tests run, and failures.
+6. Save the evaluator report in the host repo's test-report location; if none exists, use `docs/reports/tests/`.
+7. Do not let either implementation agent review the other implementation.
 
 ## Hard Boundaries
 
-Never request or expose:
+Never request, store, or expose:
 
 - Absolute roots or datastore paths.
-- Raw DB queries or query results.
-- Secrets, credentials, tokens, PII, raw prompts, provider payloads.
+- Raw DB queries or raw query results.
+- Secrets, credentials, tokens, PII, raw prompts, or provider payloads.
 - Skipped sensitive content or matched sensitive text.
 - Public exposure, provider calls, embeddings, vectors, crawling, production deployment, symlink traversal, or auth-model changes.
 
