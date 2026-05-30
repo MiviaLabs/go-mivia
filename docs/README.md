@@ -9,6 +9,7 @@ This index points only to stable repository documentation. Local task plans and 
 ## Map
 
 - [System architecture](architecture/system-architecture.md): current local-only service shape, data flows, and operational boundaries.
+- [Agent context server guide](agent-context-guide.md): short guide for business stakeholders, engineers, and agents using Serena plus MiviaLabs REST/MCP.
 - [ADRs](adr/): approved and proposed architecture decisions.
 - [REST OpenAPI contract](../api/openapi/agent-control.v1.yaml): localhost REST contract under `/api/v1`.
 - [MCP capability contract](../api/mcp/agent-control.v1.md): Streamable HTTP MCP contract under `/mcp`.

@@ -1,80 +1,37 @@
 ---
 name: mivialabs-agent-mcp
-description: Use this repo-local skill when operating or documenting this repository's localhost MCP server tools and resources.
+description: Use for this repo's localhost MCP server when an agent needs indexed project context, ingestion status, bounded file chunks, or MCP contract verification.
 ---
 
-# MiviaLabs Agent MCP Router
+# MiviaLabs Agent MCP
 
-This skill is local to this repository. Do not promote it to global Codex or Claude skill registries until the MCP contract and safe operating patterns are explicitly approved for promotion.
+Repo-local only. Do not promote globally until the MCP contract and operating pattern are explicitly approved.
+
+## Tool Choice
+
+Use the right source first:
+
+| Need | Use | Do not use |
+| --- | --- | --- |
+| Code symbols, references, call sites, edit targets | Serena | MCP file chunks as a substitute for semantic navigation |
+| Indexed project map, ingestion status, file IDs, bounded chunks, symbol lists | MiviaLabs MCP | Raw DB queries, absolute paths, broad shell scans |
+| Git state, unindexed new files, tests, builds, logs, generated artifacts | Shell | MCP as proof of current working-tree state |
+
+If the choice is unclear:
+
+1. Code structure -> Serena.
+2. Indexed repo discovery -> MCP.
+3. Current disk/git/runtime fact -> shell.
 
 ## Required Reads
 
-Before using or documenting MCP workflows, read:
+For normal MCP use:
 
 - `.ai/INDEX.md`
-- `.ai/rules/00-operating-doctrine.md`
-- `.ai/rules/05-external-systems.md`
 - `.ai/rules/10-security-privacy.md`
-- `.ai/rules/20-go-service-standards.md`
-- `.ai/rules/30-docker-data.md`
-- `api/mcp/agent-control.v1.md`
-- `api/openapi/agent-control.v1.yaml` when REST/MCP behavior is being compared
+- This skill.
 
-Do not use Jira or Confluence for this repository unless the user explicitly overrides that constraint in the same request.
-
-## Boundary
-
-Use only the localhost `agent-server` MCP endpoint at `/mcp`. Stop before any workflow that would require public exposure, a new auth model, provider calls, embeddings, vectors, external crawling, symlink traversal, raw database queries, production deployment, or personal-data processing.
-
-Never send or ask the MCP server to return secrets, credentials, tokens, PII, raw prompts, provider payloads, skipped sensitive content, matched sensitive text, absolute roots, datastore paths, or raw LadybugDB/SQLite query results.
-
-## Routing
-
-Task control:
-
-- `tasks.create`
-- `tasks.get`
-- Resources: `mivialabs://tasks/{id}`
-
-Research metadata, fixture/provider-disabled posture:
-
-- `research_runs.create`
-- `research_runs.get`
-- `research_sources.create`
-- `research_sources.get`
-- Resources: `mivialabs://research-runs/{id}`, `mivialabs://research-sources/{id}`
-
-Project registry and metadata-only digest:
-
-- `projects.list`
-- `projects.get`
-- `projects.digest`
-- Resources: `mivialabs://projects/{id}`, `mivialabs://projects/{id}/digest-runs/{run_id}`
-
-Content graph ingestion and live-update metadata after matching approvals and local config gates:
-
-- `projects.ingest`
-- `projects.ingestion_status`
-- `projects.files.list`
-- `projects.file.chunks`
-- `projects.symbols.list`
-- Resources: `mivialabs://projects/{id}/files/{file_id}`, `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`, `mivialabs://projects/{id}/symbols/{symbol_id}`
-
-Codex may expose underscore aliases such as `projects_ingest`; both dotted and underscore names are accepted by the server.
-
-## Stop Conditions
-
-Stop and report the blocked condition when:
-
-- The server is not bound to localhost or loopback.
-- The request requires raw database query execution.
-- A requested response would reveal absolute roots, datastore paths, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, or provider payloads.
-- The project is not explicitly configured for the requested `metadata_only`, `content_graph`, or `live` behavior.
-- The workflow requires external provider, embedding, vector, crawling, public exposure, auth, production, or PII approval not present in stable repo docs.
-
-## Verification
-
-For MCP behavior changes, verify the contract and implementation together:
+For MCP behavior, contract, or API changes also read:
 
 - `api/mcp/agent-control.v1.md`
 - `api/openapi/agent-control.v1.yaml`
@@ -83,4 +40,64 @@ For MCP behavior changes, verify the contract and implementation together:
 - `internal/projectregistry/httpapi`
 - `internal/projectingestion`
 
-Run the narrow verifier first, then broaden to `go test ./...` when behavior or contract surfaces changed.
+Do not use Jira or Confluence unless the user explicitly overrides that repo rule in the same request.
+
+## Safe Sequence
+
+Use the smallest sequence that answers the task:
+
+1. Confirm `/mcp` is localhost or loopback.
+2. Use `projects.list` or `projects.get` to confirm `enabled`, `digest_mode`, `update_policy`, and `graph_storage`.
+3. Use `projects.files.list` or `projects.symbols.list` with small `page_size` to confirm indexed content exists.
+4. Use `projects.ingest` only when a manual rescan is needed; then use `projects.ingestion_status` with that returned `run_id`.
+5. Use `projects.file.chunks` only after a `file_id` is known; keep `max_chunk_bytes` bounded.
+6. Switch to Serena for symbol bodies, references, and edit planning.
+7. Switch to shell for tests, diffs, logs, generated files, or anything changed after the last ingestion.
+
+If MCP is down or the project is not indexed, say so and fall back to Serena plus shell. Do not invent MCP facts.
+
+## Tools
+
+Use dotted names when available; Codex-style underscore aliases are accepted.
+
+| Purpose | Tools |
+| --- | --- |
+| Tasks | `tasks.create`, `tasks.get` |
+| Research metadata only | `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get` |
+| Project registry | `projects.list`, `projects.get` |
+| Metadata digest | `projects.digest` |
+| Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.files.list`, `projects.file.chunks`, `projects.symbols.list` |
+
+Resources:
+
+- `mivialabs://tasks/{id}`
+- `mivialabs://research-runs/{id}`
+- `mivialabs://research-sources/{id}`
+- `mivialabs://projects/{id}`
+- `mivialabs://projects/{id}/digest-runs/{run_id}`
+- `mivialabs://projects/{id}/files/{file_id}`
+- `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`
+- `mivialabs://projects/{id}/symbols/{symbol_id}`
+
+## Raw HTTP Check
+
+Only when no native MCP client is available:
+
+- `POST http://127.0.0.1:<port>/mcp`
+- `Content-Type: application/json`
+- `Accept: application/json, text/event-stream`
+- Optional `MCP-Protocol-Version: 2025-06-18`
+
+Start with `tools/list`, then use tool calls. Do not use raw HTTP to bypass MCP boundaries.
+
+## Hard Boundaries
+
+Never request or expose:
+
+- Absolute roots or datastore paths.
+- Raw DB queries or query results.
+- Secrets, credentials, tokens, PII, raw prompts, provider payloads.
+- Skipped sensitive content or matched sensitive text.
+- Public exposure, provider calls, embeddings, vectors, crawling, production deployment, symlink traversal, or auth-model changes.
+
+Stop and report the blocked condition if the workflow requires any of those.

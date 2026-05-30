@@ -1,0 +1,119 @@
+# Agent Context Server Guide
+
+Status: Current local guide
+Date: 2026-05-30
+Classification: Internal; PII-prohibited
+
+`agent-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata and chunks, and keeps source understanding inside the developer machine.
+
+## Who It Helps
+
+| Audience | Value |
+| --- | --- |
+| Business stakeholders | Less agent guesswork, faster engineering work, and a clear local-only data boundary. |
+| Local users | A simple way to ask what projects are configured, indexed, and safe for agents to inspect. |
+| Engineers | One local service for project config, ingestion, run status, REST checks, and MCP tools. |
+| AI agents | Token-efficient project discovery, file IDs, symbols, chunks, and ingestion state without broad scans. |
+
+## How It Works
+
+```mermaid
+flowchart LR
+  Engineer["Engineer"] --> Agent["AI agent"]
+  Agent --> Serena["Serena"]
+  Agent --> MCP["MiviaLabs MCP"]
+  Serena --> Code["Code symbols and references"]
+  MCP --> Server["agent-server on localhost"]
+  Server --> Project["Approved local project"]
+  Server --> Store["Local graph and SQLite"]
+  Store --> MCP
+  Code --> Agent
+  MCP --> Agent
+```
+
+Serena and `agent-server` are complementary:
+
+- Use Serena for precise code navigation: symbols, references, call sites, and edit targets.
+- Use MiviaLabs MCP for indexed project context: project metadata, ingestion state, file IDs, chunks, and symbol lists.
+- Use shell for current disk and git truth: diffs, tests, builds, logs, and newly changed files.
+
+## When To Use What
+
+| Need | First tool |
+| --- | --- |
+| Understand a Go type, function, caller, or edit location | Serena |
+| Find indexed files or symbols without scanning the repo in chat | MCP |
+| Read a bounded chunk by opaque file ID | MCP |
+| Check whether live ingestion is configured and returning content | MCP or REST |
+| Verify a code change, test, build, log, or git state | Shell |
+| Inspect a file just created in the working tree | Shell, then Serena if code navigation is needed |
+
+## Surfaces
+
+REST is for direct local checks, scripts, and smoke tests. MCP is for agent clients such as Codex Desktop.
+
+| Capability | REST under `/api/v1` | MCP tool |
+| --- | --- | --- |
+| Create task | `POST /tasks` | `tasks.create` |
+| Get task | `GET /tasks/{id}` | `tasks.get` |
+| Create research run metadata | `POST /research-runs` | `research_runs.create` |
+| Get research run metadata | `GET /research-runs/{id}` | `research_runs.get` |
+| Create research source metadata | `POST /research-runs/{id}/sources` | `research_sources.create` |
+| Get research source metadata | `GET /research-runs/{id}/sources/{source_id}` | `research_sources.get` |
+| List projects | `GET /projects` | `projects.list` |
+| Get project | `GET /projects/{id}` | `projects.get` |
+| Run metadata-only digest | `POST /projects/{id}/digest-runs` | `projects.digest` |
+| Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
+| Get ingestion run | `GET /projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
+| List indexed files | `GET /projects/{id}/files` | `projects.files.list` |
+| Read bounded chunks | `GET /projects/{id}/files/{file_id}/chunks` | `projects.file.chunks` |
+| List symbols | `GET /projects/{id}/symbols` | `projects.symbols.list` |
+
+MCP resources also expose stable IDs:
+
+- `mivialabs://projects/{id}`
+- `mivialabs://projects/{id}/digest-runs/{run_id}`
+- `mivialabs://projects/{id}/files/{file_id}`
+- `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`
+- `mivialabs://projects/{id}/symbols/{symbol_id}`
+
+## Common Workflows
+
+Check the server:
+
+```sh
+curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:8080/readyz
+```
+
+Check project context:
+
+```sh
+curl -fsS http://127.0.0.1:8080/api/v1/projects
+curl -fsS http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/files?page_size=5'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/symbols?page_size=10'
+```
+
+Call MCP over raw HTTP only when no native MCP client is available:
+
+```sh
+curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  http://127.0.0.1:8080/mcp
+```
+
+## Safety Boundary
+
+The server is local-only. It must not expose:
+
+- Absolute roots or datastore paths.
+- Raw database queries.
+- Secrets, credentials, tokens, PII, raw prompts, or provider payloads.
+- Skipped sensitive content or matched sensitive text.
+- Public network access, provider calls, embeddings, vectors, crawling, production deployment, symlink traversal, or auth-model changes.
+
+Use stable opaque IDs from REST or MCP responses. Do not infer or expose local root paths.

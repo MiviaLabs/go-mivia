@@ -10,6 +10,18 @@ The platform is local-first and localhost-only by default. It stores local metad
 
 Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only.
 
+## Start Here
+
+Use this repo as a local context server for engineers and AI agents:
+
+| Need | Use |
+| --- | --- |
+| Business overview | Read `Business View` below. |
+| Engineer setup and smoke tests | [Local development runbook](docs/runbooks/local-dev.md). |
+| How Serena, MCP, REST, and shell work together | [Agent context server guide](docs/agent-context-guide.md). |
+| REST contract | [OpenAPI contract](api/openapi/agent-control.v1.yaml). |
+| MCP contract | [MCP capability contract](api/mcp/agent-control.v1.md). |
+
 ## Business View
 
 `agent-server` is a local control and context service for engineers and AI agents. It gives agents a safe, structured way to understand a developer's local projects, remember approved local metadata, run bounded project ingestion, and expose that context through REST and MCP without sending source code to external providers.
@@ -135,6 +147,7 @@ sequenceDiagram
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [Agent context server guide](docs/agent-context-guide.md)
 - [System architecture](docs/architecture/system-architecture.md)
 - [REST OpenAPI contract](api/openapi/agent-control.v1.yaml)
 - [MCP capability contract](api/mcp/agent-control.v1.md)
@@ -213,6 +226,20 @@ The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.
 ## Local Project APIs
 
 Project APIs are for engineer local computers only. REST exposes project list/get, manual digest, manual ingestion, ingestion status, file, chunk, and symbol metadata endpoints under `/api/v1`; MCP exposes matching project tools and resources.
+
+Use REST for scripts, smoke tests, and direct local checks. Use MCP when an agent client needs the same capabilities. Use Serena for code navigation and shell for git/tests/logs/current disk state.
+
+| Capability | REST | MCP |
+| --- | --- | --- |
+| Projects | `GET /api/v1/projects`, `GET /api/v1/projects/{id}` | `projects.list`, `projects.get` |
+| Metadata digest | `POST /api/v1/projects/{id}/digest-runs` | `projects.digest` |
+| Content graph ingestion | `POST /api/v1/projects/{id}/ingestion-runs` | `projects.ingest` |
+| Ingestion run status | `GET /api/v1/projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
+| Indexed files | `GET /api/v1/projects/{id}/files` | `projects.files.list` |
+| Bounded chunks | `GET /api/v1/projects/{id}/files/{file_id}/chunks` | `projects.file.chunks` |
+| Symbols | `GET /api/v1/projects/{id}/symbols` | `projects.symbols.list` |
+
+Full task, research, project, REST, and MCP method mapping is in the [agent context server guide](docs/agent-context-guide.md).
 
 Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/agent-server.local.toml`. The committed schema example is [configs/agent-server.example.toml](configs/agent-server.example.toml).
 

@@ -11,6 +11,14 @@ Agent entrypoints:
 - Use `.ai/tasks/` only as an ignored local planning workspace. Do not commit task plans or research plans, and do not link them from technical docs.
 - Treat `AGENTS.md` and `CLAUDE.md` as thin adapters only.
 
+Context-tool routing:
+
+- Use Serena first for code understanding: symbol overview, references, call sites, and targeted reads before non-trivial Go edits. Prefer it over opening whole source files.
+- Use the local MiviaLabs MCP server for indexed repo context: project discovery, ingestion status, file metadata, bounded chunks, and symbol lists exposed by the localhost content graph.
+- Use shell commands for exact working-tree facts: `git status`, `git diff`, tests, builds, generated files, logs, and files not yet indexed by MCP.
+- Do not guess between tools: if the question is about code structure, start with Serena; if it is about the indexed project graph or MCP behavior, start with MCP; if it is about current disk/git/runtime state, use shell.
+- If Serena or the MCP server is unavailable, state the gap and fall back to shell only for the minimum evidence needed.
+
 Source-of-truth order:
 
 1. System, developer, and tool instructions.
