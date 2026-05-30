@@ -114,6 +114,43 @@ type Symbol struct {
 	Receiver    string
 	StartLine   int
 	EndLine     int
+	StartByte   int
+	EndByte     int
+	StartColumn int
+	EndColumn   int
+}
+
+type Reference struct {
+	Kind                string
+	Name                string
+	TargetName          string
+	PackageName         string
+	Receiver            string
+	ImportPath          string
+	EnclosingSymbolName string
+	StartLine           int
+	EndLine             int
+	StartByte           int
+	EndByte             int
+	StartColumn         int
+	EndColumn           int
+	ResolutionStatus    string
+	Confidence          string
+}
+
+type Call struct {
+	CallerName       string
+	CalleeName       string
+	Receiver         string
+	ImportPath       string
+	StartLine        int
+	EndLine          int
+	StartByte        int
+	EndByte          int
+	StartColumn      int
+	EndColumn        int
+	ResolutionStatus string
+	Confidence       string
 }
 
 type Heading struct {

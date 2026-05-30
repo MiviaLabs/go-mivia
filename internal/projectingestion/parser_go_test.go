@@ -45,6 +45,35 @@ func TestParseGoFile_RejectsInvalidUTF8(t *testing.T) {
 	}
 }
 
+func TestParseGoFileSemantic_ExtractsReferencesCallsAndSourceSpans(t *testing.T) {
+	source := []byte(`package sample
+
+type Service struct{}
+
+func helper() {}
+
+func Run() {
+	helper()
+}
+`)
+
+	result, err := ParseGoFileSemantic("synthetic.go", source)
+	if err != nil {
+		t.Fatalf("parse go semantic file: %v", err)
+	}
+	assertSymbol(t, result.Symbols, SymbolKindFunction, "Run", "", "", 7, 9)
+	run := findSymbol(t, result.Symbols, SymbolKindFunction, "Run")
+	if run.StartByte <= 0 || run.EndByte <= run.StartByte {
+		t.Fatalf("expected Run byte span, got %#v", run)
+	}
+	if !hasCall(result.Calls, "Run", "helper") {
+		t.Fatalf("expected Run -> helper call, got %#v", result.Calls)
+	}
+	if !hasReference(result.References, "Run", "helper") {
+		t.Fatalf("expected helper reference in Run, got %#v", result.References)
+	}
+}
+
 func assertSymbol(t *testing.T, symbols []Symbol, kind SymbolKind, name string, importPath string, receiver string, startLine int, endLine int) {
 	t.Helper()
 	for _, symbol := range symbols {
@@ -63,4 +92,33 @@ func assertSymbol(t *testing.T, symbols []Symbol, kind SymbolKind, name string, 
 		return
 	}
 	t.Fatalf("missing symbol %s %s in %#v", kind, name, symbols)
+}
+
+func findSymbol(t *testing.T, symbols []Symbol, kind SymbolKind, name string) Symbol {
+	t.Helper()
+	for _, symbol := range symbols {
+		if symbol.Kind == kind && symbol.Name == name {
+			return symbol
+		}
+	}
+	t.Fatalf("missing symbol %s %s in %#v", kind, name, symbols)
+	return Symbol{}
+}
+
+func hasCall(calls []Call, caller string, callee string) bool {
+	for _, call := range calls {
+		if call.CallerName == caller && call.CalleeName == callee {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReference(references []Reference, enclosing string, target string) bool {
+	for _, ref := range references {
+		if ref.EnclosingSymbolName == enclosing && ref.TargetName == target {
+			return true
+		}
+	}
+	return false
 }

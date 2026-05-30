@@ -142,7 +142,7 @@ sequenceDiagram
   Scheduler->>Ingestion: Run bounded full scan or priority path task
   Ingestion->>Ingestion: Apply path, symlink, include/exclude, size, binary, UTF-8, and sensitive-marker gates
   Ingestion->>Ingestion: Extract metadata with promoted parser registry
-  Ingestion->>Graph: Store eligible file versions, chunks, symbols, headings, and run metadata
+  Ingestion->>Graph: Store eligible file versions, chunks, symbols, references, calls, headings, and run metadata
   Ingestion->>SQLite: Store run, file state, and extractor cache metadata
   Ingestion-->>Server: Run metadata with stable run ID
   Server-->>Client: JSON without roots, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, or provider payloads
@@ -175,7 +175,7 @@ sequenceDiagram
 - Project digest stores metadata only: relative path, extension/language hint, size, mtime, and `metadata_sha256` derived from those metadata fields. It must not store raw source content or file-content hashes.
 - Content graph ingestion is approved only for explicitly opted-in `content_graph` projects. It may store eligible local source chunks after all gates pass. Skipped sensitive content, matched sensitive-marker text, secrets, PII, raw prompts, provider payloads, and absolute roots must not be stored or returned.
 - Promoted AST extraction runs after safety gates. Go uses the Go stdlib parser; JS, JSX, TS, TSX, C#, and Python use mandatory Tree-sitter extractors with embedded queries and startup validation; Markdown and infrastructure/config files use metadata-only extractors. No regex fallback is allowed for promoted Tree-sitter languages.
-- The SQLite extractor cache stores only serialized symbols and headings keyed by project, relative-path hash, content hash, extractor name, and extractor version. It does not store raw source, AST node text, chunks, absolute roots, skipped sensitive content, matched sensitive text, secrets, prompts, provider payloads, or PII.
+- The SQLite extractor cache stores only serialized symbols, headings, references, and calls keyed by project, relative-path hash, content hash, extractor name, and extractor version. It does not store raw source, AST node text, chunks, absolute roots, skipped sensitive content, matched sensitive text, secrets, prompts, provider payloads, or PII. Symbol source APIs return text only from eligible indexed chunks and only under explicit caps.
 - Full scans commit graph writes in bounded windows and run through a fair scheduler. REST and MCP manual ingestion calls enqueue work and return run metadata without waiting for scan completion. Live path events have priority over full-scan continuation, and global plus per-project limits prevent one project from monopolizing ingestion workers.
 
 ## Operational Boundaries

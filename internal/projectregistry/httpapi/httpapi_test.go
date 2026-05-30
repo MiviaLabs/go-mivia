@@ -77,7 +77,7 @@ func TestProjectRoutes_UnknownProjectReturnsNotFound(t *testing.T) {
 }
 
 func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
-	mux, projectID, root := newIngestionMux(t, "package main\n\nfunc Run() { println(\"hello world\") }\n")
+	mux, projectID, root := newIngestionMux(t, "package main\n\nfunc helper() {}\n\nfunc Run() { helper() }\n")
 
 	created := httptest.NewRecorder()
 	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/ingestion-runs", nil))
@@ -144,6 +144,50 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 	}
 	if !strings.Contains(symbols.Body.String(), `"name":"Run"`) || strings.Contains(symbols.Body.String(), root) {
 		t.Fatalf("unexpected symbols response: %s", symbols.Body.String())
+	}
+	var symbolList projectingestion.SymbolList
+	if err := json.Unmarshal(symbols.Body.Bytes(), &symbolList); err != nil {
+		t.Fatalf("decode symbols: %v", err)
+	}
+	runSymbol := findSymbol(t, symbolList.Symbols, "Run")
+	helperSymbol := findSymbol(t, symbolList.Symbols, "helper")
+
+	source := httptest.NewRecorder()
+	mux.ServeHTTP(source, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/symbols/"+runSymbol.ID+"/source?max_source_bytes=12", nil))
+	if source.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", source.Code, source.Body.String())
+	}
+	assertDoesNotLeak(t, source.Body.String(), root, "content_sha256")
+	if !strings.Contains(source.Body.String(), "func Run") || !strings.Contains(source.Body.String(), `"text_truncated":true`) {
+		t.Fatalf("expected bounded source response, got %s", source.Body.String())
+	}
+
+	refs := httptest.NewRecorder()
+	mux.ServeHTTP(refs, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/symbols/"+helperSymbol.ID+"/references", nil))
+	if refs.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", refs.Code, refs.Body.String())
+	}
+	assertDoesNotLeak(t, refs.Body.String(), root, "content_sha256", "package main")
+	if !strings.Contains(refs.Body.String(), `"resolution_status":"resolved"`) {
+		t.Fatalf("expected resolved reference response, got %s", refs.Body.String())
+	}
+
+	callees := httptest.NewRecorder()
+	mux.ServeHTTP(callees, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/symbols/"+runSymbol.ID+"/callees", nil))
+	if callees.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", callees.Code, callees.Body.String())
+	}
+	if !strings.Contains(callees.Body.String(), helperSymbol.ID) {
+		t.Fatalf("expected helper callee response, got %s", callees.Body.String())
+	}
+
+	callGraph := httptest.NewRecorder()
+	mux.ServeHTTP(callGraph, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/symbols/"+runSymbol.ID+"/call-graph?direction=callees&max_depth=1&max_nodes=10", nil))
+	if callGraph.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", callGraph.Code, callGraph.Body.String())
+	}
+	if !strings.Contains(callGraph.Body.String(), helperSymbol.ID) || strings.Contains(callGraph.Body.String(), root) {
+		t.Fatalf("unexpected call graph response: %s", callGraph.Body.String())
 	}
 
 	outline := httptest.NewRecorder()
@@ -440,6 +484,17 @@ func assertDoesNotLeak(t *testing.T, body string, forbidden ...string) {
 			t.Fatalf("response leaked %q: %s", value, body)
 		}
 	}
+}
+
+func findSymbol(t *testing.T, symbols []projectingestion.SymbolMetadata, name string) projectingestion.SymbolMetadata {
+	t.Helper()
+	for _, symbol := range symbols {
+		if symbol.Name == name {
+			return symbol
+		}
+	}
+	t.Fatalf("missing symbol %q in %#v", name, symbols)
+	return projectingestion.SymbolMetadata{}
 }
 
 const testShortTimeout = 100 * time.Millisecond

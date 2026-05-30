@@ -172,6 +172,11 @@ After registration, new Codex Desktop sessions can discover these tools:
 - `projects.files.get`
 - `projects.file.chunks`
 - `projects.symbols.list`
+- `projects.symbol.source`
+- `projects.symbol.references`
+- `projects.symbol.callers`
+- `projects.symbol.callees`
+- `projects.symbol.call_graph`
 - `projects.headings.list`
 - `projects.file.outline`
 

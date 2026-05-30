@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 7
+const Version = 8
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -113,6 +113,8 @@ var statements = []string{
 		extractor_version TEXT NOT NULL,
 		symbols_json TEXT NOT NULL DEFAULT '[]',
 		headings_json TEXT NOT NULL DEFAULT '[]',
+		references_json TEXT NOT NULL DEFAULT '[]',
+		calls_json TEXT NOT NULL DEFAULT '[]',
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY(project_id, relative_path_hash, content_sha256, extractor_name, extractor_version),
@@ -160,6 +162,17 @@ var configuredProjectColumns = []columnDefinition{
 	},
 }
 
+var extractorCacheColumns = []columnDefinition{
+	{
+		Name:       "references_json",
+		Definition: "references_json TEXT NOT NULL DEFAULT '[]'",
+	},
+	{
+		Name:       "calls_json",
+		Definition: "calls_json TEXT NOT NULL DEFAULT '[]'",
+	},
+}
+
 type columnDefinition struct {
 	Name       string
 	Definition string
@@ -172,6 +185,9 @@ func Bootstrap(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	if err := ensureColumns(ctx, db, "configured_projects", configuredProjectColumns); err != nil {
+		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
+	}
+	if err := ensureColumns(ctx, db, "project_extractor_cache", extractorCacheColumns); err != nil {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, versionStatement, Component, Version); err != nil {

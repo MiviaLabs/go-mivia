@@ -305,6 +305,49 @@ Input schema:
 
 Output: bounded symbol metadata for an opted-in content graph project.
 
+### `projects.symbol.source`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "symbol_id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "symbol_id": { "type": "string", "minLength": 1 },
+    "max_source_bytes": { "type": "integer", "minimum": 1 }
+  }
+}
+```
+
+Output: bounded source text for one eligible indexed symbol. Text is derived only from eligible stored chunks and capped by `max_source_bytes` and project limits.
+
+### `projects.symbol.references`
+
+Input schema: `id`, `symbol_id`, optional `page_size`, and optional `page_token`.
+
+Output: bounded reference metadata resolved to the requested symbol. Source text, roots, content hashes, skipped sensitive content, and matched sensitive text are not returned.
+
+### `projects.symbol.callers`
+
+Input schema: `id`, `symbol_id`, optional `page_size`, and optional `page_token`.
+
+Output: bounded direct caller edges for the requested symbol.
+
+### `projects.symbol.callees`
+
+Input schema: `id`, `symbol_id`, optional `page_size`, and optional `page_token`.
+
+Output: bounded direct callee edges for the requested symbol.
+
+### `projects.symbol.call_graph`
+
+Input schema: `id`, `symbol_id`, optional `direction` (`callers`, `callees`, `both`), optional `max_depth` (`1..5`), and optional `max_nodes` (`1..100`).
+
+Output: bounded call graph nodes and edges with `resolution_status` and confidence metadata. Unresolved dynamic-language cases are represented as metadata, not guessed edges.
+
 ### `projects.file.outline`
 
 Input schema:

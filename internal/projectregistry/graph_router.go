@@ -116,6 +116,25 @@ func (router *ProjectGraphRouter) PutRelationship(ctx context.Context, relations
 	return backend.PutRelationship(ctx, relationship)
 }
 
+func (router *ProjectGraphRouter) ListRelationships(ctx context.Context, relationshipType string, filter ladybug.RelationshipFilter) ([]ladybug.Relationship, error) {
+	if projectID := strings.TrimSpace(filter.Properties["project_id"]); projectID != "" {
+		backend, err := router.backendForProjectID(projectID)
+		if err != nil {
+			return nil, err
+		}
+		return backend.ListRelationships(ctx, relationshipType, filter)
+	}
+	relationships := make([]ladybug.Relationship, 0)
+	for _, backend := range router.allBackends {
+		listed, err := backend.ListRelationships(ctx, relationshipType, filter)
+		if err != nil {
+			return nil, err
+		}
+		relationships = append(relationships, listed...)
+	}
+	return relationships, nil
+}
+
 func (router *ProjectGraphRouter) Batch(ctx context.Context, fn func(ladybug.Graph) error) error {
 	if fn == nil {
 		return nil

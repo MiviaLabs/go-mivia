@@ -14,6 +14,7 @@ const (
 	ExtractorMarkdownHeading   ExtractorName = "markdown-heading"
 	ExtractorInfraLightweight  ExtractorName = "infra-lightweight"
 	extractorVersionOne                      = "1"
+	extractorVersionTwo                      = "2"
 	extractorInitErrorCategory               = "extractor_initialization_failed"
 )
 
@@ -22,6 +23,8 @@ type ExtractorResult struct {
 	ExtractorVersion string
 	Symbols          []Symbol
 	Headings         []Heading
+	References       []Reference
+	Calls            []Call
 }
 
 type Extractor interface {
@@ -44,13 +47,12 @@ func NewDefaultExtractorRegistry() *ExtractorRegistry {
 	return NewExtractorRegistry(
 		staticExtractor{
 			name:    string(ExtractorGoStdlibAST),
-			version: extractorVersionOne,
+			version: extractorVersionTwo,
 			supports: func(relative string) bool {
 				return strings.EqualFold(path.Ext(relative), ".go")
 			},
 			parse: func(_ context.Context, relative string, content []byte) (ExtractorResult, error) {
-				symbols, err := ParseGoFile(relative, content)
-				return ExtractorResult{Symbols: symbols}, err
+				return ParseGoFileSemantic(relative, content)
 			},
 		},
 		newTreeSitterJavaScriptExtractor(),

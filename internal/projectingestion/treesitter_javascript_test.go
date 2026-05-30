@@ -77,6 +77,28 @@ def build_service():
 	assertSymbol(t, result.Symbols, SymbolKindFunction, "build_service", "", "", 9, 10)
 }
 
+func TestTreeSitterPythonExtractsReferencesAndCalls(t *testing.T) {
+	result := parseWithExtractor(t, newTreeSitterPythonExtractor(), "src/app.py", []byte(`
+def helper():
+    return True
+
+def run():
+    return helper()
+`))
+
+	if !hasCall(result.Calls, "run", "helper") {
+		t.Fatalf("expected run -> helper call, got %#v", result.Calls)
+	}
+	if !hasReference(result.References, "run", "helper") {
+		t.Fatalf("expected helper reference in run, got %#v", result.References)
+	}
+	for _, call := range result.Calls {
+		if call.StartByte <= 0 || call.EndByte <= call.StartByte {
+			t.Fatalf("expected call byte span, got %#v", call)
+		}
+	}
+}
+
 func TestBadTypeScriptSyntaxRecordsParseError(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

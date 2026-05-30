@@ -145,13 +145,18 @@ The server exposes bounded project metadata on localhost only:
 - `GET /api/v1/projects/{id}/files/{file_id}/chunks`
 - `GET /api/v1/projects/{id}/files/{file_id}/outline`
 - `GET /api/v1/projects/{id}/symbols`
+- `GET /api/v1/projects/{id}/symbols/{symbol_id}/source`
+- `GET /api/v1/projects/{id}/symbols/{symbol_id}/references`
+- `GET /api/v1/projects/{id}/symbols/{symbol_id}/callers`
+- `GET /api/v1/projects/{id}/symbols/{symbol_id}/callees`
+- `GET /api/v1/projects/{id}/symbols/{symbol_id}/call-graph`
 - `GET /api/v1/projects/{id}/headings`
-- MCP tools: `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.headings.list`, `projects.file.outline`
+- MCP tools: `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`
 - MCP resources: `mivialabs://projects/{id}`, `mivialabs://projects/{id}/digest-runs/{run_id}`, `mivialabs://projects/{id}/files/{file_id}`, `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`, `mivialabs://projects/{id}/files/{file_id}/outline`, `mivialabs://projects/{id}/symbols/{symbol_id}`
 
 Project responses omit local root paths and datastore paths by default. Digest runs are manual and metadata-only: graph writes store relative path, extension/language hint, file size, mtime, and a metadata fingerprint. Content graph ingestion stores eligible local source chunks only after all gates pass. AST metadata is promoted for Go, JS, JSX, TS, TSX, C#, Python, Markdown, and lightweight infrastructure/config files. TS/JS/TSX/JSX, C#, and Python parsing is mandatory Tree-sitter; startup validation fails with `extractor_initialization_failed` if a promoted grammar or query cannot initialize.
 
-Extractor cache data is stored in SQLite table `project_extractor_cache`. It stores symbols and headings only; it does not store raw source, AST text, chunks, absolute paths, skipped sensitive data, or matched sensitive text. Cache rows are keyed by project, relative-path hash, content hash, extractor name, and extractor version, and are removed when a file becomes skipped or absent.
+Extractor cache data is stored in SQLite table `project_extractor_cache`. It stores symbols, headings, references, and calls only; it does not store raw source, AST text, chunks, absolute paths, skipped sensitive data, or matched sensitive text. Cache rows are keyed by project, relative-path hash, content hash, extractor name, and extractor version, and are removed when a file becomes skipped or absent. Symbol source responses derive text only from eligible indexed chunks and enforce request/project caps.
 
 Full scans commit graph writes in bounded windows. Manual and live ingestion submissions run through the scheduler. Manual submissions return queued run metadata without waiting for scan completion; clients should use latest status or poll the returned run ID before trusting indexed data. The scheduler prioritizes live path events over full-scan continuation and enforces global and per-project worker limits.
 

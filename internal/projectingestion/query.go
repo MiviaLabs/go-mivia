@@ -12,9 +12,12 @@ import (
 )
 
 const (
-	DefaultPageSize      = 50
-	MaxPageSize          = 100
-	DefaultMaxChunkBytes = 8192
+	DefaultPageSize       = 50
+	MaxPageSize           = 100
+	DefaultMaxChunkBytes  = 8192
+	DefaultMaxSourceBytes = 8192
+	MaxCallGraphDepth     = 5
+	MaxCallGraphNodes     = 100
 )
 
 type Pagination struct {
@@ -35,6 +38,16 @@ type FileOutlineOptions struct {
 	SymbolPagination Pagination
 	IncludeChunkText bool
 	MaxChunkBytes    int
+}
+
+type SymbolSourceOptions struct {
+	MaxSourceBytes int
+}
+
+type CallGraphOptions struct {
+	Direction string
+	MaxDepth  int
+	MaxNodes  int
 }
 
 type RunMetadata struct {
@@ -101,11 +114,88 @@ type SymbolMetadata struct {
 	Receiver    string `json:"receiver,omitempty"`
 	StartLine   int    `json:"start_line"`
 	EndLine     int    `json:"end_line"`
+	StartByte   int    `json:"start_byte,omitempty"`
+	EndByte     int    `json:"end_byte,omitempty"`
+	StartColumn int    `json:"start_column,omitempty"`
+	EndColumn   int    `json:"end_column,omitempty"`
 }
 
 type SymbolList struct {
 	Symbols       []SymbolMetadata `json:"symbols"`
 	NextPageToken string           `json:"next_page_token,omitempty"`
+}
+
+type SymbolSource struct {
+	Symbol        SymbolMetadata `json:"symbol"`
+	Text          string         `json:"text"`
+	TextTruncated bool           `json:"text_truncated"`
+	MaxBytes      int            `json:"max_bytes"`
+}
+
+type SymbolReferenceMetadata struct {
+	ID                  string `json:"id"`
+	FileID              string `json:"file_id"`
+	ProjectID           string `json:"project_id"`
+	Kind                string `json:"kind"`
+	Name                string `json:"name"`
+	TargetName          string `json:"target_name,omitempty"`
+	TargetSymbolID      string `json:"target_symbol_id,omitempty"`
+	PackageName         string `json:"package,omitempty"`
+	Receiver            string `json:"receiver,omitempty"`
+	ImportPath          string `json:"import_path,omitempty"`
+	EnclosingSymbolID   string `json:"enclosing_symbol_id,omitempty"`
+	EnclosingSymbolName string `json:"enclosing_symbol_name,omitempty"`
+	StartLine           int    `json:"start_line"`
+	EndLine             int    `json:"end_line"`
+	StartByte           int    `json:"start_byte,omitempty"`
+	EndByte             int    `json:"end_byte,omitempty"`
+	StartColumn         int    `json:"start_column,omitempty"`
+	EndColumn           int    `json:"end_column,omitempty"`
+	ResolutionStatus    string `json:"resolution_status"`
+	Confidence          string `json:"confidence,omitempty"`
+}
+
+type SymbolReferenceList struct {
+	Symbol        SymbolMetadata            `json:"symbol"`
+	References    []SymbolReferenceMetadata `json:"references"`
+	NextPageToken string                    `json:"next_page_token,omitempty"`
+}
+
+type SymbolCallEdge struct {
+	ID               string `json:"id"`
+	CallID           string `json:"call_id,omitempty"`
+	FileID           string `json:"file_id,omitempty"`
+	ProjectID        string `json:"project_id"`
+	CallerSymbolID   string `json:"caller_symbol_id"`
+	CalleeSymbolID   string `json:"callee_symbol_id"`
+	CallerName       string `json:"caller_name,omitempty"`
+	CalleeName       string `json:"callee_name,omitempty"`
+	Receiver         string `json:"receiver,omitempty"`
+	ImportPath       string `json:"import_path,omitempty"`
+	StartLine        int    `json:"start_line,omitempty"`
+	EndLine          int    `json:"end_line,omitempty"`
+	StartByte        int    `json:"start_byte,omitempty"`
+	EndByte          int    `json:"end_byte,omitempty"`
+	StartColumn      int    `json:"start_column,omitempty"`
+	EndColumn        int    `json:"end_column,omitempty"`
+	ResolutionStatus string `json:"resolution_status"`
+	Confidence       string `json:"confidence,omitempty"`
+}
+
+type SymbolCallEdgeList struct {
+	Symbol        SymbolMetadata   `json:"symbol"`
+	Edges         []SymbolCallEdge `json:"edges"`
+	NextPageToken string           `json:"next_page_token,omitempty"`
+}
+
+type SymbolCallGraph struct {
+	Symbol    SymbolMetadata   `json:"symbol"`
+	Direction string           `json:"direction"`
+	MaxDepth  int              `json:"max_depth"`
+	MaxNodes  int              `json:"max_nodes"`
+	Nodes     []SymbolMetadata `json:"nodes"`
+	Edges     []SymbolCallEdge `json:"edges"`
+	Truncated bool             `json:"truncated"`
 }
 
 type HeadingMetadata struct {
@@ -199,6 +289,17 @@ func effectiveMaxChunkBytes(project projectregistry.Project, requested int) int 
 	limit := project.MaxChunkBytes
 	if limit <= 0 {
 		limit = DefaultMaxChunkBytes
+	}
+	if requested > 0 && requested < limit {
+		return requested
+	}
+	return limit
+}
+
+func effectiveMaxSourceBytes(project projectregistry.Project, requested int) int {
+	limit := project.MaxChunkBytes
+	if limit <= 0 {
+		limit = DefaultMaxSourceBytes
 	}
 	if requested > 0 && requested < limit {
 		return requested

@@ -53,6 +53,11 @@ type API interface {
 	GetChunk(context.Context, string, string, string, int) (ChunkMetadata, error)
 	ListSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
 	GetSymbol(context.Context, string, string) (SymbolMetadata, error)
+	GetSymbolSource(context.Context, string, string, SymbolSourceOptions) (SymbolSource, error)
+	ListSymbolReferences(context.Context, string, string, Pagination) (SymbolReferenceList, error)
+	ListSymbolCallers(context.Context, string, string, Pagination) (SymbolCallEdgeList, error)
+	ListSymbolCallees(context.Context, string, string, Pagination) (SymbolCallEdgeList, error)
+	GetSymbolCallGraph(context.Context, string, string, CallGraphOptions) (SymbolCallGraph, error)
 	ListHeadings(context.Context, string, string, Pagination) (HeadingList, error)
 	GetFileOutline(context.Context, string, string, FileOutlineOptions) (FileOutline, error)
 }
@@ -606,7 +611,94 @@ func (svc *Service) GetSymbol(ctx context.Context, projectID string, symbolID st
 	if err != nil {
 		return SymbolMetadata{}, err
 	}
+	if !validOpaqueID(symbolID) || !strings.HasPrefix(strings.TrimSpace(symbolID), project.GraphNamespace+":") {
+		return SymbolMetadata{}, ErrIngestionNotFound
+	}
 	return svc.graph.GetSymbol(ctx, project, symbolID)
+}
+
+func (svc *Service) GetSymbolSource(ctx context.Context, projectID string, symbolID string, options SymbolSourceOptions) (SymbolSource, error) {
+	if options.MaxSourceBytes < 0 {
+		return SymbolSource{}, ErrInvalidInput
+	}
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolSource{}, err
+	}
+	if !validOpaqueID(symbolID) || !strings.HasPrefix(strings.TrimSpace(symbolID), project.GraphNamespace+":") {
+		return SymbolSource{}, ErrIngestionNotFound
+	}
+	return svc.graph.GetSymbolSource(ctx, project, strings.TrimSpace(symbolID), effectiveMaxSourceBytes(project, options.MaxSourceBytes))
+}
+
+func (svc *Service) ListSymbolReferences(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolReferenceList, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
+	if !validOpaqueID(symbolID) || !strings.HasPrefix(strings.TrimSpace(symbolID), project.GraphNamespace+":") {
+		return SymbolReferenceList{}, ErrIngestionNotFound
+	}
+	return svc.graph.ListSymbolReferences(ctx, project, strings.TrimSpace(symbolID), pagination)
+}
+
+func (svc *Service) ListSymbolCallers(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolCallEdgeList, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	if !validOpaqueID(symbolID) || !strings.HasPrefix(strings.TrimSpace(symbolID), project.GraphNamespace+":") {
+		return SymbolCallEdgeList{}, ErrIngestionNotFound
+	}
+	return svc.graph.ListSymbolCallers(ctx, project, strings.TrimSpace(symbolID), pagination)
+}
+
+func (svc *Service) ListSymbolCallees(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolCallEdgeList, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	if !validOpaqueID(symbolID) || !strings.HasPrefix(strings.TrimSpace(symbolID), project.GraphNamespace+":") {
+		return SymbolCallEdgeList{}, ErrIngestionNotFound
+	}
+	return svc.graph.ListSymbolCallees(ctx, project, strings.TrimSpace(symbolID), pagination)
+}
+
+func (svc *Service) GetSymbolCallGraph(ctx context.Context, projectID string, symbolID string, options CallGraphOptions) (SymbolCallGraph, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolCallGraph{}, err
+	}
+	if !validOpaqueID(symbolID) || !strings.HasPrefix(strings.TrimSpace(symbolID), project.GraphNamespace+":") {
+		return SymbolCallGraph{}, ErrIngestionNotFound
+	}
+	normalized, err := normalizeCallGraphOptions(options)
+	if err != nil {
+		return SymbolCallGraph{}, err
+	}
+	return svc.graph.GetSymbolCallGraph(ctx, project, strings.TrimSpace(symbolID), normalized)
+}
+
+func normalizeCallGraphOptions(options CallGraphOptions) (CallGraphOptions, error) {
+	options.Direction = strings.TrimSpace(options.Direction)
+	if options.Direction == "" {
+		options.Direction = "callees"
+	}
+	switch options.Direction {
+	case "callers", "callees", "both":
+	default:
+		return CallGraphOptions{}, ErrInvalidInput
+	}
+	if options.MaxDepth == 0 {
+		options.MaxDepth = 1
+	}
+	if options.MaxNodes == 0 {
+		options.MaxNodes = 25
+	}
+	if options.MaxDepth < 1 || options.MaxDepth > MaxCallGraphDepth || options.MaxNodes < 1 || options.MaxNodes > MaxCallGraphNodes {
+		return CallGraphOptions{}, ErrInvalidInput
+	}
+	return options, nil
 }
 
 func (svc *Service) projectForIngestion(projectID string, trigger Trigger) (projectregistry.Project, error) {
@@ -723,7 +815,7 @@ func (svc *Service) ingestExistingFile(ctx context.Context, project projectregis
 	if err := svc.state.SaveFileState(ctx, state); err != nil {
 		return FileState{}, nil, nil, nil, err
 	}
-	if err := svc.graph.PutEligibleFile(ctx, project, run, state, chunkSet.Chunks, result.Symbols, result.Headings); err != nil {
+	if err := svc.graph.PutEligibleFile(ctx, project, run, state, chunkSet.Chunks, result.Symbols, result.References, result.Calls, result.Headings); err != nil {
 		return FileState{}, nil, nil, nil, err
 	}
 	return state, chunkSet.Chunks, result.Symbols, result.Headings, nil
@@ -741,6 +833,8 @@ func (svc *Service) extractEligible(ctx context.Context, project projectregistry
 				ExtractorVersion: entry.ExtractorVersion,
 				Symbols:          entry.Symbols,
 				Headings:         entry.Headings,
+				References:       entry.References,
+				Calls:            entry.Calls,
 			}, nil
 		}
 		if err != nil && !errors.Is(err, ErrExtractorCacheMiss) {
@@ -762,6 +856,8 @@ func (svc *Service) extractEligible(ctx context.Context, project projectregistry
 			ExtractorVersion: result.ExtractorVersion,
 			Symbols:          result.Symbols,
 			Headings:         result.Headings,
+			References:       result.References,
+			Calls:            result.Calls,
 			CreatedAt:        eventAt,
 			UpdatedAt:        eventAt,
 		}); err != nil {

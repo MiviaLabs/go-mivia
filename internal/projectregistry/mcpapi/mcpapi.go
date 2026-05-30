@@ -240,6 +240,90 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 			Package:    input.Package,
 		}, projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
 		return toolResult(symbols), err
+	case "projects.symbol.source", "projects_symbol_source":
+		var input struct {
+			ID             string          `json:"id"`
+			SymbolID       string          `json:"symbol_id"`
+			MaxSourceBytes int             `json:"max_source_bytes,omitempty"`
+			Meta           json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		source, err := ingestion.GetSymbolSource(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.SymbolID), projectingestion.SymbolSourceOptions{MaxSourceBytes: input.MaxSourceBytes})
+		return toolResult(source), err
+	case "projects.symbol.references", "projects_symbol_references":
+		var input struct {
+			ID        string          `json:"id"`
+			SymbolID  string          `json:"symbol_id"`
+			PageSize  int             `json:"page_size,omitempty"`
+			PageToken string          `json:"page_token,omitempty"`
+			Meta      json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		refs, err := ingestion.ListSymbolReferences(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.SymbolID), projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
+		return toolResult(refs), err
+	case "projects.symbol.callers", "projects_symbol_callers":
+		var input struct {
+			ID        string          `json:"id"`
+			SymbolID  string          `json:"symbol_id"`
+			PageSize  int             `json:"page_size,omitempty"`
+			PageToken string          `json:"page_token,omitempty"`
+			Meta      json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		edges, err := ingestion.ListSymbolCallers(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.SymbolID), projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
+		return toolResult(edges), err
+	case "projects.symbol.callees", "projects_symbol_callees":
+		var input struct {
+			ID        string          `json:"id"`
+			SymbolID  string          `json:"symbol_id"`
+			PageSize  int             `json:"page_size,omitempty"`
+			PageToken string          `json:"page_token,omitempty"`
+			Meta      json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		edges, err := ingestion.ListSymbolCallees(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.SymbolID), projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
+		return toolResult(edges), err
+	case "projects.symbol.call_graph", "projects_symbol_call_graph":
+		var input struct {
+			ID        string          `json:"id"`
+			SymbolID  string          `json:"symbol_id"`
+			Direction string          `json:"direction,omitempty"`
+			MaxDepth  int             `json:"max_depth,omitempty"`
+			MaxNodes  int             `json:"max_nodes,omitempty"`
+			Meta      json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		graph, err := ingestion.GetSymbolCallGraph(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.SymbolID), projectingestion.CallGraphOptions{
+			Direction: input.Direction,
+			MaxDepth:  input.MaxDepth,
+			MaxNodes:  input.MaxNodes,
+		})
+		return toolResult(graph), err
 	case "projects.headings.list", "projects_headings_list":
 		var input struct {
 			ID        string          `json:"id"`
@@ -420,6 +504,55 @@ func ingestionToolDefinitions() []map[string]any {
 				"extension":   map[string]any{"type": "string"},
 				"package":     map[string]any{"type": "string"},
 			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.symbol.source",
+			"title":       "Get Project Symbol Source",
+			"description": "Fetch bounded source text for one eligible indexed symbol without root paths or skipped sensitive content.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":               map[string]any{"type": "string", "minLength": 1},
+				"symbol_id":        map[string]any{"type": "string", "minLength": 1},
+				"max_source_bytes": map[string]any{"type": "integer", "minimum": 1},
+			}, []string{"id", "symbol_id"}),
+		},
+		{
+			"name":        "projects.symbol.references",
+			"title":       "List Project Symbol References",
+			"description": "List bounded indexed references that resolve to one symbol.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":        map[string]any{"type": "string", "minLength": 1},
+				"symbol_id": map[string]any{"type": "string", "minLength": 1},
+			}), []string{"id", "symbol_id"}),
+		},
+		{
+			"name":        "projects.symbol.callers",
+			"title":       "List Project Symbol Callers",
+			"description": "List bounded direct caller edges for one indexed symbol.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":        map[string]any{"type": "string", "minLength": 1},
+				"symbol_id": map[string]any{"type": "string", "minLength": 1},
+			}), []string{"id", "symbol_id"}),
+		},
+		{
+			"name":        "projects.symbol.callees",
+			"title":       "List Project Symbol Callees",
+			"description": "List bounded direct callee edges for one indexed symbol.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":        map[string]any{"type": "string", "minLength": 1},
+				"symbol_id": map[string]any{"type": "string", "minLength": 1},
+			}), []string{"id", "symbol_id"}),
+		},
+		{
+			"name":        "projects.symbol.call_graph",
+			"title":       "Get Project Symbol Call Graph",
+			"description": "Traverse bounded direct call edges for one indexed symbol.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":        map[string]any{"type": "string", "minLength": 1},
+				"symbol_id": map[string]any{"type": "string", "minLength": 1},
+				"direction": map[string]any{"type": "string", "enum": []string{"callers", "callees", "both"}},
+				"max_depth": map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxCallGraphDepth},
+				"max_nodes": map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxCallGraphNodes},
+			}, []string{"id", "symbol_id"}),
 		},
 		{
 			"name":        "projects.headings.list",

@@ -78,6 +78,124 @@ func TestIngestProject_StoresEligibleContentGraphState(t *testing.T) {
 	}
 }
 
+func TestSymbolSemanticQueriesReturnBoundedSourceReferencesAndCallEdges(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), `package main
+
+func helper() {}
+
+func Run() {
+	helper()
+}
+`)
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	symbols, err := svc.ListSymbols(ctx, "example-service", SymbolFilter{}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbols: %v", err)
+	}
+	runSymbol := findSymbolMetadata(t, symbols.Symbols, "Run")
+	helperSymbol := findSymbolMetadata(t, symbols.Symbols, "helper")
+
+	source, err := svc.GetSymbolSource(ctx, "example-service", runSymbol.ID, SymbolSourceOptions{MaxSourceBytes: 12})
+	if err != nil {
+		t.Fatalf("get symbol source: %v", err)
+	}
+	if !strings.Contains(source.Text, "func Run") || !source.TextTruncated {
+		t.Fatalf("expected bounded Run source, got %#v", source)
+	}
+	if strings.Contains(source.Text, root) {
+		t.Fatalf("source leaked root: %#v", source)
+	}
+
+	refs, err := svc.ListSymbolReferences(ctx, "example-service", helperSymbol.ID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbol references: %v", err)
+	}
+	if len(refs.References) == 0 || refs.References[0].TargetSymbolID != helperSymbol.ID || refs.References[0].ResolutionStatus != "resolved" {
+		t.Fatalf("expected resolved helper reference, got %#v", refs)
+	}
+
+	callees, err := svc.ListSymbolCallees(ctx, "example-service", runSymbol.ID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbol callees: %v", err)
+	}
+	if len(callees.Edges) != 1 || callees.Edges[0].CalleeSymbolID != helperSymbol.ID {
+		t.Fatalf("expected Run -> helper edge, got %#v", callees)
+	}
+	callers, err := svc.ListSymbolCallers(ctx, "example-service", helperSymbol.ID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbol callers: %v", err)
+	}
+	if len(callers.Edges) != 1 || callers.Edges[0].CallerSymbolID != runSymbol.ID {
+		t.Fatalf("expected helper caller Run, got %#v", callers)
+	}
+	graph, err := svc.GetSymbolCallGraph(ctx, "example-service", runSymbol.ID, CallGraphOptions{Direction: "callees", MaxDepth: 1, MaxNodes: 10})
+	if err != nil {
+		t.Fatalf("get symbol call graph: %v", err)
+	}
+	if len(graph.Nodes) != 2 || len(graph.Edges) != 1 {
+		t.Fatalf("expected two-node one-edge graph, got %#v", graph)
+	}
+}
+
+func TestSymbolSemanticEdgesDeletedWhenFileSkipped(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	file := filepath.Join(root, "cmd", "main.go")
+	writeFile(t, file, `package main
+
+func helper() {}
+
+func Run() {
+	helper()
+}
+`)
+
+	svc, graph, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	initialRefs, err := graph.ListNodes(ctx, "CodeReference", map[string]string{"project_id": "example-service"})
+	if err != nil {
+		t.Fatalf("list references: %v", err)
+	}
+	initialCalls, err := graph.ListNodes(ctx, "CodeCall", map[string]string{"project_id": "example-service"})
+	if err != nil {
+		t.Fatalf("list calls: %v", err)
+	}
+	if len(initialRefs) == 0 || len(initialCalls) == 0 {
+		t.Fatalf("expected semantic nodes before skip, refs=%d calls=%d", len(initialRefs), len(initialCalls))
+	}
+
+	writeFile(t, file, "package main\n\n// password = \"redacted\"\nfunc Run() {}\n")
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("reingest project: %v", err)
+	}
+	refs, err := graph.ListNodes(ctx, "CodeReference", map[string]string{"project_id": "example-service"})
+	if err != nil {
+		t.Fatalf("list references after skip: %v", err)
+	}
+	calls, err := graph.ListNodes(ctx, "CodeCall", map[string]string{"project_id": "example-service"})
+	if err != nil {
+		t.Fatalf("list calls after skip: %v", err)
+	}
+	if len(refs) != 0 || len(calls) != 0 {
+		t.Fatalf("expected stale semantic nodes deleted after sensitive skip, refs=%#v calls=%#v", refs, calls)
+	}
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusSkipped})
+	if err != nil {
+		t.Fatalf("list skipped states: %v", err)
+	}
+	if len(states) != 1 || states[0].SkippedReason != SkipReasonSensitiveContent || states[0].ContentSHA256 != "" {
+		t.Fatalf("expected sensitive skip without content hash, got %#v", states)
+	}
+}
+
 func TestIngestProjectBatchesGraphWrites(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -934,6 +1052,17 @@ func findState(t *testing.T, states []FileState, relativePath string) FileState 
 	}
 	t.Fatalf("state for %q not found in %#v", relativePath, states)
 	return FileState{}
+}
+
+func findSymbolMetadata(t *testing.T, symbols []SymbolMetadata, name string) SymbolMetadata {
+	t.Helper()
+	for _, symbol := range symbols {
+		if symbol.Name == name {
+			return symbol
+		}
+	}
+	t.Fatalf("symbol %q not found in %#v", name, symbols)
+	return SymbolMetadata{}
 }
 
 func writeFile(t *testing.T, path string, content string) {

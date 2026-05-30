@@ -274,6 +274,59 @@ func TestCallToolWithIngestion_P2DiscoveryTools(t *testing.T) {
 	if !strings.Contains(textBody, "package main") {
 		t.Fatalf("expected opt-in outline source text: %s", textBody)
 	}
+
+	allGoSymbolsResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.symbols.list", json.RawMessage(`{"id":"example-service","kind":"function","extension":"go","page_size":10}`))
+	if err != nil {
+		t.Fatalf("call go symbols list tool: %v", err)
+	}
+	allGoSymbols := allGoSymbolsResult["structuredContent"].(projectingestion.SymbolList)
+	mainSymbol := findSymbol(t, allGoSymbols.Symbols, "main")
+	helperSymbol := findSymbol(t, allGoSymbols.Symbols, "helper")
+	sourceResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.symbol.source", marshalArgs(t, map[string]any{
+		"id":               "example-service",
+		"symbol_id":        mainSymbol.ID,
+		"max_source_bytes": 12,
+	}))
+	if err != nil {
+		t.Fatalf("call symbol source tool: %v", err)
+	}
+	sourceBody := marshalResult(t, sourceResult)
+	if !strings.Contains(sourceBody, "func main") || !strings.Contains(sourceBody, `"text_truncated":true`) || strings.Contains(sourceBody, "content_sha256") {
+		t.Fatalf("unexpected source response: %s", sourceBody)
+	}
+	refsResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.symbol.references", marshalArgs(t, map[string]any{
+		"id":        "example-service",
+		"symbol_id": helperSymbol.ID,
+	}))
+	if err != nil {
+		t.Fatalf("call symbol references tool: %v", err)
+	}
+	if !strings.Contains(marshalResult(t, refsResult), `"resolution_status":"resolved"`) {
+		t.Fatalf("expected resolved references, got %s", marshalResult(t, refsResult))
+	}
+	calleesResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.symbol.callees", marshalArgs(t, map[string]any{
+		"id":        "example-service",
+		"symbol_id": mainSymbol.ID,
+	}))
+	if err != nil {
+		t.Fatalf("call symbol callees tool: %v", err)
+	}
+	if !strings.Contains(marshalResult(t, calleesResult), helperSymbol.ID) {
+		t.Fatalf("expected helper callee, got %s", marshalResult(t, calleesResult))
+	}
+	graphResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.symbol.call_graph", marshalArgs(t, map[string]any{
+		"id":        "example-service",
+		"symbol_id": mainSymbol.ID,
+		"direction": "callees",
+		"max_depth": 1,
+		"max_nodes": 10,
+	}))
+	if err != nil {
+		t.Fatalf("call symbol call graph tool: %v", err)
+	}
+	if !strings.Contains(marshalResult(t, graphResult), helperSymbol.ID) {
+		t.Fatalf("expected helper in call graph, got %s", marshalResult(t, graphResult))
+	}
 }
 
 func newServices(t *testing.T) (*projectregistry.Registry, *projectregistry.DigestService) {
@@ -309,7 +362,7 @@ func newIngestionServices(t *testing.T) (*projectregistry.Registry, *projectregi
 	t.Helper()
 	root := t.TempDir()
 	for name, content := range map[string]string{
-		"cmd/main.go":    "package main\nfunc main() {}\n",
+		"cmd/main.go":    "package main\nfunc helper() {}\nfunc main() { helper() }\n",
 		"docs/guide.md":  "# Guide\n\n## Setup\n",
 		"web/app.ts":     "export class Widget {}\nexport const load = () => true\n",
 		"scripts/app.py": "import os\nclass Worker:\n    pass\n",
@@ -374,6 +427,17 @@ func marshalArgs(t *testing.T, value any) json.RawMessage {
 		t.Fatalf("marshal args: %v", err)
 	}
 	return encoded
+}
+
+func findSymbol(t *testing.T, symbols []projectingestion.SymbolMetadata, name string) projectingestion.SymbolMetadata {
+	t.Helper()
+	for _, symbol := range symbols {
+		if symbol.Name == name {
+			return symbol
+		}
+	}
+	t.Fatalf("missing symbol %q in %#v", name, symbols)
+	return projectingestion.SymbolMetadata{}
 }
 
 const testShortTimeout = 100 * time.Millisecond

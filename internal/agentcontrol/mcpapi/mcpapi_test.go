@@ -204,6 +204,39 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 		t.Fatalf("chunk response leaked forbidden metadata: %s", chunks.Body.String())
 	}
 
+	symbols := postMCP(t, handler, `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"projects.symbols.list","arguments":{"id":"example-service","kind":"function","page_size":10}}}`)
+	if bytes.Contains(symbols.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected symbols success, got %s", symbols.Body.String())
+	}
+	var symbolsRPC rpcResponse
+	if err := json.Unmarshal(symbols.Body.Bytes(), &symbolsRPC); err != nil {
+		t.Fatalf("decode symbols response: %v", err)
+	}
+	symbolItems := symbolsRPC.Result.StructuredContent["symbols"].([]any)
+	runID := symbolIDByName(t, symbolItems, "Run")
+	helperID := symbolIDByName(t, symbolItems, "helper")
+
+	source := postMCP(t, handler, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"projects.symbol.source","arguments":{"id":"example-service","symbol_id":"`+runID+`","max_source_bytes":12}}}`)
+	if bytes.Contains(source.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected symbol source success, got %s", source.Body.String())
+	}
+	if !bytes.Contains(source.Body.Bytes(), []byte("func Run")) || !bytes.Contains(source.Body.Bytes(), []byte(`"text_truncated":true`)) || bytes.Contains(source.Body.Bytes(), []byte("content_sha256")) {
+		t.Fatalf("unexpected source response: %s", source.Body.String())
+	}
+
+	refs := postMCP(t, handler, `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"projects.symbol.references","arguments":{"id":"example-service","symbol_id":"`+helperID+`"}}}`)
+	if bytes.Contains(refs.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(refs.Body.Bytes(), []byte(`"resolution_status":"resolved"`)) {
+		t.Fatalf("expected resolved references success, got %s", refs.Body.String())
+	}
+	callees := postMCP(t, handler, `{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"projects.symbol.callees","arguments":{"id":"example-service","symbol_id":"`+runID+`"}}}`)
+	if bytes.Contains(callees.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(callees.Body.Bytes(), []byte(helperID)) {
+		t.Fatalf("expected helper callee success, got %s", callees.Body.String())
+	}
+	graph := postMCP(t, handler, `{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"projects.symbol.call_graph","arguments":{"id":"example-service","symbol_id":"`+runID+`","direction":"callees","max_depth":1,"max_nodes":10}}}`)
+	if bytes.Contains(graph.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(graph.Body.Bytes(), []byte(helperID)) {
+		t.Fatalf("expected call graph success, got %s", graph.Body.String())
+	}
+
 	read := postMCP(t, handler, `{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"mivialabs://projects/example-service/files/`+fileID+`"}}`)
 	if read.Code != http.StatusOK || bytes.Contains(read.Body.Bytes(), []byte(`"error"`)) {
 		t.Fatalf("expected file resource success, got %s", read.Body.String())
@@ -214,6 +247,18 @@ type rpcResponse struct {
 	Result struct {
 		StructuredContent map[string]any `json:"structuredContent"`
 	} `json:"result"`
+}
+
+func symbolIDByName(t *testing.T, symbols []any, name string) string {
+	t.Helper()
+	for _, item := range symbols {
+		symbol := item.(map[string]any)
+		if symbol["name"] == name {
+			return symbol["id"].(string)
+		}
+	}
+	t.Fatalf("missing symbol %q in %#v", name, symbols)
+	return ""
 }
 
 func newHandler() http.Handler {
@@ -260,7 +305,7 @@ func newHandlerWithProjectIngestion(t *testing.T) (http.Handler, string) {
 	if err := os.MkdirAll(filepath.Join(root, "cmd"), 0o700); err != nil {
 		t.Fatalf("create project dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "cmd", "main.go"), []byte("package main\n\nfunc Run() { println(\"hello\") }\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "cmd", "main.go"), []byte("package main\n\nfunc helper() {}\n\nfunc Run() { helper() }\n"), 0o600); err != nil {
 		t.Fatalf("write project file: %v", err)
 	}
 	registry, err := projectregistry.NewRegistry([]config.Project{{

@@ -70,6 +70,11 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Get indexed file metadata | `GET /projects/{id}/files/{file_id}` | `projects.files.get` |
 | Read bounded chunks | `GET /projects/{id}/files/{file_id}/chunks` | `projects.file.chunks` |
 | List symbols | `GET /projects/{id}/symbols?kind=function&name_prefix=Run` | `projects.symbols.list` |
+| Get bounded symbol source | `GET /projects/{id}/symbols/{symbol_id}/source` | `projects.symbol.source` |
+| List symbol references | `GET /projects/{id}/symbols/{symbol_id}/references` | `projects.symbol.references` |
+| List symbol callers | `GET /projects/{id}/symbols/{symbol_id}/callers` | `projects.symbol.callers` |
+| List symbol callees | `GET /projects/{id}/symbols/{symbol_id}/callees` | `projects.symbol.callees` |
+| Traverse symbol call graph | `GET /projects/{id}/symbols/{symbol_id}/call-graph` | `projects.symbol.call_graph` |
 | List document headings | `GET /projects/{id}/headings?file_id={file_id}` | `projects.headings.list` |
 | Get file outline, optionally with bounded eligible chunk text | `GET /projects/{id}/files/{file_id}/outline` | `projects.file.outline` |
 
@@ -125,6 +130,6 @@ The server is local-only. It must not expose:
 - Skipped sensitive content or matched sensitive text.
 - Public network access, provider calls, embeddings, vectors, crawling, production deployment, symlink traversal, or auth-model changes.
 
-Use stable opaque IDs from REST or MCP responses. Discovery order for agents is project metadata, latest ingestion status, small `projects.files.list` or `projects.symbols.list`/`projects.headings.list`, `projects.file.outline`, then bounded `projects.file.chunks` when separate text paging is necessary. For large files, call `projects.file.outline` with `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token`. If source context is needed in the same response, set `include_chunk_text=true` and a small `max_chunk_bytes`; this is available only for eligible files with stored chunks. Do not infer or expose local root paths.
+Use stable opaque IDs from REST or MCP responses. Discovery order for agents is project metadata, latest ingestion status, small `projects.files.list` or `projects.symbols.list`/`projects.headings.list`, `projects.file.outline`, then semantic symbol tools or bounded chunks as needed. For common navigation, use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph`; use `resolution_status` and confidence metadata instead of assuming unresolved dynamic-language edges are precise. For large files, call `projects.file.outline` with `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token`. If source context is needed in the same response, set `include_chunk_text=true` with a small `max_chunk_bytes`, or call `projects.symbol.source` with `max_source_bytes` for one eligible symbol. Do not infer or expose local root paths.
 
-Promoted AST metadata covers Go stdlib AST, Tree-sitter JS/JSX/TS/TSX, Tree-sitter C#, Tree-sitter Python, Markdown headings, and lightweight infrastructure/config metadata. TS/JS/TSX/JSX, C#, and Python have no regex fallback; parse failures are file-local `parse_error` skips and full scans continue. Extractor cache entries store symbols/headings only and are removed for skipped or absent files.
+Promoted AST metadata covers Go stdlib AST, Tree-sitter JS/JSX/TS/TSX, Tree-sitter C#, Tree-sitter Python, Markdown headings, and lightweight infrastructure/config metadata. Go and Python also store indexed reference/call metadata; unsupported or ambiguous edges remain unresolved rather than guessed. TS/JS/TSX/JSX, C#, and Python have no regex fallback; parse failures are file-local `parse_error` skips and full scans continue. Extractor cache entries store symbols/headings/references/calls only and are removed for skipped or absent files.

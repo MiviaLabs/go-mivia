@@ -29,6 +29,11 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}/chunks", listChunksHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}/outline", getFileOutlineHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols", listSymbolsHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/source", getSymbolSourceHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/references", listSymbolReferencesHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/callers", listSymbolCallersHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/callees", listSymbolCalleesHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/call-graph", getSymbolCallGraphHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/headings", listHeadingsHandler(ingestion))
 	}
 }
@@ -157,6 +162,75 @@ func listHeadingsHandler(ingestion projectingestion.API) http.Handler {
 		}
 		headings, err := ingestion.ListHeadings(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.URL.Query().Get("file_id")), pagination)
 		writeIngestionResult(w, headings, err, http.StatusOK)
+	})
+}
+
+func getSymbolSourceHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		maxSourceBytes, err := positiveIntQuery(r, "max_source_bytes")
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		source, err := ingestion.GetSymbolSource(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("symbol_id")), projectingestion.SymbolSourceOptions{MaxSourceBytes: maxSourceBytes})
+		writeIngestionResult(w, source, err, http.StatusOK)
+	})
+}
+
+func listSymbolReferencesHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pagination, err := paginationFromRequest(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		refs, err := ingestion.ListSymbolReferences(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("symbol_id")), pagination)
+		writeIngestionResult(w, refs, err, http.StatusOK)
+	})
+}
+
+func listSymbolCallersHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pagination, err := paginationFromRequest(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		edges, err := ingestion.ListSymbolCallers(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("symbol_id")), pagination)
+		writeIngestionResult(w, edges, err, http.StatusOK)
+	})
+}
+
+func listSymbolCalleesHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pagination, err := paginationFromRequest(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		edges, err := ingestion.ListSymbolCallees(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("symbol_id")), pagination)
+		writeIngestionResult(w, edges, err, http.StatusOK)
+	})
+}
+
+func getSymbolCallGraphHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		maxDepth, err := positiveIntQuery(r, "max_depth")
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		maxNodes, err := positiveIntQuery(r, "max_nodes")
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		graph, err := ingestion.GetSymbolCallGraph(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("symbol_id")), projectingestion.CallGraphOptions{
+			Direction: r.URL.Query().Get("direction"),
+			MaxDepth:  maxDepth,
+			MaxNodes:  maxNodes,
+		})
+		writeIngestionResult(w, graph, err, http.StatusOK)
 	})
 }
 

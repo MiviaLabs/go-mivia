@@ -36,6 +36,12 @@ type Relationship struct {
 	Properties map[string]string
 }
 
+type RelationshipFilter struct {
+	From       *NodeRef
+	To         *NodeRef
+	Properties map[string]string
+}
+
 type Graph interface {
 	Bootstrap(context.Context, schema.GraphSchema) error
 	PutNode(context.Context, Node) error
@@ -43,6 +49,7 @@ type Graph interface {
 	ListNodes(context.Context, string, map[string]string) ([]Node, error)
 	DeleteNodes(context.Context, string, map[string]string) error
 	PutRelationship(context.Context, Relationship) error
+	ListRelationships(context.Context, string, RelationshipFilter) ([]Relationship, error)
 }
 
 type BatchGraph interface {
@@ -161,6 +168,33 @@ func (graph *MemoryGraph) PutRelationship(_ context.Context, relationship Relati
 	}
 	graph.relationships[relationshipKey(relationship.Type, relationship.From, relationship.To)] = copied
 	return nil
+}
+
+func (graph *MemoryGraph) ListRelationships(_ context.Context, relationshipType string, filter RelationshipFilter) ([]Relationship, error) {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
+	out := make([]Relationship, 0)
+	for _, relationship := range graph.relationships {
+		if relationship.Type != relationshipType {
+			continue
+		}
+		if filter.From != nil && relationship.From != *filter.From {
+			continue
+		}
+		if filter.To != nil && relationship.To != *filter.To {
+			continue
+		}
+		if !matchesProperties(relationship.Properties, filter.Properties) {
+			continue
+		}
+		out = append(out, Relationship{
+			Type:       relationship.Type,
+			From:       relationship.From,
+			To:         relationship.To,
+			Properties: copyProperties(relationship.Properties),
+		})
+	}
+	return out, nil
 }
 
 func (graph *MemoryGraph) GetRelationship(_ context.Context, relationshipType string, from NodeRef, to NodeRef) (Relationship, error) {

@@ -21,6 +21,7 @@ type graphBackend interface {
 	ListNodes(context.Context, string, map[string]string) ([]ladybug.Node, error)
 	DeleteNodes(context.Context, string, map[string]string) error
 	PutRelationship(context.Context, ladybug.Relationship) error
+	ListRelationships(context.Context, string, ladybug.RelationshipFilter) ([]ladybug.Relationship, error)
 }
 
 type GraphStore struct {
@@ -31,13 +32,13 @@ func NewGraphStore(graph graphBackend) *GraphStore {
 	return &GraphStore{graph: graph}
 }
 
-func (store *GraphStore) PutEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, headings []Heading) error {
+func (store *GraphStore) PutEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, headings []Heading) error {
 	return store.withBatch(ctx, func(store *GraphStore) error {
-		return store.putEligibleFile(ctx, project, run, state, chunks, symbols, headings)
+		return store.putEligibleFile(ctx, project, run, state, chunks, symbols, references, calls, headings)
 	})
 }
 
-func (store *GraphStore) putEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, headings []Heading) error {
+func (store *GraphStore) putEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, headings []Heading) error {
 	if err := store.putProject(ctx, project); err != nil {
 		return err
 	}
@@ -120,6 +121,10 @@ func (store *GraphStore) putEligibleFile(ctx context.Context, project projectreg
 				"receiver":     symbol.Receiver,
 				"start_line":   strconv.Itoa(symbol.StartLine),
 				"end_line":     strconv.Itoa(symbol.EndLine),
+				"start_byte":   strconv.Itoa(symbol.StartByte),
+				"end_byte":     strconv.Itoa(symbol.EndByte),
+				"start_column": strconv.Itoa(symbol.StartColumn),
+				"end_column":   strconv.Itoa(symbol.EndColumn),
 			},
 		}); err != nil {
 			return err
@@ -132,6 +137,14 @@ func (store *GraphStore) putEligibleFile(ctx context.Context, project projectreg
 				return err
 			}
 		}
+	}
+
+	symbolIDs := symbolIDIndex(repoFileID, symbols)
+	if err := store.putReferences(ctx, project.ID, repoFileID, versionID, chunks, references, symbolIDs); err != nil {
+		return err
+	}
+	if err := store.putCalls(ctx, project.ID, repoFileID, versionID, chunks, calls, symbolIDs); err != nil {
+		return err
 	}
 
 	for index, heading := range headings {
@@ -504,6 +517,363 @@ func (store *GraphStore) GetSymbol(ctx context.Context, project projectregistry.
 	return symbolMetadataFromNode(node)
 }
 
+func (store *GraphStore) GetSymbolSource(ctx context.Context, project projectregistry.Project, symbolID string, maxSourceBytes int) (SymbolSource, error) {
+	symbol, err := store.GetSymbol(ctx, project, symbolID)
+	if err != nil {
+		return SymbolSource{}, err
+	}
+	if symbol.StartByte <= 0 && symbol.EndByte <= 0 {
+		return SymbolSource{Symbol: symbol, MaxBytes: maxSourceBytes}, nil
+	}
+	nodes, err := store.graph.ListNodes(ctx, "ContentChunk", map[string]string{
+		"project_id":   project.ID,
+		"repo_file_id": symbol.FileID,
+	})
+	if err != nil {
+		return SymbolSource{}, err
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		left, _ := strconv.Atoi(nodes[i].Properties["byte_start"])
+		right, _ := strconv.Atoi(nodes[j].Properties["byte_start"])
+		if left == right {
+			return nodes[i].ID < nodes[j].ID
+		}
+		return left < right
+	})
+	var builder strings.Builder
+	for _, node := range nodes {
+		chunkStart, _ := strconv.Atoi(node.Properties["byte_start"])
+		chunkEnd, _ := strconv.Atoi(node.Properties["byte_end"])
+		if chunkEnd <= symbol.StartByte || chunkStart >= symbol.EndByte {
+			continue
+		}
+		text := node.Properties["text"]
+		start := maxInt(symbol.StartByte, chunkStart) - chunkStart
+		end := minInt(symbol.EndByte, chunkEnd) - chunkStart
+		if start < 0 || end < start || start > len(text) {
+			continue
+		}
+		if end > len(text) {
+			end = len(text)
+		}
+		builder.WriteString(text[start:end])
+		if builder.Len() >= maxSourceBytes {
+			text, _ := truncateUTF8Bytes(builder.String(), maxSourceBytes)
+			return SymbolSource{Symbol: symbol, Text: text, TextTruncated: true, MaxBytes: maxSourceBytes}, nil
+		}
+	}
+	text, truncated := truncateUTF8Bytes(builder.String(), maxSourceBytes)
+	return SymbolSource{Symbol: symbol, Text: text, TextTruncated: truncated, MaxBytes: maxSourceBytes}, nil
+}
+
+func (store *GraphStore) ListSymbolReferences(ctx context.Context, project projectregistry.Project, symbolID string, pagination Pagination) (SymbolReferenceList, error) {
+	symbol, err := store.GetSymbol(ctx, project, symbolID)
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
+	nodes, err := store.graph.ListNodes(ctx, "CodeReference", map[string]string{
+		"project_id":       project.ID,
+		"target_symbol_id": symbol.ID,
+	})
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
+	sortReferenceNodes(nodes)
+	window, nextToken, err := paginate(nodes, pagination)
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
+	refs := make([]SymbolReferenceMetadata, 0, len(window))
+	for _, node := range window {
+		ref, err := referenceMetadataFromNode(node)
+		if err != nil {
+			return SymbolReferenceList{}, err
+		}
+		refs = append(refs, ref)
+	}
+	return SymbolReferenceList{Symbol: symbol, References: refs, NextPageToken: nextToken}, nil
+}
+
+func (store *GraphStore) ListSymbolCallers(ctx context.Context, project projectregistry.Project, symbolID string, pagination Pagination) (SymbolCallEdgeList, error) {
+	symbol, err := store.GetSymbol(ctx, project, symbolID)
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	to := ladybug.NodeRef{Label: "CodeSymbol", ID: symbol.ID}
+	return store.listSymbolCallEdges(ctx, project, symbol, ladybug.RelationshipFilter{To: &to, Properties: map[string]string{"project_id": project.ID}}, pagination)
+}
+
+func (store *GraphStore) ListSymbolCallees(ctx context.Context, project projectregistry.Project, symbolID string, pagination Pagination) (SymbolCallEdgeList, error) {
+	symbol, err := store.GetSymbol(ctx, project, symbolID)
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	from := ladybug.NodeRef{Label: "CodeSymbol", ID: symbol.ID}
+	return store.listSymbolCallEdges(ctx, project, symbol, ladybug.RelationshipFilter{From: &from, Properties: map[string]string{"project_id": project.ID}}, pagination)
+}
+
+func (store *GraphStore) listSymbolCallEdges(ctx context.Context, project projectregistry.Project, symbol SymbolMetadata, filter ladybug.RelationshipFilter, pagination Pagination) (SymbolCallEdgeList, error) {
+	relationships, err := store.graph.ListRelationships(ctx, "SYMBOL_CALLS_SYMBOL", filter)
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	sortCallRelationships(relationships)
+	window, nextToken, err := paginate(relationships, pagination)
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	edges := make([]SymbolCallEdge, 0, len(window))
+	for _, relationship := range window {
+		edges = append(edges, callEdgeFromRelationship(relationship))
+	}
+	return SymbolCallEdgeList{Symbol: symbol, Edges: edges, NextPageToken: nextToken}, nil
+}
+
+func (store *GraphStore) GetSymbolCallGraph(ctx context.Context, project projectregistry.Project, symbolID string, options CallGraphOptions) (SymbolCallGraph, error) {
+	root, err := store.GetSymbol(ctx, project, symbolID)
+	if err != nil {
+		return SymbolCallGraph{}, err
+	}
+	nodes := map[string]SymbolMetadata{root.ID: root}
+	visitedDepth := map[string]int{root.ID: 0}
+	queue := []string{root.ID}
+	edgesByID := map[string]SymbolCallEdge{}
+	truncated := false
+	for len(queue) > 0 {
+		currentID := queue[0]
+		queue = queue[1:]
+		depth := visitedDepth[currentID]
+		if depth >= options.MaxDepth {
+			continue
+		}
+		for _, rel := range []struct {
+			direction string
+			filter    ladybug.RelationshipFilter
+		}{
+			{direction: "callees", filter: ladybug.RelationshipFilter{From: &ladybug.NodeRef{Label: "CodeSymbol", ID: currentID}, Properties: map[string]string{"project_id": project.ID}}},
+			{direction: "callers", filter: ladybug.RelationshipFilter{To: &ladybug.NodeRef{Label: "CodeSymbol", ID: currentID}, Properties: map[string]string{"project_id": project.ID}}},
+		} {
+			if options.Direction != "both" && options.Direction != rel.direction {
+				continue
+			}
+			relationships, err := store.graph.ListRelationships(ctx, "SYMBOL_CALLS_SYMBOL", rel.filter)
+			if err != nil {
+				return SymbolCallGraph{}, err
+			}
+			sortCallRelationships(relationships)
+			for _, relationship := range relationships {
+				edge := callEdgeFromRelationship(relationship)
+				edgesByID[edge.ID] = edge
+				nextID := relationship.To.ID
+				if rel.direction == "callers" {
+					nextID = relationship.From.ID
+				}
+				if _, ok := nodes[nextID]; !ok {
+					if len(nodes) >= options.MaxNodes {
+						truncated = true
+						continue
+					}
+					node, err := store.graph.GetNode(ctx, "CodeSymbol", nextID)
+					if err != nil {
+						return SymbolCallGraph{}, err
+					}
+					metadata, err := symbolMetadataFromNode(node)
+					if err != nil {
+						return SymbolCallGraph{}, err
+					}
+					nodes[nextID] = metadata
+				}
+				if _, ok := visitedDepth[nextID]; !ok {
+					visitedDepth[nextID] = depth + 1
+					queue = append(queue, nextID)
+				}
+			}
+		}
+	}
+	nodeList := make([]SymbolMetadata, 0, len(nodes))
+	for _, node := range nodes {
+		nodeList = append(nodeList, node)
+	}
+	sort.Slice(nodeList, func(i, j int) bool {
+		if nodeList[i].Name == nodeList[j].Name {
+			return nodeList[i].ID < nodeList[j].ID
+		}
+		return nodeList[i].Name < nodeList[j].Name
+	})
+	edgeList := make([]SymbolCallEdge, 0, len(edgesByID))
+	for _, edge := range edgesByID {
+		edgeList = append(edgeList, edge)
+	}
+	sort.Slice(edgeList, func(i, j int) bool { return edgeList[i].ID < edgeList[j].ID })
+	return SymbolCallGraph{Symbol: root, Direction: options.Direction, MaxDepth: options.MaxDepth, MaxNodes: options.MaxNodes, Nodes: nodeList, Edges: edgeList, Truncated: truncated}, nil
+}
+
+func (store *GraphStore) putReferences(ctx context.Context, projectID string, repoFileID string, versionID string, chunks []Chunk, references []Reference, symbols symbolIndex) error {
+	for index, ref := range references {
+		refID := codeReferenceID(repoFileID, index, ref)
+		enclosingID := symbols.byName[ref.EnclosingSymbolName]
+		targetID := symbols.byName[ref.TargetName]
+		status := ref.ResolutionStatus
+		confidence := ref.Confidence
+		if targetID != "" {
+			status = "resolved"
+			confidence = "direct"
+		} else if status == "" {
+			status = "unresolved"
+		}
+		if confidence == "" {
+			confidence = "candidate"
+		}
+		if err := store.graph.PutNode(ctx, ladybug.Node{
+			Label: "CodeReference",
+			ID:    refID,
+			Properties: map[string]string{
+				"id":                    refID,
+				"project_id":            projectID,
+				"repo_file_id":          repoFileID,
+				"file_version_id":       versionID,
+				"kind":                  ref.Kind,
+				"name":                  ref.Name,
+				"target_name":           ref.TargetName,
+				"target_symbol_id":      targetID,
+				"package":               ref.PackageName,
+				"receiver":              ref.Receiver,
+				"import_path":           ref.ImportPath,
+				"enclosing_symbol_id":   enclosingID,
+				"enclosing_symbol_name": ref.EnclosingSymbolName,
+				"start_line":            strconv.Itoa(ref.StartLine),
+				"end_line":              strconv.Itoa(ref.EndLine),
+				"start_byte":            strconv.Itoa(ref.StartByte),
+				"end_byte":              strconv.Itoa(ref.EndByte),
+				"start_column":          strconv.Itoa(ref.StartColumn),
+				"end_column":            strconv.Itoa(ref.EndColumn),
+				"resolution_status":     status,
+				"confidence":            confidence,
+			},
+		}); err != nil {
+			return err
+		}
+		if targetID != "" {
+			if err := store.putRelationship(ctx, "SYMBOL_HAS_REFERENCE", "CodeSymbol", targetID, "CodeReference", refID, projectID); err != nil {
+				return err
+			}
+			if enclosingID != "" {
+				if err := store.putRelationship(ctx, "SYMBOL_REFERENCES_SYMBOL", "CodeSymbol", enclosingID, "CodeSymbol", targetID, projectID); err != nil {
+					return err
+				}
+			}
+		}
+		if chunkID := containingChunkID(versionID, chunks, ref.StartLine); chunkID != "" {
+			if err := store.putRelationship(ctx, "REFERENCE_IN_CHUNK", "CodeReference", refID, "ContentChunk", chunkID, projectID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (store *GraphStore) putCalls(ctx context.Context, projectID string, repoFileID string, versionID string, chunks []Chunk, calls []Call, symbols symbolIndex) error {
+	for index, call := range calls {
+		callID := codeCallID(repoFileID, index, call)
+		callerID := symbols.byName[call.CallerName]
+		calleeID := symbols.byName[call.CalleeName]
+		status := call.ResolutionStatus
+		confidence := call.Confidence
+		if callerID != "" && calleeID != "" {
+			status = "resolved"
+			confidence = "direct"
+		} else if status == "" {
+			status = "unresolved"
+		}
+		if confidence == "" {
+			confidence = "candidate"
+		}
+		if err := store.graph.PutNode(ctx, ladybug.Node{
+			Label: "CodeCall",
+			ID:    callID,
+			Properties: map[string]string{
+				"id":                callID,
+				"project_id":        projectID,
+				"repo_file_id":      repoFileID,
+				"file_version_id":   versionID,
+				"caller_symbol_id":  callerID,
+				"callee_symbol_id":  calleeID,
+				"caller_name":       call.CallerName,
+				"callee_name":       call.CalleeName,
+				"receiver":          call.Receiver,
+				"import_path":       call.ImportPath,
+				"start_line":        strconv.Itoa(call.StartLine),
+				"end_line":          strconv.Itoa(call.EndLine),
+				"start_byte":        strconv.Itoa(call.StartByte),
+				"end_byte":          strconv.Itoa(call.EndByte),
+				"start_column":      strconv.Itoa(call.StartColumn),
+				"end_column":        strconv.Itoa(call.EndColumn),
+				"resolution_status": status,
+				"confidence":        confidence,
+			},
+		}); err != nil {
+			return err
+		}
+		if callerID != "" && calleeID != "" {
+			if err := store.putRelationshipWithProperties(ctx, "SYMBOL_CALLS_SYMBOL", "CodeSymbol", callerID, "CodeSymbol", calleeID, projectID, map[string]string{
+				"call_id":           callID,
+				"repo_file_id":      repoFileID,
+				"caller_name":       call.CallerName,
+				"callee_name":       call.CalleeName,
+				"receiver":          call.Receiver,
+				"import_path":       call.ImportPath,
+				"start_line":        strconv.Itoa(call.StartLine),
+				"end_line":          strconv.Itoa(call.EndLine),
+				"start_byte":        strconv.Itoa(call.StartByte),
+				"end_byte":          strconv.Itoa(call.EndByte),
+				"start_column":      strconv.Itoa(call.StartColumn),
+				"end_column":        strconv.Itoa(call.EndColumn),
+				"resolution_status": status,
+				"confidence":        confidence,
+			}); err != nil {
+				return err
+			}
+		}
+		if chunkID := containingChunkID(versionID, chunks, call.StartLine); chunkID != "" {
+			if err := store.putRelationship(ctx, "CALL_IN_CHUNK", "CodeCall", callID, "ContentChunk", chunkID, projectID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+type symbolIndex struct {
+	byName     map[string]string
+	byNameKind map[string]SymbolKind
+}
+
+func symbolIDIndex(repoFileID string, symbols []Symbol) symbolIndex {
+	index := symbolIndex{
+		byName:     make(map[string]string, len(symbols)),
+		byNameKind: make(map[string]SymbolKind, len(symbols)),
+	}
+	for _, symbol := range symbols {
+		if symbol.Name == "" {
+			continue
+		}
+		id := codeSymbolID(repoFileID, symbol)
+		existingKind, exists := index.byNameKind[symbol.Name]
+		if !exists || preferredResolutionKind(symbol.Kind, existingKind) {
+			index.byName[symbol.Name] = id
+			index.byNameKind[symbol.Name] = symbol.Kind
+		}
+	}
+	return index
+}
+
+func preferredResolutionKind(candidate SymbolKind, existing SymbolKind) bool {
+	if candidate == SymbolKindFunction || candidate == SymbolKindMethod || candidate == SymbolKindClass || candidate == SymbolKindType {
+		return existing == SymbolKindPackage || existing == SymbolKindImport
+	}
+	return false
+}
+
 func (store *GraphStore) putProject(ctx context.Context, project projectregistry.Project) error {
 	return store.graph.PutNode(ctx, ladybug.Node{
 		Label: "Project",
@@ -563,7 +933,7 @@ func (store *GraphStore) putRepoFile(ctx context.Context, project projectregistr
 
 func (store *GraphStore) deleteDerivedFileNodes(ctx context.Context, projectID string, repoFileID string) error {
 	filter := map[string]string{"project_id": projectID, "repo_file_id": repoFileID}
-	for _, label := range []string{"CodeSymbol", "DocumentHeading", "ContentChunk", "FileVersion"} {
+	for _, label := range []string{"CodeReference", "CodeCall", "CodeSymbol", "DocumentHeading", "ContentChunk", "FileVersion"} {
 		if err := store.graph.DeleteNodes(ctx, label, filter); err != nil {
 			return err
 		}
@@ -572,13 +942,19 @@ func (store *GraphStore) deleteDerivedFileNodes(ctx context.Context, projectID s
 }
 
 func (store *GraphStore) putRelationship(ctx context.Context, relType string, fromLabel string, fromID string, toLabel string, toID string, projectID string) error {
+	return store.putRelationshipWithProperties(ctx, relType, fromLabel, fromID, toLabel, toID, projectID, nil)
+}
+
+func (store *GraphStore) putRelationshipWithProperties(ctx context.Context, relType string, fromLabel string, fromID string, toLabel string, toID string, projectID string, properties map[string]string) error {
+	props := map[string]string{"project_id": projectID}
+	for key, value := range properties {
+		props[key] = value
+	}
 	return store.graph.PutRelationship(ctx, ladybug.Relationship{
-		Type: relType,
-		From: ladybug.NodeRef{Label: fromLabel, ID: fromID},
-		To:   ladybug.NodeRef{Label: toLabel, ID: toID},
-		Properties: map[string]string{
-			"project_id": projectID,
-		},
+		Type:       relType,
+		From:       ladybug.NodeRef{Label: fromLabel, ID: fromID},
+		To:         ladybug.NodeRef{Label: toLabel, ID: toID},
+		Properties: props,
 	})
 }
 
@@ -596,6 +972,14 @@ func contentChunkID(versionID string, index int) string {
 
 func codeSymbolID(repoFileID string, symbol Symbol) string {
 	return repoFileID + ":symbol:" + shortHash(string(symbol.Kind)+"\x00"+symbol.Name+"\x00"+symbol.Receiver+"\x00"+symbol.ImportPath+"\x00"+strconv.Itoa(symbol.StartLine))
+}
+
+func codeReferenceID(repoFileID string, index int, ref Reference) string {
+	return repoFileID + ":reference:" + shortHash(strconv.Itoa(index)+"\x00"+ref.Kind+"\x00"+ref.TargetName+"\x00"+ref.EnclosingSymbolName+"\x00"+strconv.Itoa(ref.StartLine)+"\x00"+strconv.Itoa(ref.StartByte))
+}
+
+func codeCallID(repoFileID string, index int, call Call) string {
+	return repoFileID + ":call:" + shortHash(strconv.Itoa(index)+"\x00"+call.CallerName+"\x00"+call.CalleeName+"\x00"+call.Receiver+"\x00"+strconv.Itoa(call.StartLine)+"\x00"+strconv.Itoa(call.StartByte))
 }
 
 func documentHeadingID(repoFileID string, index int, heading Heading) string {
@@ -729,6 +1113,10 @@ func symbolMetadataFromNode(node ladybug.Node) (SymbolMetadata, error) {
 		Receiver:    node.Properties["receiver"],
 		StartLine:   startLine,
 		EndLine:     endLine,
+		StartByte:   atoiDefault(node.Properties["start_byte"]),
+		EndByte:     atoiDefault(node.Properties["end_byte"]),
+		StartColumn: atoiDefault(node.Properties["start_column"]),
+		EndColumn:   atoiDefault(node.Properties["end_column"]),
 	}, nil
 }
 
@@ -759,4 +1147,109 @@ func headingMetadataFromNode(node ladybug.Node) (HeadingMetadata, error) {
 		StartLine:   startLine,
 		EndLine:     endLine,
 	}, nil
+}
+
+func referenceMetadataFromNode(node ladybug.Node) (SymbolReferenceMetadata, error) {
+	startLine, err := strconv.Atoi(node.Properties["start_line"])
+	if err != nil {
+		return SymbolReferenceMetadata{}, err
+	}
+	endLine, err := strconv.Atoi(node.Properties["end_line"])
+	if err != nil {
+		return SymbolReferenceMetadata{}, err
+	}
+	return SymbolReferenceMetadata{
+		ID:                  node.ID,
+		FileID:              node.Properties["repo_file_id"],
+		ProjectID:           node.Properties["project_id"],
+		Kind:                node.Properties["kind"],
+		Name:                node.Properties["name"],
+		TargetName:          node.Properties["target_name"],
+		TargetSymbolID:      node.Properties["target_symbol_id"],
+		PackageName:         node.Properties["package"],
+		Receiver:            node.Properties["receiver"],
+		ImportPath:          node.Properties["import_path"],
+		EnclosingSymbolID:   node.Properties["enclosing_symbol_id"],
+		EnclosingSymbolName: node.Properties["enclosing_symbol_name"],
+		StartLine:           startLine,
+		EndLine:             endLine,
+		StartByte:           atoiDefault(node.Properties["start_byte"]),
+		EndByte:             atoiDefault(node.Properties["end_byte"]),
+		StartColumn:         atoiDefault(node.Properties["start_column"]),
+		EndColumn:           atoiDefault(node.Properties["end_column"]),
+		ResolutionStatus:    node.Properties["resolution_status"],
+		Confidence:          node.Properties["confidence"],
+	}, nil
+}
+
+func callEdgeFromRelationship(relationship ladybug.Relationship) SymbolCallEdge {
+	props := relationship.Properties
+	return SymbolCallEdge{
+		ID:               relationshipKeyID(relationship),
+		CallID:           props["call_id"],
+		FileID:           props["repo_file_id"],
+		ProjectID:        props["project_id"],
+		CallerSymbolID:   relationship.From.ID,
+		CalleeSymbolID:   relationship.To.ID,
+		CallerName:       props["caller_name"],
+		CalleeName:       props["callee_name"],
+		Receiver:         props["receiver"],
+		ImportPath:       props["import_path"],
+		StartLine:        atoiDefault(props["start_line"]),
+		EndLine:          atoiDefault(props["end_line"]),
+		StartByte:        atoiDefault(props["start_byte"]),
+		EndByte:          atoiDefault(props["end_byte"]),
+		StartColumn:      atoiDefault(props["start_column"]),
+		EndColumn:        atoiDefault(props["end_column"]),
+		ResolutionStatus: props["resolution_status"],
+		Confidence:       props["confidence"],
+	}
+}
+
+func relationshipKeyID(relationship ladybug.Relationship) string {
+	if callID := relationship.Properties["call_id"]; callID != "" {
+		return callID
+	}
+	return shortHash(relationship.Type + "\x00" + relationship.From.ID + "\x00" + relationship.To.ID)
+}
+
+func sortReferenceNodes(nodes []ladybug.Node) {
+	sort.Slice(nodes, func(i, j int) bool {
+		left := atoiDefault(nodes[i].Properties["start_line"])
+		right := atoiDefault(nodes[j].Properties["start_line"])
+		if left == right {
+			return nodes[i].ID < nodes[j].ID
+		}
+		return left < right
+	})
+}
+
+func sortCallRelationships(relationships []ladybug.Relationship) {
+	sort.Slice(relationships, func(i, j int) bool {
+		left := atoiDefault(relationships[i].Properties["start_line"])
+		right := atoiDefault(relationships[j].Properties["start_line"])
+		if left == right {
+			return relationshipKeyID(relationships[i]) < relationshipKeyID(relationships[j])
+		}
+		return left < right
+	})
+}
+
+func atoiDefault(value string) int {
+	parsed, _ := strconv.Atoi(value)
+	return parsed
+}
+
+func minInt(left int, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func maxInt(left int, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }

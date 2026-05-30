@@ -110,6 +110,10 @@ func (graph *PersistentGraph) PutRelationship(ctx context.Context, relationship 
 	}})
 }
 
+func (graph *PersistentGraph) ListRelationships(ctx context.Context, relationshipType string, filter RelationshipFilter) ([]Relationship, error) {
+	return graph.graph.ListRelationships(ctx, relationshipType, filter)
+}
+
 func (graph *PersistentGraph) Batch(ctx context.Context, fn func(Graph) error) error {
 	if fn == nil {
 		return nil
@@ -555,6 +559,10 @@ func (graph *recordingGraph) PutRelationship(ctx context.Context, relationship R
 		Relationship: &copied,
 	})
 	return nil
+}
+
+func (graph *recordingGraph) ListRelationships(ctx context.Context, relationshipType string, filter RelationshipFilter) ([]Relationship, error) {
+	return graph.graph.ListRelationships(ctx, relationshipType, filter)
 }
 
 func copyNode(node Node) Node {

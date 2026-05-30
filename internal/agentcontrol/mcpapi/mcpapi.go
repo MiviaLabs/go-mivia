@@ -210,6 +210,11 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		"projects.files.list", "projects_files_list", "projects.files.get", "projects_files_get",
 		"projects.file.chunks", "projects_file_chunks",
 		"projects.symbols.list", "projects_symbols_list",
+		"projects.symbol.source", "projects_symbol_source",
+		"projects.symbol.references", "projects_symbol_references",
+		"projects.symbol.callers", "projects_symbol_callers",
+		"projects.symbol.callees", "projects_symbol_callees",
+		"projects.symbol.call_graph", "projects_symbol_call_graph",
 		"projects.headings.list", "projects_headings_list",
 		"projects.file.outline", "projects_file_outline":
 		if handler.projects == nil {

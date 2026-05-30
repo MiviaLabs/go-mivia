@@ -370,6 +370,124 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/symbols/{symbol_id}/source:
+    get:
+      operationId: getProjectSymbolSource
+      summary: Get bounded eligible source text for a project symbol
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/SymbolID'
+        - name: max_source_bytes
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Bounded symbol source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSymbolSource'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/symbols/{symbol_id}/references:
+    get:
+      operationId: listProjectSymbolReferences
+      summary: List bounded references for a project symbol
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/SymbolID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Project symbol references
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSymbolReferenceList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/symbols/{symbol_id}/callers:
+    get:
+      operationId: listProjectSymbolCallers
+      summary: List direct caller edges for a project symbol
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/SymbolID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Project symbol caller edges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSymbolCallEdgeList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/symbols/{symbol_id}/callees:
+    get:
+      operationId: listProjectSymbolCallees
+      summary: List direct callee edges for a project symbol
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/SymbolID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Project symbol callee edges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSymbolCallEdgeList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/symbols/{symbol_id}/call-graph:
+    get:
+      operationId: getProjectSymbolCallGraph
+      summary: Traverse bounded direct call edges for a project symbol
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/SymbolID'
+        - name: direction
+          in: query
+          schema:
+            type: string
+            enum: [callers, callees, both]
+        - name: max_depth
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+        - name: max_nodes
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Project symbol call graph
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSymbolCallGraph'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   parameters:
     ID:
@@ -388,6 +506,13 @@ components:
         minLength: 1
     FileID:
       name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    SymbolID:
+      name: symbol_id
       in: path
       required: true
       schema:
@@ -840,6 +965,126 @@ components:
         end_line:
           type: integer
           minimum: 1
+        start_byte:
+          type: integer
+          minimum: 0
+        end_byte:
+          type: integer
+          minimum: 0
+        start_column:
+          type: integer
+          minimum: 0
+        end_column:
+          type: integer
+          minimum: 0
+    ProjectSymbolSource:
+      type: object
+      additionalProperties: false
+      required: [symbol, text, text_truncated, max_bytes]
+      properties:
+        symbol:
+          $ref: '#/components/schemas/ProjectSymbol'
+        text:
+          type: string
+          description: Eligible indexed symbol source text, capped by max_source_bytes and project limits.
+        text_truncated:
+          type: boolean
+        max_bytes:
+          type: integer
+    ProjectSymbolReferenceList:
+      type: object
+      additionalProperties: false
+      required: [symbol, references]
+      properties:
+        symbol:
+          $ref: '#/components/schemas/ProjectSymbol'
+        references:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSymbolReference'
+        next_page_token:
+          type: string
+    ProjectSymbolReference:
+      type: object
+      additionalProperties: false
+      required: [id, file_id, project_id, kind, name, start_line, end_line, resolution_status]
+      properties:
+        id: {type: string}
+        file_id: {type: string}
+        project_id: {type: string}
+        kind: {type: string}
+        name: {type: string}
+        target_name: {type: string}
+        target_symbol_id: {type: string}
+        package: {type: string}
+        receiver: {type: string}
+        import_path: {type: string}
+        enclosing_symbol_id: {type: string}
+        enclosing_symbol_name: {type: string}
+        start_line: {type: integer, minimum: 1}
+        end_line: {type: integer, minimum: 1}
+        start_byte: {type: integer, minimum: 0}
+        end_byte: {type: integer, minimum: 0}
+        start_column: {type: integer, minimum: 0}
+        end_column: {type: integer, minimum: 0}
+        resolution_status: {type: string}
+        confidence: {type: string}
+    ProjectSymbolCallEdgeList:
+      type: object
+      additionalProperties: false
+      required: [symbol, edges]
+      properties:
+        symbol:
+          $ref: '#/components/schemas/ProjectSymbol'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSymbolCallEdge'
+        next_page_token:
+          type: string
+    ProjectSymbolCallEdge:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, caller_symbol_id, callee_symbol_id, resolution_status]
+      properties:
+        id: {type: string}
+        call_id: {type: string}
+        file_id: {type: string}
+        project_id: {type: string}
+        caller_symbol_id: {type: string}
+        callee_symbol_id: {type: string}
+        caller_name: {type: string}
+        callee_name: {type: string}
+        receiver: {type: string}
+        import_path: {type: string}
+        start_line: {type: integer, minimum: 1}
+        end_line: {type: integer, minimum: 1}
+        start_byte: {type: integer, minimum: 0}
+        end_byte: {type: integer, minimum: 0}
+        start_column: {type: integer, minimum: 0}
+        end_column: {type: integer, minimum: 0}
+        resolution_status: {type: string}
+        confidence: {type: string}
+    ProjectSymbolCallGraph:
+      type: object
+      additionalProperties: false
+      required: [symbol, direction, max_depth, max_nodes, nodes, edges, truncated]
+      properties:
+        symbol:
+          $ref: '#/components/schemas/ProjectSymbol'
+        direction: {type: string}
+        max_depth: {type: integer}
+        max_nodes: {type: integer}
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSymbol'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSymbolCallEdge'
+        truncated:
+          type: boolean
     ErrorResponse:
       type: object
       additionalProperties: false

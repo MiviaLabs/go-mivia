@@ -203,6 +203,46 @@ func (scheduler *Scheduler) GetSymbol(ctx context.Context, projectID string, sym
 	return api.GetSymbol(ctx, projectID, symbolID)
 }
 
+func (scheduler *Scheduler) GetSymbolSource(ctx context.Context, projectID string, symbolID string, options SymbolSourceOptions) (SymbolSource, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolSource{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.GetSymbolSource(ctx, projectID, symbolID, options)
+}
+
+func (scheduler *Scheduler) ListSymbolReferences(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolReferenceList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolReferenceList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListSymbolReferences(ctx, projectID, symbolID, pagination)
+}
+
+func (scheduler *Scheduler) ListSymbolCallers(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolCallEdgeList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolCallEdgeList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListSymbolCallers(ctx, projectID, symbolID, pagination)
+}
+
+func (scheduler *Scheduler) ListSymbolCallees(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolCallEdgeList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolCallEdgeList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListSymbolCallees(ctx, projectID, symbolID, pagination)
+}
+
+func (scheduler *Scheduler) GetSymbolCallGraph(ctx context.Context, projectID string, symbolID string, options CallGraphOptions) (SymbolCallGraph, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolCallGraph{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.GetSymbolCallGraph(ctx, projectID, symbolID, options)
+}
+
 func (scheduler *Scheduler) ListHeadings(ctx context.Context, projectID string, fileID string, pagination Pagination) (HeadingList, error) {
 	api, ok := scheduler.runner.(API)
 	if !ok {

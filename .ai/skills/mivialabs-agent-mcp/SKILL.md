@@ -57,7 +57,7 @@ Use the smallest sequence that answers the task:
 5. Call `projects.ingestion_status_latest` before relying on indexed data. If the latest run is missing, failed, stale for the task, or older than current disk changes, call `projects.ingest`.
 6. Treat `projects.ingest` as asynchronous. It returns quickly with queued run metadata and a `run_id`; poll `projects.ingestion_status` with that `run_id` until `completed` or `failed`.
 7. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
-8. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Set `include_chunk_text=true` with a small `max_chunk_bytes` when an eligible file's source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
+8. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph` for common indexed navigation. Use `projects.symbol.source` only when bounded eligible source text for one symbol is needed. Set `include_chunk_text=true` with a small `max_chunk_bytes` when eligible file source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
 9. Switch to semantic tools for symbol bodies, references, and edit planning.
 10. Switch to shell for tests, diffs, logs, generated files, and anything changed after the last ingestion.
 
@@ -73,14 +73,14 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Research metadata only | `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get` |
 | Project registry | `projects.list`, `projects.get` |
 | Metadata digest | `projects.digest` |
-| Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.headings.list`, `projects.file.outline` |
+| Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline` |
 
 ## Indexed Metadata Contract
 
 - Promoted AST metadata currently covers Go stdlib AST, Tree-sitter JS/JSX/TS/TSX, Tree-sitter C#, Tree-sitter Python, Markdown headings, and lightweight infrastructure/config metadata.
 - TS/JS/TSX/JSX, C#, and Python have no regex fallback. If a promoted grammar or embedded query cannot initialize, server startup fails with `extractor_initialization_failed`.
 - Per-file parser failures are file-local `parse_error` skips; full scans continue.
-- Extractor cache rows store only symbols and headings keyed by hashes, extractor name, and version. Skipped or absent files must not have cache rows or content hashes.
+- Extractor cache rows store only symbols, headings, references, and calls keyed by hashes, extractor name, and version. Skipped or absent files must not have cache rows or content hashes.
 - Full scans run through bounded graph write batches and the fair scheduler; live path events have priority over full-scan continuation.
 
 Resources:
