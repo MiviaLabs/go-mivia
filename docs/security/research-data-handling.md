@@ -23,6 +23,18 @@ REST and MCP project APIs return bounded project metadata only. They expose `GET
 
 Project digests follow the same metadata-only posture. They are manual and store project/file metadata plus metadata fingerprints only. The metadata fingerprint is derived from relative path, extension/language hint, file size, and mtime; it is not a file-content hash. Digest storage and REST/MCP responses must not store or return raw source content or file-content hashes.
 
+## Content Graph Approval Gate
+
+[ADR-0007](../adr/0007-content-graph-ingestion-and-live-updates.md) is proposed as an approval gate for future content graph ingestion and live updates. It does not relax the current source-content prohibition.
+
+Until ADR-0007 is accepted with named engineering owner and Security/DPO owner approvals:
+
+- no source content, chunk text, symbol text extracted from source, source-content hashes, file-version content state, or live watcher state may be stored in LadybugDB, SQLite, fixtures, logs, REST responses, MCP responses, traces, or metrics
+- no provider, embedding, vector, crawling, public exposure, auth model, or symlink traversal work is approved
+- only metadata-only/manual project digest behavior remains approved
+
+If ADR-0007 is accepted later, this policy must be updated before any implementation stores source content or source-content hashes. PII ingestion remains prohibited unless separately approved by Security/DPO with purpose, legal basis, access model, retention, deletion path, audit trail, and data residency posture.
+
 ## Provider Policy
 
 - Only fixture providers are implemented during bootstrap.
