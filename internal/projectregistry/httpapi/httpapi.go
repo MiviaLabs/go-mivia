@@ -280,6 +280,17 @@ func fileOutlineOptions(r *http.Request) (projectingestion.FileOutlineOptions, e
 	if err != nil {
 		return projectingestion.FileOutlineOptions{}, err
 	}
+	maxChunkBytes, err := positiveIntQuery(r, "max_chunk_bytes")
+	if err != nil {
+		return projectingestion.FileOutlineOptions{}, err
+	}
+	includeChunkText := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("include_chunk_text")); raw != "" {
+		includeChunkText, err = strconv.ParseBool(raw)
+		if err != nil {
+			return projectingestion.FileOutlineOptions{}, projectregistry.ErrInvalidInput
+		}
+	}
 	filter, err := projectingestion.NormalizeSymbolFilter(projectingestion.SymbolFilter{
 		Kind:       projectingestion.SymbolKind(strings.TrimSpace(r.URL.Query().Get("kind"))),
 		NamePrefix: r.URL.Query().Get("name_prefix"),
@@ -288,7 +299,9 @@ func fileOutlineOptions(r *http.Request) (projectingestion.FileOutlineOptions, e
 		return projectingestion.FileOutlineOptions{}, err
 	}
 	return projectingestion.FileOutlineOptions{
-		SymbolFilter: filter,
+		SymbolFilter:     filter,
+		IncludeChunkText: includeChunkText,
+		MaxChunkBytes:    maxChunkBytes,
 		SymbolPagination: projectingestion.Pagination{
 			PageSize:  pageSize,
 			PageToken: r.URL.Query().Get("symbol_page_token"),

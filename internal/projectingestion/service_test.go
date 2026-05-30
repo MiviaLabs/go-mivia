@@ -712,6 +712,7 @@ func TestSymbolsHeadingsAndOutline_P2DiscoveryFlows(t *testing.T) {
 	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc Run() {}\n")
 	writeFile(t, filepath.Join(root, "docs", "guide.md"), "# Guide\n\n## Setup\n")
 	writeFile(t, filepath.Join(root, "web", "app.ts"), "export class Widget {}\nexport const load = () => true\n")
+	writeFile(t, filepath.Join(root, "scripts", "worker.py"), "import os\nclass Worker:\n    def run(self):\n        return True\n")
 
 	svc, _, state := newTestService(t, root)
 	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
@@ -743,6 +744,13 @@ func TestSymbolsHeadingsAndOutline_P2DiscoveryFlows(t *testing.T) {
 	}
 	if len(tsSymbols.Symbols) < 2 {
 		t.Fatalf("expected TypeScript class/function symbols, got %#v", tsSymbols.Symbols)
+	}
+	pySymbols, err := svc.ListSymbols(ctx, "example-service", SymbolFilter{Extension: ".py", NamePrefix: "Worker"}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list python symbols: %v", err)
+	}
+	if len(pySymbols.Symbols) != 1 || pySymbols.Symbols[0].Kind != string(SymbolKindClass) {
+		t.Fatalf("expected Python class symbol, got %#v", pySymbols.Symbols)
 	}
 	headings, err := svc.ListHeadings(ctx, "example-service", mdFileID, Pagination{PageSize: MaxPageSize})
 	if err != nil {
@@ -785,7 +793,7 @@ func TestService_LatestRunMetadataIsSafe(t *testing.T) {
 	}
 }
 
-func TestService_FileOutlineFiltersAndPaginatesSymbolsWithoutChunkText(t *testing.T) {
+func TestService_FileOutlineFiltersPaginatesAndOptionallyIncludesChunkText(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc Alpha() {}\nfunc Beta() {}\nfunc Alfred() {}\n")
@@ -812,8 +820,18 @@ func TestService_FileOutlineFiltersAndPaginatesSymbolsWithoutChunkText(t *testin
 	encoded := fmt.Sprintf("%#v", outline)
 	for _, forbidden := range []string{"func Alpha", "func Beta", "package main"} {
 		if strings.Contains(encoded, forbidden) {
-			t.Fatalf("outline leaked raw source %q: %#v", forbidden, outline)
+			t.Fatalf("outline included source text without opt-in %q: %#v", forbidden, outline)
 		}
+	}
+	withText, err := svc.GetFileOutline(ctx, "example-service", fileID, FileOutlineOptions{
+		IncludeChunkText: true,
+		MaxChunkBytes:    32,
+	})
+	if err != nil {
+		t.Fatalf("get text outline: %v", err)
+	}
+	if len(withText.Chunks) == 0 || !strings.Contains(withText.Chunks[0].Text, "package main") || !withText.Chunks[0].TextTruncated {
+		t.Fatalf("expected bounded chunk text in outline, got %#v", withText.Chunks)
 	}
 }
 

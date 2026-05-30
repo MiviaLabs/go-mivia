@@ -320,12 +320,14 @@ Input schema:
     "kind": { "type": "string" },
     "name_prefix": { "type": "string" },
     "symbol_page_size": { "type": "integer", "minimum": 1, "maximum": 100 },
-    "symbol_page_token": { "type": "string" }
+    "symbol_page_token": { "type": "string" },
+    "include_chunk_text": { "type": "boolean" },
+    "max_chunk_bytes": { "type": "integer", "minimum": 1 }
   }
 }
 ```
 
-Output: bounded file metadata, headings, symbols, symbol pagination token, and chunk IDs/line ranges without chunk text, raw source snippets, or AST node text.
+Output: bounded file metadata, headings, symbols, symbol pagination token, and chunk IDs/line ranges. By default, outline chunks omit text. When `include_chunk_text` is true, outline chunks may include eligible stored chunk text truncated by `max_chunk_bytes` and project caps. Skipped sensitive files, matched sensitive text, raw AST node text, absolute roots, and raw local config values are never returned.
 
 ## Resources
 

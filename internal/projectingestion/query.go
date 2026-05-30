@@ -33,6 +33,8 @@ type SymbolFilter struct {
 type FileOutlineOptions struct {
 	SymbolFilter     SymbolFilter
 	SymbolPagination Pagination
+	IncludeChunkText bool
+	MaxChunkBytes    int
 }
 
 type RunMetadata struct {
@@ -123,14 +125,16 @@ type HeadingList struct {
 }
 
 type OutlineChunkMetadata struct {
-	ID        string `json:"id"`
-	FileID    string `json:"file_id"`
-	ProjectID string `json:"project_id"`
-	Index     int    `json:"index"`
-	StartLine int    `json:"start_line"`
-	EndLine   int    `json:"end_line"`
-	ByteStart int    `json:"byte_start"`
-	ByteEnd   int    `json:"byte_end"`
+	ID            string `json:"id"`
+	FileID        string `json:"file_id"`
+	ProjectID     string `json:"project_id"`
+	Index         int    `json:"index"`
+	StartLine     int    `json:"start_line"`
+	EndLine       int    `json:"end_line"`
+	ByteStart     int    `json:"byte_start"`
+	ByteEnd       int    `json:"byte_end"`
+	Text          string `json:"text,omitempty"`
+	TextTruncated bool   `json:"text_truncated,omitempty"`
 }
 
 type FileOutline struct {

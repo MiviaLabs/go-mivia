@@ -206,7 +206,7 @@ graph_storage = "persistent"
 
 The watcher uses `github.com/fsnotify/fsnotify` and watches directories, not individual files. It registers each eligible directory because filesystem notifications are not recursive. Overflow or full queues trigger a scheduled project rescan. The scheduler prioritizes live path events over full-scan continuation and enforces global and per-project worker limits. Manual ingestion remains available as fallback, returns queued metadata immediately, and runs through the same scheduler.
 
-Promoted AST extraction validates at startup when content graph ingestion is enabled. Supported promoted extractors are Go stdlib AST, Tree-sitter JavaScript/TypeScript/TSX, Tree-sitter C#, Markdown headings, and lightweight infrastructure/config metadata. Tree-sitter failures must be fixed as dependency or query initialization issues; do not re-enable regex fallback for TS/JS/TSX/JSX or C#.
+Promoted AST extraction validates at startup when content graph ingestion is enabled. Supported promoted extractors are Go stdlib AST, Tree-sitter JavaScript/TypeScript/TSX, Tree-sitter C#, Tree-sitter Python, Markdown headings, and lightweight infrastructure/config metadata. Tree-sitter failures must be fixed as dependency or query initialization issues; do not re-enable regex fallback for TS/JS/TSX/JSX, C#, or Python.
 
 Verified local smoke:
 

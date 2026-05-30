@@ -289,7 +289,7 @@ paths:
     get:
       operationId: getProjectFileOutline
       summary: Get project file outline
-      description: Returns file, heading, symbol, and chunk location metadata without chunk text, raw source snippets, or AST node text. Symbol filters can bound large outlines.
+      description: Returns file, heading, symbol, and chunk location metadata. Symbol filters can bound large outlines. Chunk text is omitted by default, but eligible stored chunk text can be requested with include_chunk_text and max_chunk_bytes.
       parameters:
         - $ref: '#/components/parameters/ID'
         - $ref: '#/components/parameters/FileID'
@@ -311,6 +311,15 @@ paths:
           in: query
           schema:
             type: string
+        - name: include_chunk_text
+          in: query
+          schema:
+            type: boolean
+        - name: max_chunk_bytes
+          in: query
+          schema:
+            type: integer
+            minimum: 1
       responses:
         '200':
           description: Project file outline
@@ -737,7 +746,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ProjectOutlineChunk'
-      description: Does not include chunk text, raw source snippets, AST node text, absolute roots, or skipped sensitive content.
+      description: Chunk text is omitted unless requested with include_chunk_text. Raw AST node text, absolute roots, skipped sensitive content, and matched sensitive text are never returned.
     ProjectHeading:
       type: object
       additionalProperties: false
@@ -788,6 +797,11 @@ components:
         byte_end:
           type: integer
           minimum: 0
+        text:
+          type: string
+          description: Optional eligible chunk text, included only when requested and capped by max_chunk_bytes and project limits.
+        text_truncated:
+          type: boolean
     ProjectSymbolList:
       type: object
       additionalProperties: false

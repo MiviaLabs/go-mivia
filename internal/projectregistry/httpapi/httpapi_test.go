@@ -145,6 +145,34 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 	if !strings.Contains(symbols.Body.String(), `"name":"Run"`) || strings.Contains(symbols.Body.String(), root) {
 		t.Fatalf("unexpected symbols response: %s", symbols.Body.String())
 	}
+
+	outline := httptest.NewRecorder()
+	mux.ServeHTTP(outline, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files/"+fileList.Files[0].ID+"/outline?kind=function&name_prefix=Run&symbol_page_size=1", nil))
+	if outline.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", outline.Code, outline.Body.String())
+	}
+	assertDoesNotLeak(t, outline.Body.String(), root, "package main", "println", "content_sha256")
+	var fileOutline projectingestion.FileOutline
+	if err := json.Unmarshal(outline.Body.Bytes(), &fileOutline); err != nil {
+		t.Fatalf("decode outline: %v", err)
+	}
+	if len(fileOutline.Symbols) != 1 || fileOutline.Symbols[0].Name != "Run" || len(fileOutline.Chunks) != 1 || fileOutline.Chunks[0].Text != "" {
+		t.Fatalf("unexpected outline response: %#v", fileOutline)
+	}
+
+	textOutline := httptest.NewRecorder()
+	mux.ServeHTTP(textOutline, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files/"+fileList.Files[0].ID+"/outline?include_chunk_text=true&max_chunk_bytes=18", nil))
+	if textOutline.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", textOutline.Code, textOutline.Body.String())
+	}
+	assertDoesNotLeak(t, textOutline.Body.String(), root, "content_sha256")
+	var textFileOutline projectingestion.FileOutline
+	if err := json.Unmarshal(textOutline.Body.Bytes(), &textFileOutline); err != nil {
+		t.Fatalf("decode text outline: %v", err)
+	}
+	if len(textFileOutline.Chunks) != 1 || !strings.Contains(textFileOutline.Chunks[0].Text, "package main") || !textFileOutline.Chunks[0].TextTruncated {
+		t.Fatalf("expected bounded outline text: %#v", textFileOutline.Chunks)
+	}
 }
 
 func TestProjectIngestionRoutes_SubmitsAsyncWithoutWaitingForScan(t *testing.T) {

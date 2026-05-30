@@ -542,6 +542,9 @@ func (svc *Service) ListHeadings(ctx context.Context, projectID string, fileID s
 }
 
 func (svc *Service) GetFileOutline(ctx context.Context, projectID string, fileID string, options FileOutlineOptions) (FileOutline, error) {
+	if options.MaxChunkBytes < 0 {
+		return FileOutline{}, ErrInvalidInput
+	}
 	project, err := svc.projectForQuery(projectID)
 	if err != nil {
 		return FileOutline{}, err

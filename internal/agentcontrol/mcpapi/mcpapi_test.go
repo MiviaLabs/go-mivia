@@ -169,6 +169,14 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	}
 	waitMCPIngestionRun(t, handler, ingestRPC.Result.StructuredContent["id"].(string))
 
+	latest := postMCP(t, handler, `{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"projects.ingestion_status_latest","arguments":{"id":"example-service"}}}`)
+	if bytes.Contains(latest.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected latest ingestion status success, got %s", latest.Body.String())
+	}
+	if bytes.Contains(latest.Body.Bytes(), []byte(root)) || bytes.Contains(latest.Body.Bytes(), []byte("content_sha256")) {
+		t.Fatalf("latest ingestion status leaked sensitive metadata: %s", latest.Body.String())
+	}
+
 	files := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.files.list","arguments":"{\"id\":\"example-service\",\"page_size\":1}"}}`)
 	if bytes.Contains(files.Body.Bytes(), []byte(`"error"`)) {
 		t.Fatalf("expected files success, got %s", files.Body.String())

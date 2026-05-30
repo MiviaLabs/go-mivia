@@ -198,6 +198,14 @@ func TestCallToolWithIngestion_P2DiscoveryTools(t *testing.T) {
 	if len(symbols.Symbols) != 1 || symbols.Symbols[0].Name != "load" {
 		t.Fatalf("unexpected filtered symbols: %#v", symbols)
 	}
+	pySymbolsResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.symbols.list", json.RawMessage(`{"id":"example-service","kind":"class","name_prefix":"Worker","extension":"py","page_size":10}`))
+	if err != nil {
+		t.Fatalf("call python symbols list tool: %v", err)
+	}
+	pySymbols := pySymbolsResult["structuredContent"].(projectingestion.SymbolList)
+	if len(pySymbols.Symbols) != 1 || pySymbols.Symbols[0].Name != "Worker" {
+		t.Fatalf("unexpected python symbols: %#v", pySymbols)
+	}
 
 	headingsResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.headings.list", marshalArgs(t, map[string]any{
 		"id":      "example-service",
@@ -251,7 +259,20 @@ func TestCallToolWithIngestion_P2DiscoveryTools(t *testing.T) {
 	}
 	filteredBody := marshalResult(t, filteredOutlineResult)
 	if strings.Contains(filteredBody, "func main") || strings.Contains(filteredBody, "package main") {
-		t.Fatalf("filtered outline leaked raw source: %s", filteredBody)
+		t.Fatalf("filtered outline included source without opt-in: %s", filteredBody)
+	}
+	textOutlineResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.file.outline", marshalArgs(t, map[string]any{
+		"id":                 "example-service",
+		"file_id":            goFiles.Files[0].ID,
+		"include_chunk_text": true,
+		"max_chunk_bytes":    24,
+	}))
+	if err != nil {
+		t.Fatalf("call text outline tool: %v", err)
+	}
+	textBody := marshalResult(t, textOutlineResult)
+	if !strings.Contains(textBody, "package main") {
+		t.Fatalf("expected opt-in outline source text: %s", textBody)
 	}
 }
 
@@ -288,9 +309,10 @@ func newIngestionServices(t *testing.T) (*projectregistry.Registry, *projectregi
 	t.Helper()
 	root := t.TempDir()
 	for name, content := range map[string]string{
-		"cmd/main.go":   "package main\nfunc main() {}\n",
-		"docs/guide.md": "# Guide\n\n## Setup\n",
-		"web/app.ts":    "export class Widget {}\nexport const load = () => true\n",
+		"cmd/main.go":    "package main\nfunc main() {}\n",
+		"docs/guide.md":  "# Guide\n\n## Setup\n",
+		"web/app.ts":     "export class Widget {}\nexport const load = () => true\n",
+		"scripts/app.py": "import os\nclass Worker:\n    pass\n",
 	} {
 		fullPath := filepath.Join(root, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {

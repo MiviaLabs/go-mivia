@@ -57,6 +57,26 @@ export const Widget = () => <section />;
 	assertSymbol(t, result.Symbols, SymbolKindFunction, "Widget", "", "", 7, 7)
 }
 
+func TestTreeSitterPythonExtractsSymbols(t *testing.T) {
+	result := parseWithExtractor(t, newTreeSitterPythonExtractor(), "src/app.py", []byte(`
+import os
+from package.module import Client
+
+class Service:
+    def run(self):
+        return True
+
+def build_service():
+    return Service()
+`))
+
+	assertSymbol(t, result.Symbols, SymbolKindImport, "os", "os", "", 2, 2)
+	assertSymbol(t, result.Symbols, SymbolKindImport, "package.module", "package.module", "", 3, 3)
+	assertSymbol(t, result.Symbols, SymbolKindClass, "Service", "", "", 5, 7)
+	assertSymbol(t, result.Symbols, SymbolKindFunction, "run", "", "", 6, 7)
+	assertSymbol(t, result.Symbols, SymbolKindFunction, "build_service", "", "", 9, 10)
+}
+
 func TestBadTypeScriptSyntaxRecordsParseError(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -85,6 +105,7 @@ func TestTreeSitterExtractorLifecycleValidation(t *testing.T) {
 		newTreeSitterJavaScriptExtractor(),
 		newTreeSitterTypeScriptExtractor(),
 		newTreeSitterTSXExtractor(),
+		newTreeSitterPythonExtractor(),
 	} {
 		if err := extractor.Validate(); err != nil {
 			t.Fatalf("validate %s: %v", extractor.Name(), err)

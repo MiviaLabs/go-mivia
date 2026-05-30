@@ -258,13 +258,15 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		return toolResult(headings), err
 	case "projects.file.outline", "projects_file_outline":
 		var input struct {
-			ID              string          `json:"id"`
-			FileID          string          `json:"file_id"`
-			Kind            string          `json:"kind,omitempty"`
-			NamePrefix      string          `json:"name_prefix,omitempty"`
-			SymbolPageSize  int             `json:"symbol_page_size,omitempty"`
-			SymbolPageToken string          `json:"symbol_page_token,omitempty"`
-			Meta            json.RawMessage `json:"_meta,omitempty"`
+			ID               string          `json:"id"`
+			FileID           string          `json:"file_id"`
+			Kind             string          `json:"kind,omitempty"`
+			NamePrefix       string          `json:"name_prefix,omitempty"`
+			SymbolPageSize   int             `json:"symbol_page_size,omitempty"`
+			SymbolPageToken  string          `json:"symbol_page_token,omitempty"`
+			IncludeChunkText bool            `json:"include_chunk_text,omitempty"`
+			MaxChunkBytes    int             `json:"max_chunk_bytes,omitempty"`
+			Meta             json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
@@ -278,6 +280,8 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 				NamePrefix: input.NamePrefix,
 			},
 			SymbolPagination: projectingestion.Pagination{PageSize: input.SymbolPageSize, PageToken: input.SymbolPageToken},
+			IncludeChunkText: input.IncludeChunkText,
+			MaxChunkBytes:    input.MaxChunkBytes,
 		})
 		return toolResult(outline), err
 	default:
@@ -431,12 +435,14 @@ func ingestionToolDefinitions() []map[string]any {
 			"title":       "Get Project File Outline",
 			"description": "Fetch bounded file metadata, headings, symbols, and chunk ids without full chunk text.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":                map[string]any{"type": "string", "minLength": 1},
-				"file_id":           map[string]any{"type": "string", "minLength": 1},
-				"kind":              map[string]any{"type": "string"},
-				"name_prefix":       map[string]any{"type": "string"},
-				"symbol_page_size":  map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxPageSize},
-				"symbol_page_token": map[string]any{"type": "string"},
+				"id":                 map[string]any{"type": "string", "minLength": 1},
+				"file_id":            map[string]any{"type": "string", "minLength": 1},
+				"kind":               map[string]any{"type": "string"},
+				"name_prefix":        map[string]any{"type": "string"},
+				"symbol_page_size":   map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxPageSize},
+				"symbol_page_token":  map[string]any{"type": "string"},
+				"include_chunk_text": map[string]any{"type": "boolean"},
+				"max_chunk_bytes":    map[string]any{"type": "integer", "minimum": 1},
 			}, []string{"id", "file_id"}),
 		},
 	}

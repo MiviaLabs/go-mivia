@@ -11,6 +11,7 @@ import (
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_c_sharp "github.com/tree-sitter/tree-sitter-c-sharp/bindings/go"
 	tree_sitter_javascript "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
+	tree_sitter_python "github.com/tree-sitter/tree-sitter-python/bindings/go"
 	tree_sitter_typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
@@ -19,6 +20,7 @@ const (
 	ExtractorTreeSitterTypeScript ExtractorName = "treesitter-typescript"
 	ExtractorTreeSitterTSX        ExtractorName = "treesitter-tsx"
 	ExtractorTreeSitterCSharp     ExtractorName = "treesitter-csharp"
+	ExtractorTreeSitterPython     ExtractorName = "treesitter-python"
 )
 
 //go:embed queries/javascript.scm
@@ -32,6 +34,9 @@ var tsxQuery string
 
 //go:embed queries/csharp.scm
 var csharpQuery string
+
+//go:embed queries/python.scm
+var pythonQuery string
 
 type treeSitterExtractor struct {
 	name         string
@@ -61,6 +66,18 @@ func newTreeSitterCSharpExtractor() Extractor {
 		query:      csharpQuery,
 		languageFunc: func() *tree_sitter.Language {
 			return tree_sitter.NewLanguage(tree_sitter_c_sharp.Language())
+		},
+	}
+}
+
+func newTreeSitterPythonExtractor() Extractor {
+	return treeSitterExtractor{
+		name:       string(ExtractorTreeSitterPython),
+		version:    extractorVersionOne,
+		extensions: extensionSet(".py", ".pyw"),
+		query:      pythonQuery,
+		languageFunc: func() *tree_sitter.Language {
+			return tree_sitter.NewLanguage(tree_sitter_python.Language())
 		},
 	}
 }
@@ -160,6 +177,8 @@ func (extractor treeSitterExtractor) Parse(ctx context.Context, relative string,
 	var symbols []Symbol
 	if extractor.name == string(ExtractorTreeSitterCSharp) {
 		symbols = extractCSharpSymbols(root, content)
+	} else if extractor.name == string(ExtractorTreeSitterPython) {
+		symbols = extractPythonSymbols(root, content)
 	} else {
 		symbols = extractJavaScriptFamilySymbols(root, content)
 	}
@@ -291,6 +310,75 @@ func csharpImportSymbolFromNode(node *tree_sitter.Node, content []byte) (Symbol,
 		Kind:       SymbolKindImport,
 		Name:       name,
 		ImportPath: name,
+		StartLine:  int(node.StartPosition().Row) + 1,
+		EndLine:    int(node.EndPosition().Row) + 1,
+	}, true
+}
+
+func extractPythonSymbols(root *tree_sitter.Node, content []byte) []Symbol {
+	if root == nil {
+		return nil
+	}
+	var symbols []Symbol
+	var visit func(node *tree_sitter.Node)
+	visit = func(node *tree_sitter.Node) {
+		if node == nil {
+			return
+		}
+		switch node.Kind() {
+		case "import_statement", "import_from_statement":
+			if symbol, ok := pythonImportSymbolFromNode(node, content); ok {
+				symbols = append(symbols, symbol)
+			}
+		case "function_definition":
+			if symbol, ok := namedSymbolFromNode(node, content, SymbolKindFunction); ok {
+				symbols = append(symbols, symbol)
+			}
+		case "class_definition":
+			if symbol, ok := namedSymbolFromNode(node, content, SymbolKindClass); ok {
+				symbols = append(symbols, symbol)
+			}
+		}
+		childCursor := node.Walk()
+		defer childCursor.Close()
+		for _, child := range node.NamedChildren(childCursor) {
+			child := child
+			visit(&child)
+		}
+	}
+	visit(root)
+	return symbols
+}
+
+func pythonImportSymbolFromNode(node *tree_sitter.Node, content []byte) (Symbol, bool) {
+	value := strings.TrimSpace(node.Utf8Text(content))
+	if value == "" {
+		return Symbol{}, false
+	}
+	name := value
+	importPath := value
+	if strings.HasPrefix(value, "from ") {
+		rest := strings.TrimSpace(strings.TrimPrefix(value, "from "))
+		if idx := strings.Index(rest, " import "); idx >= 0 {
+			importPath = strings.TrimSpace(rest[:idx])
+			name = importPath
+		}
+	} else if strings.HasPrefix(value, "import ") {
+		rest := strings.TrimSpace(strings.TrimPrefix(value, "import "))
+		first := strings.Split(rest, ",")[0]
+		first = strings.TrimSpace(first)
+		if fields := strings.Fields(first); len(fields) > 0 {
+			importPath = fields[0]
+			name = fields[0]
+		}
+	}
+	if name == "" {
+		return Symbol{}, false
+	}
+	return Symbol{
+		Kind:       SymbolKindImport,
+		Name:       name,
+		ImportPath: importPath,
 		StartLine:  int(node.StartPosition().Row) + 1,
 		EndLine:    int(node.EndPosition().Row) + 1,
 	}, true

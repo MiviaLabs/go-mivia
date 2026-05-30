@@ -443,7 +443,7 @@ func (store *GraphStore) GetFileOutline(ctx context.Context, project projectregi
 	if err != nil {
 		return FileOutline{}, err
 	}
-	chunks, err := store.listOutlineChunks(ctx, project, fileID, Pagination{PageSize: MaxPageSize})
+	chunks, err := store.listOutlineChunks(ctx, project, fileID, Pagination{PageSize: MaxPageSize}, options.IncludeChunkText, effectiveMaxChunkBytes(project, options.MaxChunkBytes))
 	if err != nil {
 		return FileOutline{}, err
 	}
@@ -456,7 +456,7 @@ func (store *GraphStore) GetFileOutline(ctx context.Context, project projectregi
 	}, nil
 }
 
-func (store *GraphStore) listOutlineChunks(ctx context.Context, project projectregistry.Project, fileID string, pagination Pagination) ([]OutlineChunkMetadata, error) {
+func (store *GraphStore) listOutlineChunks(ctx context.Context, project projectregistry.Project, fileID string, pagination Pagination, includeText bool, maxChunkBytes int) ([]OutlineChunkMetadata, error) {
 	nodes, err := store.graph.ListNodes(ctx, "ContentChunk", map[string]string{
 		"project_id":   project.ID,
 		"repo_file_id": fileID,
@@ -478,7 +478,7 @@ func (store *GraphStore) listOutlineChunks(ctx context.Context, project projectr
 	}
 	chunks := make([]OutlineChunkMetadata, 0, len(window))
 	for _, node := range window {
-		chunk, err := outlineChunkMetadataFromNode(node)
+		chunk, err := outlineChunkMetadataFromNode(node, includeText, maxChunkBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -687,12 +687,12 @@ func chunkMetadataFromNode(node ladybug.Node, maxChunkBytes int) (ChunkMetadata,
 	}, nil
 }
 
-func outlineChunkMetadataFromNode(node ladybug.Node) (OutlineChunkMetadata, error) {
-	chunk, err := chunkMetadataFromNode(node, 0)
+func outlineChunkMetadataFromNode(node ladybug.Node, includeText bool, maxChunkBytes int) (OutlineChunkMetadata, error) {
+	chunk, err := chunkMetadataFromNode(node, maxChunkBytes)
 	if err != nil {
 		return OutlineChunkMetadata{}, err
 	}
-	return OutlineChunkMetadata{
+	outline := OutlineChunkMetadata{
 		ID:        chunk.ID,
 		FileID:    chunk.FileID,
 		ProjectID: chunk.ProjectID,
@@ -701,7 +701,12 @@ func outlineChunkMetadataFromNode(node ladybug.Node) (OutlineChunkMetadata, erro
 		EndLine:   chunk.EndLine,
 		ByteStart: chunk.ByteStart,
 		ByteEnd:   chunk.ByteEnd,
-	}, nil
+	}
+	if includeText {
+		outline.Text = chunk.Text
+		outline.TextTruncated = chunk.TextTruncated
+	}
+	return outline, nil
 }
 
 func symbolMetadataFromNode(node ladybug.Node) (SymbolMetadata, error) {
