@@ -1,10 +1,10 @@
 # Business Overview
 
 Status: Current local capability summary
-Date: 2026-05-30
+Date: 2026-05-31
 Classification: Internal; PII-prohibited
 
-`agent-server` is a local context and control service for engineers using AI agents. It gives agents a governed way to discover, search, navigate, inspect git state, and apply exact edits in approved local codebases without sending source code to external providers and without broad ad hoc filesystem scans.
+`agent-server` is a local context and control service for engineers using AI agents. It gives agents a governed way to discover, search, navigate, inspect git status/diff, and apply exact edits in approved local codebases without sending source code to external providers and without broad ad hoc filesystem scans.
 
 ## Value
 
@@ -17,7 +17,8 @@ flowchart LR
   Safety["Safety gates"]
   Graph["Local semantic graph"]
   Search["SQLite FTS and named AST search"]
-  Outcome["Faster, safer project understanding"]
+  Workspace["Governed workspace status/diff/read/edit"]
+  Outcome["Faster, safer project understanding and edits"]
 
   Engineer --> Agent
   Agent --> Server
@@ -25,8 +26,10 @@ flowchart LR
   Projects --> Safety
   Safety --> Graph
   Safety --> Search
+  Safety --> Workspace
   Graph --> Agent
   Search --> Agent
+  Workspace --> Agent
   Agent --> Outcome
   Outcome --> Engineer
 ```
@@ -51,4 +54,4 @@ The current boundary blocks public exposure, auth model changes, provider calls,
 
 ## Operating Model
 
-Agents should use MiviaLabs MCP first for indexed project context and opted-in workspace operations: project discovery, ingestion state, file discovery, chunks, search, symbols, references, calls, source, call graph, named AST search, governed git status/diff, current file read, and exact edits. Shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories. Serena remains a fallback for edit-time semantic gaps when MCP is unavailable, stale, missing the project, or lacks the needed operation.
+Agents should use MiviaLabs MCP first for indexed project context and opted-in workspace operations: project discovery, ingestion state, file discovery, chunks, search, symbols, references, calls, source, call graph, named AST search, governed git status/diff, eligible current file reads, and exact edits. Shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories. Serena remains a fallback for edit-time semantic gaps when MCP is unavailable, stale, missing the project, or lacks the needed operation.

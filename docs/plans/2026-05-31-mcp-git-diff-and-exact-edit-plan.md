@@ -1,6 +1,6 @@
 # MCP Git Diff And Exact File Edit Plan
 
-Status: Draft, source-grounded
+Status: Implemented, verified, committed as `9f53474`
 Date: 2026-05-31
 Classification: Internal; PII-prohibited
 Mode: Free-text plan; no Jira or Confluence used by repository constraint.
@@ -455,14 +455,14 @@ The plan intentionally does not add authentication. Therefore this feature must 
 
 ## 15. Acceptance Criteria
 
-- [ ] `projects.workspace.git_status` and REST equivalent return parsed, paginated status for opted-in projects without roots or raw command output.
-- [ ] `projects.workspace.git_diff` and REST equivalent return capped safe diffs only for allowed paths and withhold sensitive diffs.
-- [ ] `projects.workspace.file_read` and REST equivalent return current eligible text plus opaque edit token without content hashes.
-- [ ] `projects.workspace.file_edit` and REST equivalent apply token-guarded exact byte-span edits, reject stale/mismatched/sensitive edits, and queue path ingestion after success.
-- [ ] Workspace capabilities are disabled by default and require explicit global plus per-project opt-in.
-- [ ] MCP tools have strict schemas, dotted names, and underscore aliases.
-- [ ] OpenAPI, MCP docs, README, architecture docs, config docs, runbook, and MCP skill are updated.
-- [ ] Tests cover gating, safety, privacy leaks, diff caps, edit concurrency, stale token, exact old-text matching, denied/sensitive paths, and ingestion freshness.
+- [x] `projects.workspace.git_status` and REST equivalent return parsed, paginated status for opted-in projects without roots or raw command output.
+- [x] `projects.workspace.git_diff` and REST equivalent return capped safe diffs only for allowed paths and withhold sensitive diffs.
+- [x] `projects.workspace.file_read` and REST equivalent return current eligible text plus opaque edit token without content hashes.
+- [x] `projects.workspace.file_edit` and REST equivalent apply token-guarded exact byte-span edits, reject stale/mismatched/sensitive edits, and queue path ingestion after success.
+- [x] Workspace capabilities are disabled by default and require explicit global plus per-project opt-in.
+- [x] MCP tools have strict schemas, dotted names, and underscore aliases.
+- [x] OpenAPI, MCP docs, README, architecture docs, config docs, runbook, and MCP skill are updated.
+- [x] Tests cover gating, safety, privacy leaks, diff caps, edit concurrency, stale token, exact old-text matching, denied/sensitive paths, and ingestion freshness.
 
 ## 16. References
 

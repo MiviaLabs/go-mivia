@@ -1,7 +1,7 @@
 # Agent Context Server Guide
 
 Status: Current local guide
-Date: 2026-05-30
+Date: 2026-05-31
 Classification: Internal; PII-prohibited
 
 `agent-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, symbol navigation, call graph views, named AST structural search, and governed workspace git/read/edit operations, and keeps source understanding inside the developer machine.
@@ -13,24 +13,25 @@ Classification: Internal; PII-prohibited
 | Business stakeholders | Less agent guesswork, faster engineering work, and a clear local-only data boundary. |
 | Local users | A simple way to ask what projects are configured, indexed, and safe for agents to inspect. |
 | Engineers | One local service for project config, ingestion, run status, REST checks, and MCP tools. |
-| AI agents | Token-efficient project discovery, file IDs, symbols, chunks, references, calls, FTS search, AST catalog search, and ingestion state without broad scans. |
+| AI agents | Token-efficient project discovery, file IDs, symbols, chunks, references, calls, FTS search, AST catalog search, ingestion state, and governed workspace status/diff/read/edit without broad scans. |
 
 ## How It Works
 
 ```mermaid
 flowchart LR
   Engineer["Engineer"] --> Agent["AI agent"]
-  Agent --> MCP["MiviaLabs MCP first"]
+  Agent --> MCP["MiviaLabs MCP first for indexed context and opted-in workspace"]
   Agent --> Serena["Serena fallback"]
   Agent --> Shell["Shell"]
   MCP --> Indexed["Indexed files, chunks, symbols, refs, calls, AST"]
+  MCP --> Workspace["Governed workspace status/diff/read/edit"]
   MCP --> Server["agent-server on localhost"]
   Server --> Project["Approved local project"]
   Server --> Store["Local graph, SQLite, and FTS"]
   Store --> MCP
   Indexed --> Agent
   Serena --> Code["Edit-time semantic gaps"]
-  Shell --> Disk["Tests, build, logs, process control, generated files"]
+  Shell --> Disk["Tests, build, logs, process control, generated files, arbitrary commands, non-opted-in repos"]
   Code --> Agent
   Disk --> Agent
   MCP --> Agent
@@ -50,9 +51,12 @@ MiviaLabs MCP, Serena, and shell are complementary:
 | Find indexed files or symbols without scanning the repo in chat | MCP |
 | Run routine text, path, symbol, reference, call, or named AST discovery | MCP `projects.search.*` |
 | Read a bounded chunk by opaque file ID | MCP |
+| Check governed git status/diff for an opted-in workspace | MCP workspace tools |
+| Read or exact-edit an eligible current file in an opted-in workspace | MCP workspace tools |
 | Check whether indexed data is fresh enough for the task | MCP or REST |
-| Verify a code change, test, build, log, or git state | Shell |
-| Inspect a file just created in the working tree | Shell, then MCP after live ingestion catches up; Serena only for edit-time semantic gaps |
+| Verify tests, builds, logs, process control, generated files, or non-opted-in repo state | Shell |
+| Inspect a file just created or changed in an opted-in workspace | MCP `projects.workspace.file_read` by safe relative path |
+| Inspect a file outside MCP eligibility or project opt-in | Shell |
 
 ## Surfaces
 
@@ -157,6 +161,6 @@ The server is local-only. It must not expose:
 - Skipped sensitive content or matched sensitive text.
 - Public network access, provider calls, embeddings, vectors, crawling, production deployment, symlink traversal, or auth-model changes.
 
-Use stable opaque IDs from REST or MCP responses. Discovery order for agents is project metadata, latest ingestion status, indexed `projects.search.*` for routine text/path/symbol/reference/call discovery, `projects.search.ast.queries` before named AST search, small `projects.files.list` or `projects.symbols.list`/`projects.headings.list`, `projects.file.outline`, then semantic symbol tools or bounded chunks as needed. Live ingestion is the normal freshness path for edited files; poll latest ingestion status when search results look unexpected. Use Serena for editor-aware symbol navigation and edits, and `ast-grep` only for structural search or rewrite/codemod tasks not yet covered by indexed search. For common navigation, use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph`; use `resolution_status` and confidence metadata instead of assuming unresolved dynamic-language edges are precise. For large files, call `projects.file.outline` with `kind`, `name_prefix`, `name_contains`, `symbol_page_size`, and `symbol_page_token`. If source context is needed in the same response, set `include_chunk_text=true` with a small `max_chunk_bytes`, use `projects.search.text` for capped snippets, or call `projects.symbol.source` with `max_source_bytes` for one eligible symbol. Do not infer or expose local root paths.
+Use stable opaque IDs from REST or MCP responses. Discovery order for agents is project metadata, latest ingestion status, indexed `projects.search.*` for routine text/path/symbol/reference/call discovery, `projects.search.ast.queries` before named AST search, small `projects.files.list` or `projects.symbols.list`/`projects.headings.list`, `projects.file.outline`, then semantic symbol tools or bounded chunks as needed. For opted-in workspaces, use `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, and `projects.workspace.file_edit` before shell for status, diff, eligible current file reads, and exact edits. Live ingestion is the normal freshness path after workspace edits; poll latest ingestion status when search results look unexpected. Use Serena only for edit-time semantic gaps that MCP cannot answer, and `ast-grep` only for structural search or rewrite/codemod tasks not yet covered by indexed search. For common navigation, use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph`; use `resolution_status` and confidence metadata instead of assuming unresolved dynamic-language edges are precise. For large files, call `projects.file.outline` with `kind`, `name_prefix`, `name_contains`, `symbol_page_size`, and `symbol_page_token`. If source context is needed in the same response, set `include_chunk_text=true` with a small `max_chunk_bytes`, use `projects.search.text` for capped snippets, or call `projects.symbol.source` with `max_source_bytes` for one eligible symbol. Do not infer or expose local root paths.
 
 Promoted AST metadata covers Go stdlib AST, Tree-sitter JS/JSX/TS/TSX, Tree-sitter C#, Tree-sitter Python, Markdown headings, and lightweight infrastructure/config metadata. Go and Python also store indexed reference/call metadata; unsupported or ambiguous edges remain unresolved rather than guessed. TS/JS/TSX/JSX, C#, and Python have no regex fallback; parse failures are file-local `parse_error` skips and full scans continue. Sensitive, denied, absent, parse-error, and other skipped files stay unreachable from chunk/source/search responses. Oversized files are reported only as safe coverage gaps through metadata such as `skipped_reason=file_too_large`, size, and ingestion reason counts; source text, chunks, snippets, content hashes, skipped sensitive text, raw parser/SQLite/FTS/Tree-sitter errors, roots, secrets, PII, raw prompts, and provider payloads are not returned. Extractor cache entries store symbols/headings/references/calls only and are removed for skipped or absent files.

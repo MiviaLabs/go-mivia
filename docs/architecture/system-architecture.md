@@ -1,7 +1,7 @@
 # System Architecture
 
 Status: Bootstrap current-state
-Date: 2026-05-30
+Date: 2026-05-31
 Classification: Internal; PII-prohibited
 Owners: Engineering owner TBD; Security/DPO required before PII, public exposure, provider, retention, or production decisions.
 
@@ -20,7 +20,7 @@ Local task plans and research plans are not stable technical documentation. Do n
 - Project ingestion services: `internal/projectingestion` handles eligible local source safety gates, chunking, promoted AST extraction, extractor cache, SQLite FTS5 search indexing, bounded graph writes, SQLite run/file state, bounded REST/MCP query views, fair scheduling, live watcher orchestration, parallel full-scan file workers, search-index repair, startup recovery for interrupted runs, and periodic running-progress persistence.
 - Project workspace services: `internal/projectworkspace` handles governed git status/diff, current eligible file reads with opaque edit tokens, and token-guarded exact byte-span edits for explicitly opted-in workspaces.
 - Stores: Ladybug graph abstraction for graph data; SQLite for local app configuration, ingestion state, extractor cache, and FTS-backed governed search. Project graph storage can be persistent or process-local per project.
-- Boundary: localhost-only by default; no approved production deployment, public API exposure, auth model, live provider, external crawling, embedding provider, vector dimension, or PII processing.
+- Boundary: localhost-only by default; no approved production deployment, public API exposure, auth model, live provider, external crawling, embedding provider, vector dimension, arbitrary shell endpoint, raw patch upload, git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool, or PII processing.
 
 ## Component And Data Flow
 

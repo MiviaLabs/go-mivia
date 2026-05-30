@@ -32,7 +32,7 @@ flowchart TB
   AST["Named AST search catalog"]
   Queries["Bounded query APIs: files, chunks, outlines, FTS search, symbol source, refs, callers, callees, call graph, AST search"]
   Workspace["Workspace APIs: governed git status/diff, current file read, token-guarded exact edit"]
-  Boundaries["No public exposure, auth changes, provider calls, crawling, embeddings, raw DB queries, PII, secrets, roots, prompts, or skipped sensitive content"]
+  Boundaries["No public exposure, auth changes, provider calls, crawling, embeddings, raw DB queries, arbitrary shell, raw patches, git write tools, PII, secrets, roots, prompts, or skipped sensitive content"]
 
   Client --> Server
   Server --> REST
@@ -104,21 +104,26 @@ flowchart LR
   Graph["Local semantic graph"]
   SQLite["Local run, file, config, and cache state"]
   APIs["REST and MCP bounded APIs"]
+  Workspace["Governed workspace status/diff/read/edit"]
 
   Engineer --> Agent
   Agent --> Server
   Server --> APIs
+  APIs --> Workspace
   APIs --> Scheduler
   Scheduler --> Projects
   Projects --> Safety
+  Safety --> Workspace
   Safety --> Graph
   Safety --> SQLite
   Graph --> APIs
   SQLite --> APIs
+  Workspace --> APIs
   APIs --> Agent
 
   Graph --> Value["Faster, safer codebase understanding"]
   SQLite --> Value
+  Workspace --> Value
   Value --> Engineer
 ```
 
@@ -143,10 +148,11 @@ What this enables:
 ```mermaid
 flowchart TB
   Agent["AI agent"]
-  MCP["agent-server MCP first for indexed context"]
+  MCP["agent-server MCP first for indexed context and opted-in workspace"]
   Serena["Serena fallback or edit-time semantic tools"]
-  Shell["Shell for git, tests, logs, and current disk"]
+  Shell["Shell for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repos"]
   Source["Source files"]
+  Workspace["Governed workspace status/diff/read/edit"]
   Indexed["Files, chunks, symbols, refs, calls, AST matches"]
   Registry["Project registry and ingestion status"]
   Ingestion["Live and manual content graph ingestion"]
@@ -156,7 +162,9 @@ flowchart TB
   Agent --> MCP
   MCP --> Registry
   MCP --> Ingestion
+  MCP --> Workspace
   Ingestion --> Guardrails
+  Workspace --> Guardrails
   Guardrails --> Store
   Store --> Indexed
   Indexed --> MCP
@@ -185,14 +193,14 @@ sequenceDiagram
   participant Store as Local graph, SQLite, and FTS
 
   Engineer->>Agent: Ask for implementation or review
-  Agent->>Server: Query project metadata, ingestion state, search, symbols, refs, calls, AST, and bounded chunks
+  Agent->>Server: Query project metadata, ingestion state, search, symbols, refs, calls, AST, bounded chunks, and workspace status/diff/read/edit
   Server->>Project: Read only eligible local files after safety gates
   Server->>Store: Persist approved local metadata and graph context
   Store-->>Server: Return bounded context
   Server-->>Agent: Return governed project context
   Agent->>Serena: Fall back for edit-time semantic gaps
   Serena-->>Agent: Return precise code structure when needed
-  Agent->>Shell: Verify git, tests, build, logs, and current disk
+  Agent->>Shell: Verify tests, build, logs, process control, generated files, and non-opted-in repo state
   Shell-->>Agent: Return runtime evidence
   Agent-->>Engineer: Make a smaller, verified change with clearer evidence
 ```
@@ -307,13 +315,13 @@ wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored
 wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivialabs-agent-server
 ```
 
-The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, and `projects.file.outline`. Codex Desktop may show underscore-normalized callable names such as `tasks_create` or `projects_search_text`; the server accepts both forms.
+The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, and `projects.workspace.file_edit`. Codex Desktop may show underscore-normalized callable names such as `tasks_create`, `projects_search_text`, or `projects_workspace_file_read`; the server accepts both forms.
 
 ## Local Project APIs
 
 Project APIs are for engineer local computers only. REST exposes project list/get, manual digest, manual ingestion, ingestion status, file, chunk, and symbol metadata endpoints under `/api/v1`; MCP exposes matching project tools and resources.
 
-Use REST for scripts, smoke tests, and direct local checks. Use MCP first when an agent client needs indexed project context. Use Serena only for edit-time semantic gaps that MCP cannot answer, and use shell for git/tests/logs/current disk state.
+Use REST for scripts, smoke tests, and direct local checks. Use MCP first when an agent client needs indexed project context or opted-in workspace status/diff/read/edit. Use Serena only for edit-time semantic gaps that MCP cannot answer, and use shell for tests, builds, logs, process control, generated-file verification, arbitrary commands, and non-opted-in repos.
 
 | Capability | REST | MCP |
 | --- | --- | --- |
@@ -338,8 +346,12 @@ Use REST for scripts, smoke tests, and direct local checks. Use MCP first when a
 | Symbol callers | `GET /api/v1/projects/{id}/symbols/{symbol_id}/callers` | `projects.symbol.callers` |
 | Symbol callees | `GET /api/v1/projects/{id}/symbols/{symbol_id}/callees` | `projects.symbol.callees` |
 | Symbol call graph | `GET /api/v1/projects/{id}/symbols/{symbol_id}/call-graph` | `projects.symbol.call_graph` |
+| Governed git status | `GET /api/v1/projects/{id}/workspace/git/status` | `projects.workspace.git_status` |
+| Governed git diff | `GET /api/v1/projects/{id}/workspace/git/diff` | `projects.workspace.git_diff` |
+| Current eligible file read | `GET /api/v1/projects/{id}/workspace/files/read` | `projects.workspace.file_read` |
+| Exact token-guarded file edit | `POST /api/v1/projects/{id}/workspace/files/edit` | `projects.workspace.file_edit` |
 
-Manual content graph ingestion and search index repair are asynchronous. `POST /ingestion-runs`, `POST /search-index/rebuild`, `projects.ingest`, and `projects.search_index.rebuild` submit work through the fair scheduler and return queued run metadata quickly; clients poll by `run_id` or check latest status before relying on indexed data. Agents should use the indexed search tools first for routine text, path, symbol, reference, and call discovery; live ingestion is the normal freshness path for edited files. Use Serena for editor-aware symbol navigation and edits, and `ast-grep` only for structural search or rewrite work not covered by indexed search. Full task, research, project, REST, and MCP method mapping is in the [agent context server guide](docs/agent-context-guide.md).
+Manual content graph ingestion and search index repair are asynchronous. `POST /ingestion-runs`, `POST /search-index/rebuild`, `projects.ingest`, and `projects.search_index.rebuild` submit work through the fair scheduler and return queued run metadata quickly; clients poll by `run_id` or check latest status before relying on indexed data. Agents should use indexed search tools first for routine text, path, symbol, reference, and call discovery, and workspace tools first for opted-in git status/diff/current eligible file reads/exact edits. Live ingestion is the normal freshness path after workspace edits. Use Serena only for edit-time semantic gaps that MCP cannot answer, and `ast-grep` only for structural search or rewrite work not covered by indexed search. Full task, research, project, REST, and MCP method mapping is in the [agent context server guide](docs/agent-context-guide.md).
 
 Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/agent-server.local.toml`. The committed schema example is [configs/agent-server.example.toml](configs/agent-server.example.toml).
 

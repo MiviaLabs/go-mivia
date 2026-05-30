@@ -1,6 +1,6 @@
 ---
 name: mivialabs-agent-mcp
-description: Use with the MiviaLabs localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, search, bounded chunks, symbol navigation, call graph, or named AST discovery.
+description: Use with the MiviaLabs localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, search, bounded chunks, symbol navigation, call graph, named AST discovery, governed git status/diff, current eligible file reads, or exact token-guarded edits.
 ---
 
 # MiviaLabs Agent MCP
@@ -9,7 +9,7 @@ Portable skill. It can be copied into any repository indexed by a running MiviaL
 
 ## Mandatory Use Gate
 
-When a MiviaLabs MCP server is available for the target project, agents must use it for indexed project context before broad shell scans, manual file walking, or chat-only assumptions.
+When a MiviaLabs MCP server is available for the target project, agents must use it before broad shell scans, manual file walking, Serena indexed-context discovery, or chat-only assumptions for every capability listed below.
 
 Mandatory MCP-first surfaces:
 
@@ -20,7 +20,7 @@ Mandatory MCP-first surfaces:
 - Any task asking what the indexed project graph knows or whether local content graph ingestion is current.
 - Planning and review context that can be answered from indexed files, symbols, references, calls, headings, or chunks.
 
-Do not bypass MCP with raw database queries, absolute root inspection, or broad shell scans when an MCP tool can answer the indexed-context question. Use shell only for current git/disk/runtime facts, tests, build output, logs, generated files, and edits not yet ingested.
+Do not bypass MCP with raw database queries, absolute root inspection, broad shell scans, ad hoc `git status`/`git diff`, or direct file reads/edits when an MCP tool can answer or perform the operation. Use shell only for tests, build output, logs, process control, generated-file verification, arbitrary commands outside the MCP contract, non-opted-in repositories, and files not yet eligible or allowed by MCP.
 
 Do not use Serena for indexed project discovery, symbol overview/listing, references, call sites, search, bounded source chunks, or planning context when MiviaLabs MCP is available and current.
 
@@ -50,8 +50,9 @@ If unclear:
 
 1. Indexed code structure -> MiviaLabs MCP.
 2. Indexed project discovery -> MCP.
-3. Current local state -> shell.
-4. Non-indexed semantic gap -> Serena or host semantic tool, with the fallback stated.
+3. Governed git status/diff/read/edit for opted-in projects -> MCP workspace tools.
+4. Tests, builds, logs, process control, generated files, arbitrary commands, or non-opted-in repos -> shell.
+5. Non-indexed semantic gap -> Serena or host semantic tool, with the fallback stated.
 
 ## Safe Sequence
 
@@ -69,7 +70,7 @@ Use the smallest sequence that answers the task:
 9. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
 10. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `name_contains`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph` for common indexed navigation. Use `projects.symbol.source` only when bounded eligible source text for one symbol is needed. Set `include_chunk_text=true` with a small `max_chunk_bytes` when eligible file source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
 11. Switch to Serena or another semantic tool only if MCP cannot answer the required symbol body, reference, call, or edit-planning question.
-12. Use `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, and `projects.workspace.file_edit` only for opted-in workspaces. `file_edit` requires the opaque token from a current file read and queues path ingestion after successful non-dry-run edits.
+12. For opted-in workspaces, use `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, and `projects.workspace.file_edit` before shell for status, diff, eligible current file reads, and exact edits. `file_edit` requires the opaque token from a current file read and queues path ingestion after successful non-dry-run edits.
 13. Switch to shell for tests, builds, logs, generated files, process control, arbitrary commands, and non-opted-in repos. For edited indexed files, rely on live ingestion as the normal freshness path and poll latest ingestion status when search results look unexpected.
 
 If MCP is down, the project is not listed, or live ingestion cannot provide current indexed context, say so and fall back to Serena or another semantic tool plus shell. Do not invent MCP facts.
