@@ -40,15 +40,23 @@ type fileStorageConfig struct {
 }
 
 type fileIngestionConfig struct {
-	ContentGraphEnabled   *bool   `toml:"content_graph_enabled"`
-	LiveUpdatesEnabled    *bool   `toml:"live_updates_enabled"`
-	DebounceInterval      *string `toml:"debounce_interval"`
-	MaxFileBytes          *int64  `toml:"max_file_bytes"`
-	MaxChunkBytes         *int    `toml:"max_chunk_bytes"`
-	QueueDepth            *int    `toml:"queue_depth"`
-	WorkerCount           *int    `toml:"worker_count"`
-	InitialScanOnStart    *bool   `toml:"initial_scan_on_start"`
-	SensitiveMarkerPolicy string  `toml:"sensitive_marker_policy"`
+	ContentGraphEnabled      *bool   `toml:"content_graph_enabled"`
+	LiveUpdatesEnabled       *bool   `toml:"live_updates_enabled"`
+	ASTExtractionEnabled     *bool   `toml:"ast_extraction_enabled"`
+	ExtractorCacheEnabled    *bool   `toml:"extractor_cache_enabled"`
+	DebounceInterval         *string `toml:"debounce_interval"`
+	MaxFileBytes             *int64  `toml:"max_file_bytes"`
+	MaxChunkBytes            *int    `toml:"max_chunk_bytes"`
+	QueueDepth               *int    `toml:"queue_depth"`
+	WorkerCount              *int    `toml:"worker_count"`
+	GlobalWorkerCount        *int    `toml:"global_worker_count"`
+	PerProjectWorkerLimit    *int    `toml:"per_project_worker_limit"`
+	LivePathPriority         *bool   `toml:"live_path_priority"`
+	MaxWatchedDirectoryCount *int    `toml:"max_watched_directory_count"`
+	TaskWarnAfter            *string `toml:"task_warn_after"`
+	FullScanBatchSize        *int    `toml:"full_scan_batch_size"`
+	InitialScanOnStart       *bool   `toml:"initial_scan_on_start"`
+	SensitiveMarkerPolicy    string  `toml:"sensitive_marker_policy"`
 }
 
 type fileProjectConfig struct {
@@ -139,6 +147,23 @@ func (cfg fileIngestionConfig) validate() error {
 	if cfg.WorkerCount != nil && *cfg.WorkerCount <= 0 {
 		return fmt.Errorf("ingestion.worker_count must be positive")
 	}
+	if cfg.GlobalWorkerCount != nil && *cfg.GlobalWorkerCount <= 0 {
+		return fmt.Errorf("ingestion.global_worker_count must be positive")
+	}
+	if cfg.PerProjectWorkerLimit != nil && *cfg.PerProjectWorkerLimit <= 0 {
+		return fmt.Errorf("ingestion.per_project_worker_limit must be positive")
+	}
+	if cfg.MaxWatchedDirectoryCount != nil && *cfg.MaxWatchedDirectoryCount < 0 {
+		return fmt.Errorf("ingestion.max_watched_directory_count must be non-negative")
+	}
+	if cfg.TaskWarnAfter != nil {
+		if _, err := time.ParseDuration(*cfg.TaskWarnAfter); err != nil {
+			return fmt.Errorf("ingestion.task_warn_after must be a valid duration")
+		}
+	}
+	if cfg.FullScanBatchSize != nil && (*cfg.FullScanBatchSize <= 0 || *cfg.FullScanBatchSize > 5000) {
+		return fmt.Errorf("ingestion.full_scan_batch_size must be positive and <= 5000")
+	}
 	if cfg.SensitiveMarkerPolicy != "" && cfg.SensitiveMarkerPolicy != sensitiveMarkerPolicySkipFile {
 		return fmt.Errorf("ingestion.sensitive_marker_policy must be %q", sensitiveMarkerPolicySkipFile)
 	}
@@ -181,6 +206,12 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		if cfg.Ingestion.LiveUpdatesEnabled != nil {
 			base.Ingestion.LiveUpdatesEnabled = *cfg.Ingestion.LiveUpdatesEnabled
 		}
+		if cfg.Ingestion.ASTExtractionEnabled != nil {
+			base.Ingestion.ASTExtractionEnabled = *cfg.Ingestion.ASTExtractionEnabled
+		}
+		if cfg.Ingestion.ExtractorCacheEnabled != nil {
+			base.Ingestion.ExtractorCacheEnabled = *cfg.Ingestion.ExtractorCacheEnabled
+		}
 		var err error
 		if base.Ingestion.DebounceInterval, err = applyDuration("ingestion.debounce_interval", cfg.Ingestion.DebounceInterval, base.Ingestion.DebounceInterval); err != nil {
 			return Config{}, err
@@ -196,6 +227,26 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		}
 		if cfg.Ingestion.WorkerCount != nil {
 			base.Ingestion.WorkerCount = *cfg.Ingestion.WorkerCount
+		}
+		if cfg.Ingestion.GlobalWorkerCount != nil {
+			base.Ingestion.GlobalWorkerCount = *cfg.Ingestion.GlobalWorkerCount
+		} else if cfg.Ingestion.WorkerCount != nil {
+			base.Ingestion.GlobalWorkerCount = *cfg.Ingestion.WorkerCount
+		}
+		if cfg.Ingestion.PerProjectWorkerLimit != nil {
+			base.Ingestion.PerProjectWorkerLimit = *cfg.Ingestion.PerProjectWorkerLimit
+		}
+		if cfg.Ingestion.LivePathPriority != nil {
+			base.Ingestion.LivePathPriority = *cfg.Ingestion.LivePathPriority
+		}
+		if cfg.Ingestion.MaxWatchedDirectoryCount != nil {
+			base.Ingestion.MaxWatchedDirectoryCount = *cfg.Ingestion.MaxWatchedDirectoryCount
+		}
+		if base.Ingestion.TaskWarnAfter, err = applyDuration("ingestion.task_warn_after", cfg.Ingestion.TaskWarnAfter, base.Ingestion.TaskWarnAfter); err != nil {
+			return Config{}, err
+		}
+		if cfg.Ingestion.FullScanBatchSize != nil {
+			base.Ingestion.FullScanBatchSize = *cfg.Ingestion.FullScanBatchSize
 		}
 		if cfg.Ingestion.InitialScanOnStart != nil {
 			base.Ingestion.InitialScanOnStart = *cfg.Ingestion.InitialScanOnStart

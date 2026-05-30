@@ -59,6 +59,14 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Metadata digest | `projects.digest` |
 | Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.headings.list`, `projects.file.outline` |
 
+## Indexed Metadata Contract
+
+- Promoted AST metadata currently covers Go stdlib AST, Tree-sitter JS/JSX/TS/TSX, Tree-sitter C#, Markdown headings, and lightweight infrastructure/config metadata.
+- TS/JS/TSX/JSX and C# have no regex fallback. If a promoted grammar or embedded query cannot initialize, server startup fails with `extractor_initialization_failed`.
+- Per-file parser failures are file-local `parse_error` skips; full scans continue.
+- Extractor cache rows store only symbols and headings keyed by hashes, extractor name, and version. Skipped or absent files must not have cache rows or content hashes.
+- Full scans run through bounded graph write batches and the fair scheduler; live path events have priority over full-scan continuation.
+
 Resources:
 
 - `mivialabs://tasks/{id}`

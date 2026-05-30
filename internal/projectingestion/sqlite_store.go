@@ -3,6 +3,7 @@ package projectingestion
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 )
 
 var ErrRunNotFound = errors.New("ingestion run not found")
+var ErrExtractorCacheMiss = errors.New("extractor cache miss")
 
 type FileStateFilter struct {
 	Status        FileStatus
@@ -26,6 +28,18 @@ type SQLiteStore struct {
 
 func NewSQLiteStore(db *sql.DB) *SQLiteStore {
 	return &SQLiteStore{db: db}
+}
+
+type ExtractorCacheEntry struct {
+	ProjectID        string
+	RelativePathHash string
+	ContentSHA256    string
+	ExtractorName    string
+	ExtractorVersion string
+	Symbols          []Symbol
+	Headings         []Heading
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
@@ -206,6 +220,92 @@ func (store *SQLiteStore) SaveFileState(ctx context.Context, state FileState) er
 		formatTime(state.LastIngestedAt),
 		string(state.SkippedReason),
 	)
+	return err
+}
+
+func (store *SQLiteStore) GetExtractorCache(ctx context.Context, projectID string, relativePathHash string, contentSHA256 string, extractorName string, extractorVersion string) (ExtractorCacheEntry, error) {
+	row := store.db.QueryRowContext(ctx, `SELECT
+		project_id,
+		relative_path_hash,
+		content_sha256,
+		extractor_name,
+		extractor_version,
+		symbols_json,
+		headings_json,
+		created_at,
+		updated_at
+	FROM project_extractor_cache
+	WHERE project_id = ?
+		AND relative_path_hash = ?
+		AND content_sha256 = ?
+		AND extractor_name = ?
+		AND extractor_version = ?`,
+		projectID,
+		relativePathHash,
+		contentSHA256,
+		extractorName,
+		extractorVersion,
+	)
+	entry, err := scanExtractorCacheEntry(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ExtractorCacheEntry{}, ErrExtractorCacheMiss
+	}
+	return entry, err
+}
+
+func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry ExtractorCacheEntry) error {
+	if entry.ProjectID == "" || entry.RelativePathHash == "" || entry.ContentSHA256 == "" || entry.ExtractorName == "" || entry.ExtractorVersion == "" {
+		return ErrInvalidInput
+	}
+	symbolsJSON, err := json.Marshal(entry.Symbols)
+	if err != nil {
+		return err
+	}
+	headingsJSON, err := json.Marshal(entry.Headings)
+	if err != nil {
+		return err
+	}
+	createdAt := entry.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = entry.UpdatedAt
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	updatedAt := entry.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = createdAt
+	}
+	_, err = store.db.ExecContext(ctx, `INSERT INTO project_extractor_cache (
+		project_id,
+		relative_path_hash,
+		content_sha256,
+		extractor_name,
+		extractor_version,
+		symbols_json,
+		headings_json,
+		created_at,
+		updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(project_id, relative_path_hash, content_sha256, extractor_name, extractor_version) DO UPDATE SET
+		symbols_json = excluded.symbols_json,
+		headings_json = excluded.headings_json,
+		updated_at = excluded.updated_at`,
+		entry.ProjectID,
+		entry.RelativePathHash,
+		entry.ContentSHA256,
+		entry.ExtractorName,
+		entry.ExtractorVersion,
+		string(symbolsJSON),
+		string(headingsJSON),
+		formatTime(createdAt),
+		formatTime(updatedAt),
+	)
+	return err
+}
+
+func (store *SQLiteStore) DeleteExtractorCacheForFile(ctx context.Context, projectID string, relativePathHash string) error {
+	_, err := store.db.ExecContext(ctx, `DELETE FROM project_extractor_cache WHERE project_id = ? AND relative_path_hash = ?`, projectID, relativePathHash)
 	return err
 }
 
@@ -413,6 +513,42 @@ func scanFileState(scanner fileStateScanner) (FileState, error) {
 	}
 	state.SkippedReason = SkipReason(skippedReason)
 	return state, nil
+}
+
+func scanExtractorCacheEntry(scanner runScanner) (ExtractorCacheEntry, error) {
+	var entry ExtractorCacheEntry
+	var symbolsJSON string
+	var headingsJSON string
+	var createdAt string
+	var updatedAt string
+	err := scanner.Scan(
+		&entry.ProjectID,
+		&entry.RelativePathHash,
+		&entry.ContentSHA256,
+		&entry.ExtractorName,
+		&entry.ExtractorVersion,
+		&symbolsJSON,
+		&headingsJSON,
+		&createdAt,
+		&updatedAt,
+	)
+	if err != nil {
+		return ExtractorCacheEntry{}, err
+	}
+	if err := json.Unmarshal([]byte(symbolsJSON), &entry.Symbols); err != nil {
+		return ExtractorCacheEntry{}, err
+	}
+	if err := json.Unmarshal([]byte(headingsJSON), &entry.Headings); err != nil {
+		return ExtractorCacheEntry{}, err
+	}
+	var parseErr error
+	if entry.CreatedAt, parseErr = parseOptionalTime(createdAt); parseErr != nil {
+		return ExtractorCacheEntry{}, parseErr
+	}
+	if entry.UpdatedAt, parseErr = parseOptionalTime(updatedAt); parseErr != nil {
+		return ExtractorCacheEntry{}, parseErr
+	}
+	return entry, nil
 }
 
 func parseOptionalTime(value string) (time.Time, error) {

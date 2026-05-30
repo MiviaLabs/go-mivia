@@ -62,11 +62,19 @@ Environment variables remain final overrides over file values:
 | `storage.sqlite_path` | No | Local ignored app-config datastore path; defaults to `data/mivialabs-config.sqlite`. |
 | `ingestion.content_graph_enabled` | No | Global content graph gate; default `false`. |
 | `ingestion.live_updates_enabled` | No | Global live watcher gate; requires content graph enabled; default `false`. |
+| `ingestion.ast_extraction_enabled` | No | Must remain `true` when content graph is enabled; default `true`. |
+| `ingestion.extractor_cache_enabled` | No | Must remain `true` when AST extraction is enabled; default `true`. |
 | `ingestion.debounce_interval` | No | Go duration for live event coalescing; default `2s`. |
 | `ingestion.max_file_bytes` | No | Global source file cap for ingestion; project value can override. |
 | `ingestion.max_chunk_bytes` | No | Global chunk cap for ingestion and query responses; project value can override. |
 | `ingestion.queue_depth` | No | Positive live update queue size. |
-| `ingestion.worker_count` | No | Positive live update worker count. |
+| `ingestion.worker_count` | No | Backward-compatible live submitter worker count. |
+| `ingestion.global_worker_count` | No | Positive global scheduler worker count; default `2`. |
+| `ingestion.per_project_worker_limit` | No | Positive per-project scheduler limit, no larger than global worker count; default `1`. |
+| `ingestion.live_path_priority` | No | Must remain `true` while live updates are enabled; default `true`. |
+| `ingestion.full_scan_batch_size` | No | Positive full-scan graph write batch size up to `5000`; default `500`. |
+| `ingestion.max_watched_directory_count` | No | Optional watched-directory cap per project; `0` means unlimited. |
+| `ingestion.task_warn_after` | No | Positive duration before slow live ingestion task warning; default `30s`. |
 | `ingestion.initial_scan_on_start` | No | Optional startup rescan for live projects; default `false`. |
 | `ingestion.sensitive_marker_policy` | No | Only `skip_file` is accepted. |
 | `projects.id` | Yes | Stable project slug. |
@@ -140,7 +148,11 @@ The server exposes bounded project metadata on localhost only:
 - MCP tools: `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.ingestion_status`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.headings.list`, `projects.file.outline`
 - MCP resources: `mivialabs://projects/{id}`, `mivialabs://projects/{id}/digest-runs/{run_id}`, `mivialabs://projects/{id}/files/{file_id}`, `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`, `mivialabs://projects/{id}/files/{file_id}/outline`, `mivialabs://projects/{id}/symbols/{symbol_id}`
 
-Project responses omit local root paths and datastore paths by default. Digest runs are manual and metadata-only: graph writes store relative path, extension/language hint, file size, mtime, and a metadata fingerprint. Content graph ingestion stores eligible local source chunks only after all gates pass. Skipped sensitive files are represented only by reason codes and hash-only state where required.
+Project responses omit local root paths and datastore paths by default. Digest runs are manual and metadata-only: graph writes store relative path, extension/language hint, file size, mtime, and a metadata fingerprint. Content graph ingestion stores eligible local source chunks only after all gates pass. AST metadata is promoted for Go, JS, JSX, TS, TSX, C#, Markdown, and lightweight infrastructure/config files. TS/JS/TSX/JSX and C# parsing is mandatory Tree-sitter; startup validation fails with `extractor_initialization_failed` if a promoted grammar or query cannot initialize.
+
+Extractor cache data is stored in SQLite table `project_extractor_cache`. It stores symbols and headings only; it does not store raw source, AST text, chunks, absolute paths, skipped sensitive data, or matched sensitive text. Cache rows are keyed by project, relative-path hash, content hash, extractor name, and extractor version, and are removed when a file becomes skipped or absent.
+
+Full scans commit graph writes in bounded windows. Manual and live ingestion submissions run through the scheduler, which prioritizes live path events over full-scan continuation and enforces global and per-project worker limits.
 
 File listing accepts optional `status`, `extension`, `path_prefix`, `skipped_reason`, `present`, `modified_since`, `page_size`, and `page_token` filters. Extension values may be `go` or `.go`; matching is case-insensitive and invalidates whitespace or path separators.
 

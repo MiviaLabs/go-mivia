@@ -16,7 +16,7 @@ func RegisterRoutes(mux *http.ServeMux, registry *projectregistry.Registry, dige
 	RegisterRoutesWithIngestion(mux, registry, digest, nil)
 }
 
-func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion *projectingestion.Service) {
+func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API) {
 	mux.Handle("GET /api/v1/projects", listProjectsHandler(registry))
 	mux.Handle("GET /api/v1/projects/{id}", getProjectHandler(registry))
 	mux.Handle("POST /api/v1/projects/{id}/digest-runs", createDigestRunHandler(digest))
@@ -58,21 +58,21 @@ func createDigestRunHandler(digest *projectregistry.DigestService) http.Handler 
 	})
 }
 
-func createIngestionRunHandler(ingestion *projectingestion.Service) http.Handler {
+func createIngestionRunHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		run, err := ingestion.IngestProject(r.Context(), strings.TrimSpace(r.PathValue("id")), projectingestion.TriggerManual)
 		writeIngestionResult(w, projectingestion.MetadataForRun(run), err, http.StatusCreated)
 	})
 }
 
-func getIngestionRunHandler(ingestion *projectingestion.Service) http.Handler {
+func getIngestionRunHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		run, err := ingestion.RunMetadata(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("run_id")))
 		writeIngestionResult(w, run, err, http.StatusOK)
 	})
 }
 
-func listFilesHandler(ingestion *projectingestion.Service) http.Handler {
+func listFilesHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		filter, err := fileFilter(r)
 		if err != nil {
@@ -89,7 +89,7 @@ func listFilesHandler(ingestion *projectingestion.Service) http.Handler {
 	})
 }
 
-func listChunksHandler(ingestion *projectingestion.Service) http.Handler {
+func listChunksHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		maxChunkBytes, err := positiveIntQuery(r, "max_chunk_bytes")
 		if err != nil {
@@ -112,7 +112,7 @@ func listChunksHandler(ingestion *projectingestion.Service) http.Handler {
 	})
 }
 
-func getFileHandler(ingestion *projectingestion.Service) http.Handler {
+func getFileHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		file, err := ingestion.GetFile(
 			r.Context(),
@@ -123,7 +123,7 @@ func getFileHandler(ingestion *projectingestion.Service) http.Handler {
 	})
 }
 
-func listSymbolsHandler(ingestion *projectingestion.Service) http.Handler {
+func listSymbolsHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pagination, err := paginationFromRequest(r)
 		if err != nil {
@@ -140,7 +140,7 @@ func listSymbolsHandler(ingestion *projectingestion.Service) http.Handler {
 	})
 }
 
-func listHeadingsHandler(ingestion *projectingestion.Service) http.Handler {
+func listHeadingsHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pagination, err := paginationFromRequest(r)
 		if err != nil {
@@ -152,7 +152,7 @@ func listHeadingsHandler(ingestion *projectingestion.Service) http.Handler {
 	})
 }
 
-func getFileOutlineHandler(ingestion *projectingestion.Service) http.Handler {
+func getFileOutlineHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		outline, err := ingestion.GetFileOutline(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("file_id")))
 		writeIngestionResult(w, outline, err, http.StatusOK)

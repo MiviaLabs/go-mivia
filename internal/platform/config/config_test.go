@@ -89,11 +89,18 @@ sqlite_path = "data/from-file.sqlite"
 [ingestion]
 content_graph_enabled = false
 live_updates_enabled = false
+ast_extraction_enabled = true
+extractor_cache_enabled = true
 debounce_interval = "3s"
 max_file_bytes = 2097152
 max_chunk_bytes = 8192
 queue_depth = 64
 worker_count = 1
+full_scan_batch_size = 250
+per_project_worker_limit = 1
+live_path_priority = true
+max_watched_directory_count = 32
+task_warn_after = "15s"
 initial_scan_on_start = false
 sensitive_marker_policy = "skip_file"
 
@@ -154,6 +161,15 @@ sensitive_marker_policy = "skip_file"
 	if cfg.Ingestion.QueueDepth != 32 {
 		t.Fatalf("expected env ingestion queue depth override, got %d", cfg.Ingestion.QueueDepth)
 	}
+	if cfg.Ingestion.FullScanBatchSize != 250 {
+		t.Fatalf("expected file full scan batch size, got %d", cfg.Ingestion.FullScanBatchSize)
+	}
+	if cfg.Ingestion.GlobalWorkerCount != 1 || cfg.Ingestion.PerProjectWorkerLimit != 1 {
+		t.Fatalf("expected scheduler worker settings, got %+v", cfg.Ingestion)
+	}
+	if cfg.Ingestion.MaxWatchedDirectoryCount != 32 || cfg.Ingestion.TaskWarnAfter != 15*time.Second {
+		t.Fatalf("expected watcher/task settings, got %+v", cfg.Ingestion)
+	}
 	if len(cfg.Projects) != 1 {
 		t.Fatalf("expected one project, got %d", len(cfg.Projects))
 	}
@@ -173,11 +189,18 @@ func TestLoad_EnvOverridesIngestion_ReturnsMergedConfig(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("MIVIA_INGESTION_CONTENT_GRAPH_ENABLED", "true")
 	t.Setenv("MIVIA_INGESTION_LIVE_UPDATES_ENABLED", "true")
+	t.Setenv("MIVIA_INGESTION_AST_EXTRACTION_ENABLED", "true")
+	t.Setenv("MIVIA_INGESTION_EXTRACTOR_CACHE_ENABLED", "true")
 	t.Setenv("MIVIA_INGESTION_DEBOUNCE_INTERVAL", "4s")
 	t.Setenv("MIVIA_INGESTION_MAX_FILE_BYTES", "1024")
 	t.Setenv("MIVIA_INGESTION_MAX_CHUNK_BYTES", "512")
 	t.Setenv("MIVIA_INGESTION_QUEUE_DEPTH", "8")
 	t.Setenv("MIVIA_INGESTION_WORKER_COUNT", "3")
+	t.Setenv("MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT", "2")
+	t.Setenv("MIVIA_INGESTION_LIVE_PATH_PRIORITY", "true")
+	t.Setenv("MIVIA_INGESTION_MAX_WATCHED_DIRECTORY_COUNT", "9")
+	t.Setenv("MIVIA_INGESTION_TASK_WARN_AFTER", "7s")
+	t.Setenv("MIVIA_INGESTION_FULL_SCAN_BATCH_SIZE", "100")
 	t.Setenv("MIVIA_INGESTION_INITIAL_SCAN_ON_START", "true")
 	t.Setenv("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY", "skip_file")
 
@@ -195,8 +218,14 @@ func TestLoad_EnvOverridesIngestion_ReturnsMergedConfig(t *testing.T) {
 	if cfg.Ingestion.MaxFileBytes != 1024 || cfg.Ingestion.MaxChunkBytes != 512 {
 		t.Fatalf("expected ingestion byte overrides: %+v", cfg.Ingestion)
 	}
-	if cfg.Ingestion.QueueDepth != 8 || cfg.Ingestion.WorkerCount != 3 {
+	if cfg.Ingestion.QueueDepth != 8 || cfg.Ingestion.WorkerCount != 3 || cfg.Ingestion.GlobalWorkerCount != 3 || cfg.Ingestion.PerProjectWorkerLimit != 2 {
 		t.Fatalf("expected queue/worker overrides: %+v", cfg.Ingestion)
+	}
+	if cfg.Ingestion.MaxWatchedDirectoryCount != 9 || cfg.Ingestion.TaskWarnAfter != 7*time.Second {
+		t.Fatalf("expected watcher/task env overrides: %+v", cfg.Ingestion)
+	}
+	if cfg.Ingestion.FullScanBatchSize != 100 {
+		t.Fatalf("expected full scan batch size override, got %d", cfg.Ingestion.FullScanBatchSize)
 	}
 	if !cfg.Ingestion.InitialScanOnStart {
 		t.Fatal("expected initial scan override")
@@ -258,11 +287,19 @@ func clearConfigEnv(t *testing.T) {
 		"MIVIA_SHUTDOWN_TIMEOUT",
 		"MIVIA_INGESTION_CONTENT_GRAPH_ENABLED",
 		"MIVIA_INGESTION_LIVE_UPDATES_ENABLED",
+		"MIVIA_INGESTION_AST_EXTRACTION_ENABLED",
+		"MIVIA_INGESTION_EXTRACTOR_CACHE_ENABLED",
 		"MIVIA_INGESTION_DEBOUNCE_INTERVAL",
 		"MIVIA_INGESTION_MAX_FILE_BYTES",
 		"MIVIA_INGESTION_MAX_CHUNK_BYTES",
 		"MIVIA_INGESTION_QUEUE_DEPTH",
 		"MIVIA_INGESTION_WORKER_COUNT",
+		"MIVIA_INGESTION_GLOBAL_WORKER_COUNT",
+		"MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT",
+		"MIVIA_INGESTION_LIVE_PATH_PRIORITY",
+		"MIVIA_INGESTION_MAX_WATCHED_DIRECTORY_COUNT",
+		"MIVIA_INGESTION_TASK_WARN_AFTER",
+		"MIVIA_INGESTION_FULL_SCAN_BATCH_SIZE",
 		"MIVIA_INGESTION_INITIAL_SCAN_ON_START",
 		"MIVIA_INGESTION_SENSITIVE_MARKER_POLICY",
 	} {

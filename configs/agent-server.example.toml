@@ -20,11 +20,19 @@ sqlite_path = "data/mivialabs-config.sqlite"
 # any runtime may store source content, source-content hashes, or live state.
 content_graph_enabled = false
 live_updates_enabled = false
+ast_extraction_enabled = true
+extractor_cache_enabled = true
 debounce_interval = "2s"
 max_file_bytes = 1048576
 max_chunk_bytes = 16384
 queue_depth = 128
 worker_count = 2
+global_worker_count = 2
+per_project_worker_limit = 1
+live_path_priority = true
+full_scan_batch_size = 500
+max_watched_directory_count = 0
+task_warn_after = "30s"
 initial_scan_on_start = false
 sensitive_marker_policy = "skip_file"
 

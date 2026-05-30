@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 6
+const Version = 7
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -105,6 +105,22 @@ var statements = []string{
 		updated_at TEXT NOT NULL,
 		FOREIGN KEY(project_id) REFERENCES configured_projects(id)
 	)`,
+	`CREATE TABLE IF NOT EXISTS project_extractor_cache (
+		project_id TEXT NOT NULL,
+		relative_path_hash TEXT NOT NULL,
+		content_sha256 TEXT NOT NULL,
+		extractor_name TEXT NOT NULL,
+		extractor_version TEXT NOT NULL,
+		symbols_json TEXT NOT NULL DEFAULT '[]',
+		headings_json TEXT NOT NULL DEFAULT '[]',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY(project_id, relative_path_hash, content_sha256, extractor_name, extractor_version),
+		FOREIGN KEY(project_id) REFERENCES configured_projects(id),
+		CHECK (content_sha256 != ''),
+		CHECK (extractor_name != ''),
+		CHECK (extractor_version != '')
+	)`,
 	`CREATE INDEX IF NOT EXISTS idx_project_file_ingestion_state_project_status_path
 		ON project_file_ingestion_state(project_id, status, relative_path_hash)`,
 	`CREATE INDEX IF NOT EXISTS idx_project_file_ingestion_state_project_hash
@@ -115,6 +131,10 @@ var statements = []string{
 		ON project_file_ingestion_state(project_id, relative_path_safe, relative_path)`,
 	`CREATE INDEX IF NOT EXISTS idx_project_file_ingestion_state_project_modified
 		ON project_file_ingestion_state(project_id, modified_at, relative_path_hash)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_extractor_cache_project_file
+		ON project_extractor_cache(project_id, relative_path_hash)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_extractor_cache_project_extractor
+		ON project_extractor_cache(project_id, extractor_name, extractor_version)`,
 }
 
 const versionStatement = `INSERT INTO schema_versions (component, version)

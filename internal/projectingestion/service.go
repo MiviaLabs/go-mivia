@@ -35,23 +35,46 @@ type stateStore interface {
 	ListFileStates(context.Context, string, FileStateFilter) ([]FileState, error)
 	ListFileStatesPage(context.Context, string, FileStateFilter, Pagination) ([]FileState, string, error)
 	GetFileStateByHash(context.Context, string, string) (FileState, error)
+	GetExtractorCache(context.Context, string, string, string, string, string) (ExtractorCacheEntry, error)
+	SaveExtractorCache(context.Context, ExtractorCacheEntry) error
+	DeleteExtractorCacheForFile(context.Context, string, string) error
+}
+
+type API interface {
+	IngestProject(context.Context, string, Trigger) (Run, error)
+	IngestPath(context.Context, string, string, Trigger) (Run, error)
+	RunMetadata(context.Context, string, string) (RunMetadata, error)
+	ListFiles(context.Context, string, FileStateFilter, Pagination) (FileList, error)
+	GetFile(context.Context, string, string) (FileMetadata, error)
+	ListChunks(context.Context, string, string, Pagination, int) (ChunkList, error)
+	GetChunk(context.Context, string, string, string, int) (ChunkMetadata, error)
+	ListSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
+	GetSymbol(context.Context, string, string) (SymbolMetadata, error)
+	ListHeadings(context.Context, string, string, Pagination) (HeadingList, error)
+	GetFileOutline(context.Context, string, string) (FileOutline, error)
 }
 
 type Service struct {
-	registry *projectregistry.Registry
-	graph    *GraphStore
-	state    stateStore
-	now      func() time.Time
-	newID    func(projectregistry.Project, time.Time) string
+	registry              *projectregistry.Registry
+	graph                 *GraphStore
+	state                 stateStore
+	extractors            *ExtractorRegistry
+	extractorCacheEnabled bool
+	fullScanBatchSize     int
+	now                   func() time.Time
+	newID                 func(projectregistry.Project, time.Time) string
 }
 
 func NewService(registry *projectregistry.Registry, graph *GraphStore, state stateStore) *Service {
 	return &Service{
-		registry: registry,
-		graph:    graph,
-		state:    state,
-		now:      func() time.Time { return time.Now().UTC() },
-		newID:    defaultRunID,
+		registry:              registry,
+		graph:                 graph,
+		state:                 state,
+		extractors:            NewDefaultExtractorRegistry(),
+		extractorCacheEnabled: true,
+		fullScanBatchSize:     500,
+		now:                   func() time.Time { return time.Now().UTC() },
+		newID:                 defaultRunID,
 	}
 }
 
@@ -71,9 +94,17 @@ func (svc *Service) withGraphBatch(ctx context.Context, fn func(*Service) (Run, 
 }
 
 func (svc *Service) IngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
-	return svc.withGraphBatch(ctx, func(svc *Service) (Run, error) {
-		return svc.ingestProject(ctx, projectID, trigger)
-	})
+	return svc.ingestProject(ctx, projectID, trigger)
+}
+
+func (svc *Service) SetFullScanBatchSize(size int) {
+	if size > 0 {
+		svc.fullScanBatchSize = size
+	}
+}
+
+func (svc *Service) SetExtractorCacheEnabled(enabled bool) {
+	svc.extractorCacheEnabled = enabled
 }
 
 func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
@@ -226,6 +257,9 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 			LastIngestedAt:   run.StartedAt,
 		}
 		if err := svc.state.SaveFileState(ctx, state); err != nil {
+			return run, err
+		}
+		if err := svc.state.DeleteExtractorCacheForFile(ctx, project.ID, state.RelativePathHash); err != nil {
 			return run, err
 		}
 		if err := svc.graph.PutFileState(ctx, project, run, state); err != nil {
@@ -601,7 +635,8 @@ func (svc *Service) ingestExistingFile(ctx context.Context, project projectregis
 		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
 	}
 
-	symbols, headings, err := parseEligible(relative, content)
+	extractor := svc.extractors.ExtractorFor(relative)
+	result, err := svc.extractEligible(ctx, project, relative, hashValue(relative), chunkSet.ContentSHA256, extractor, content, run.StartedAt)
 	if err != nil {
 		state := svc.skippedState(project, relative, SkipReasonParseError, int64(len(content)), info.ModTime().UTC(), true, run.StartedAt)
 		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
@@ -610,14 +645,59 @@ func (svc *Service) ingestExistingFile(ctx context.Context, project projectregis
 	if err := svc.state.SaveFileState(ctx, state); err != nil {
 		return FileState{}, nil, nil, nil, err
 	}
-	if err := svc.graph.PutEligibleFile(ctx, project, run, state, chunkSet.Chunks, symbols, headings); err != nil {
+	if err := svc.graph.PutEligibleFile(ctx, project, run, state, chunkSet.Chunks, result.Symbols, result.Headings); err != nil {
 		return FileState{}, nil, nil, nil, err
 	}
-	return state, chunkSet.Chunks, symbols, headings, nil
+	return state, chunkSet.Chunks, result.Symbols, result.Headings, nil
+}
+
+func (svc *Service) extractEligible(ctx context.Context, project projectregistry.Project, relative string, relativePathHash string, contentSHA256 string, extractor Extractor, content []byte, eventAt time.Time) (ExtractorResult, error) {
+	if extractor == nil {
+		return ExtractorResult{}, nil
+	}
+	if svc.extractorCacheEnabled && contentSHA256 != "" {
+		entry, err := svc.state.GetExtractorCache(ctx, project.ID, relativePathHash, contentSHA256, extractor.Name(), extractor.Version())
+		if err == nil {
+			return ExtractorResult{
+				ExtractorName:    entry.ExtractorName,
+				ExtractorVersion: entry.ExtractorVersion,
+				Symbols:          entry.Symbols,
+				Headings:         entry.Headings,
+			}, nil
+		}
+		if err != nil && !errors.Is(err, ErrExtractorCacheMiss) {
+			return ExtractorResult{}, err
+		}
+	}
+	result, err := extractor.Parse(ctx, relative, content)
+	if err != nil {
+		return ExtractorResult{}, err
+	}
+	result.ExtractorName = extractor.Name()
+	result.ExtractorVersion = extractor.Version()
+	if svc.extractorCacheEnabled && contentSHA256 != "" {
+		if err := svc.state.SaveExtractorCache(ctx, ExtractorCacheEntry{
+			ProjectID:        project.ID,
+			RelativePathHash: relativePathHash,
+			ContentSHA256:    contentSHA256,
+			ExtractorName:    result.ExtractorName,
+			ExtractorVersion: result.ExtractorVersion,
+			Symbols:          result.Symbols,
+			Headings:         result.Headings,
+			CreatedAt:        eventAt,
+			UpdatedAt:        eventAt,
+		}); err != nil {
+			return ExtractorResult{}, err
+		}
+	}
+	return result, nil
 }
 
 func (svc *Service) saveSkipped(ctx context.Context, project projectregistry.Project, run Run, state FileState, skipDir bool) error {
 	if err := svc.state.SaveFileState(ctx, state); err != nil {
+		return err
+	}
+	if err := svc.state.DeleteExtractorCacheForFile(ctx, project.ID, state.RelativePathHash); err != nil {
 		return err
 	}
 	if err := svc.graph.PutSkippedFile(ctx, project, run, state); err != nil {
@@ -647,6 +727,9 @@ func (svc *Service) tombstoneMissingFiles(ctx context.Context, project projectre
 		state.LastEventAt = run.StartedAt
 		state.LastIngestedAt = run.StartedAt
 		if err := svc.state.SaveFileState(ctx, state); err != nil {
+			return err
+		}
+		if err := svc.state.DeleteExtractorCacheForFile(ctx, project.ID, state.RelativePathHash); err != nil {
 			return err
 		}
 		if err := svc.graph.putFileState(ctx, project, run, state); err != nil {
@@ -718,47 +801,8 @@ func fileStateFromSafety(project projectregistry.Project, originalRelative strin
 }
 
 func parseEligible(relative string, content []byte) ([]Symbol, []Heading, error) {
-	extension := strings.ToLower(path.Ext(relative))
-	base := strings.ToLower(path.Base(relative))
-	switch base {
-	case "dockerfile", "containerfile":
-		symbols, err := ParseDockerfileSymbols(content)
-		return symbols, nil, err
-	case "makefile":
-		symbols, err := ParseMakefileSymbols(content)
-		return symbols, nil, err
-	case "openapi.yaml", "openapi.yml", "openapi.json", "swagger.yaml", "swagger.yml", "swagger.json":
-		symbols, err := ParseOpenAPIPathSymbols(content)
-		return symbols, nil, err
-	}
-	switch extension {
-	case ".go":
-		symbols, err := ParseGoFile(relative, content)
-		return symbols, nil, err
-	case ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts":
-		symbols, err := ParseJavaScriptLikeSymbols(content)
-		return symbols, nil, err
-	case ".md", ".markdown":
-		headings, err := ParseMarkdownHeadings(content)
-		return nil, headings, err
-	case ".dockerfile":
-		symbols, err := ParseDockerfileSymbols(content)
-		return symbols, nil, err
-	case ".mk":
-		symbols, err := ParseMakefileSymbols(content)
-		return symbols, nil, err
-	case ".sql":
-		symbols, err := ParseSQLMigrationSymbols(relative, content)
-		return symbols, nil, err
-	case ".json":
-		symbols, err := ParseJSONTopLevelKeys(content)
-		return symbols, nil, err
-	case ".yaml", ".yml", ".toml":
-		symbols, err := ParseConfigTopLevelKeys(content)
-		return symbols, nil, err
-	default:
-		return nil, nil, nil
-	}
+	result, err := NewDefaultExtractorRegistry().Extract(context.Background(), relative, content)
+	return result.Symbols, result.Headings, err
 }
 
 func recordRunReason(run *Run, reason SkipReason) {

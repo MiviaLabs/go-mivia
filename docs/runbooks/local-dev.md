@@ -55,8 +55,8 @@ Do not put secrets, tokens, PII, raw prompts, raw source content, provider paylo
 For a longer-running WSL process launched from Windows, build a binary first:
 
 ```powershell
-wsl -d Ubuntu --cd /home/mac/mivialabs/mivialabs-agents-monorepo env PATH=/home/mac/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin go build -o /tmp/mivialabs-agent-server ./cmd/agent-server
-wsl -d Ubuntu --cd /home/mac/mivialabs/mivialabs-agents-monorepo env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: /tmp/mivialabs-agent-server
+wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored-runtime-dir>/mivialabs-agent-server ./cmd/agent-server
+wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivialabs-agent-server
 ```
 
 Keep that terminal open while testing. If you need a detached process, launch `wsl.exe` from Windows process management and redirect logs to a local temp file.
@@ -181,9 +181,17 @@ Live updates are disabled unless both gates are enabled:
 [ingestion]
 content_graph_enabled = true
 live_updates_enabled = true
+ast_extraction_enabled = true
+extractor_cache_enabled = true
 debounce_interval = "2s"
 queue_depth = 128
 worker_count = 2
+global_worker_count = 2
+per_project_worker_limit = 1
+live_path_priority = true
+full_scan_batch_size = 500
+max_watched_directory_count = 0
+task_warn_after = "30s"
 initial_scan_on_start = false
 
 [[projects]]
@@ -192,7 +200,9 @@ update_policy = "live"
 graph_storage = "persistent"
 ```
 
-The watcher uses `github.com/fsnotify/fsnotify` and watches directories, not individual files. It registers each eligible directory because filesystem notifications are not recursive. Overflow or full queues trigger a project rescan. Manual ingestion remains available as fallback.
+The watcher uses `github.com/fsnotify/fsnotify` and watches directories, not individual files. It registers each eligible directory because filesystem notifications are not recursive. Overflow or full queues trigger a scheduled project rescan. The scheduler prioritizes live path events over full-scan continuation and enforces global and per-project worker limits. Manual ingestion remains available as fallback and runs through the same scheduler.
+
+Promoted AST extraction validates at startup when content graph ingestion is enabled. Supported promoted extractors are Go stdlib AST, Tree-sitter JavaScript/TypeScript/TSX, Tree-sitter C#, Markdown headings, and lightweight infrastructure/config metadata. Tree-sitter failures must be fixed as dependency or query initialization issues; do not re-enable regex fallback for TS/JS/TSX/JSX or C#.
 
 Verified local smoke:
 
@@ -223,6 +233,8 @@ Do not commit `lib-ladybug/` or local database files.
 - Persistent graph open failure: check the `storage.ladybug_path` directory is writable, local, ignored, and not inside an included project path unless excluded.
 - Live watcher misses events: run manual ingestion and check whether the project is on a network, mounted, or special filesystem.
 - Live watcher reports `no space left on device` or `too many open files`: reduce included directories or increase OS watch limits.
+- Tree-sitter build fails under WSL: verify CGO-capable toolchain support and the pinned Tree-sitter module versions, then rerun the package tests. Do not fall back to regex extraction for promoted languages.
+- `extractor_initialization_failed`: treat as a startup validation failure for the named extractor. Check grammar/query dependency setup; do not log or paste local source content while debugging.
 - MCP 406: include both `application/json` and `text/event-stream` in `Accept`.
 - MCP 403: use a localhost or loopback `Origin`.
 - Codex MCP tool returns `-32602 invalid tool arguments`: confirm the server binary includes support for `_meta`, JSON-string arguments, and underscore tool aliases.

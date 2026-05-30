@@ -17,6 +17,9 @@ type OrchestratorOptions struct {
 	DebounceInterval         time.Duration
 	QueueDepth               int
 	WorkerCount              int
+	GlobalWorkerCount        int
+	PerProjectWorkerLimit    int
+	LivePathPriority         bool
 	InitialScanOnStart       bool
 	MaxWatchedDirectoryCount int
 	TaskWarnAfter            time.Duration
@@ -31,6 +34,7 @@ type ingestionRunner interface {
 type Orchestrator struct {
 	registry       *projectregistry.Registry
 	ingestion      ingestionRunner
+	scheduler      *Scheduler
 	options        OrchestratorOptions
 	logger         *slog.Logger
 	watcherFactory WatcherFactory
@@ -91,12 +95,31 @@ func NewOrchestrator(registry *projectregistry.Registry, ingestion ingestionRunn
 	if options.WorkerCount <= 0 {
 		options.WorkerCount = 1
 	}
+	if options.GlobalWorkerCount <= 0 {
+		options.GlobalWorkerCount = options.WorkerCount
+	}
+	if options.PerProjectWorkerLimit <= 0 {
+		options.PerProjectWorkerLimit = 1
+	}
+	if !options.LivePathPriority {
+		options.LivePathPriority = true
+	}
 	if options.TaskWarnAfter <= 0 {
 		options.TaskWarnAfter = 30 * time.Second
+	}
+	scheduler, ok := ingestion.(*Scheduler)
+	if !ok {
+		scheduler = NewScheduler(ingestion, SchedulerOptions{
+			QueueDepth:            options.QueueDepth,
+			GlobalWorkerCount:     options.GlobalWorkerCount,
+			PerProjectWorkerLimit: options.PerProjectWorkerLimit,
+			LivePathPriority:      options.LivePathPriority,
+		})
 	}
 	return &Orchestrator{
 		registry:       registry,
 		ingestion:      ingestion,
+		scheduler:      scheduler,
 		options:        options,
 		logger:         options.Logger,
 		watcherFactory: NewFSNotifyWatcher,
@@ -130,6 +153,10 @@ func (orchestrator *Orchestrator) Start(ctx context.Context) error {
 		return fmt.Errorf("%w: orchestrator dependencies are required", ErrUnsupportedIngest)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
+	if err := orchestrator.scheduler.Start(runCtx); err != nil {
+		cancel()
+		return err
+	}
 	startedWatchers := make([]*projectWatcher, 0)
 	for _, project := range orchestrator.registry.List() {
 		if !project.Enabled || project.DigestMode != projectregistry.DigestModeContentGraph || project.UpdatePolicy != projectregistry.UpdatePolicyLive {
@@ -191,6 +218,8 @@ func (orchestrator *Orchestrator) Start(ctx context.Context) error {
 			slog.Int("failed_directory_count", watchStats.failed),
 			slog.Int("queue_depth", orchestrator.options.QueueDepth),
 			slog.Int("worker_count", orchestrator.options.WorkerCount),
+			slog.Int("global_worker_count", orchestrator.options.GlobalWorkerCount),
+			slog.Int("per_project_worker_limit", orchestrator.options.PerProjectWorkerLimit),
 			slog.Duration("debounce_interval", orchestrator.options.DebounceInterval),
 			slog.Bool("initial_scan_on_start", orchestrator.options.InitialScanOnStart),
 		)
@@ -227,6 +256,7 @@ func (orchestrator *Orchestrator) Stop(ctx context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
+	_ = orchestrator.scheduler.Stop(ctx)
 	orchestrator.logInfo("live ingestion orchestrator stopping")
 	done := make(chan struct{})
 	go func() {
@@ -346,7 +376,7 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 		case task := <-projectWatcher.tasks:
 			if task.rescan {
 				orchestrator.logInfo("live ingestion rescan started", slog.String("project_id", projectWatcher.project.ID))
-				run, err := orchestrator.ingestion.IngestProject(ctx, projectWatcher.project.ID, TriggerLive)
+				run, err := orchestrator.scheduler.SubmitFullScan(ctx, projectWatcher.project.ID, TriggerLive)
 				if err != nil {
 					orchestrator.logWarn("live ingestion rescan failed",
 						slog.String("project_id", projectWatcher.project.ID),
@@ -374,7 +404,7 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 				slog.String("relative_path_hash", pathHash),
 			)
 			done := orchestrator.monitorLiveTask(ctx, projectWatcher.project.ID, pathHash, "path", startedAt)
-			run, err := orchestrator.ingestion.IngestPath(ctx, projectWatcher.project.ID, task.relativePath, TriggerLive)
+			run, err := orchestrator.scheduler.SubmitPath(ctx, projectWatcher.project.ID, task.relativePath, TriggerLive)
 			close(done)
 			if err != nil {
 				orchestrator.logWarn("live ingestion path event failed",

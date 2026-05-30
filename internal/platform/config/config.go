@@ -11,21 +11,25 @@ import (
 )
 
 const (
-	defaultConfigPath                = "configs/agent-server.local.toml"
-	defaultHTTPAddr                  = "127.0.0.1:8080"
-	defaultLadybugPath               = "data/mivialabs.lbug"
-	defaultSQLitePath                = "data/mivialabs-config.sqlite"
-	defaultMaxRequestBytes           = int64(1 << 20)
-	defaultRequestTimeout            = 10 * time.Second
-	defaultReadHeaderTimeout         = 5 * time.Second
-	defaultShutdownTimeout           = 10 * time.Second
-	defaultIngestionDebounceInterval = 2 * time.Second
-	defaultIngestionMaxFileBytes     = int64(1 << 20)
-	defaultIngestionMaxChunkBytes    = 16 * 1024
-	defaultIngestionQueueDepth       = 128
-	defaultIngestionWorkerCount      = 2
-	defaultSensitiveMarkerPolicy     = "skip_file"
-	sensitiveMarkerPolicySkipFile    = "skip_file"
+	defaultConfigPath                 = "configs/agent-server.local.toml"
+	defaultHTTPAddr                   = "127.0.0.1:8080"
+	defaultLadybugPath                = "data/mivialabs.lbug"
+	defaultSQLitePath                 = "data/mivialabs-config.sqlite"
+	defaultMaxRequestBytes            = int64(1 << 20)
+	defaultRequestTimeout             = 10 * time.Second
+	defaultReadHeaderTimeout          = 5 * time.Second
+	defaultShutdownTimeout            = 10 * time.Second
+	defaultIngestionDebounceInterval  = 2 * time.Second
+	defaultIngestionMaxFileBytes      = int64(1 << 20)
+	defaultIngestionMaxChunkBytes     = 16 * 1024
+	defaultIngestionQueueDepth        = 128
+	defaultIngestionWorkerCount       = 2
+	defaultIngestionGlobalWorkerCount = 2
+	defaultIngestionPerProjectLimit   = 1
+	defaultIngestionFullScanBatchSize = 500
+	defaultIngestionTaskWarnAfter     = 30 * time.Second
+	defaultSensitiveMarkerPolicy      = "skip_file"
+	sensitiveMarkerPolicySkipFile     = "skip_file"
 )
 
 type Config struct {
@@ -42,15 +46,23 @@ type Config struct {
 }
 
 type Ingestion struct {
-	ContentGraphEnabled   bool
-	LiveUpdatesEnabled    bool
-	DebounceInterval      time.Duration
-	MaxFileBytes          int64
-	MaxChunkBytes         int
-	QueueDepth            int
-	WorkerCount           int
-	InitialScanOnStart    bool
-	SensitiveMarkerPolicy string
+	ContentGraphEnabled      bool
+	LiveUpdatesEnabled       bool
+	ASTExtractionEnabled     bool
+	ExtractorCacheEnabled    bool
+	DebounceInterval         time.Duration
+	MaxFileBytes             int64
+	MaxChunkBytes            int
+	QueueDepth               int
+	WorkerCount              int
+	GlobalWorkerCount        int
+	PerProjectWorkerLimit    int
+	LivePathPriority         bool
+	MaxWatchedDirectoryCount int
+	TaskWarnAfter            time.Duration
+	FullScanBatchSize        int
+	InitialScanOnStart       bool
+	SensitiveMarkerPolicy    string
 }
 
 type Project struct {
@@ -122,15 +134,23 @@ func defaultConfig(configPath string) Config {
 
 func defaultIngestion() Ingestion {
 	return Ingestion{
-		ContentGraphEnabled:   false,
-		LiveUpdatesEnabled:    false,
-		DebounceInterval:      defaultIngestionDebounceInterval,
-		MaxFileBytes:          defaultIngestionMaxFileBytes,
-		MaxChunkBytes:         defaultIngestionMaxChunkBytes,
-		QueueDepth:            defaultIngestionQueueDepth,
-		WorkerCount:           defaultIngestionWorkerCount,
-		InitialScanOnStart:    false,
-		SensitiveMarkerPolicy: defaultSensitiveMarkerPolicy,
+		ContentGraphEnabled:      false,
+		LiveUpdatesEnabled:       false,
+		ASTExtractionEnabled:     true,
+		ExtractorCacheEnabled:    true,
+		DebounceInterval:         defaultIngestionDebounceInterval,
+		MaxFileBytes:             defaultIngestionMaxFileBytes,
+		MaxChunkBytes:            defaultIngestionMaxChunkBytes,
+		QueueDepth:               defaultIngestionQueueDepth,
+		WorkerCount:              defaultIngestionWorkerCount,
+		GlobalWorkerCount:        defaultIngestionGlobalWorkerCount,
+		PerProjectWorkerLimit:    defaultIngestionPerProjectLimit,
+		LivePathPriority:         true,
+		MaxWatchedDirectoryCount: 0,
+		TaskWarnAfter:            defaultIngestionTaskWarnAfter,
+		FullScanBatchSize:        defaultIngestionFullScanBatchSize,
+		InitialScanOnStart:       false,
+		SensitiveMarkerPolicy:    defaultSensitiveMarkerPolicy,
 	}
 }
 
@@ -157,6 +177,12 @@ func applyEnvOverrides(cfg *Config) error {
 	if cfg.Ingestion.LiveUpdatesEnabled, err = getenvBool("MIVIA_INGESTION_LIVE_UPDATES_ENABLED", cfg.Ingestion.LiveUpdatesEnabled); err != nil {
 		return err
 	}
+	if cfg.Ingestion.ASTExtractionEnabled, err = getenvBool("MIVIA_INGESTION_AST_EXTRACTION_ENABLED", cfg.Ingestion.ASTExtractionEnabled); err != nil {
+		return err
+	}
+	if cfg.Ingestion.ExtractorCacheEnabled, err = getenvBool("MIVIA_INGESTION_EXTRACTOR_CACHE_ENABLED", cfg.Ingestion.ExtractorCacheEnabled); err != nil {
+		return err
+	}
 	if cfg.Ingestion.DebounceInterval, err = getenvDuration("MIVIA_INGESTION_DEBOUNCE_INTERVAL", cfg.Ingestion.DebounceInterval); err != nil {
 		return err
 	}
@@ -169,7 +195,30 @@ func applyEnvOverrides(cfg *Config) error {
 	if cfg.Ingestion.QueueDepth, err = getenvInt("MIVIA_INGESTION_QUEUE_DEPTH", cfg.Ingestion.QueueDepth); err != nil {
 		return err
 	}
+	workerCountOverridden := os.Getenv("MIVIA_INGESTION_WORKER_COUNT") != ""
 	if cfg.Ingestion.WorkerCount, err = getenvInt("MIVIA_INGESTION_WORKER_COUNT", cfg.Ingestion.WorkerCount); err != nil {
+		return err
+	}
+	globalWorkerCountOverridden := os.Getenv("MIVIA_INGESTION_GLOBAL_WORKER_COUNT") != ""
+	if cfg.Ingestion.GlobalWorkerCount, err = getenvInt("MIVIA_INGESTION_GLOBAL_WORKER_COUNT", cfg.Ingestion.GlobalWorkerCount); err != nil {
+		return err
+	}
+	if workerCountOverridden && !globalWorkerCountOverridden {
+		cfg.Ingestion.GlobalWorkerCount = cfg.Ingestion.WorkerCount
+	}
+	if cfg.Ingestion.PerProjectWorkerLimit, err = getenvInt("MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT", cfg.Ingestion.PerProjectWorkerLimit); err != nil {
+		return err
+	}
+	if cfg.Ingestion.LivePathPriority, err = getenvBool("MIVIA_INGESTION_LIVE_PATH_PRIORITY", cfg.Ingestion.LivePathPriority); err != nil {
+		return err
+	}
+	if cfg.Ingestion.MaxWatchedDirectoryCount, err = getenvInt("MIVIA_INGESTION_MAX_WATCHED_DIRECTORY_COUNT", cfg.Ingestion.MaxWatchedDirectoryCount); err != nil {
+		return err
+	}
+	if cfg.Ingestion.TaskWarnAfter, err = getenvDuration("MIVIA_INGESTION_TASK_WARN_AFTER", cfg.Ingestion.TaskWarnAfter); err != nil {
+		return err
+	}
+	if cfg.Ingestion.FullScanBatchSize, err = getenvInt("MIVIA_INGESTION_FULL_SCAN_BATCH_SIZE", cfg.Ingestion.FullScanBatchSize); err != nil {
 		return err
 	}
 	if cfg.Ingestion.InitialScanOnStart, err = getenvBool("MIVIA_INGESTION_INITIAL_SCAN_ON_START", cfg.Ingestion.InitialScanOnStart); err != nil {
@@ -214,6 +263,12 @@ func (ingestion Ingestion) Validate() error {
 	if ingestion.LiveUpdatesEnabled && !ingestion.ContentGraphEnabled {
 		return errors.New("MIVIA_INGESTION_LIVE_UPDATES_ENABLED requires MIVIA_INGESTION_CONTENT_GRAPH_ENABLED")
 	}
+	if ingestion.ContentGraphEnabled && !ingestion.ASTExtractionEnabled {
+		return errors.New("MIVIA_INGESTION_AST_EXTRACTION_ENABLED must be true when content graph is enabled")
+	}
+	if ingestion.ASTExtractionEnabled && !ingestion.ExtractorCacheEnabled {
+		return errors.New("MIVIA_INGESTION_EXTRACTOR_CACHE_ENABLED must be true when AST extraction is enabled")
+	}
 	if ingestion.DebounceInterval <= 0 {
 		return errors.New("MIVIA_INGESTION_DEBOUNCE_INTERVAL must be positive")
 	}
@@ -228,6 +283,24 @@ func (ingestion Ingestion) Validate() error {
 	}
 	if ingestion.WorkerCount <= 0 {
 		return errors.New("MIVIA_INGESTION_WORKER_COUNT must be positive")
+	}
+	if ingestion.GlobalWorkerCount <= 0 {
+		return errors.New("MIVIA_INGESTION_GLOBAL_WORKER_COUNT must be positive")
+	}
+	if ingestion.PerProjectWorkerLimit <= 0 || ingestion.PerProjectWorkerLimit > ingestion.GlobalWorkerCount {
+		return errors.New("MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT must be positive and <= MIVIA_INGESTION_GLOBAL_WORKER_COUNT")
+	}
+	if ingestion.LiveUpdatesEnabled && !ingestion.LivePathPriority {
+		return errors.New("MIVIA_INGESTION_LIVE_PATH_PRIORITY must remain true while live updates are enabled")
+	}
+	if ingestion.MaxWatchedDirectoryCount < 0 {
+		return errors.New("MIVIA_INGESTION_MAX_WATCHED_DIRECTORY_COUNT must be non-negative")
+	}
+	if ingestion.TaskWarnAfter <= 0 {
+		return errors.New("MIVIA_INGESTION_TASK_WARN_AFTER must be positive")
+	}
+	if ingestion.FullScanBatchSize <= 0 || ingestion.FullScanBatchSize > 5000 {
+		return errors.New("MIVIA_INGESTION_FULL_SCAN_BATCH_SIZE must be positive and <= 5000")
 	}
 	if ingestion.SensitiveMarkerPolicy != sensitiveMarkerPolicySkipFile {
 		return fmt.Errorf("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY must be %q", sensitiveMarkerPolicySkipFile)

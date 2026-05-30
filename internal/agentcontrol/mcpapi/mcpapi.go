@@ -31,7 +31,7 @@ type Handler struct {
 	research      *research.Service
 	projects      *projectregistry.Registry
 	projectDigest *projectregistry.DigestService
-	projectIngest *projectingestion.Service
+	projectIngest projectingestion.API
 	logger        *slog.Logger
 }
 
@@ -54,7 +54,7 @@ func NewHandlerWithResearchAndProjects(service *service.Service, research *resea
 	return NewHandlerWithResearchProjectsAndIngestion(service, research, projects, projectDigest, nil, logger)
 }
 
-func NewHandlerWithResearchProjectsAndIngestion(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest *projectingestion.Service, logger *slog.Logger) http.Handler {
+func NewHandlerWithResearchProjectsAndIngestion(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:       service,
 		research:      research,

@@ -77,6 +77,36 @@ func TestIngestProject_StoresEligibleContentGraphState(t *testing.T) {
 	}
 }
 
+func TestIngestProjectBatchesGraphWrites(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "a.go"), "package main\n\nfunc A() {}\n")
+	writeFile(t, filepath.Join(root, "cmd", "b.go"), "package main\n\nfunc B() {}\n")
+	writeFile(t, filepath.Join(root, "cmd", "c.go"), "package main\n\nfunc C() {}\n")
+
+	svc, _, _ := newTestService(t, root)
+	counter := &batchCountingGraph{MemoryGraph: ladybug.NewMemoryGraph()}
+	if err := counter.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	svc.graph = NewGraphStore(counter)
+	svc.SetFullScanBatchSize(2)
+
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if run.FilesIngested != 3 {
+		t.Fatalf("expected three ingested files, got %#v", run)
+	}
+	if counter.batchCalls < 3 {
+		t.Fatalf("expected per-file graph batches, got %d", counter.batchCalls)
+	}
+	if counter.maxRepoFileNodesPerBatch > 1 {
+		t.Fatalf("full scan graph batch included too many repo files: %d", counter.maxRepoFileNodesPerBatch)
+	}
+}
+
 func TestIngestProject_InvalidGoSyntaxDoesNotFailFullScan(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -883,4 +913,42 @@ func (store *lookupOnlyStateStore) GetFileStateByHash(_ context.Context, project
 		return FileState{}, ErrIngestionNotFound
 	}
 	return store.state, nil
+}
+
+func (store *lookupOnlyStateStore) GetExtractorCache(context.Context, string, string, string, string, string) (ExtractorCacheEntry, error) {
+	return ExtractorCacheEntry{}, errors.New("unexpected GetExtractorCache")
+}
+
+func (store *lookupOnlyStateStore) SaveExtractorCache(context.Context, ExtractorCacheEntry) error {
+	return errors.New("unexpected SaveExtractorCache")
+}
+
+func (store *lookupOnlyStateStore) DeleteExtractorCacheForFile(context.Context, string, string) error {
+	return errors.New("unexpected DeleteExtractorCacheForFile")
+}
+
+type batchCountingGraph struct {
+	*ladybug.MemoryGraph
+	batchCalls               int
+	currentRepoFileNodes     int
+	maxRepoFileNodesPerBatch int
+}
+
+func (graph *batchCountingGraph) Batch(ctx context.Context, fn func(ladybug.Graph) error) error {
+	graph.batchCalls++
+	graph.currentRepoFileNodes = 0
+	if err := fn(graph); err != nil {
+		return err
+	}
+	if graph.currentRepoFileNodes > graph.maxRepoFileNodesPerBatch {
+		graph.maxRepoFileNodesPerBatch = graph.currentRepoFileNodes
+	}
+	return nil
+}
+
+func (graph *batchCountingGraph) PutNode(ctx context.Context, node ladybug.Node) error {
+	if node.Label == "RepoFile" {
+		graph.currentRepoFileNodes++
+	}
+	return graph.MemoryGraph.PutNode(ctx, node)
 }

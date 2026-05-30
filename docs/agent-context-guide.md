@@ -34,7 +34,7 @@ flowchart LR
 Serena and `agent-server` are complementary:
 
 - Use Serena for precise code navigation: symbols, references, call sites, and edit targets.
-- Use MiviaLabs MCP for indexed project context: project metadata, ingestion state, file IDs, chunks, and symbol lists.
+- Use MiviaLabs MCP for indexed project context: project metadata, ingestion state, file IDs, outlines, headings, chunks, and symbol lists.
 - Use shell for current disk and git truth: diffs, tests, builds, logs, and newly changed files.
 
 ## When To Use What
@@ -121,4 +121,6 @@ The server is local-only. It must not expose:
 - Skipped sensitive content or matched sensitive text.
 - Public network access, provider calls, embeddings, vectors, crawling, production deployment, symlink traversal, or auth-model changes.
 
-Use stable opaque IDs from REST or MCP responses. Do not infer or expose local root paths.
+Use stable opaque IDs from REST or MCP responses. Discovery order for agents is project metadata, small `projects.files.list` or `projects.symbols.list`/`projects.headings.list`, `projects.file.outline`, then bounded `projects.file.chunks` only when text is necessary. Do not infer or expose local root paths.
+
+Promoted AST metadata covers Go stdlib AST, Tree-sitter JS/JSX/TS/TSX, Tree-sitter C#, Markdown headings, and lightweight infrastructure/config metadata. TS/JS/TSX/JSX and C# have no regex fallback; parse failures are file-local `parse_error` skips and full scans continue. Extractor cache entries store symbols/headings only and are removed for skipped or absent files.

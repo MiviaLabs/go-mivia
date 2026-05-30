@@ -64,6 +64,7 @@ func TestBootstrap_IngestionTablesExist(t *testing.T) {
 		"project_ingestion_run_reason_counts",
 		"project_file_ingestion_state",
 		"project_watch_state",
+		"project_extractor_cache",
 	} {
 		assertTable(t, db.SQLDB(), table)
 	}

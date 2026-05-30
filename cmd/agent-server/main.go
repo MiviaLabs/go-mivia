@@ -75,6 +75,11 @@ func run() error {
 	if err := projectstore.NewSQLiteStore(sqliteDB.SQLDB()).SaveProjects(ctx, projectRegistry.List()); err != nil {
 		return err
 	}
+	if cfg.Ingestion.ContentGraphEnabled {
+		if err := projectingestion.ValidateDefaultExtractorRegistry(); err != nil {
+			return err
+		}
+	}
 	projectPersistentGraph, err := ladybug.OpenPersistentGraph(cfg.LadybugPath)
 	if err != nil {
 		return err
@@ -87,17 +92,33 @@ func run() error {
 	researchService := research.NewService(researchstore.NewLadybugMetadataStore(graph))
 	projectDigestService := projectregistry.NewDigestService(projectRegistry, projectGraph)
 	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(projectGraph), projectingestion.NewSQLiteStore(sqliteDB.SQLDB()))
+	projectIngestionService.SetFullScanBatchSize(cfg.Ingestion.FullScanBatchSize)
+	projectIngestionService.SetExtractorCacheEnabled(cfg.Ingestion.ExtractorCacheEnabled)
+	projectIngestionScheduler := projectingestion.NewScheduler(projectIngestionService, projectingestion.SchedulerOptions{
+		QueueDepth:            cfg.Ingestion.QueueDepth,
+		GlobalWorkerCount:     cfg.Ingestion.GlobalWorkerCount,
+		PerProjectWorkerLimit: cfg.Ingestion.PerProjectWorkerLimit,
+		LivePathPriority:      cfg.Ingestion.LivePathPriority,
+	})
+	if err := projectIngestionScheduler.Start(ctx); err != nil {
+		return err
+	}
 	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
 	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
 		return err
 	}
-	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionService, projectingestion.OrchestratorOptions{
-		LiveUpdatesEnabled: cfg.Ingestion.LiveUpdatesEnabled,
-		DebounceInterval:   cfg.Ingestion.DebounceInterval,
-		QueueDepth:         cfg.Ingestion.QueueDepth,
-		WorkerCount:        cfg.Ingestion.WorkerCount,
-		InitialScanOnStart: cfg.Ingestion.InitialScanOnStart,
-		Logger:             logger,
+	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
+		LiveUpdatesEnabled:       cfg.Ingestion.LiveUpdatesEnabled,
+		DebounceInterval:         cfg.Ingestion.DebounceInterval,
+		QueueDepth:               cfg.Ingestion.QueueDepth,
+		WorkerCount:              cfg.Ingestion.WorkerCount,
+		GlobalWorkerCount:        cfg.Ingestion.GlobalWorkerCount,
+		PerProjectWorkerLimit:    cfg.Ingestion.PerProjectWorkerLimit,
+		LivePathPriority:         cfg.Ingestion.LivePathPriority,
+		InitialScanOnStart:       cfg.Ingestion.InitialScanOnStart,
+		MaxWatchedDirectoryCount: cfg.Ingestion.MaxWatchedDirectoryCount,
+		TaskWarnAfter:            cfg.Ingestion.TaskWarnAfter,
+		Logger:                   logger,
 	})
 	if err := projectIngestionOrchestrator.Start(ctx); err != nil {
 		return err
@@ -127,8 +148,8 @@ func run() error {
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
 	httpapi.RegisterRoutes(mux, agentService)
 	researchhttpapi.RegisterRoutes(mux, researchService)
-	projecthttpapi.RegisterRoutesWithIngestion(mux, projectRegistry, projectDigestService, projectIngestionService)
-	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsAndIngestion(agentService, researchService, projectRegistry, projectDigestService, projectIngestionService, logger))
+	projecthttpapi.RegisterRoutesWithIngestion(mux, projectRegistry, projectDigestService, projectIngestionScheduler)
+	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsAndIngestion(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, logger))
 
 	handler := httpserver.Chain(
 		mux,
@@ -160,11 +181,15 @@ func run() error {
 		if err := projectIngestionOrchestrator.Stop(shutdownCtx); err != nil {
 			return err
 		}
+		if err := projectIngestionScheduler.Stop(shutdownCtx); err != nil {
+			return err
+		}
 		return server.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
 		_ = projectIngestionOrchestrator.Stop(shutdownCtx)
+		_ = projectIngestionScheduler.Stop(shutdownCtx)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}

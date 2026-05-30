@@ -80,7 +80,7 @@ func CallTool(ctx context.Context, registry *projectregistry.Registry, digest *p
 	return CallToolWithIngestion(ctx, registry, digest, nil, name, arguments)
 }
 
-func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion *projectingestion.Service, name string, arguments json.RawMessage) (map[string]any, error) {
+func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, name string, arguments json.RawMessage) (map[string]any, error) {
 	switch name {
 	case "projects.list", "projects_list":
 		var input struct {
@@ -266,7 +266,7 @@ func ReadResource(ctx context.Context, registry *projectregistry.Registry, diges
 	return ReadResourceWithIngestion(ctx, registry, digest, nil, uri)
 }
 
-func ReadResourceWithIngestion(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion *projectingestion.Service, uri string) (map[string]any, error) {
+func ReadResourceWithIngestion(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, uri string) (map[string]any, error) {
 	if !strings.HasPrefix(uri, "mivialabs://projects/") {
 		return nil, projectregistry.ErrProjectNotFound
 	}

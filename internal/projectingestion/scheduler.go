@@ -1,0 +1,340 @@
+package projectingestion
+
+import (
+	"context"
+	"fmt"
+	"sync"
+)
+
+type SchedulerOptions struct {
+	QueueDepth            int
+	GlobalWorkerCount     int
+	PerProjectWorkerLimit int
+	LivePathPriority      bool
+}
+
+type SchedulerDiagnostics struct {
+	QueueDepth             int
+	LiveQueueDepth         int
+	FullScanQueueDepth     int
+	ActiveTaskCount        int
+	ActiveProjectTaskCount map[string]int
+}
+
+type Scheduler struct {
+	runner  ingestionRunner
+	options SchedulerOptions
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	liveCh chan schedulerTask
+	fullCh chan schedulerTask
+	wg     sync.WaitGroup
+
+	mu            sync.Mutex
+	projectLimits map[string]chan struct{}
+	active        int
+	activeProject map[string]int
+	started       bool
+}
+
+type schedulerTask struct {
+	projectID    string
+	relativePath string
+	trigger      Trigger
+	taskType     string
+	done         chan schedulerResult
+}
+
+type schedulerResult struct {
+	run Run
+	err error
+}
+
+func NewScheduler(runner ingestionRunner, options SchedulerOptions) *Scheduler {
+	if options.QueueDepth <= 0 {
+		options.QueueDepth = 128
+	}
+	if options.GlobalWorkerCount <= 0 {
+		options.GlobalWorkerCount = 2
+	}
+	if options.PerProjectWorkerLimit <= 0 {
+		options.PerProjectWorkerLimit = 1
+	}
+	if options.PerProjectWorkerLimit > options.GlobalWorkerCount {
+		options.PerProjectWorkerLimit = options.GlobalWorkerCount
+	}
+	return &Scheduler{
+		runner:        runner,
+		options:       options,
+		liveCh:        make(chan schedulerTask, options.QueueDepth),
+		fullCh:        make(chan schedulerTask, options.QueueDepth),
+		projectLimits: make(map[string]chan struct{}),
+		activeProject: make(map[string]int),
+	}
+}
+
+func (scheduler *Scheduler) Start(ctx context.Context) error {
+	if scheduler == nil || scheduler.runner == nil {
+		return fmt.Errorf("%w: scheduler dependencies are required", ErrUnsupportedIngest)
+	}
+	scheduler.mu.Lock()
+	defer scheduler.mu.Unlock()
+	if scheduler.started {
+		return nil
+	}
+	scheduler.ctx, scheduler.cancel = context.WithCancel(ctx)
+	scheduler.started = true
+	for i := 0; i < scheduler.options.GlobalWorkerCount; i++ {
+		scheduler.wg.Add(1)
+		go func() {
+			defer scheduler.wg.Done()
+			scheduler.workerLoop(scheduler.ctx)
+		}()
+	}
+	return nil
+}
+
+func (scheduler *Scheduler) Stop(ctx context.Context) error {
+	if scheduler == nil {
+		return nil
+	}
+	scheduler.mu.Lock()
+	cancel := scheduler.cancel
+	scheduler.cancel = nil
+	scheduler.started = false
+	scheduler.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		scheduler.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (scheduler *Scheduler) IngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
+	return scheduler.SubmitFullScan(ctx, projectID, trigger)
+}
+
+func (scheduler *Scheduler) IngestPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
+	return scheduler.SubmitPath(ctx, projectID, relativePath, trigger)
+}
+
+func (scheduler *Scheduler) RunMetadata(ctx context.Context, projectID string, runID string) (RunMetadata, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return RunMetadata{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.RunMetadata(ctx, projectID, runID)
+}
+
+func (scheduler *Scheduler) ListFiles(ctx context.Context, projectID string, filter FileStateFilter, pagination Pagination) (FileList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return FileList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListFiles(ctx, projectID, filter, pagination)
+}
+
+func (scheduler *Scheduler) GetFile(ctx context.Context, projectID string, fileID string) (FileMetadata, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return FileMetadata{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.GetFile(ctx, projectID, fileID)
+}
+
+func (scheduler *Scheduler) ListChunks(ctx context.Context, projectID string, fileID string, pagination Pagination, maxChunkBytes int) (ChunkList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return ChunkList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListChunks(ctx, projectID, fileID, pagination, maxChunkBytes)
+}
+
+func (scheduler *Scheduler) GetChunk(ctx context.Context, projectID string, fileID string, chunkID string, maxChunkBytes int) (ChunkMetadata, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return ChunkMetadata{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.GetChunk(ctx, projectID, fileID, chunkID, maxChunkBytes)
+}
+
+func (scheduler *Scheduler) ListSymbols(ctx context.Context, projectID string, filter SymbolFilter, pagination Pagination) (SymbolList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListSymbols(ctx, projectID, filter, pagination)
+}
+
+func (scheduler *Scheduler) GetSymbol(ctx context.Context, projectID string, symbolID string) (SymbolMetadata, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolMetadata{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.GetSymbol(ctx, projectID, symbolID)
+}
+
+func (scheduler *Scheduler) ListHeadings(ctx context.Context, projectID string, fileID string, pagination Pagination) (HeadingList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return HeadingList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListHeadings(ctx, projectID, fileID, pagination)
+}
+
+func (scheduler *Scheduler) GetFileOutline(ctx context.Context, projectID string, fileID string) (FileOutline, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return FileOutline{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.GetFileOutline(ctx, projectID, fileID)
+}
+
+func (scheduler *Scheduler) SubmitFullScan(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
+	return scheduler.submit(ctx, scheduler.fullCh, schedulerTask{
+		projectID: projectID,
+		trigger:   trigger,
+		taskType:  "full_scan",
+		done:      make(chan schedulerResult, 1),
+	})
+}
+
+func (scheduler *Scheduler) SubmitPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
+	return scheduler.submit(ctx, scheduler.liveCh, schedulerTask{
+		projectID:    projectID,
+		relativePath: relativePath,
+		trigger:      trigger,
+		taskType:     "path",
+		done:         make(chan schedulerResult, 1),
+	})
+}
+
+func (scheduler *Scheduler) submit(ctx context.Context, queue chan schedulerTask, task schedulerTask) (Run, error) {
+	if scheduler == nil {
+		return Run{}, fmt.Errorf("%w: scheduler is required", ErrUnsupportedIngest)
+	}
+	select {
+	case queue <- task:
+	case <-ctx.Done():
+		return Run{}, ctx.Err()
+	}
+	select {
+	case result := <-task.done:
+		return result.run, result.err
+	case <-ctx.Done():
+		return Run{}, ctx.Err()
+	}
+}
+
+func (scheduler *Scheduler) workerLoop(ctx context.Context) {
+	for {
+		task, ok := scheduler.nextTask(ctx)
+		if !ok {
+			return
+		}
+		scheduler.runTask(ctx, task)
+	}
+}
+
+func (scheduler *Scheduler) nextTask(ctx context.Context) (schedulerTask, bool) {
+	if scheduler.options.LivePathPriority {
+		select {
+		case task := <-scheduler.liveCh:
+			return task, true
+		default:
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return schedulerTask{}, false
+	case task := <-scheduler.liveCh:
+		return task, true
+	case task := <-scheduler.fullCh:
+		return task, true
+	}
+}
+
+func (scheduler *Scheduler) runTask(ctx context.Context, task schedulerTask) {
+	if !scheduler.acquireProject(ctx, task.projectID) {
+		task.done <- schedulerResult{err: ctx.Err()}
+		return
+	}
+	defer scheduler.releaseProject(task.projectID)
+
+	var result schedulerResult
+	if task.taskType == "path" {
+		result.run, result.err = scheduler.runner.IngestPath(ctx, task.projectID, task.relativePath, task.trigger)
+	} else {
+		result.run, result.err = scheduler.runner.IngestProject(ctx, task.projectID, task.trigger)
+	}
+	task.done <- result
+}
+
+func (scheduler *Scheduler) acquireProject(ctx context.Context, projectID string) bool {
+	limit := scheduler.projectLimit(projectID)
+	select {
+	case limit <- struct{}{}:
+		scheduler.mu.Lock()
+		scheduler.active++
+		scheduler.activeProject[projectID]++
+		scheduler.mu.Unlock()
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (scheduler *Scheduler) releaseProject(projectID string) {
+	limit := scheduler.projectLimit(projectID)
+	select {
+	case <-limit:
+	default:
+	}
+	scheduler.mu.Lock()
+	scheduler.active--
+	if scheduler.active < 0 {
+		scheduler.active = 0
+	}
+	scheduler.activeProject[projectID]--
+	if scheduler.activeProject[projectID] <= 0 {
+		delete(scheduler.activeProject, projectID)
+	}
+	scheduler.mu.Unlock()
+}
+
+func (scheduler *Scheduler) projectLimit(projectID string) chan struct{} {
+	scheduler.mu.Lock()
+	defer scheduler.mu.Unlock()
+	limit, ok := scheduler.projectLimits[projectID]
+	if !ok {
+		limit = make(chan struct{}, scheduler.options.PerProjectWorkerLimit)
+		scheduler.projectLimits[projectID] = limit
+	}
+	return limit
+}
+
+func (scheduler *Scheduler) Diagnostics() SchedulerDiagnostics {
+	scheduler.mu.Lock()
+	defer scheduler.mu.Unlock()
+	activeProject := make(map[string]int, len(scheduler.activeProject))
+	for projectID, count := range scheduler.activeProject {
+		activeProject[projectID] = count
+	}
+	return SchedulerDiagnostics{
+		QueueDepth:             len(scheduler.liveCh) + len(scheduler.fullCh),
+		LiveQueueDepth:         len(scheduler.liveCh),
+		FullScanQueueDepth:     len(scheduler.fullCh),
+		ActiveTaskCount:        scheduler.active,
+		ActiveProjectTaskCount: activeProject,
+	}
+}
