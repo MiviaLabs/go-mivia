@@ -28,7 +28,7 @@ flowchart TB
   Extractors["Extractors: Go AST, Tree-sitter JS/TS/TSX/C#/Python, Markdown, infra/config"]
   Graph["Ladybug graph: files, chunks, symbols, references, calls, headings"]
   SQLite["SQLite: config, run state, file state, extractor cache"]
-  Queries["Bounded query APIs: files, chunks, outlines, symbol source, refs, callers, callees, call graph"]
+  Queries["Bounded query APIs: files, chunks, outlines, search, symbol source, refs, callers, callees, call graph, AST search"]
   Boundaries["No public exposure, auth changes, provider calls, crawling, embeddings, raw DB queries, PII, secrets, roots, prompts, or skipped sensitive content"]
 
   Client --> Server
@@ -61,8 +61,8 @@ flowchart TB
 | Project registry | Optional local TOML projects with metadata-only digest or content graph mode | Root paths and local config values stay out of REST/MCP responses |
 | Ingestion scheduler | Async manual ingestion, live watcher rescan, global/per-project limits, live path priority | No one project can monopolize scheduler workers |
 | Full-scan ingestion | Parallel bounded file workers, periodic running counters, stale cleanup after workers drain | Source is stored only for eligible chunks after safety gates |
-| Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
-| Query APIs | Files, chunks, outlines, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned |
+| Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph, named AST structural search | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
+| Query APIs | Files, chunks, outlines, text/file/symbol/reference/call search, named AST search, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned; raw FTS and raw Tree-sitter syntax are not exposed |
 
 ## Start Here
 
@@ -112,7 +112,7 @@ flowchart LR
 What this enables:
 
 - Engineers can opt local projects into metadata-only digest or content graph ingestion.
-- Agents can ask for bounded project files, chunks, outlines, symbols, symbol source, references, direct call edges, call graphs, and ingestion status through MCP instead of guessing from stale chat context.
+- Agents can ask for bounded project files, chunks, outlines, search results, symbols, symbol source, references, direct call edges, call graphs, named AST structural matches, and ingestion status through MCP instead of guessing from stale chat context.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
 - Local state can persist per project when `graph_storage = "persistent"`, or stay process-local with `graph_storage = "in_memory"`.
 - The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, provider calls, embeddings, vectors, skipped sensitive content, secrets, raw prompts, provider payloads, and PII.

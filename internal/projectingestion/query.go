@@ -19,6 +19,7 @@ const (
 	DefaultMaxSnippetBytes = 240
 	MaxSnippetBytes        = 1024
 	MaxSearchQueryBytes    = 256
+	MaxASTQueryBytes       = 64
 	MaxCallGraphDepth      = 5
 	MaxCallGraphNodes      = 100
 )
@@ -73,6 +74,18 @@ type ReferenceSearchOptions struct {
 	CaseSensitive      bool
 	PageSize           int
 	PageToken          string
+}
+
+type ASTSearchOptions struct {
+	Language        string
+	Query           string
+	Captures        []string
+	Extension       string
+	PathPrefix      string
+	PageSize        int
+	PageToken       string
+	MaxMatches      int
+	MaxSnippetBytes int
 }
 
 type SearchIndexMetadata struct {
@@ -267,6 +280,32 @@ type SymbolCallGraph struct {
 	Nodes     []SymbolMetadata `json:"nodes"`
 	Edges     []SymbolCallEdge `json:"edges"`
 	Truncated bool             `json:"truncated"`
+}
+
+type ASTSearchResult struct {
+	File                 FileMetadata  `json:"file"`
+	Chunk                ChunkMetadata `json:"chunk"`
+	CaptureName          string        `json:"capture_name"`
+	CaptureText          string        `json:"capture_text,omitempty"`
+	CaptureTextTruncated bool          `json:"capture_text_truncated,omitempty"`
+	LineStart            int           `json:"line_start"`
+	LineEnd              int           `json:"line_end"`
+	ByteStart            int           `json:"byte_start"`
+	ByteEnd              int           `json:"byte_end"`
+	StartColumn          int           `json:"start_column,omitempty"`
+	EndColumn            int           `json:"end_column,omitempty"`
+	Snippet              string        `json:"snippet,omitempty"`
+	SnippetTruncated     bool          `json:"snippet_truncated,omitempty"`
+}
+
+type ASTSearchResultList struct {
+	Results         []ASTSearchResult    `json:"results"`
+	NextPageToken   string               `json:"next_page_token,omitempty"`
+	QueryLanguage   string               `json:"query_language"`
+	QueryVersion    string               `json:"query_version"`
+	ResultTruncated bool                 `json:"result_truncated"`
+	MaxSnippetBytes int                  `json:"max_snippet_bytes"`
+	Index           *SearchIndexMetadata `json:"index,omitempty"`
 }
 
 type HeadingMetadata struct {

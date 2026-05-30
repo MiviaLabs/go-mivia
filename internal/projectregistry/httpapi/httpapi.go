@@ -35,6 +35,7 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("GET /api/v1/projects/{id}/search/symbols", searchSymbolsHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/search/references", searchReferencesHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/search/calls", searchCallsHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/search/ast", searchASTHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/source", getSymbolSourceHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/references", listSymbolReferencesHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/callers", listSymbolCallersHandler(ingestion))
@@ -228,6 +229,18 @@ func searchCallsHandler(ingestion projectingestion.API) http.Handler {
 		}
 		calls, err := ingestion.SearchCalls(r.Context(), strings.TrimSpace(r.PathValue("id")), options)
 		writeIngestionResult(w, calls, err, http.StatusOK)
+	})
+}
+
+func searchASTHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		options, err := astSearchOptions(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		results, err := ingestion.SearchAST(r.Context(), strings.TrimSpace(r.PathValue("id")), options)
+		writeIngestionResult(w, results, err, http.StatusOK)
 	})
 }
 
@@ -505,6 +518,38 @@ func referenceSearchOptions(r *http.Request) (projectingestion.ReferenceSearchOp
 		CaseSensitive:      caseSensitive,
 		PageSize:           pageSize,
 		PageToken:          r.URL.Query().Get("page_token"),
+	})
+}
+
+func astSearchOptions(r *http.Request) (projectingestion.ASTSearchOptions, error) {
+	pageSize, err := positiveIntQuery(r, "page_size")
+	if err != nil {
+		return projectingestion.ASTSearchOptions{}, err
+	}
+	maxSnippetBytes, err := positiveIntQuery(r, "max_snippet_bytes")
+	if err != nil {
+		return projectingestion.ASTSearchOptions{}, err
+	}
+	maxMatches, err := positiveIntQuery(r, "max_matches")
+	if err != nil {
+		return projectingestion.ASTSearchOptions{}, err
+	}
+	captures := []string(nil)
+	if raw := strings.TrimSpace(r.URL.Query().Get("captures")); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			captures = append(captures, strings.TrimSpace(part))
+		}
+	}
+	return projectingestion.NormalizeASTSearchOptions(projectingestion.ASTSearchOptions{
+		Language:        r.URL.Query().Get("language"),
+		Query:           r.URL.Query().Get("query"),
+		Captures:        captures,
+		Extension:       r.URL.Query().Get("extension"),
+		PathPrefix:      r.URL.Query().Get("path_prefix"),
+		PageSize:        pageSize,
+		PageToken:       r.URL.Query().Get("page_token"),
+		MaxSnippetBytes: maxSnippetBytes,
+		MaxMatches:      maxMatches,
 	})
 }
 

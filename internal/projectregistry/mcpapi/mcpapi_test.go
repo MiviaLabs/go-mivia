@@ -387,7 +387,16 @@ func TestCallToolWithIngestion_SearchToolsSupportDottedAndUnderscoreNames(t *tes
 		t.Fatalf("unexpected call search result: %#v", calls)
 	}
 
-	body := marshalResult(t, map[string]any{"text": textResult, "files": filesResult, "symbols": symbolsResult, "refs": refsResult, "calls": callsResult})
+	astResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_search_ast", json.RawMessage(`{"id":"example-service","language":"go","query":"call_expressions","captures":["callee"],"page_size":10,"max_snippet_bytes":16}`))
+	if err != nil {
+		t.Fatalf("call ast search tool: %v", err)
+	}
+	ast := astResult["structuredContent"].(projectingestion.ASTSearchResultList)
+	if len(ast.Results) == 0 || ast.Results[0].CaptureName != "callee" || ast.Results[0].CaptureText != "helper" || ast.Results[0].Chunk.Text != "" {
+		t.Fatalf("unexpected ast search result: %#v", ast)
+	}
+
+	body := marshalResult(t, map[string]any{"text": textResult, "files": filesResult, "symbols": symbolsResult, "refs": refsResult, "calls": callsResult, "ast": astResult})
 	for _, forbidden := range []string{"root_path", "content_sha256", "access_token", "provider_payload", "raw_prompt"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("search tool response leaked %q: %s", forbidden, body)

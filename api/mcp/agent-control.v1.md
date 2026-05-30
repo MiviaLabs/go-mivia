@@ -353,6 +353,14 @@ Input schema: `id`, optional `name_contains`, `caller_name_contains`, `callee_na
 
 Output: bounded indexed call metadata, including unresolved call nodes where available. No source text, roots, content hashes, skipped sensitive content, raw parser errors, or raw datastore details are returned.
 
+### `projects.search.ast`
+
+Input schema: `id`, required `language` (`go`, `python`, `javascript`, `jsx`, `typescript`, `tsx`, `csharp`), required `query` named catalog id, optional `captures`, `extension`, `path_prefix`, `page_size`, `page_token`, `max_matches`, and `max_snippet_bytes`.
+
+Named query ids: `function_declarations`, `class_declarations`, `type_declarations`, `call_expressions`, `imports`, `test_functions`, `assignments`, and `error_handling` where supported by the language.
+
+Output: bounded capture results from eligible indexed chunks only, including safe file metadata, chunk location metadata without full chunk text, capture name/text, span, capped snippet, `query_language`, `query_version`, `result_truncated`, and search index metadata. Raw Tree-sitter query syntax is not accepted. Roots, content hashes, skipped sensitive text, raw parser/Tree-sitter errors, raw SQLite/FTS errors, raw prompts, provider payloads, secrets, and PII are not returned.
+
 ### `projects.symbol.source`
 
 Input schema:

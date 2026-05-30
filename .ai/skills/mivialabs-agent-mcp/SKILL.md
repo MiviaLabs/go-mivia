@@ -41,7 +41,7 @@ Do not assume the current repository is the server repo. Do not assume any speci
 | --- | --- | --- |
 | Code symbols, references, call sites, edit targets | MiviaLabs MCP when indexed and current | Serena as first resort in indexed MiviaLabs projects |
 | Indexed project map, ingestion state, file IDs, chunks, symbols | MiviaLabs MCP | Raw DB queries, absolute paths, broad shell scans |
-| Routine indexed text, path, symbol, reference, or call discovery | `projects.search.*` | Serena `search_for_pattern`, raw DB queries, broad shell scans |
+| Routine indexed text, path, symbol, reference, call, or named AST discovery | `projects.search.*` | Serena `search_for_pattern`, raw DB queries, broad shell scans |
 | Current git/test/runtime state, builds, logs, generated files | Shell or host tooling | MCP as proof of git or runtime state |
 
 If unclear:
@@ -58,7 +58,7 @@ Use the smallest sequence that answers the task:
 1. Confirm the MCP endpoint is localhost or loopback.
 2. Call `tools/list`.
 3. Call `projects.list` or `projects.get` to confirm `enabled`, `digest_mode`, `update_policy`, and `graph_storage`.
-4. Call `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, or `projects.search.calls` for routine indexed discovery before broad text scans.
+4. Call `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, or `projects.search.ast` for routine indexed discovery before broad text scans.
 5. Call `projects.files.list`, `projects.symbols.list`, or `projects.headings.list` with small `page_size` to confirm indexed content exists and narrow to stable opaque IDs.
 6. Call `projects.ingestion_status_latest` before relying on indexed data. If the latest run is missing, failed, stale for the task, or older than current disk changes, call `projects.ingest`.
 7. Treat `projects.ingest` as asynchronous. It returns quickly with queued run metadata and a `run_id`; poll `projects.ingestion_status` with that `run_id` until `completed` or `failed`.
@@ -80,11 +80,12 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Research metadata only | `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get` |
 | Project registry | `projects.list`, `projects.get` |
 | Metadata digest | `projects.digest` |
-| Content graph | `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline` |
+| Content graph | `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline` |
 
 ## Indexed Metadata Contract
 
 - Promoted AST metadata currently covers Go stdlib AST, Tree-sitter JS/JSX/TS/TSX, Tree-sitter C#, Tree-sitter Python, Markdown headings, and lightweight infrastructure/config metadata.
+- `projects.search.ast` runs named Tree-sitter structural queries over eligible indexed chunks for Go, Python, JavaScript, JSX, TypeScript, TSX, and C#. It accepts catalog IDs such as `function_declarations`, `class_declarations`, `call_expressions`, `imports`, `test_functions`, `assignments`, and `error_handling`; it does not accept raw Tree-sitter query syntax.
 - TS/JS/TSX/JSX, C#, and Python have no regex fallback. If a promoted grammar or embedded query cannot initialize, server startup fails with `extractor_initialization_failed`.
 - Per-file parser failures are file-local `parse_error` skips; full scans continue.
 - Extractor cache rows store only symbols, headings, references, and calls keyed by hashes, extractor name, and version. Skipped or absent files must not have cache rows or content hashes.

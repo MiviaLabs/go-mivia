@@ -63,6 +63,7 @@ type API interface {
 	SearchSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
 	SearchReferences(context.Context, string, ReferenceSearchOptions) (SymbolReferenceList, error)
 	SearchCalls(context.Context, string, ReferenceSearchOptions) (SymbolCallEdgeList, error)
+	SearchAST(context.Context, string, ASTSearchOptions) (ASTSearchResultList, error)
 	GetSymbol(context.Context, string, string) (SymbolMetadata, error)
 	GetSymbolSource(context.Context, string, string, SymbolSourceOptions) (SymbolSource, error)
 	ListSymbolReferences(context.Context, string, string, Pagination) (SymbolReferenceList, error)
@@ -914,6 +915,24 @@ func (svc *Service) SearchCalls(ctx context.Context, projectID string, options R
 	return calls, nil
 }
 
+func (svc *Service) SearchAST(ctx context.Context, projectID string, options ASTSearchOptions) (ASTSearchResultList, error) {
+	normalized, err := NormalizeASTSearchOptions(options)
+	if err != nil {
+		return ASTSearchResultList{}, err
+	}
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return ASTSearchResultList{}, err
+	}
+	results, err := searchAST(ctx, svc, project, normalized)
+	if err != nil {
+		return ASTSearchResultList{}, err
+	}
+	index := svc.searchIndexMetadata(ctx, project.ID)
+	results.Index = &index
+	return results, nil
+}
+
 func (svc *Service) ListHeadings(ctx context.Context, projectID string, fileID string, pagination Pagination) (HeadingList, error) {
 	project, err := svc.projectForQuery(projectID)
 	if err != nil {
@@ -1082,6 +1101,61 @@ func NormalizeReferenceSearchOptions(options ReferenceSearchOptions) (ReferenceS
 	}
 	if _, _, err := paginationWindow(Pagination{PageSize: options.PageSize, PageToken: options.PageToken}); err != nil {
 		return ReferenceSearchOptions{}, err
+	}
+	return options, nil
+}
+
+func NormalizeASTSearchOptions(options ASTSearchOptions) (ASTSearchOptions, error) {
+	options.Language = strings.ToLower(strings.TrimSpace(options.Language))
+	options.Query = strings.TrimSpace(options.Query)
+	options.PathPrefix = strings.TrimSpace(options.PathPrefix)
+	if options.Language == "" || options.Query == "" || strings.Contains(options.Query, "\x00") || len(options.Query) > MaxASTQueryBytes {
+		return ASTSearchOptions{}, ErrInvalidInput
+	}
+	if !astSearchLanguageSupported(options.Language) {
+		return ASTSearchOptions{}, ErrInvalidInput
+	}
+	if !validASTQueryID(options.Query) {
+		return ASTSearchOptions{}, ErrInvalidInput
+	}
+	if options.Extension != "" {
+		extension, err := NormalizeFileExtension(options.Extension)
+		if err != nil {
+			return ASTSearchOptions{}, err
+		}
+		options.Extension = extension
+	}
+	if options.PathPrefix != "" {
+		prefix, err := NormalizePathPrefix(options.PathPrefix)
+		if err != nil {
+			return ASTSearchOptions{}, err
+		}
+		options.PathPrefix = prefix
+	}
+	if len(options.Captures) > 16 {
+		return ASTSearchOptions{}, ErrInvalidInput
+	}
+	for i, capture := range options.Captures {
+		capture = strings.TrimSpace(capture)
+		if capture == "" || strings.ContainsAny(capture, "\x00/\\") || len(capture) > MaxASTQueryBytes || !validASTCaptureName(capture) {
+			return ASTSearchOptions{}, ErrInvalidInput
+		}
+		options.Captures[i] = capture
+	}
+	if options.MaxSnippetBytes < 0 || options.MaxMatches < 0 {
+		return ASTSearchOptions{}, ErrInvalidInput
+	}
+	if options.MaxSnippetBytes == 0 {
+		options.MaxSnippetBytes = DefaultMaxSnippetBytes
+	}
+	if options.MaxSnippetBytes > MaxSnippetBytes {
+		options.MaxSnippetBytes = MaxSnippetBytes
+	}
+	if options.MaxMatches == 0 || options.MaxMatches > MaxPageSize {
+		options.MaxMatches = MaxPageSize
+	}
+	if _, _, err := paginationWindow(Pagination{PageSize: options.PageSize, PageToken: options.PageToken}); err != nil {
+		return ASTSearchOptions{}, err
 	}
 	return options, nil
 }

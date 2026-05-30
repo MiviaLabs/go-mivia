@@ -581,6 +581,50 @@ paths:
                 $ref: '#/components/schemas/ProjectSymbolCallEdgeList'
         '400': {$ref: '#/components/responses/BadRequest'}
         '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{id}/search/ast:
+    get:
+      operationId: searchProjectAST
+      summary: Search eligible indexed project AST
+      description: Runs a named Tree-sitter structural query over eligible indexed chunks only. The query parameter is a catalog id, not raw Tree-sitter syntax. Skipped sensitive content, roots, content hashes, raw parser internals, raw prompts, provider payloads, and raw datastore errors are not returned.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: language
+          in: query
+          required: true
+          schema: {type: string, enum: [go, python, javascript, jsx, typescript, tsx, csharp]}
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [function_declarations, class_declarations, type_declarations, call_expressions, imports, test_functions, assignments, error_handling]
+        - name: captures
+          in: query
+          description: Optional comma-separated capture-name allowlist from the named query.
+          schema: {type: string}
+        - name: extension
+          in: query
+          schema: {type: string}
+        - name: path_prefix
+          in: query
+          schema: {type: string}
+        - name: max_matches
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100}
+        - name: max_snippet_bytes
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 1024}
+      responses:
+        '200':
+          description: Project AST search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectASTSearchResultList'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /projects/{id}/symbols/{symbol_id}/source:
     get:
       operationId: getProjectSymbolSource
@@ -1182,6 +1226,55 @@ components:
         line_end: {type: integer, minimum: 1}
         byte_start: {type: integer, minimum: 0}
         byte_end: {type: integer, minimum: 0}
+        snippet:
+          type: string
+          description: Capped eligible indexed source snippet only.
+        snippet_truncated:
+          type: boolean
+    ProjectASTSearchResultList:
+      type: object
+      additionalProperties: false
+      required: [results, query_language, query_version, result_truncated, max_snippet_bytes]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectASTSearchResult'
+        next_page_token:
+          type: string
+        query_language:
+          type: string
+        query_version:
+          type: string
+        result_truncated:
+          type: boolean
+        max_snippet_bytes:
+          type: integer
+          minimum: 1
+        index:
+          $ref: '#/components/schemas/ProjectSearchIndex'
+    ProjectASTSearchResult:
+      type: object
+      additionalProperties: false
+      required: [file, chunk, capture_name, line_start, line_end, byte_start, byte_end]
+      properties:
+        file:
+          $ref: '#/components/schemas/ProjectFile'
+        chunk:
+          $ref: '#/components/schemas/ProjectChunk'
+        capture_name:
+          type: string
+        capture_text:
+          type: string
+          description: Capped eligible capture text only.
+        capture_text_truncated:
+          type: boolean
+        line_start: {type: integer, minimum: 1}
+        line_end: {type: integer, minimum: 1}
+        byte_start: {type: integer, minimum: 0}
+        byte_end: {type: integer, minimum: 0}
+        start_column: {type: integer, minimum: 0}
+        end_column: {type: integer, minimum: 0}
         snippet:
           type: string
           description: Capped eligible indexed source snippet only.

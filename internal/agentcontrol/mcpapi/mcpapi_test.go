@@ -180,6 +180,11 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 		t.Fatalf("latest ingestion status leaked sensitive metadata: %s", latest.Body.String())
 	}
 
+	digest := postMCP(t, handler, `{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"projects.digest","arguments":{"id":"example-service"}}}`)
+	if !bytes.Contains(digest.Body.Bytes(), []byte(`"code":-32004`)) || !bytes.Contains(digest.Body.Bytes(), []byte(`project digest unsupported`)) || bytes.Contains(digest.Body.Bytes(), []byte(`invalid tool arguments`)) {
+		t.Fatalf("expected content_graph digest unsupported error, got %s", digest.Body.String())
+	}
+
 	files := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.files.list","arguments":"{\"id\":\"example-service\",\"page_size\":1}"}}`)
 	if bytes.Contains(files.Body.Bytes(), []byte(`"error"`)) {
 		t.Fatalf("expected files success, got %s", files.Body.String())

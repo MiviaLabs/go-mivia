@@ -423,6 +423,38 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 			PageToken:          input.PageToken,
 		})
 		return toolResult(calls), err
+	case "projects.search.ast", "projects_search_ast":
+		var input struct {
+			ID              string          `json:"id"`
+			Language        string          `json:"language"`
+			Query           string          `json:"query"`
+			Captures        []string        `json:"captures,omitempty"`
+			Extension       string          `json:"extension,omitempty"`
+			PathPrefix      string          `json:"path_prefix,omitempty"`
+			PageSize        int             `json:"page_size,omitempty"`
+			PageToken       string          `json:"page_token,omitempty"`
+			MaxMatches      int             `json:"max_matches,omitempty"`
+			MaxSnippetBytes int             `json:"max_snippet_bytes,omitempty"`
+			Meta            json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		results, err := ingestion.SearchAST(ctx, strings.TrimSpace(input.ID), projectingestion.ASTSearchOptions{
+			Language:        input.Language,
+			Query:           input.Query,
+			Captures:        input.Captures,
+			Extension:       input.Extension,
+			PathPrefix:      input.PathPrefix,
+			PageSize:        input.PageSize,
+			PageToken:       input.PageToken,
+			MaxMatches:      input.MaxMatches,
+			MaxSnippetBytes: input.MaxSnippetBytes,
+		})
+		return toolResult(results), err
 	case "projects.symbol.source", "projects_symbol_source":
 		var input struct {
 			ID             string          `json:"id"`
@@ -773,6 +805,21 @@ func ingestionToolDefinitions() []map[string]any {
 				"confidence":           map[string]any{"type": "string"},
 				"case_sensitive":       map[string]any{"type": "boolean"},
 			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.search.ast",
+			"title":       "Search Indexed Project AST",
+			"description": "Run a named Tree-sitter structural query over eligible indexed chunks only. Raw Tree-sitter query syntax, skipped sensitive source, root paths, and parser internals are never returned.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":                map[string]any{"type": "string", "minLength": 1},
+				"language":          map[string]any{"type": "string", "enum": []string{"go", "python", "javascript", "jsx", "typescript", "tsx", "csharp"}},
+				"query":             map[string]any{"type": "string", "description": "Named query id such as function_declarations, class_declarations, call_expressions, imports, test_functions, assignments, or error_handling."},
+				"captures":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 16},
+				"extension":         map[string]any{"type": "string"},
+				"path_prefix":       map[string]any{"type": "string"},
+				"max_matches":       map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxPageSize},
+				"max_snippet_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxSnippetBytes},
+			}), []string{"id", "language", "query"}),
 		},
 		{
 			"name":        "projects.symbol.source",

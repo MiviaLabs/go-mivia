@@ -76,6 +76,7 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Search indexed symbols | `GET /projects/{id}/search/symbols?name_contains=Run` | `projects.search.symbols` |
 | Search indexed references | `GET /projects/{id}/search/references?target_name_contains=Run` | `projects.search.references` |
 | Search indexed calls | `GET /projects/{id}/search/calls?callee_name_contains=Run` | `projects.search.calls` |
+| Search indexed AST structure | `GET /projects/{id}/search/ast?language=typescript&query=call_expressions` | `projects.search.ast` |
 | Get bounded symbol source | `GET /projects/{id}/symbols/{symbol_id}/source` | `projects.symbol.source` |
 | List symbol references | `GET /projects/{id}/symbols/{symbol_id}/references` | `projects.symbol.references` |
 | List symbol callers | `GET /projects/{id}/symbols/{symbol_id}/callers` | `projects.symbol.callers` |
@@ -85,6 +86,10 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Get file outline, optionally with bounded eligible chunk text | `GET /projects/{id}/files/{file_id}/outline` | `projects.file.outline` |
 
 `projects.ingest`, `projects.search_index.rebuild`, `POST /ingestion-runs`, and `POST /search-index/rebuild` are asynchronous submissions. They return queued run metadata with a `run_id`; poll `projects.ingestion_status` or use latest status before trusting indexed content.
+
+`projects.digest` is only for `metadata_only` projects. For `content_graph` projects, use ingestion status and bounded file/search tools; the MCP error is `project digest unsupported`, not an active-ingestion block.
+
+`projects.search.ast` accepts named query IDs only, such as `function_declarations`, `class_declarations`, `call_expressions`, `imports`, `test_functions`, `assignments`, and `error_handling`. It does not accept raw Tree-sitter query syntax and only runs over eligible indexed chunks.
 
 MCP resources also expose stable IDs:
 

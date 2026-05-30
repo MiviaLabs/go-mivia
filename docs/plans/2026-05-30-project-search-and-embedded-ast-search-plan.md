@@ -1,6 +1,6 @@
 # Project Search And Embedded AST Search Plan
 
-Status: Phase 1 implemented; Phase 2/3 implementation-ready
+Status: Phase 1-3 implemented; Phase 4 pre-hardening passed for representative live projects; Phase 4 named AST search implemented
 Date: 2026-05-30
 Classification: Internal; PII-prohibited
 Mode: Free-text plan; no Jira or Confluence used by repository constraint.
@@ -296,15 +296,22 @@ Before adding `projects.search.ast`, verify Phase 3 behavior against a real larg
 - Confirm search metadata reports current ingestion/index status without leaking roots, content hashes, skipped sensitive text, raw parser errors, raw SQLite/FTS errors, secrets, PII, raw prompts, or provider payloads.
 - If any discrepancy appears, fix extractor/indexing behavior before exposing the AST search surface.
 
+Checkpoint update on 2026-05-30:
+
+- Large TypeScript project MCP checks passed for symbol source, file chunks, text/symbol search, and call search while ingestion was running; search metadata correctly reported running/degraded state during drift.
+- CrookedCircuits C# project was added to local config for live verification, then MCP checks confirmed `.cs` files, C# symbols, bounded symbol source, file chunks, call search, `projects.symbol.callers`, and `projects.symbol.callees`.
+- `projects.digest` remains metadata-only; content-graph projects now return a specific `project digest unsupported` MCP error instead of looking like malformed arguments or an active-ingestion block.
+- No confirmed C# discrepancy remained before continuing Phase 4 AST implementation.
+
 ### 8.2 Structural Search Contract
 
-Add `projects.search.ast` only after Phase 1 is stable and Phase 3 FTS does not need public contract changes.
+Add `projects.search.ast` only after Phase 1 is stable, Phase 3 FTS does not need public contract changes, and the pre-hardening checkpoint above passes.
 
 Inputs:
 
 - `id`
 - `language`: `go`, `python`, `javascript`, `typescript`, `tsx`, `jsx`, `csharp`
-- `query`: Tree-sitter query text or a constrained named-query ID
+- `query`: constrained named-query ID
 - `captures`: optional capture-name allowlist
 - `extension`, `path_prefix`, pagination
 - `max_matches`, `max_snippet_bytes`
@@ -373,7 +380,7 @@ Each query entry should define:
 - tests with fixture code
 - version
 
-Raw Tree-sitter query input can be allowed later under stricter caps, but named queries should be the default MCP path.
+Raw Tree-sitter query input can be allowed later under stricter caps, but named queries are the only supported initial REST/MCP path.
 
 ## 9. Phase 5: Optional AST-Grep Parity Layer
 

@@ -286,9 +286,12 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
-	if errors.Is(err, projectregistry.ErrInvalidInput) ||
-		errors.Is(err, projectregistry.ErrDigestProjectDisabled) ||
+	if errors.Is(err, projectregistry.ErrDigestProjectDisabled) ||
 		errors.Is(err, projectregistry.ErrDigestUnsupported) {
+		writeJSONRPCError(w, id, -32004, "project digest unsupported")
+		return
+	}
+	if errors.Is(err, projectregistry.ErrInvalidInput) {
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}

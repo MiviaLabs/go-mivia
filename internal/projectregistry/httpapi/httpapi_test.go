@@ -368,6 +368,7 @@ func Run() {
 		"/api/v1/projects/" + projectID + "/search/symbols?name_contains=Alpha",
 		"/api/v1/projects/" + projectID + "/search/references?target_name_contains=Alpha",
 		"/api/v1/projects/" + projectID + "/search/calls?caller_name_contains=Run&callee_name_contains=Alpha",
+		"/api/v1/projects/" + projectID + "/search/ast?language=go&query=call_expressions&captures=callee&max_snippet_bytes=20",
 	}
 	for _, path := range cases {
 		res := httptest.NewRecorder()
