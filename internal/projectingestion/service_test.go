@@ -664,6 +664,211 @@ func TestRebuildSearchIndexRepairsDriftAndClearsDegradedState(t *testing.T) {
 	requireTextMatches(t, ctx, svc, "RepairNeedle", 1)
 }
 
+func TestRebuildSearchIndex_DoesNotRewriteUnchangedIndexedFiles(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc StableNeedle() {}\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	fileID := repoFileID("example_ns", findState(t, states, "cmd/main.go").RelativePathHash)
+	before := countSearchRows(t, ctx, state, "project_search_chunks_fts", "example-service", fileID)
+
+	svc.extractors = NewExtractorRegistry(staticExtractor{
+		name:    "failing-rewrite-detector",
+		version: "1",
+		supports: func(relative string) bool {
+			return strings.HasSuffix(relative, ".go")
+		},
+		parse: func(context.Context, string, []byte) (ExtractorResult, error) {
+			return ExtractorResult{}, errors.New("unchanged file was reparsed")
+		},
+	})
+	if err := state.MarkSearchIndexDegraded(ctx, "example-service", "search_index_drift"); err != nil {
+		t.Fatalf("mark degraded: %v", err)
+	}
+
+	run, err := svc.RebuildSearchIndex(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("rebuild unchanged search index: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.FilesSeen != 0 || run.FilesIngested != 0 {
+		t.Fatalf("expected no-op repair run, got %#v", run)
+	}
+	after := countSearchRows(t, ctx, state, "project_search_chunks_fts", "example-service", fileID)
+	if after != before {
+		t.Fatalf("expected unchanged chunk rows to remain stable, before=%d after=%d", before, after)
+	}
+	requireTextMatches(t, ctx, svc, "StableNeedle", 1)
+}
+
+func TestRebuildSearchIndex_RemovesOrphanFTSRows(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc RealNeedle() {}\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if _, err := state.db.ExecContext(ctx, `INSERT INTO project_search_files_fts (
+		project_id, file_id, relative_path, extension, size_bytes, modified_at
+	) VALUES (?, ?, ?, ?, ?, ?)`, "example-service", "example_ns:orphan", "orphan.go", ".go", "1", "2026-05-30T12:00:00Z"); err != nil {
+		t.Fatalf("insert orphan fts file: %v", err)
+	}
+	if _, err := state.db.ExecContext(ctx, `INSERT INTO project_search_chunks_fts (
+		project_id, file_id, chunk_id, relative_path, extension, size_bytes, modified_at,
+		chunk_index, start_line, end_line, byte_start, byte_end, text
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "example-service", "example_ns:chunk_orphan", "example_ns:chunk_orphan:version:old:chunk:0",
+		"chunk_orphan.go", ".go", "1", "2026-05-30T12:00:00Z", "0", "1", "1", "0", "1", "orphan"); err != nil {
+		t.Fatalf("insert orphan fts chunk: %v", err)
+	}
+
+	run, err := svc.RebuildSearchIndex(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("rebuild search index: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.FilesSeen != 0 {
+		t.Fatalf("expected orphan-only no-op file repair, got %#v", run)
+	}
+	files, err := svc.SearchFiles(ctx, "example-service", FileSearchOptions{PathContains: "orphan", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search orphan files: %v", err)
+	}
+	if len(files.Files) != 0 {
+		t.Fatalf("expected orphan FTS row removed, got %#v", files)
+	}
+	if count := countSearchRows(t, ctx, state, "project_search_chunks_fts", "example-service", "example_ns:chunk_orphan"); count != 0 {
+		t.Fatalf("expected chunk-only orphan FTS rows removed, got %d", count)
+	}
+	requireTextMatches(t, ctx, svc, "RealNeedle", 1)
+}
+
+func TestRebuildSearchIndex_RepairsMissingAndStaleFiles(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	file := filepath.Join(root, "cmd", "main.go")
+	writeFile(t, file, "package main\n\nfunc OldNeedle() {}\n")
+	writeFile(t, filepath.Join(root, "pkg", "missing.go"), "package pkg\n\nfunc MissingNeedle() {}\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	mainState := findState(t, states, "cmd/main.go")
+	fileID := repoFileID("example_ns", mainState.RelativePathHash)
+	missingState := findState(t, states, "pkg/missing.go")
+	missingFileID := repoFileID("example_ns", missingState.RelativePathHash)
+
+	writeFile(t, file, "package main\n\nfunc NewNeedle() {}\n")
+	info, err := os.Lstat(file)
+	if err != nil {
+		t.Fatalf("stat changed file: %v", err)
+	}
+	project := svc.registry.List()[0]
+	prepared := svc.prepareExistingFile(ctx, project, "cmd/main.go", file, info, Run{StartedAt: svc.now()})
+	if prepared.err != nil {
+		t.Fatalf("prepare changed file: %v", prepared.err)
+	}
+	if err := state.SaveFileState(ctx, prepared.state); err != nil {
+		t.Fatalf("save stale file state: %v", err)
+	}
+	staleSearch, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "OldNeedle", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search stale text: %v", err)
+	}
+	if staleSearch.Index == nil || !staleSearch.Index.Degraded || staleSearch.Index.DegradedReason != "search_index_drift" {
+		t.Fatalf("expected hash drift metadata before repair, got %#v", staleSearch.Index)
+	}
+	if _, err := state.db.ExecContext(ctx, "DELETE FROM project_search_files_fts WHERE project_id = ? AND file_id = ?", "example-service", missingFileID); err != nil {
+		t.Fatalf("delete fts file row: %v", err)
+	}
+
+	run, err := svc.RebuildSearchIndex(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("rebuild stale search index: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.FilesSeen != 2 || run.FilesIngested != 2 {
+		t.Fatalf("expected two targeted repairs, got %#v", run)
+	}
+	requireTextMatches(t, ctx, svc, "OldNeedle", 0)
+	requireTextMatches(t, ctx, svc, "NewNeedle", 1)
+	requireTextMatches(t, ctx, svc, "MissingNeedle", 1)
+	if count := countSearchRows(t, ctx, state, "project_search_files_fts", "example-service", fileID); count != 1 {
+		t.Fatalf("expected one repaired fts file row, got %d", count)
+	}
+	if count := countSearchRows(t, ctx, state, "project_search_files_fts", "example-service", missingFileID); count != 1 {
+		t.Fatalf("expected one missing fts file row repaired, got %d", count)
+	}
+}
+
+func TestRebuildSearchIndex_RepairsFileChangedToEmpty(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	file := filepath.Join(root, "docs", "note.md")
+	writeFile(t, file, "OldNeedle\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	noteState := findState(t, states, "docs/note.md")
+	fileID := repoFileID("example_ns", noteState.RelativePathHash)
+	if count := countSearchRows(t, ctx, state, "project_search_chunks_fts", "example-service", fileID); count == 0 {
+		t.Fatalf("expected old chunk rows before repair")
+	}
+
+	writeFile(t, file, "")
+	info, err := os.Lstat(file)
+	if err != nil {
+		t.Fatalf("stat changed file: %v", err)
+	}
+	project := svc.registry.List()[0]
+	prepared := svc.prepareExistingFile(ctx, project, "docs/note.md", file, info, Run{StartedAt: svc.now()})
+	if prepared.err != nil {
+		t.Fatalf("prepare changed file: %v", prepared.err)
+	}
+	if err := state.SaveFileState(ctx, prepared.state); err != nil {
+		t.Fatalf("save empty file state: %v", err)
+	}
+	health, err := state.SearchIndexHealth(ctx, project)
+	if err != nil {
+		t.Fatalf("search index health: %v", err)
+	}
+	if !health.Degraded || health.Reason != "search_index_drift" {
+		t.Fatalf("expected stale empty file to degrade search health, got %#v", health)
+	}
+
+	run, err := svc.RebuildSearchIndex(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("rebuild empty search index: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.FilesSeen != 1 || run.FilesIngested != 1 {
+		t.Fatalf("expected one targeted empty-file repair, got %#v", run)
+	}
+	requireTextMatches(t, ctx, svc, "OldNeedle", 0)
+	if count := countSearchRows(t, ctx, state, "project_search_chunks_fts", "example-service", fileID); count != 0 {
+		t.Fatalf("expected stale chunk rows removed for empty file, got %d", count)
+	}
+	if count := countSearchRows(t, ctx, state, "project_search_files_fts", "example-service", fileID); count != 1 {
+		t.Fatalf("expected empty file row retained, got %d", count)
+	}
+}
+
 func TestSymbolSemanticEdgesDeletedWhenFileSkipped(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -1720,6 +1925,27 @@ func requireTextMatches(t *testing.T, ctx context.Context, svc *Service, query s
 	if len(results.Results) != count {
 		t.Fatalf("expected %d text matches for %q, got %#v", count, query, results)
 	}
+}
+
+func countSearchRows(t *testing.T, ctx context.Context, store *SQLiteStore, table string, projectID string, fileID string) int {
+	t.Helper()
+	if !isSearchFTSTable(table) {
+		t.Fatalf("unexpected search table %q", table)
+	}
+	var count int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE project_id = ? AND file_id = ?", projectID, fileID).Scan(&count); err != nil {
+		t.Fatalf("count %s rows: %v", table, err)
+	}
+	return count
+}
+
+func isSearchFTSTable(table string) bool {
+	for _, allowed := range searchFTSTables() {
+		if table == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 type lookupOnlyStateStore struct {

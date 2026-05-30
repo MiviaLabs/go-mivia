@@ -375,13 +375,17 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 			return
 		case task := <-projectWatcher.tasks:
 			if task.rescan {
+				startedAt := time.Now()
 				orchestrator.logInfo("live ingestion rescan started", slog.String("project_id", projectWatcher.project.ID))
+				done := orchestrator.monitorLiveTask(ctx, projectWatcher.project.ID, "", "full_scan", startedAt)
 				run, err := orchestrator.scheduler.SubmitFullScan(ctx, projectWatcher.project.ID, TriggerLive)
+				close(done)
 				if err != nil {
 					orchestrator.logWarn("live ingestion rescan failed",
 						slog.String("project_id", projectWatcher.project.ID),
 						slog.String("error_category", "ingest_failed"),
 						slog.String("error", err.Error()),
+						slog.Duration("elapsed", time.Since(startedAt)),
 					)
 					continue
 				}
@@ -394,6 +398,7 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 					slog.Int("files_skipped", run.FilesSkipped),
 					slog.Int("chunks_stored", run.ChunksStored),
 					slog.Int("symbols_stored", run.SymbolsStored),
+					slog.Duration("elapsed", time.Since(startedAt)),
 				)
 				continue
 			}
@@ -448,13 +453,16 @@ func (orchestrator *Orchestrator) monitorLiveTask(ctx context.Context, projectID
 		case <-ctx.Done():
 		case <-done:
 		case <-timer.C:
-			orchestrator.logWarn("live ingestion task still running",
+			attrs := []slog.Attr{
 				slog.String("project_id", projectID),
-				slog.String("relative_path_hash", relativePathHash),
 				slog.String("task_type", taskType),
 				slog.String("error_category", "live_task_slow"),
 				slog.Duration("elapsed", time.Since(startedAt)),
-			)
+			}
+			if relativePathHash != "" {
+				attrs = append(attrs, slog.String("relative_path_hash", relativePathHash))
+			}
+			orchestrator.logWarn("live ingestion task still running", attrs...)
 		}
 	}()
 	return done

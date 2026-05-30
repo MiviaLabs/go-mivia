@@ -38,6 +38,99 @@ func TestSchedulerFullScansBothMakeProgress(t *testing.T) {
 	}
 }
 
+func TestSchedulerProjectWideTasksDoNotOverlapForSameProject(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runner := newBlockingSchedulerRunner()
+	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 2, PerProjectWorkerLimit: 2, LivePathPriority: true})
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	defer scheduler.Stop(context.Background())
+
+	fullDone := make(chan error, 1)
+	go func() {
+		_, err := scheduler.SubmitFullScan(ctx, "project-a", TriggerManual)
+		fullDone <- err
+	}()
+	runner.waitStarted(t, "full_scan", "project-a")
+
+	if _, err := scheduler.SubmitRebuildSearchIndex(ctx, "project-a"); err != nil {
+		t.Fatalf("submit search index rebuild: %v", err)
+	}
+	runner.assertNotStarted(t, "search_index_rebuild", "project-a", 30*time.Millisecond)
+
+	runner.release("full_scan", "project-a")
+	if err := <-fullDone; err != nil {
+		t.Fatalf("full scan: %v", err)
+	}
+	runner.waitStarted(t, "search_index_rebuild", "project-a")
+	runner.release("search_index_rebuild", "project-a")
+}
+
+func TestSchedulerProjectWideTasksRunInParallelForDifferentProjects(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runner := newBlockingSchedulerRunner()
+	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 2, PerProjectWorkerLimit: 2, LivePathPriority: true})
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	defer scheduler.Stop(context.Background())
+
+	fullDone := make(chan error, 1)
+	go func() {
+		_, err := scheduler.SubmitFullScan(ctx, "project-a", TriggerManual)
+		fullDone <- err
+	}()
+	runner.waitStarted(t, "full_scan", "project-a")
+
+	if _, err := scheduler.SubmitRebuildSearchIndex(ctx, "project-b"); err != nil {
+		t.Fatalf("submit search index rebuild: %v", err)
+	}
+	runner.waitStarted(t, "search_index_rebuild", "project-b")
+	runner.release("search_index_rebuild", "project-b")
+	runner.release("full_scan", "project-a")
+	if err := <-fullDone; err != nil {
+		t.Fatalf("full scan: %v", err)
+	}
+}
+
+func TestSchedulerPathWaitsForSameProjectFullScan(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runner := newBlockingSchedulerRunner()
+	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 2, PerProjectWorkerLimit: 2, LivePathPriority: true})
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	defer scheduler.Stop(context.Background())
+
+	fullDone := make(chan error, 1)
+	go func() {
+		_, err := scheduler.SubmitFullScan(ctx, "project-a", TriggerManual)
+		fullDone <- err
+	}()
+	runner.waitStarted(t, "full_scan", "project-a")
+
+	pathDone := make(chan error, 1)
+	go func() {
+		_, err := scheduler.SubmitPath(ctx, "project-a", "src/app.go", TriggerLive)
+		pathDone <- err
+	}()
+	runner.assertNotStarted(t, "path", "project-a", 30*time.Millisecond)
+
+	runner.release("full_scan", "project-a")
+	if err := <-fullDone; err != nil {
+		t.Fatalf("full scan: %v", err)
+	}
+	runner.waitStarted(t, "path", "project-a")
+	runner.release("path", "project-a")
+	if err := <-pathDone; err != nil {
+		t.Fatalf("path ingest: %v", err)
+	}
+}
+
 func TestSchedulerSubmitFullScanAsyncReturnsBeforeExecutionCompletes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -57,6 +150,36 @@ func TestSchedulerSubmitFullScanAsyncReturnsBeforeExecutionCompletes(t *testing.
 	}
 	runner.waitStarted(t, "full_scan", "project-a")
 	runner.release("full_scan", "project-a")
+}
+
+func TestSchedulerAsyncPreparedRunMarkedFailedWhenQueueFull(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runner := newBlockingSchedulerRunner()
+	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 1, GlobalWorkerCount: 1, PerProjectWorkerLimit: 1, LivePathPriority: true})
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	defer scheduler.Stop(context.Background())
+
+	if _, err := scheduler.SubmitFullScanAsync(ctx, "project-a", TriggerManual); err != nil {
+		t.Fatalf("submit first async full scan: %v", err)
+	}
+	runner.waitStarted(t, "full_scan", "project-a")
+	if _, err := scheduler.SubmitFullScanAsync(ctx, "project-b", TriggerManual); err != nil {
+		t.Fatalf("submit queued async full scan: %v", err)
+	}
+	failed, err := scheduler.SubmitFullScanAsync(ctx, "project-c", TriggerManual)
+	if err == nil {
+		t.Fatalf("expected queue full error")
+	}
+	if failed.Status != RunStatusFailed || failed.ErrorCategory != "queue_full" {
+		t.Fatalf("expected failed queue_full run, got %#v", failed)
+	}
+
+	runner.release("full_scan", "project-a")
+	runner.waitStarted(t, "full_scan", "project-b")
+	runner.release("full_scan", "project-b")
 }
 
 func TestSchedulerPathStartsWhileOtherProjectFullScanActive(t *testing.T) {
@@ -134,6 +257,9 @@ func TestSchedulerDiagnosticsAreSafeCounters(t *testing.T) {
 	if len(diagnostics.ActiveProjectTaskCount) != 0 {
 		t.Fatalf("expected no active projects: %#v", diagnostics.ActiveProjectTaskCount)
 	}
+	if len(diagnostics.ProjectWideTaskCount) != 0 {
+		t.Fatalf("expected no active project-wide tasks: %#v", diagnostics.ProjectWideTaskCount)
+	}
 }
 
 type blockingSchedulerRunner struct {
@@ -141,6 +267,7 @@ type blockingSchedulerRunner struct {
 	started  map[string]int
 	releases map[string]chan struct{}
 	notify   chan string
+	failed   map[string]string
 }
 
 func newBlockingSchedulerRunner() *blockingSchedulerRunner {
@@ -148,6 +275,7 @@ func newBlockingSchedulerRunner() *blockingSchedulerRunner {
 		started:  make(map[string]int),
 		releases: make(map[string]chan struct{}),
 		notify:   make(chan string, 32),
+		failed:   make(map[string]string),
 	}
 }
 
@@ -159,8 +287,8 @@ func (runner *blockingSchedulerRunner) IngestPath(ctx context.Context, projectID
 	return runner.block(ctx, "path", projectID)
 }
 
-func (runner *blockingSchedulerRunner) PrepareProjectRun(context.Context, string, Trigger) (Run, error) {
-	return Run{ID: "prepared-project-a", ProjectID: "project-a", Trigger: TriggerManual, Status: RunStatusPending}, nil
+func (runner *blockingSchedulerRunner) PrepareProjectRun(_ context.Context, projectID string, trigger Trigger) (Run, error) {
+	return Run{ID: "prepared-" + projectID, ProjectID: projectID, Trigger: trigger, Status: RunStatusPending}, nil
 }
 
 func (runner *blockingSchedulerRunner) ExecutePreparedProjectRun(ctx context.Context, run Run) (Run, error) {
@@ -172,8 +300,22 @@ func (runner *blockingSchedulerRunner) ExecutePreparedProjectRun(ctx context.Con
 	return run, nil
 }
 
-func (runner *blockingSchedulerRunner) FailPreparedProjectRun(context.Context, Run, string) (Run, error) {
-	return Run{}, nil
+func (runner *blockingSchedulerRunner) ExecutePreparedSearchIndexRebuild(ctx context.Context, run Run) (Run, error) {
+	completed, err := runner.block(ctx, "search_index_rebuild", run.ProjectID)
+	if err != nil {
+		return run, err
+	}
+	run.Status = completed.Status
+	return run, nil
+}
+
+func (runner *blockingSchedulerRunner) FailPreparedProjectRun(_ context.Context, run Run, category string) (Run, error) {
+	runner.mu.Lock()
+	runner.failed[run.ID] = category
+	runner.mu.Unlock()
+	run.Status = RunStatusFailed
+	run.ErrorCategory = category
+	return run, nil
 }
 
 func (runner *blockingSchedulerRunner) block(ctx context.Context, taskType string, projectID string) (Run, error) {
@@ -212,6 +354,14 @@ func (runner *blockingSchedulerRunner) startedCount(taskType string, projectID s
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
 	return runner.started[taskType+":"+projectID]
+}
+
+func (runner *blockingSchedulerRunner) assertNotStarted(t *testing.T, taskType string, projectID string, wait time.Duration) {
+	t.Helper()
+	time.Sleep(wait)
+	if started := runner.startedCount(taskType, projectID); started != 0 {
+		t.Fatalf("%s:%s started unexpectedly: %d", taskType, projectID, started)
+	}
 }
 
 func (runner *blockingSchedulerRunner) release(taskType string, projectID string) {

@@ -172,7 +172,7 @@ func (svc *Service) ExecutePreparedSearchIndexRebuild(ctx context.Context, run R
 }
 
 func (svc *Service) executeSearchIndexRebuild(ctx context.Context, project projectregistry.Project, run Run) (Run, error) {
-	search, ok := svc.state.(searchMutationStore)
+	search, ok := svc.state.(searchRepairStore)
 	if !ok {
 		run.Status = RunStatusFailed
 		run.ErrorCategory = "search_index_rebuild_failed"
@@ -180,7 +180,8 @@ func (svc *Service) executeSearchIndexRebuild(ctx context.Context, project proje
 		_ = svc.persistRun(ctx, project, run)
 		return run, fmt.Errorf("%w: search index repair requires SQLite search store", ErrUnsupportedIngest)
 	}
-	if err := search.DeleteSearchProject(ctx, project.ID); err != nil {
+	states, err := search.ReconcileSearchIndex(ctx, project)
+	if err != nil {
 		_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
 		run.Status = RunStatusFailed
 		run.ErrorCategory = "search_index_delete_failed"
@@ -188,19 +189,102 @@ func (svc *Service) executeSearchIndexRebuild(ctx context.Context, project proje
 		_ = svc.persistRun(ctx, project, run)
 		return run, err
 	}
-	run, err := svc.executeProjectRun(ctx, project, run)
-	if err != nil {
+	progress := newFullScanProgress(run)
+	for _, state := range states {
+		if err := svc.repairSearchIndexFile(ctx, project, progress, state); err != nil {
+			_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_rebuild_failed")
+			run = progress.currentRun()
+			run.Status = RunStatusFailed
+			run.ErrorCategory = "search_index_rebuild_failed"
+			run.FinishedAt = svc.now().UTC()
+			_ = svc.persistRun(ctx, project, run)
+			return run, err
+		}
+	}
+	run = progress.currentRun()
+	run.Status = RunStatusCompleted
+	run.FinishedAt = svc.now().UTC()
+	if err := svc.persistRun(ctx, project, run); err != nil {
 		_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_rebuild_failed")
 		return run, err
-	}
-	if run.Status != RunStatusCompleted {
-		_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_rebuild_failed")
-		return run, nil
 	}
 	if err := search.ClearSearchIndexDegraded(ctx, project.ID); err != nil {
 		return run, err
 	}
 	return run, nil
+}
+
+func (svc *Service) repairSearchIndexFile(ctx context.Context, project projectregistry.Project, progress *fullScanProgress, state FileState) error {
+	if state.RelativePath == "" || !state.RelativePathSafe {
+		return fmt.Errorf("%w: unsafe search index repair state", ErrUnsupportedIngest)
+	}
+	relative, ok := normalizeProjectRelativePath(state.RelativePath)
+	if !ok || relative != state.RelativePath {
+		return fmt.Errorf("%w: unsafe search index repair path", ErrPathNotProjectLocal)
+	}
+	fullPath := filepath.Join(project.CanonicalRootPath, filepath.FromSlash(relative))
+	checkedRelative, ok := safeRelativePath(project.CanonicalRootPath, fullPath)
+	if !ok || checkedRelative != relative {
+		return ErrPathEscapesRoot
+	}
+	info, err := os.Lstat(fullPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return svc.repairAbsentSearchIndexFile(ctx, project, progress, state)
+	}
+	if err != nil {
+		skipped := svc.skippedState(project, relative, SkipReasonStatError, 0, time.Time{}, true, progress.currentRun().StartedAt)
+		return svc.saveSearchIndexRepairResult(ctx, project, progress, fullScanFileResult{state: skipped})
+	}
+	if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		skipped := svc.skippedState(project, relative, SkipReasonUnsafePath, info.Size(), info.ModTime().UTC(), true, progress.currentRun().StartedAt)
+		return svc.saveSearchIndexRepairResult(ctx, project, progress, fullScanFileResult{state: skipped})
+	}
+	result := svc.prepareExistingFile(ctx, project, relative, fullPath, info, progress.currentRun())
+	return svc.saveSearchIndexRepairResult(ctx, project, progress, result)
+}
+
+func (svc *Service) repairAbsentSearchIndexFile(ctx context.Context, project projectregistry.Project, progress *fullScanProgress, state FileState) error {
+	run := progress.currentRun()
+	state.Status = FileStatusAbsent
+	state.Present = false
+	state.ContentSHA256 = ""
+	state.LastEventAt = run.StartedAt
+	state.LastIngestedAt = run.StartedAt
+	if err := svc.state.SaveFileState(ctx, state); err != nil {
+		return err
+	}
+	if err := svc.state.DeleteExtractorCacheForFile(ctx, project.ID, state.RelativePathHash); err != nil {
+		return err
+	}
+	if err := svc.graph.putFileState(ctx, project, run, state); err != nil {
+		return err
+	}
+	if search, ok := svc.state.(searchMutationStore); ok {
+		if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
+			_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
+			return err
+		}
+	}
+	progress.record(state, true, 0, 0)
+	return progress.flush(ctx, svc, project, false)
+}
+
+func (svc *Service) saveSearchIndexRepairResult(ctx context.Context, project projectregistry.Project, progress *fullScanProgress, result fullScanFileResult) error {
+	if result.err != nil {
+		return result.err
+	}
+	if result.state.Status == FileStatusEligible {
+		result.err = svc.saveEligiblePreparedFile(ctx, project, progress.currentRun(), result)
+	} else {
+		result.err = svc.saveSkipped(ctx, project, progress.currentRun(), result.state, false)
+	}
+	if result.state.RelativePathHash != "" {
+		progress.record(result.state, true, result.chunkCount, result.symbolCount)
+	}
+	if result.err != nil {
+		return result.err
+	}
+	return progress.flush(ctx, svc, project, false)
 }
 
 func (svc *Service) SetFullScanBatchSize(size int) {
@@ -843,7 +927,7 @@ func (svc *Service) SearchText(ctx context.Context, projectID string, options Te
 	if err != nil {
 		return TextSearchResultList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project.ID)
+	index := svc.searchIndexMetadata(ctx, project)
 	results.Index = &index
 	return results, nil
 }
@@ -862,7 +946,7 @@ func (svc *Service) SearchFiles(ctx context.Context, projectID string, options F
 		if err != nil {
 			return FileList{}, err
 		}
-		index := svc.searchIndexMetadata(ctx, project.ID)
+		index := svc.searchIndexMetadata(ctx, project)
 		files.Index = &index
 		return files, nil
 	}
@@ -891,7 +975,7 @@ func (svc *Service) SearchFiles(ctx context.Context, projectID string, options F
 	if err != nil {
 		return FileList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project.ID)
+	index := svc.searchIndexMetadata(ctx, project)
 	return FileList{Files: window, NextPageToken: nextToken, Index: &index}, nil
 }
 
@@ -908,7 +992,7 @@ func (svc *Service) SearchSymbols(ctx context.Context, projectID string, filter 
 	if err != nil {
 		return SymbolList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project.ID)
+	index := svc.searchIndexMetadata(ctx, project)
 	symbols.Index = &index
 	return symbols, nil
 }
@@ -926,7 +1010,7 @@ func (svc *Service) SearchReferences(ctx context.Context, projectID string, opti
 	if err != nil {
 		return SymbolReferenceList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project.ID)
+	index := svc.searchIndexMetadata(ctx, project)
 	refs.Index = &index
 	return refs, nil
 }
@@ -944,7 +1028,7 @@ func (svc *Service) SearchCalls(ctx context.Context, projectID string, options R
 	if err != nil {
 		return SymbolCallEdgeList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project.ID)
+	index := svc.searchIndexMetadata(ctx, project)
 	calls.Index = &index
 	return calls, nil
 }
@@ -970,7 +1054,7 @@ func (svc *Service) SearchAST(ctx context.Context, projectID string, options AST
 	if err != nil {
 		return ASTSearchResultList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project.ID)
+	index := svc.searchIndexMetadata(ctx, project)
 	results.Coverage = &coverage
 	results.Index = &index
 	return results, nil
@@ -985,7 +1069,7 @@ func (svc *Service) ListASTQueries(ctx context.Context, projectID string) (ASTQu
 	if err != nil {
 		return ASTQueryCatalog{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project.ID)
+	index := svc.searchIndexMetadata(ctx, project)
 	return ASTQueryCatalog{
 		Queries:  astSearchCatalogMetadata(),
 		Coverage: coverage,
@@ -1220,22 +1304,22 @@ func NormalizeASTSearchOptions(options ASTSearchOptions) (ASTSearchOptions, erro
 	return options, nil
 }
 
-func (svc *Service) searchIndexMetadata(ctx context.Context, projectID string) SearchIndexMetadata {
-	runs, err := svc.state.ListLatestRuns(ctx, projectID, 1)
+func (svc *Service) searchIndexMetadata(ctx context.Context, project projectregistry.Project) SearchIndexMetadata {
+	runs, err := svc.state.ListLatestRuns(ctx, project.ID, 1)
 	metadata := SearchIndexMetadata{IndexStatus: "unknown"}
 	if err != nil || len(runs) == 0 {
-		return svc.withSearchIndexHealth(ctx, projectID, metadata)
+		return svc.withSearchIndexHealth(ctx, project, metadata)
 	}
 	metadata = SearchIndexMetadata{IndexStatus: string(runs[0].Status), IngestionRunID: runs[0].ID}
-	return svc.withSearchIndexHealth(ctx, projectID, metadata)
+	return svc.withSearchIndexHealth(ctx, project, metadata)
 }
 
-func (svc *Service) withSearchIndexHealth(ctx context.Context, projectID string, metadata SearchIndexMetadata) SearchIndexMetadata {
+func (svc *Service) withSearchIndexHealth(ctx context.Context, project projectregistry.Project, metadata SearchIndexMetadata) SearchIndexMetadata {
 	search, ok := svc.state.(searchQueryStore)
 	if !ok {
 		return metadata
 	}
-	health, err := search.SearchIndexHealth(ctx, projectID)
+	health, err := search.SearchIndexHealth(ctx, project)
 	if err != nil || !health.Degraded {
 		return metadata
 	}

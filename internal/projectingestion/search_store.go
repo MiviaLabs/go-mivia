@@ -21,13 +21,18 @@ type searchMutationStore interface {
 	ClearSearchIndexDegraded(context.Context, string) error
 }
 
+type searchRepairStore interface {
+	searchMutationStore
+	ReconcileSearchIndex(context.Context, projectregistry.Project) ([]FileState, error)
+}
+
 type searchQueryStore interface {
 	SearchText(context.Context, projectregistry.Project, TextSearchOptions) (TextSearchResultList, error)
 	SearchFiles(context.Context, projectregistry.Project, FileSearchOptions) (FileList, error)
 	SearchSymbols(context.Context, projectregistry.Project, SymbolFilter, Pagination) (SymbolList, error)
 	SearchReferences(context.Context, projectregistry.Project, ReferenceSearchOptions) (SymbolReferenceList, error)
 	SearchCalls(context.Context, projectregistry.Project, ReferenceSearchOptions) (SymbolCallEdgeList, error)
-	SearchIndexHealth(context.Context, string) (SearchIndexHealth, error)
+	SearchIndexHealth(context.Context, projectregistry.Project) (SearchIndexHealth, error)
 }
 
 type SearchIndexHealth struct {
@@ -59,7 +64,7 @@ func (adapter graphSearchAdapter) SearchCalls(ctx context.Context, project proje
 	return adapter.graph.SearchCalls(ctx, project, options)
 }
 
-func (adapter graphSearchAdapter) SearchIndexHealth(context.Context, string) (SearchIndexHealth, error) {
+func (adapter graphSearchAdapter) SearchIndexHealth(context.Context, projectregistry.Project) (SearchIndexHealth, error) {
 	return SearchIndexHealth{}, nil
 }
 
@@ -190,6 +195,61 @@ func (store *SQLiteStore) DeleteSearchProject(ctx context.Context, projectID str
 	return tx.Commit()
 }
 
+func (store *SQLiteStore) ReconcileSearchIndex(ctx context.Context, project projectregistry.Project) ([]FileState, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	states, err := searchRepairEligibleStates(ctx, tx, project)
+	if err != nil {
+		return nil, err
+	}
+	eligibleByFileID := make(map[string]FileState, len(states))
+	for _, state := range states {
+		eligibleByFileID[repoFileID(project.GraphNamespace, state.RelativePathHash)] = state
+	}
+
+	searchFileCounts, err := searchFileCountsByID(ctx, tx, project.ID)
+	if err != nil {
+		return nil, err
+	}
+	searchFileIDs, err := searchFileIDsByAnyTable(ctx, tx, project.ID)
+	if err != nil {
+		return nil, err
+	}
+	for fileID := range searchFileIDs {
+		if _, ok := eligibleByFileID[fileID]; ok {
+			continue
+		}
+		if err := deleteSearchFileTx(ctx, tx, project.ID, fileID); err != nil {
+			return nil, err
+		}
+	}
+
+	var repair []FileState
+	for _, state := range states {
+		fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+		count := searchFileCounts[fileID]
+		if count != 1 {
+			repair = append(repair, state)
+			continue
+		}
+		needsRepair, err := searchFileNeedsRepair(ctx, tx, project.ID, fileID, state)
+		if err != nil {
+			return nil, err
+		}
+		if needsRepair {
+			repair = append(repair, state)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return repair, nil
+}
+
 func (store *SQLiteStore) MarkSearchIndexDegraded(ctx context.Context, projectID string, reason string) error {
 	reason = safeSearchIndexReason(reason)
 	_, err := store.db.ExecContext(ctx, `INSERT INTO project_search_index_state (
@@ -213,37 +273,68 @@ func (store *SQLiteStore) ClearSearchIndexDegraded(ctx context.Context, projectI
 	return err
 }
 
-func (store *SQLiteStore) SearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
+func (store *SQLiteStore) SearchIndexHealth(ctx context.Context, project projectregistry.Project) (SearchIndexHealth, error) {
 	var status, reason string
 	err := store.db.QueryRowContext(ctx, `SELECT status, degraded_reason
 		FROM project_search_index_state
-		WHERE project_id = ?`, projectID).Scan(&status, &reason)
+		WHERE project_id = ?`, project.ID).Scan(&status, &reason)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return SearchIndexHealth{}, sanitizeSearchError(err)
 	}
 	if status == "degraded" {
 		return SearchIndexHealth{Degraded: true, Reason: safeSearchIndexReason(reason)}, nil
 	}
-	var eligibleFiles int
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*)
-		FROM project_file_ingestion_state
-		WHERE project_id = ?
-			AND status = ?
-			AND present = 1
-			AND relative_path_safe = 1
-			AND content_sha256 != ''`, projectID, string(FileStatusEligible)).Scan(&eligibleFiles); err != nil {
-		return SearchIndexHealth{}, sanitizeSearchError(err)
+	drift, err := store.searchIndexHasDrift(ctx, project)
+	if err != nil {
+		return SearchIndexHealth{}, err
 	}
-	var indexedFiles int
-	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*)
-		FROM project_search_files_fts
-		WHERE project_id = ?`, projectID).Scan(&indexedFiles); err != nil {
-		return SearchIndexHealth{}, sanitizeSearchError(err)
-	}
-	if eligibleFiles != indexedFiles {
+	if drift {
 		return SearchIndexHealth{Degraded: true, Reason: "search_index_drift"}, nil
 	}
 	return SearchIndexHealth{}, nil
+}
+
+func (store *SQLiteStore) searchIndexHasDrift(ctx context.Context, project projectregistry.Project) (bool, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, sanitizeSearchError(err)
+	}
+	defer tx.Rollback()
+	states, err := searchRepairEligibleStates(ctx, tx, project)
+	if err != nil {
+		return false, sanitizeSearchError(err)
+	}
+	counts, err := searchFileCountsByID(ctx, tx, project.ID)
+	if err != nil {
+		return false, sanitizeSearchError(err)
+	}
+	searchFileIDs, err := searchFileIDsByAnyTable(ctx, tx, project.ID)
+	if err != nil {
+		return false, sanitizeSearchError(err)
+	}
+	eligibleByFileID := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		eligibleByFileID[repoFileID(project.GraphNamespace, state.RelativePathHash)] = struct{}{}
+	}
+	for fileID := range searchFileIDs {
+		if _, ok := eligibleByFileID[fileID]; !ok {
+			return true, nil
+		}
+	}
+	for _, state := range states {
+		fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+		if counts[fileID] != 1 {
+			return true, nil
+		}
+		needsRepair, err := searchFileNeedsRepair(ctx, tx, project.ID, fileID, state)
+		if err != nil {
+			return false, sanitizeSearchError(err)
+		}
+		if needsRepair {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func deleteSearchFileTx(ctx context.Context, tx *sql.Tx, projectID string, fileID string) error {
@@ -253,6 +344,134 @@ func deleteSearchFileTx(ctx context.Context, tx *sql.Tx, projectID string, fileI
 		}
 	}
 	return nil
+}
+
+func searchRepairEligibleStates(ctx context.Context, tx *sql.Tx, project projectregistry.Project) ([]FileState, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT
+		relative_path_hash, relative_path, content_sha256, size_bytes, modified_at, last_event_at, last_ingested_at
+		FROM project_file_ingestion_state
+		WHERE project_id = ?
+			AND status = ?
+			AND present = 1
+			AND relative_path_safe = 1
+			AND content_sha256 != ''
+		ORDER BY relative_path_hash`, project.ID, string(FileStatusEligible))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var states []FileState
+	for rows.Next() {
+		var state FileState
+		var modifiedAt, lastEventAt, lastIngestedAt string
+		if err := rows.Scan(&state.RelativePathHash, &state.RelativePath, &state.ContentSHA256, &state.SizeBytes, &modifiedAt, &lastEventAt, &lastIngestedAt); err != nil {
+			return nil, err
+		}
+		state.ProjectID = project.ID
+		state.Status = FileStatusEligible
+		state.Present = true
+		state.RelativePathSafe = true
+		if parsed, err := parseOptionalTime(modifiedAt); err == nil {
+			state.ModifiedAt = parsed
+		}
+		if parsed, err := parseOptionalTime(lastEventAt); err == nil {
+			state.LastEventAt = parsed
+		}
+		if parsed, err := parseOptionalTime(lastIngestedAt); err == nil {
+			state.LastIngestedAt = parsed
+		}
+		states = append(states, state)
+	}
+	return states, rows.Err()
+}
+
+func searchFileCountsByID(ctx context.Context, tx *sql.Tx, projectID string) (map[string]int, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT file_id, COUNT(*)
+		FROM project_search_files_fts
+		WHERE project_id = ?
+		GROUP BY file_id`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var fileID string
+		var count int
+		if err := rows.Scan(&fileID, &count); err != nil {
+			return nil, err
+		}
+		counts[fileID] = count
+	}
+	return counts, rows.Err()
+}
+
+func searchFileIDsByAnyTable(ctx context.Context, tx *sql.Tx, projectID string) (map[string]struct{}, error) {
+	ids := make(map[string]struct{})
+	for _, table := range searchFTSTables() {
+		rows, err := tx.QueryContext(ctx, "SELECT file_id FROM "+table+" WHERE project_id = ? GROUP BY file_id", projectID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var fileID string
+			if err := rows.Scan(&fileID); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			ids[fileID] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
+func hasSearchChunkVersion(ctx context.Context, tx *sql.Tx, projectID string, fileID string, versionID string) (bool, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM project_search_chunks_fts
+		WHERE project_id = ?
+			AND file_id = ?
+			AND chunk_id LIKE ? ESCAPE '\'`,
+		projectID, fileID, escapeLike(versionID)+":chunk:%").Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func searchFileNeedsRepair(ctx context.Context, tx *sql.Tx, projectID string, fileID string, state FileState) (bool, error) {
+	versionID := fileVersionID(fileID, state.ContentSHA256)
+	indexed, err := hasSearchChunkVersion(ctx, tx, projectID, fileID, versionID)
+	if err != nil {
+		return false, err
+	}
+	if indexed {
+		return false, nil
+	}
+	chunkCount, err := searchChunkCount(ctx, tx, projectID, fileID)
+	if err != nil {
+		return false, err
+	}
+	if state.SizeBytes == 0 && chunkCount == 0 {
+		return false, nil
+	}
+	return true, nil
+}
+
+func searchChunkCount(ctx context.Context, tx *sql.Tx, projectID string, fileID string) (int, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM project_search_chunks_fts
+		WHERE project_id = ?
+			AND file_id = ?`, projectID, fileID).Scan(&count)
+	return count, err
 }
 
 func searchFTSTables() []string {
