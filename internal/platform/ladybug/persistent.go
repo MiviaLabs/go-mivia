@@ -3,6 +3,7 @@ package ladybug
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,6 +71,23 @@ func (graph *PersistentGraph) PutRelationship(ctx context.Context, relationship 
 		return err
 	}
 	return graph.persist()
+}
+
+func (graph *PersistentGraph) Batch(ctx context.Context, fn func(Graph) error) error {
+	if fn == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	callbackErr := fn(graph.graph)
+	if err := ctx.Err(); err != nil {
+		return errors.Join(callbackErr, err)
+	}
+	persistErr := graph.persist()
+	return errors.Join(callbackErr, persistErr)
 }
 
 func (graph *PersistentGraph) GetRelationship(ctx context.Context, relationshipType string, from NodeRef, to NodeRef) (Relationship, error) {

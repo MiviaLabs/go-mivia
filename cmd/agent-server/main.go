@@ -87,18 +87,19 @@ func run() error {
 	researchService := research.NewService(researchstore.NewLadybugMetadataStore(graph))
 	projectDigestService := projectregistry.NewDigestService(projectRegistry, projectGraph)
 	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(projectGraph), projectingestion.NewSQLiteStore(sqliteDB.SQLDB()))
+	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
+	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
+		return err
+	}
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionService, projectingestion.OrchestratorOptions{
 		LiveUpdatesEnabled: cfg.Ingestion.LiveUpdatesEnabled,
 		DebounceInterval:   cfg.Ingestion.DebounceInterval,
 		QueueDepth:         cfg.Ingestion.QueueDepth,
 		WorkerCount:        cfg.Ingestion.WorkerCount,
 		InitialScanOnStart: cfg.Ingestion.InitialScanOnStart,
+		Logger:             logger,
 	})
 	if err := projectIngestionOrchestrator.Start(ctx); err != nil {
-		return err
-	}
-	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
-	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
 		return err
 	}
 	agentService := service.New(agentStore, agentStore)

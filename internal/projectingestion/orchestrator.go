@@ -3,6 +3,7 @@ package projectingestion
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,6 +18,7 @@ type OrchestratorOptions struct {
 	QueueDepth         int
 	WorkerCount        int
 	InitialScanOnStart bool
+	Logger             *slog.Logger
 }
 
 type ingestionRunner interface {
@@ -28,6 +30,7 @@ type Orchestrator struct {
 	registry       *projectregistry.Registry
 	ingestion      ingestionRunner
 	options        OrchestratorOptions
+	logger         *slog.Logger
 	watcherFactory WatcherFactory
 
 	mu      sync.Mutex
@@ -64,6 +67,7 @@ func NewOrchestrator(registry *projectregistry.Registry, ingestion ingestionRunn
 		registry:       registry,
 		ingestion:      ingestion,
 		options:        options,
+		logger:         options.Logger,
 		watcherFactory: NewFSNotifyWatcher,
 	}
 }
@@ -76,6 +80,9 @@ func (orchestrator *Orchestrator) Start(ctx context.Context) error {
 	orchestrator.mu.Lock()
 	defer orchestrator.mu.Unlock()
 	if orchestrator.started || !orchestrator.options.LiveUpdatesEnabled {
+		if !orchestrator.options.LiveUpdatesEnabled {
+			orchestrator.logInfo("live ingestion disabled")
+		}
 		return nil
 	}
 	if orchestrator.registry == nil || orchestrator.ingestion == nil {
@@ -100,17 +107,27 @@ func (orchestrator *Orchestrator) Start(ctx context.Context) error {
 			rescans: make(chan struct{}, 1),
 			tasks:   make(chan ingestTask, orchestrator.options.QueueDepth),
 		}
-		if err := orchestrator.addProjectWatches(projectWatcher); err != nil {
+		watchedDirectoryCount, err := orchestrator.addProjectWatches(projectWatcher)
+		if err != nil {
 			cancel()
 			projectWatcher.close()
 			closeProjectWatchers(startedWatchers)
 			return err
 		}
+		orchestrator.logInfo("live ingestion watcher started",
+			slog.String("project_id", project.ID),
+			slog.Int("watched_directory_count", watchedDirectoryCount),
+			slog.Int("queue_depth", orchestrator.options.QueueDepth),
+			slog.Int("worker_count", orchestrator.options.WorkerCount),
+			slog.Duration("debounce_interval", orchestrator.options.DebounceInterval),
+			slog.Bool("initial_scan_on_start", orchestrator.options.InitialScanOnStart),
+		)
 		startedWatchers = append(startedWatchers, projectWatcher)
 		orchestrator.startProjectWatcher(runCtx, projectWatcher)
 	}
 	orchestrator.cancel = cancel
 	orchestrator.started = true
+	orchestrator.logInfo("live ingestion orchestrator started", slog.Int("project_count", len(startedWatchers)))
 	return nil
 }
 
@@ -128,6 +145,7 @@ func (orchestrator *Orchestrator) Stop(ctx context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
+	orchestrator.logInfo("live ingestion orchestrator stopping")
 	done := make(chan struct{})
 	go func() {
 		orchestrator.wg.Wait()
@@ -135,6 +153,7 @@ func (orchestrator *Orchestrator) Stop(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		orchestrator.logInfo("live ingestion orchestrator stopped")
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -158,6 +177,7 @@ func (orchestrator *Orchestrator) startProjectWatcher(ctx context.Context, proje
 		}()
 	}
 	if orchestrator.options.InitialScanOnStart {
+		orchestrator.logInfo("live ingestion initial scan queued", slog.String("project_id", projectWatcher.project.ID))
 		orchestrator.enqueueRescan(projectWatcher)
 	}
 }
@@ -178,6 +198,7 @@ func (orchestrator *Orchestrator) watchLoop(ctx context.Context, projectWatcher 
 				return
 			}
 			if isWatcherOverflow(err) {
+				orchestrator.logWarn("live ingestion watcher overflow; rescan queued", slog.String("project_id", projectWatcher.project.ID))
 				orchestrator.enqueueRescan(projectWatcher)
 			}
 		}
@@ -186,11 +207,17 @@ func (orchestrator *Orchestrator) watchLoop(ctx context.Context, projectWatcher 
 
 func (orchestrator *Orchestrator) handleWatchEvent(projectWatcher *projectWatcher, event WatchEvent) {
 	if event.Op&WatchCreate != 0 && isDirectoryPath(event.Path) {
-		_ = orchestrator.addWatchesUnder(projectWatcher, event.Path)
+		if added, err := orchestrator.addWatchesUnder(projectWatcher, event.Path); err == nil && added > 0 {
+			orchestrator.logInfo("live ingestion watched new directories",
+				slog.String("project_id", projectWatcher.project.ID),
+				slog.Int("watched_directory_count", added),
+			)
+		}
 	}
 	select {
 	case projectWatcher.events <- event:
 	default:
+		orchestrator.logWarn("live ingestion event queue full; rescan queued", slog.String("project_id", projectWatcher.project.ID))
 		orchestrator.enqueueRescan(projectWatcher)
 	}
 }
@@ -229,10 +256,49 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 			return
 		case task := <-projectWatcher.tasks:
 			if task.rescan {
-				_, _ = orchestrator.ingestion.IngestProject(ctx, projectWatcher.project.ID, TriggerLive)
+				orchestrator.logInfo("live ingestion rescan started", slog.String("project_id", projectWatcher.project.ID))
+				run, err := orchestrator.ingestion.IngestProject(ctx, projectWatcher.project.ID, TriggerLive)
+				if err != nil {
+					orchestrator.logWarn("live ingestion rescan failed",
+						slog.String("project_id", projectWatcher.project.ID),
+						slog.String("error_category", "ingest_failed"),
+					)
+					continue
+				}
+				orchestrator.logInfo("live ingestion rescan completed",
+					slog.String("project_id", projectWatcher.project.ID),
+					slog.String("run_id", run.ID),
+					slog.String("status", string(run.Status)),
+					slog.Int("files_seen", run.FilesSeen),
+					slog.Int("files_ingested", run.FilesIngested),
+					slog.Int("files_skipped", run.FilesSkipped),
+					slog.Int("chunks_stored", run.ChunksStored),
+					slog.Int("symbols_stored", run.SymbolsStored),
+				)
 				continue
 			}
-			_, _ = orchestrator.ingestion.IngestPath(ctx, projectWatcher.project.ID, task.relativePath, TriggerLive)
+			pathHash := shortHash(task.relativePath)
+			orchestrator.logInfo("live ingestion path event started",
+				slog.String("project_id", projectWatcher.project.ID),
+				slog.String("relative_path_hash", pathHash),
+			)
+			run, err := orchestrator.ingestion.IngestPath(ctx, projectWatcher.project.ID, task.relativePath, TriggerLive)
+			if err != nil {
+				orchestrator.logWarn("live ingestion path event failed",
+					slog.String("project_id", projectWatcher.project.ID),
+					slog.String("relative_path_hash", pathHash),
+					slog.String("error_category", "ingest_failed"),
+				)
+				continue
+			}
+			orchestrator.logInfo("live ingestion path event completed",
+				slog.String("project_id", projectWatcher.project.ID),
+				slog.String("relative_path_hash", pathHash),
+				slog.String("run_id", run.ID),
+				slog.String("status", string(run.Status)),
+				slog.Int("files_ingested", run.FilesIngested),
+				slog.Int("files_skipped", run.FilesSkipped),
+			)
 		}
 	}
 }
@@ -253,7 +319,7 @@ func (orchestrator *Orchestrator) enqueueRescan(projectWatcher *projectWatcher) 
 	}
 }
 
-func (orchestrator *Orchestrator) addProjectWatches(projectWatcher *projectWatcher) error {
+func (orchestrator *Orchestrator) addProjectWatches(projectWatcher *projectWatcher) (int, error) {
 	root := projectWatcher.project.CanonicalRootPath
 	if root == "" {
 		root = projectWatcher.project.RootPath
@@ -261,10 +327,11 @@ func (orchestrator *Orchestrator) addProjectWatches(projectWatcher *projectWatch
 	return orchestrator.addWatchesUnder(projectWatcher, root)
 }
 
-func (orchestrator *Orchestrator) addWatchesUnder(projectWatcher *projectWatcher, root string) error {
+func (orchestrator *Orchestrator) addWatchesUnder(projectWatcher *projectWatcher, root string) (int, error) {
 	project := projectWatcher.project
 	walkRoot := filepath.Clean(root)
-	return filepath.WalkDir(walkRoot, func(current string, entry os.DirEntry, walkErr error) error {
+	watched := 0
+	err := filepath.WalkDir(walkRoot, func(current string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("watch walk failed")
 		}
@@ -284,8 +351,13 @@ func (orchestrator *Orchestrator) addWatchesUnder(projectWatcher *projectWatcher
 		if relative != "" && projectregistry.ProjectExcludesRelativePath(project, relative) {
 			return filepath.SkipDir
 		}
-		return projectWatcher.watcher.Add(current)
+		if err := projectWatcher.watcher.Add(current); err != nil {
+			return err
+		}
+		watched++
+		return nil
 	})
+	return watched, err
 }
 
 func (orchestrator *Orchestrator) relativeEventPath(project projectregistry.Project, eventPath string) (string, bool) {
@@ -322,4 +394,26 @@ func resetTimer(timer *time.Timer, duration time.Duration) {
 		}
 	}
 	timer.Reset(duration)
+}
+
+func (orchestrator *Orchestrator) logInfo(message string, attrs ...slog.Attr) {
+	if orchestrator.logger == nil {
+		return
+	}
+	orchestrator.logger.Info(message, attrsToAny(attrs)...)
+}
+
+func (orchestrator *Orchestrator) logWarn(message string, attrs ...slog.Attr) {
+	if orchestrator.logger == nil {
+		return
+	}
+	orchestrator.logger.Warn(message, attrsToAny(attrs)...)
+}
+
+func attrsToAny(attrs []slog.Attr) []any {
+	args := make([]any, 0, len(attrs))
+	for _, attr := range attrs {
+		args = append(args, attr)
+	}
+	return args
 }

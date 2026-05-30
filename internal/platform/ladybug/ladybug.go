@@ -44,6 +44,10 @@ type Graph interface {
 	PutRelationship(context.Context, Relationship) error
 }
 
+type BatchGraph interface {
+	Batch(context.Context, func(Graph) error) error
+}
+
 type MemoryGraph struct {
 	mu                  sync.RWMutex
 	nodeLabels          map[string]struct{}

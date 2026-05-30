@@ -100,6 +100,20 @@ func (router *ProjectGraphRouter) PutRelationship(ctx context.Context, relations
 	return backend.PutRelationship(ctx, relationship)
 }
 
+func (router *ProjectGraphRouter) Batch(ctx context.Context, fn func(ladybug.Graph) error) error {
+	if fn == nil {
+		return nil
+	}
+	batcher, ok := router.persistent.(ladybug.BatchGraph)
+	if !ok {
+		return fn(router)
+	}
+	return batcher.Batch(ctx, func(persistent ladybug.Graph) error {
+		batched := NewProjectGraphRouter(router.registry, router.memory, persistent)
+		return fn(batched)
+	})
+}
+
 func (router *ProjectGraphRouter) backendForNodeRef(label string, id string) (ladybug.Graph, error) {
 	projectID := router.projectIDForRef(label, id)
 	if projectID == "" {

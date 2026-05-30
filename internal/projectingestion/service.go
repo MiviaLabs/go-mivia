@@ -51,7 +51,28 @@ func NewService(registry *projectregistry.Registry, graph *GraphStore, state sta
 	}
 }
 
+func (svc *Service) withGraphBatch(ctx context.Context, fn func(*Service) (Run, error)) (Run, error) {
+	if svc == nil || svc.graph == nil {
+		return fn(svc)
+	}
+	var run Run
+	err := svc.graph.WithBatch(ctx, func(graph *GraphStore) error {
+		batched := *svc
+		batched.graph = graph
+		var innerErr error
+		run, innerErr = fn(&batched)
+		return innerErr
+	})
+	return run, err
+}
+
 func (svc *Service) IngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
+	return svc.withGraphBatch(ctx, func(svc *Service) (Run, error) {
+		return svc.ingestProject(ctx, projectID, trigger)
+	})
+}
+
+func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
 	trigger = normalizeTrigger(trigger)
 	project, err := svc.projectForIngestion(projectID, trigger)
 	if err != nil {
@@ -142,6 +163,12 @@ func (svc *Service) IngestProject(ctx context.Context, projectID string, trigger
 }
 
 func (svc *Service) IngestPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
+	return svc.withGraphBatch(ctx, func(svc *Service) (Run, error) {
+		return svc.ingestPath(ctx, projectID, relativePath, trigger)
+	})
+}
+
+func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
 	trigger = normalizeTrigger(trigger)
 	project, err := svc.projectForIngestion(projectID, trigger)
 	if err != nil {
