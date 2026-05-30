@@ -62,8 +62,10 @@ func run() error {
 		return err
 	}
 	projectRegistry, err := projectregistry.NewRegistry(cfg.Projects, projectregistry.Options{
-		LadybugPath: cfg.LadybugPath,
-		SQLitePath:  cfg.SQLitePath,
+		LadybugPath:         cfg.LadybugPath,
+		SQLitePath:          cfg.SQLitePath,
+		ContentGraphEnabled: cfg.Ingestion.ContentGraphEnabled,
+		LiveUpdatesEnabled:  cfg.Ingestion.LiveUpdatesEnabled,
 	})
 	if err != nil {
 		return err

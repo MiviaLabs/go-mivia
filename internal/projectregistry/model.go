@@ -3,10 +3,13 @@ package projectregistry
 import "errors"
 
 const (
-	DigestModeMetadataOnly = "metadata_only"
-	UpdatePolicyManual     = "manual"
-	ClassificationInternal = "internal"
-	ValidationStatusValid  = "valid"
+	DigestModeMetadataOnly        = "metadata_only"
+	DigestModeContentGraph        = "content_graph"
+	UpdatePolicyManual            = "manual"
+	UpdatePolicyLive              = "live"
+	ClassificationInternal        = "internal"
+	SensitiveMarkerPolicySkipFile = "skip_file"
+	ValidationStatusValid         = "valid"
 )
 
 var (
@@ -15,21 +18,24 @@ var (
 )
 
 type Project struct {
-	ID                string
-	DisplayName       string
-	Description       string
-	RootPath          string
-	CanonicalRootPath string
-	Enabled           bool
-	Classification    string
-	GraphNamespace    string
-	DigestMode        string
-	UpdatePolicy      string
-	Include           []string
-	Exclude           []string
-	FollowSymlinks    bool
-	ValidationStatus  string
-	ValidationError   string
+	ID                    string
+	DisplayName           string
+	Description           string
+	RootPath              string
+	CanonicalRootPath     string
+	Enabled               bool
+	Classification        string
+	GraphNamespace        string
+	DigestMode            string
+	UpdatePolicy          string
+	Include               []string
+	Exclude               []string
+	FollowSymlinks        bool
+	MaxFileBytes          int64
+	MaxChunkBytes         int
+	SensitiveMarkerPolicy string
+	ValidationStatus      string
+	ValidationError       string
 }
 
 type ProjectMetadata struct {

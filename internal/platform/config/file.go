@@ -11,14 +11,17 @@ import (
 const (
 	configVersion          = 1
 	digestModeMetadataOnly = "metadata_only"
+	digestModeContentGraph = "content_graph"
 	updatePolicyManual     = "manual"
+	updatePolicyLive       = "live"
 )
 
 type fileConfig struct {
-	Version  int                 `toml:"version"`
-	Server   *fileServerConfig   `toml:"server"`
-	Storage  *fileStorageConfig  `toml:"storage"`
-	Projects []fileProjectConfig `toml:"projects"`
+	Version   int                  `toml:"version"`
+	Server    *fileServerConfig    `toml:"server"`
+	Storage   *fileStorageConfig   `toml:"storage"`
+	Ingestion *fileIngestionConfig `toml:"ingestion"`
+	Projects  []fileProjectConfig  `toml:"projects"`
 }
 
 type fileServerConfig struct {
@@ -34,19 +37,34 @@ type fileStorageConfig struct {
 	SQLitePath  *string `toml:"sqlite_path"`
 }
 
+type fileIngestionConfig struct {
+	ContentGraphEnabled   *bool   `toml:"content_graph_enabled"`
+	LiveUpdatesEnabled    *bool   `toml:"live_updates_enabled"`
+	DebounceInterval      *string `toml:"debounce_interval"`
+	MaxFileBytes          *int64  `toml:"max_file_bytes"`
+	MaxChunkBytes         *int    `toml:"max_chunk_bytes"`
+	QueueDepth            *int    `toml:"queue_depth"`
+	WorkerCount           *int    `toml:"worker_count"`
+	InitialScanOnStart    *bool   `toml:"initial_scan_on_start"`
+	SensitiveMarkerPolicy string  `toml:"sensitive_marker_policy"`
+}
+
 type fileProjectConfig struct {
-	ID             string   `toml:"id"`
-	DisplayName    string   `toml:"display_name"`
-	Description    string   `toml:"description"`
-	RootPath       string   `toml:"root_path"`
-	Enabled        bool     `toml:"enabled"`
-	Classification string   `toml:"classification"`
-	GraphNamespace string   `toml:"graph_namespace"`
-	DigestMode     string   `toml:"digest_mode"`
-	UpdatePolicy   string   `toml:"update_policy"`
-	Include        []string `toml:"include"`
-	Exclude        []string `toml:"exclude"`
-	FollowSymlinks bool     `toml:"follow_symlinks"`
+	ID                    string   `toml:"id"`
+	DisplayName           string   `toml:"display_name"`
+	Description           string   `toml:"description"`
+	RootPath              string   `toml:"root_path"`
+	Enabled               bool     `toml:"enabled"`
+	Classification        string   `toml:"classification"`
+	GraphNamespace        string   `toml:"graph_namespace"`
+	DigestMode            string   `toml:"digest_mode"`
+	UpdatePolicy          string   `toml:"update_policy"`
+	Include               []string `toml:"include"`
+	Exclude               []string `toml:"exclude"`
+	FollowSymlinks        bool     `toml:"follow_symlinks"`
+	MaxFileBytes          *int64   `toml:"max_file_bytes"`
+	MaxChunkBytes         *int     `toml:"max_chunk_bytes"`
+	SensitiveMarkerPolicy string   `toml:"sensitive_marker_policy"`
 }
 
 func loadFileConfig(path string) (fileConfig, error) {
@@ -71,13 +89,50 @@ func (cfg fileConfig) validate() error {
 	if cfg.Version != configVersion {
 		return fmt.Errorf("version must be %d", configVersion)
 	}
+	if cfg.Ingestion != nil {
+		if err := cfg.Ingestion.validate(); err != nil {
+			return err
+		}
+	}
 	for i, project := range cfg.Projects {
-		if project.DigestMode != "" && project.DigestMode != digestModeMetadataOnly {
-			return fmt.Errorf("projects[%d].digest_mode must be %q", i, digestModeMetadataOnly)
+		switch project.DigestMode {
+		case "", digestModeMetadataOnly, digestModeContentGraph:
+		default:
+			return fmt.Errorf("projects[%d].digest_mode must be %q or %q", i, digestModeMetadataOnly, digestModeContentGraph)
 		}
-		if project.UpdatePolicy != "" && project.UpdatePolicy != updatePolicyManual {
-			return fmt.Errorf("projects[%d].update_policy must be %q", i, updatePolicyManual)
+		switch project.UpdatePolicy {
+		case "", updatePolicyManual, updatePolicyLive:
+		default:
+			return fmt.Errorf("projects[%d].update_policy must be %q or %q", i, updatePolicyManual, updatePolicyLive)
 		}
+		if project.MaxFileBytes != nil && *project.MaxFileBytes <= 0 {
+			return fmt.Errorf("projects[%d].max_file_bytes must be positive", i)
+		}
+		if project.MaxChunkBytes != nil && *project.MaxChunkBytes <= 0 {
+			return fmt.Errorf("projects[%d].max_chunk_bytes must be positive", i)
+		}
+		if project.SensitiveMarkerPolicy != "" && project.SensitiveMarkerPolicy != sensitiveMarkerPolicySkipFile {
+			return fmt.Errorf("projects[%d].sensitive_marker_policy must be %q", i, sensitiveMarkerPolicySkipFile)
+		}
+	}
+	return nil
+}
+
+func (cfg fileIngestionConfig) validate() error {
+	if cfg.MaxFileBytes != nil && *cfg.MaxFileBytes <= 0 {
+		return fmt.Errorf("ingestion.max_file_bytes must be positive")
+	}
+	if cfg.MaxChunkBytes != nil && *cfg.MaxChunkBytes <= 0 {
+		return fmt.Errorf("ingestion.max_chunk_bytes must be positive")
+	}
+	if cfg.QueueDepth != nil && *cfg.QueueDepth <= 0 {
+		return fmt.Errorf("ingestion.queue_depth must be positive")
+	}
+	if cfg.WorkerCount != nil && *cfg.WorkerCount <= 0 {
+		return fmt.Errorf("ingestion.worker_count must be positive")
+	}
+	if cfg.SensitiveMarkerPolicy != "" && cfg.SensitiveMarkerPolicy != sensitiveMarkerPolicySkipFile {
+		return fmt.Errorf("ingestion.sensitive_marker_policy must be %q", sensitiveMarkerPolicySkipFile)
 	}
 	return nil
 }
@@ -111,6 +166,37 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		}
 	}
 
+	if cfg.Ingestion != nil {
+		if cfg.Ingestion.ContentGraphEnabled != nil {
+			base.Ingestion.ContentGraphEnabled = *cfg.Ingestion.ContentGraphEnabled
+		}
+		if cfg.Ingestion.LiveUpdatesEnabled != nil {
+			base.Ingestion.LiveUpdatesEnabled = *cfg.Ingestion.LiveUpdatesEnabled
+		}
+		var err error
+		if base.Ingestion.DebounceInterval, err = applyDuration("ingestion.debounce_interval", cfg.Ingestion.DebounceInterval, base.Ingestion.DebounceInterval); err != nil {
+			return Config{}, err
+		}
+		if cfg.Ingestion.MaxFileBytes != nil {
+			base.Ingestion.MaxFileBytes = *cfg.Ingestion.MaxFileBytes
+		}
+		if cfg.Ingestion.MaxChunkBytes != nil {
+			base.Ingestion.MaxChunkBytes = *cfg.Ingestion.MaxChunkBytes
+		}
+		if cfg.Ingestion.QueueDepth != nil {
+			base.Ingestion.QueueDepth = *cfg.Ingestion.QueueDepth
+		}
+		if cfg.Ingestion.WorkerCount != nil {
+			base.Ingestion.WorkerCount = *cfg.Ingestion.WorkerCount
+		}
+		if cfg.Ingestion.InitialScanOnStart != nil {
+			base.Ingestion.InitialScanOnStart = *cfg.Ingestion.InitialScanOnStart
+		}
+		if cfg.Ingestion.SensitiveMarkerPolicy != "" {
+			base.Ingestion.SensitiveMarkerPolicy = cfg.Ingestion.SensitiveMarkerPolicy
+		}
+	}
+
 	base.Projects = make([]Project, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
 		base.Projects = append(base.Projects, project.toProject())
@@ -139,7 +225,7 @@ func (project fileProjectConfig) toProject() Project {
 		updatePolicy = updatePolicyManual
 	}
 
-	return Project{
+	cfgProject := Project{
 		ID:             project.ID,
 		DisplayName:    project.DisplayName,
 		Description:    project.Description,
@@ -153,4 +239,12 @@ func (project fileProjectConfig) toProject() Project {
 		Exclude:        append([]string(nil), project.Exclude...),
 		FollowSymlinks: project.FollowSymlinks,
 	}
+	if project.MaxFileBytes != nil {
+		cfgProject.MaxFileBytes = *project.MaxFileBytes
+	}
+	if project.MaxChunkBytes != nil {
+		cfgProject.MaxChunkBytes = *project.MaxChunkBytes
+	}
+	cfgProject.SensitiveMarkerPolicy = project.SensitiveMarkerPolicy
+	return cfgProject
 }

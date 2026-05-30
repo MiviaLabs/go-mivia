@@ -9,15 +9,8 @@ import (
 )
 
 func TestConfigValidate_NonLocalBind_ReturnsError(t *testing.T) {
-	cfg := Config{
-		HTTPAddr:          "0.0.0.0:8080",
-		LadybugPath:       "data/test.lbug",
-		SQLitePath:        "data/test.sqlite",
-		MaxRequestBytes:   1024,
-		RequestTimeout:    time.Second,
-		ReadHeaderTimeout: time.Second,
-		ShutdownTimeout:   time.Second,
-	}
+	cfg := defaultConfig("test.toml")
+	cfg.HTTPAddr = "0.0.0.0:8080"
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected non-local bind to be rejected")
@@ -25,18 +18,20 @@ func TestConfigValidate_NonLocalBind_ReturnsError(t *testing.T) {
 }
 
 func TestConfigValidate_LocalBind_ReturnsNil(t *testing.T) {
-	cfg := Config{
-		HTTPAddr:          "127.0.0.1:8080",
-		LadybugPath:       "data/test.lbug",
-		SQLitePath:        "data/test.sqlite",
-		MaxRequestBytes:   1024,
-		RequestTimeout:    time.Second,
-		ReadHeaderTimeout: time.Second,
-		ShutdownTimeout:   time.Second,
-	}
+	cfg := defaultConfig("test.toml")
+	cfg.HTTPAddr = "127.0.0.1:8080"
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected local bind to be valid: %v", err)
+	}
+}
+
+func TestConfigValidate_LiveUpdatesRequireContentGraph(t *testing.T) {
+	cfg := defaultConfig("test.toml")
+	cfg.Ingestion.LiveUpdatesEnabled = true
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected live updates without content graph to fail")
 	}
 }
 
@@ -91,6 +86,17 @@ shutdown_timeout = "12s"
 ladybug_path = "data/from-file.lbug"
 sqlite_path = "data/from-file.sqlite"
 
+[ingestion]
+content_graph_enabled = false
+live_updates_enabled = false
+debounce_interval = "3s"
+max_file_bytes = 2097152
+max_chunk_bytes = 8192
+queue_depth = 64
+worker_count = 1
+initial_scan_on_start = false
+sensitive_marker_policy = "skip_file"
+
 [[projects]]
 id = "example"
 display_name = "Example"
@@ -104,12 +110,16 @@ update_policy = "manual"
 include = ["**/*.go"]
 exclude = [".git/**"]
 follow_symlinks = false
+max_file_bytes = 1048576
+max_chunk_bytes = 4096
+sensitive_marker_policy = "skip_file"
 `)
 
 	t.Setenv("MIVIA_CONFIG_PATH", path)
 	t.Setenv("MIVIA_HTTP_ADDR", "localhost:8081")
 	t.Setenv("MIVIA_LADYBUG_PATH", "data/from-env.lbug")
 	t.Setenv("MIVIA_REQUEST_TIMEOUT", "13s")
+	t.Setenv("MIVIA_INGESTION_QUEUE_DEPTH", "32")
 
 	cfg, err := Load()
 	if err != nil {
@@ -134,11 +144,58 @@ follow_symlinks = false
 	if cfg.ReadHeaderTimeout != 6*time.Second {
 		t.Fatalf("expected file read header timeout, got %s", cfg.ReadHeaderTimeout)
 	}
+	if cfg.Ingestion.DebounceInterval != 3*time.Second {
+		t.Fatalf("expected file ingestion debounce interval, got %s", cfg.Ingestion.DebounceInterval)
+	}
+	if cfg.Ingestion.MaxFileBytes != 2097152 {
+		t.Fatalf("expected file ingestion max file bytes, got %d", cfg.Ingestion.MaxFileBytes)
+	}
+	if cfg.Ingestion.QueueDepth != 32 {
+		t.Fatalf("expected env ingestion queue depth override, got %d", cfg.Ingestion.QueueDepth)
+	}
 	if len(cfg.Projects) != 1 {
 		t.Fatalf("expected one project, got %d", len(cfg.Projects))
 	}
 	if cfg.Projects[0].ID != "example" || cfg.Projects[0].DigestMode != digestModeMetadataOnly {
 		t.Fatalf("unexpected project config: %+v", cfg.Projects[0])
+	}
+	if cfg.Projects[0].MaxChunkBytes != 4096 {
+		t.Fatalf("expected project max chunk bytes, got %d", cfg.Projects[0].MaxChunkBytes)
+	}
+}
+
+func TestLoad_EnvOverridesIngestion_ReturnsMergedConfig(t *testing.T) {
+	chdir(t, t.TempDir())
+	clearConfigEnv(t)
+	t.Setenv("MIVIA_INGESTION_CONTENT_GRAPH_ENABLED", "true")
+	t.Setenv("MIVIA_INGESTION_LIVE_UPDATES_ENABLED", "true")
+	t.Setenv("MIVIA_INGESTION_DEBOUNCE_INTERVAL", "4s")
+	t.Setenv("MIVIA_INGESTION_MAX_FILE_BYTES", "1024")
+	t.Setenv("MIVIA_INGESTION_MAX_CHUNK_BYTES", "512")
+	t.Setenv("MIVIA_INGESTION_QUEUE_DEPTH", "8")
+	t.Setenv("MIVIA_INGESTION_WORKER_COUNT", "3")
+	t.Setenv("MIVIA_INGESTION_INITIAL_SCAN_ON_START", "true")
+	t.Setenv("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY", "skip_file")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected env ingestion settings to load: %v", err)
+	}
+
+	if !cfg.Ingestion.ContentGraphEnabled || !cfg.Ingestion.LiveUpdatesEnabled {
+		t.Fatalf("expected ingestion booleans enabled: %+v", cfg.Ingestion)
+	}
+	if cfg.Ingestion.DebounceInterval != 4*time.Second {
+		t.Fatalf("expected debounce override, got %s", cfg.Ingestion.DebounceInterval)
+	}
+	if cfg.Ingestion.MaxFileBytes != 1024 || cfg.Ingestion.MaxChunkBytes != 512 {
+		t.Fatalf("expected ingestion byte overrides: %+v", cfg.Ingestion)
+	}
+	if cfg.Ingestion.QueueDepth != 8 || cfg.Ingestion.WorkerCount != 3 {
+		t.Fatalf("expected queue/worker overrides: %+v", cfg.Ingestion)
+	}
+	if !cfg.Ingestion.InitialScanOnStart {
+		t.Fatal("expected initial scan override")
 	}
 }
 
@@ -195,6 +252,15 @@ func clearConfigEnv(t *testing.T) {
 		"MIVIA_REQUEST_TIMEOUT",
 		"MIVIA_READ_HEADER_TIMEOUT",
 		"MIVIA_SHUTDOWN_TIMEOUT",
+		"MIVIA_INGESTION_CONTENT_GRAPH_ENABLED",
+		"MIVIA_INGESTION_LIVE_UPDATES_ENABLED",
+		"MIVIA_INGESTION_DEBOUNCE_INTERVAL",
+		"MIVIA_INGESTION_MAX_FILE_BYTES",
+		"MIVIA_INGESTION_MAX_CHUNK_BYTES",
+		"MIVIA_INGESTION_QUEUE_DEPTH",
+		"MIVIA_INGESTION_WORKER_COUNT",
+		"MIVIA_INGESTION_INITIAL_SCAN_ON_START",
+		"MIVIA_INGESTION_SENSITIVE_MARKER_POLICY",
 	} {
 		t.Setenv(key, "")
 	}

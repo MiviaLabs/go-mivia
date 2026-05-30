@@ -13,8 +13,11 @@ import (
 var projectIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 type Options struct {
-	LadybugPath string
-	SQLitePath  string
+	LadybugPath                  string
+	SQLitePath                   string
+	ContentGraphEnabled          bool
+	LiveUpdatesEnabled           bool
+	ContentGraphApprovalAccepted bool
 }
 
 func NewRegistry(configProjects []config.Project, options Options) (*Registry, error) {
@@ -47,18 +50,21 @@ func NewRegistry(configProjects []config.Project, options Options) (*Registry, e
 
 func normalizeProject(configProject config.Project, options Options) (Project, error) {
 	project := Project{
-		ID:             strings.TrimSpace(configProject.ID),
-		DisplayName:    strings.TrimSpace(configProject.DisplayName),
-		Description:    strings.TrimSpace(configProject.Description),
-		RootPath:       configProject.RootPath,
-		Enabled:        configProject.Enabled,
-		Classification: strings.TrimSpace(configProject.Classification),
-		GraphNamespace: strings.TrimSpace(configProject.GraphNamespace),
-		DigestMode:     strings.TrimSpace(configProject.DigestMode),
-		UpdatePolicy:   strings.TrimSpace(configProject.UpdatePolicy),
-		Include:        append([]string(nil), configProject.Include...),
-		Exclude:        append([]string(nil), configProject.Exclude...),
-		FollowSymlinks: configProject.FollowSymlinks,
+		ID:                    strings.TrimSpace(configProject.ID),
+		DisplayName:           strings.TrimSpace(configProject.DisplayName),
+		Description:           strings.TrimSpace(configProject.Description),
+		RootPath:              configProject.RootPath,
+		Enabled:               configProject.Enabled,
+		Classification:        strings.TrimSpace(configProject.Classification),
+		GraphNamespace:        strings.TrimSpace(configProject.GraphNamespace),
+		DigestMode:            strings.TrimSpace(configProject.DigestMode),
+		UpdatePolicy:          strings.TrimSpace(configProject.UpdatePolicy),
+		Include:               append([]string(nil), configProject.Include...),
+		Exclude:               append([]string(nil), configProject.Exclude...),
+		FollowSymlinks:        configProject.FollowSymlinks,
+		MaxFileBytes:          configProject.MaxFileBytes,
+		MaxChunkBytes:         configProject.MaxChunkBytes,
+		SensitiveMarkerPolicy: strings.TrimSpace(configProject.SensitiveMarkerPolicy),
 	}
 
 	if project.Classification == "" {
@@ -73,8 +79,11 @@ func normalizeProject(configProject config.Project, options Options) (Project, e
 	if project.UpdatePolicy == "" {
 		project.UpdatePolicy = UpdatePolicyManual
 	}
+	if project.SensitiveMarkerPolicy == "" {
+		project.SensitiveMarkerPolicy = SensitiveMarkerPolicySkipFile
+	}
 
-	if err := validateProject(project); err != nil {
+	if err := validateProject(project, options); err != nil {
 		return Project{}, err
 	}
 	cleanRootPath, canonicalRootPath, err := validateRootPath(project.RootPath, project.Enabled)
@@ -91,7 +100,7 @@ func normalizeProject(configProject config.Project, options Options) (Project, e
 	return project, nil
 }
 
-func validateProject(project Project) error {
+func validateProject(project Project, options Options) error {
 	if project.ID == "" {
 		return fmt.Errorf("id must not be empty")
 	}
@@ -113,14 +122,41 @@ func validateProject(project Project) error {
 	if !projectIDPattern.MatchString(project.GraphNamespace) {
 		return fmt.Errorf("graph_namespace must match %s", projectIDPattern.String())
 	}
-	if project.DigestMode != DigestModeMetadataOnly {
-		return fmt.Errorf("digest_mode must be %q", DigestModeMetadataOnly)
+	switch project.DigestMode {
+	case DigestModeMetadataOnly:
+	case DigestModeContentGraph:
+		if !options.ContentGraphEnabled {
+			return fmt.Errorf("digest_mode %q requires content graph to be enabled", DigestModeContentGraph)
+		}
+		if !options.ContentGraphApprovalAccepted {
+			return fmt.Errorf("digest_mode %q requires accepted ADR-0007 owner approvals", DigestModeContentGraph)
+		}
+	default:
+		return fmt.Errorf("digest_mode must be %q or %q", DigestModeMetadataOnly, DigestModeContentGraph)
 	}
-	if project.UpdatePolicy != UpdatePolicyManual {
-		return fmt.Errorf("update_policy must be %q", UpdatePolicyManual)
+	switch project.UpdatePolicy {
+	case UpdatePolicyManual:
+	case UpdatePolicyLive:
+		if project.DigestMode != DigestModeContentGraph {
+			return fmt.Errorf("update_policy %q requires digest_mode %q", UpdatePolicyLive, DigestModeContentGraph)
+		}
+		if !options.LiveUpdatesEnabled {
+			return fmt.Errorf("update_policy %q requires live updates to be enabled", UpdatePolicyLive)
+		}
+	default:
+		return fmt.Errorf("update_policy must be %q or %q", UpdatePolicyManual, UpdatePolicyLive)
 	}
 	if project.FollowSymlinks {
 		return fmt.Errorf("follow_symlinks must be false until symlink traversal is approved")
+	}
+	if project.MaxFileBytes < 0 {
+		return fmt.Errorf("max_file_bytes must not be negative")
+	}
+	if project.MaxChunkBytes < 0 {
+		return fmt.Errorf("max_chunk_bytes must not be negative")
+	}
+	if project.SensitiveMarkerPolicy != SensitiveMarkerPolicySkipFile {
+		return fmt.Errorf("sensitive_marker_policy must be %q", SensitiveMarkerPolicySkipFile)
 	}
 	if err := validatePatterns("include", project.Include); err != nil {
 		return err

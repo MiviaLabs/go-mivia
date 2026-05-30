@@ -55,6 +55,52 @@ unexpected = true
 	}
 }
 
+func TestLoadFileConfig_RejectsUnknownIngestionField(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[ingestion]
+unexpected = true
+`)
+
+	_, err := loadFileConfig(path)
+	if err == nil {
+		t.Fatal("expected unknown ingestion field to fail")
+	}
+}
+
+func TestLoadFileConfig_AcceptsContentGraphAndLiveContractValues(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+digest_mode = "content_graph"
+update_policy = "live"
+max_file_bytes = 1024
+max_chunk_bytes = 512
+sensitive_marker_policy = "skip_file"
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected config contract values to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected config contract values to apply: %v", err)
+	}
+	project := merged.Projects[0]
+	if project.DigestMode != digestModeContentGraph || project.UpdatePolicy != updatePolicyLive {
+		t.Fatalf("unexpected project modes: %+v", project)
+	}
+	if project.MaxFileBytes != 1024 || project.MaxChunkBytes != 512 {
+		t.Fatalf("unexpected project caps: %+v", project)
+	}
+}
+
 func TestLoadFileConfig_RejectsUnsupportedDigestMode(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1
@@ -109,6 +155,75 @@ request_timeout = "soon"
 	}
 	if _, err := cfg.applyTo(defaultConfig(path)); err == nil {
 		t.Fatal("expected invalid duration to fail")
+	}
+}
+
+func TestFileConfigApplyTo_RejectsInvalidIngestionDuration(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[ingestion]
+debounce_interval = "soon"
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected TOML to parse before apply validation: %v", err)
+	}
+	if _, err := cfg.applyTo(defaultConfig(path)); err == nil {
+		t.Fatal("expected invalid ingestion duration to fail")
+	}
+}
+
+func TestLoadFileConfig_RejectsInvalidIngestionValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		message string
+	}{
+		{
+			name: "global max file bytes",
+			content: `
+version = 1
+
+[ingestion]
+max_file_bytes = 0
+`,
+			message: "max_file_bytes",
+		},
+		{
+			name: "project max chunk bytes",
+			content: `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+max_chunk_bytes = 0
+`,
+			message: "max_chunk_bytes",
+		},
+		{
+			name: "sensitive marker policy",
+			content: `
+version = 1
+
+[ingestion]
+sensitive_marker_policy = "store"
+`,
+			message: "sensitive_marker_policy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTempConfig(t, tt.content)
+			_, err := loadFileConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.message) {
+				t.Fatalf("expected %q error, got %v", tt.message, err)
+			}
+		})
 	}
 }
 

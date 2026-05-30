@@ -110,11 +110,25 @@ func TestNewRegistry_InvalidProjectFields_ReturnError(t *testing.T) {
 			message: "digest_mode",
 		},
 		{
+			name: "content graph disabled",
+			mutate: func(project *config.Project) {
+				project.DigestMode = DigestModeContentGraph
+			},
+			message: "content graph",
+		},
+		{
 			name: "unsupported update policy",
 			mutate: func(project *config.Project) {
 				project.UpdatePolicy = "watch"
 			},
 			message: "update_policy",
+		},
+		{
+			name: "live without content graph",
+			mutate: func(project *config.Project) {
+				project.UpdatePolicy = UpdatePolicyLive
+			},
+			message: "requires digest_mode",
 		},
 		{
 			name: "follow symlinks",
@@ -130,6 +144,13 @@ func TestNewRegistry_InvalidProjectFields_ReturnError(t *testing.T) {
 			},
 			message: "include",
 		},
+		{
+			name: "invalid sensitive marker policy",
+			mutate: func(project *config.Project) {
+				project.SensitiveMarkerPolicy = "store"
+			},
+			message: "sensitive_marker_policy",
+		},
 	}
 
 	for _, tt := range tests {
@@ -142,6 +163,57 @@ func TestNewRegistry_InvalidProjectFields_ReturnError(t *testing.T) {
 				t.Fatalf("expected %q error, got %v", tt.message, err)
 			}
 		})
+	}
+}
+
+func TestNewRegistry_ContentGraphRequiresApprovalGate(t *testing.T) {
+	root := t.TempDir()
+	project := validConfigProject(root)
+	project.DigestMode = DigestModeContentGraph
+
+	_, err := NewRegistry([]config.Project{project}, Options{
+		ContentGraphEnabled: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "ADR-0007") {
+		t.Fatalf("expected ADR approval gate error, got %v", err)
+	}
+}
+
+func TestNewRegistry_ContentGraphAndLiveAllowedOnlyWhenExplicitlyGated(t *testing.T) {
+	root := t.TempDir()
+	project := validConfigProject(root)
+	project.DigestMode = DigestModeContentGraph
+	project.UpdatePolicy = UpdatePolicyLive
+	project.MaxFileBytes = 1024
+	project.MaxChunkBytes = 512
+	project.SensitiveMarkerPolicy = SensitiveMarkerPolicySkipFile
+
+	_, err := NewRegistry([]config.Project{project}, Options{
+		ContentGraphEnabled:          true,
+		LiveUpdatesEnabled:           false,
+		ContentGraphApprovalAccepted: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "live updates") {
+		t.Fatalf("expected live updates gate error, got %v", err)
+	}
+
+	registry, err := NewRegistry([]config.Project{project}, Options{
+		ContentGraphEnabled:          true,
+		LiveUpdatesEnabled:           true,
+		ContentGraphApprovalAccepted: true,
+	})
+	if err != nil {
+		t.Fatalf("expected gated registry to load: %v", err)
+	}
+	loaded, ok := registry.Get("example-service")
+	if !ok {
+		t.Fatal("expected content graph project")
+	}
+	if loaded.DigestMode != DigestModeContentGraph || loaded.UpdatePolicy != UpdatePolicyLive {
+		t.Fatalf("unexpected loaded project modes: %+v", loaded)
+	}
+	if loaded.MaxFileBytes != 1024 || loaded.MaxChunkBytes != 512 {
+		t.Fatalf("unexpected loaded project caps: %+v", loaded)
 	}
 }
 
@@ -201,17 +273,18 @@ func TestRegistry_ReturnsDefensiveCopies(t *testing.T) {
 
 func validConfigProject(root string) config.Project {
 	return config.Project{
-		ID:             "example-service",
-		DisplayName:    "Example Service",
-		Description:    "Synthetic local service",
-		RootPath:       root,
-		Enabled:        true,
-		Classification: ClassificationInternal,
-		GraphNamespace: "example-service",
-		DigestMode:     DigestModeMetadataOnly,
-		UpdatePolicy:   UpdatePolicyManual,
-		Include:        []string{"**/*.go", "go.mod"},
-		Exclude:        []string{".git/**"},
-		FollowSymlinks: false,
+		ID:                    "example-service",
+		DisplayName:           "Example Service",
+		Description:           "Synthetic local service",
+		RootPath:              root,
+		Enabled:               true,
+		Classification:        ClassificationInternal,
+		GraphNamespace:        "example-service",
+		DigestMode:            DigestModeMetadataOnly,
+		UpdatePolicy:          UpdatePolicyManual,
+		Include:               []string{"**/*.go", "go.mod"},
+		Exclude:               []string{".git/**"},
+		FollowSymlinks:        false,
+		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
 	}
 }

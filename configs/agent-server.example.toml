@@ -15,6 +15,19 @@ shutdown_timeout = "10s"
 ladybug_path = "data/mivialabs.lbug"
 sqlite_path = "data/mivialabs-config.sqlite"
 
+[ingestion]
+# Disabled scaffold only. ADR-0007 owner approvals are still required before
+# any runtime may store source content, source-content hashes, or live state.
+content_graph_enabled = false
+live_updates_enabled = false
+debounce_interval = "2s"
+max_file_bytes = 1048576
+max_chunk_bytes = 16384
+queue_depth = 128
+worker_count = 2
+initial_scan_on_start = false
+sensitive_marker_policy = "skip_file"
+
 [[projects]]
 id = "example-service"
 display_name = "Example Service"
@@ -39,6 +52,9 @@ exclude = [
   "lib-ladybug/**",
 ]
 follow_symlinks = false
+max_file_bytes = 1048576
+max_chunk_bytes = 16384
+sensitive_marker_policy = "skip_file"
 
 [[projects]]
 id = "disabled-example"
@@ -62,3 +78,6 @@ exclude = [
   "lib-ladybug/**",
 ]
 follow_symlinks = false
+max_file_bytes = 1048576
+max_chunk_bytes = 16384
+sensitive_marker_policy = "skip_file"

@@ -11,14 +11,21 @@ import (
 )
 
 const (
-	defaultConfigPath        = "configs/agent-server.local.toml"
-	defaultHTTPAddr          = "127.0.0.1:8080"
-	defaultLadybugPath       = "data/mivialabs.lbug"
-	defaultSQLitePath        = "data/mivialabs-config.sqlite"
-	defaultMaxRequestBytes   = int64(1 << 20)
-	defaultRequestTimeout    = 10 * time.Second
-	defaultReadHeaderTimeout = 5 * time.Second
-	defaultShutdownTimeout   = 10 * time.Second
+	defaultConfigPath                = "configs/agent-server.local.toml"
+	defaultHTTPAddr                  = "127.0.0.1:8080"
+	defaultLadybugPath               = "data/mivialabs.lbug"
+	defaultSQLitePath                = "data/mivialabs-config.sqlite"
+	defaultMaxRequestBytes           = int64(1 << 20)
+	defaultRequestTimeout            = 10 * time.Second
+	defaultReadHeaderTimeout         = 5 * time.Second
+	defaultShutdownTimeout           = 10 * time.Second
+	defaultIngestionDebounceInterval = 2 * time.Second
+	defaultIngestionMaxFileBytes     = int64(1 << 20)
+	defaultIngestionMaxChunkBytes    = 16 * 1024
+	defaultIngestionQueueDepth       = 128
+	defaultIngestionWorkerCount      = 2
+	defaultSensitiveMarkerPolicy     = "skip_file"
+	sensitiveMarkerPolicySkipFile    = "skip_file"
 )
 
 type Config struct {
@@ -30,22 +37,38 @@ type Config struct {
 	RequestTimeout    time.Duration
 	ReadHeaderTimeout time.Duration
 	ShutdownTimeout   time.Duration
+	Ingestion         Ingestion
 	Projects          []Project
 }
 
+type Ingestion struct {
+	ContentGraphEnabled   bool
+	LiveUpdatesEnabled    bool
+	DebounceInterval      time.Duration
+	MaxFileBytes          int64
+	MaxChunkBytes         int
+	QueueDepth            int
+	WorkerCount           int
+	InitialScanOnStart    bool
+	SensitiveMarkerPolicy string
+}
+
 type Project struct {
-	ID             string
-	DisplayName    string
-	Description    string
-	RootPath       string
-	Enabled        bool
-	Classification string
-	GraphNamespace string
-	DigestMode     string
-	UpdatePolicy   string
-	Include        []string
-	Exclude        []string
-	FollowSymlinks bool
+	ID                    string
+	DisplayName           string
+	Description           string
+	RootPath              string
+	Enabled               bool
+	Classification        string
+	GraphNamespace        string
+	DigestMode            string
+	UpdatePolicy          string
+	Include               []string
+	Exclude               []string
+	FollowSymlinks        bool
+	MaxFileBytes          int64
+	MaxChunkBytes         int
+	SensitiveMarkerPolicy string
 }
 
 func Load() (Config, error) {
@@ -91,7 +114,22 @@ func defaultConfig(configPath string) Config {
 		RequestTimeout:    defaultRequestTimeout,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ShutdownTimeout:   defaultShutdownTimeout,
+		Ingestion:         defaultIngestion(),
 		Projects:          nil,
+	}
+}
+
+func defaultIngestion() Ingestion {
+	return Ingestion{
+		ContentGraphEnabled:   false,
+		LiveUpdatesEnabled:    false,
+		DebounceInterval:      defaultIngestionDebounceInterval,
+		MaxFileBytes:          defaultIngestionMaxFileBytes,
+		MaxChunkBytes:         defaultIngestionMaxChunkBytes,
+		QueueDepth:            defaultIngestionQueueDepth,
+		WorkerCount:           defaultIngestionWorkerCount,
+		InitialScanOnStart:    false,
+		SensitiveMarkerPolicy: defaultSensitiveMarkerPolicy,
 	}
 }
 
@@ -112,6 +150,31 @@ func applyEnvOverrides(cfg *Config) error {
 	if cfg.ShutdownTimeout, err = getenvDuration("MIVIA_SHUTDOWN_TIMEOUT", cfg.ShutdownTimeout); err != nil {
 		return err
 	}
+	if cfg.Ingestion.ContentGraphEnabled, err = getenvBool("MIVIA_INGESTION_CONTENT_GRAPH_ENABLED", cfg.Ingestion.ContentGraphEnabled); err != nil {
+		return err
+	}
+	if cfg.Ingestion.LiveUpdatesEnabled, err = getenvBool("MIVIA_INGESTION_LIVE_UPDATES_ENABLED", cfg.Ingestion.LiveUpdatesEnabled); err != nil {
+		return err
+	}
+	if cfg.Ingestion.DebounceInterval, err = getenvDuration("MIVIA_INGESTION_DEBOUNCE_INTERVAL", cfg.Ingestion.DebounceInterval); err != nil {
+		return err
+	}
+	if cfg.Ingestion.MaxFileBytes, err = getenvInt64("MIVIA_INGESTION_MAX_FILE_BYTES", cfg.Ingestion.MaxFileBytes); err != nil {
+		return err
+	}
+	if cfg.Ingestion.MaxChunkBytes, err = getenvInt("MIVIA_INGESTION_MAX_CHUNK_BYTES", cfg.Ingestion.MaxChunkBytes); err != nil {
+		return err
+	}
+	if cfg.Ingestion.QueueDepth, err = getenvInt("MIVIA_INGESTION_QUEUE_DEPTH", cfg.Ingestion.QueueDepth); err != nil {
+		return err
+	}
+	if cfg.Ingestion.WorkerCount, err = getenvInt("MIVIA_INGESTION_WORKER_COUNT", cfg.Ingestion.WorkerCount); err != nil {
+		return err
+	}
+	if cfg.Ingestion.InitialScanOnStart, err = getenvBool("MIVIA_INGESTION_INITIAL_SCAN_ON_START", cfg.Ingestion.InitialScanOnStart); err != nil {
+		return err
+	}
+	cfg.Ingestion.SensitiveMarkerPolicy = getenv("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY", cfg.Ingestion.SensitiveMarkerPolicy)
 	return nil
 }
 
@@ -140,6 +203,34 @@ func (cfg Config) Validate() error {
 	if cfg.ShutdownTimeout <= 0 {
 		return errors.New("MIVIA_SHUTDOWN_TIMEOUT must be positive")
 	}
+	if err := cfg.Ingestion.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ingestion Ingestion) Validate() error {
+	if ingestion.LiveUpdatesEnabled && !ingestion.ContentGraphEnabled {
+		return errors.New("MIVIA_INGESTION_LIVE_UPDATES_ENABLED requires MIVIA_INGESTION_CONTENT_GRAPH_ENABLED")
+	}
+	if ingestion.DebounceInterval <= 0 {
+		return errors.New("MIVIA_INGESTION_DEBOUNCE_INTERVAL must be positive")
+	}
+	if ingestion.MaxFileBytes <= 0 {
+		return errors.New("MIVIA_INGESTION_MAX_FILE_BYTES must be positive")
+	}
+	if ingestion.MaxChunkBytes <= 0 {
+		return errors.New("MIVIA_INGESTION_MAX_CHUNK_BYTES must be positive")
+	}
+	if ingestion.QueueDepth <= 0 {
+		return errors.New("MIVIA_INGESTION_QUEUE_DEPTH must be positive")
+	}
+	if ingestion.WorkerCount <= 0 {
+		return errors.New("MIVIA_INGESTION_WORKER_COUNT must be positive")
+	}
+	if ingestion.SensitiveMarkerPolicy != sensitiveMarkerPolicySkipFile {
+		return fmt.Errorf("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY must be %q", sensitiveMarkerPolicySkipFile)
+	}
 	return nil
 }
 
@@ -167,6 +258,30 @@ func getenvInt64(key string, fallback int64) (int64, error) {
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return value, nil
+}
+
+func getenvInt(key string, fallback int) (int, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return value, nil
+}
+
+func getenvBool(key string, fallback bool) (bool, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean: %w", key, err)
 	}
 	return value, nil
 }
