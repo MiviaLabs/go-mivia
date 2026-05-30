@@ -1,6 +1,7 @@
 package ladybug_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -112,6 +113,59 @@ func TestPersistentGraph_BatchPersistsOnceAtCommit(t *testing.T) {
 	}
 	if _, err := reopened.GetNode(ctx, "Project", "project-1"); err != nil {
 		t.Fatalf("expected batch node to persist after commit: %v", err)
+	}
+}
+
+func TestPersistentGraph_AppendsJournalInsteadOfRewritingSnapshot(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "graph.lbug")
+
+	graph, err := ladybug.OpenPersistentGraph(path)
+	if err != nil {
+		t.Fatalf("open graph: %v", err)
+	}
+	if err := graph.Bootstrap(ctx, schema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	if err := graph.Batch(ctx, func(batch ladybug.Graph) error {
+		return batch.PutNode(ctx, ladybug.Node{
+			Label: "Project",
+			ID:    "project-1",
+			Properties: map[string]string{
+				"id": "project-1",
+			},
+		})
+	}); err != nil {
+		t.Fatalf("first batch: %v", err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read graph journal: %v", err)
+	}
+	if bytes.Contains(first, []byte(`"nodes"`)) {
+		t.Fatalf("expected journal operations, got snapshot: %s", first)
+	}
+
+	if err := graph.Batch(ctx, func(batch ladybug.Graph) error {
+		return batch.PutNode(ctx, ladybug.Node{
+			Label: "RepoFile",
+			ID:    "file-1",
+			Properties: map[string]string{
+				"project_id": "project-1",
+			},
+		})
+	}); err != nil {
+		t.Fatalf("second batch: %v", err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read graph journal: %v", err)
+	}
+	if !bytes.HasPrefix(second, first) {
+		t.Fatalf("expected graph persistence to append operations instead of rewriting")
+	}
+	if bytes.Count(second, []byte(`"op"`)) != 3 {
+		t.Fatalf("expected bootstrap plus two appended operations, got journal: %s", second)
 	}
 }
 

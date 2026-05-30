@@ -33,6 +33,8 @@ type stateStore interface {
 	GetRun(context.Context, string, string) (Run, error)
 	SaveFileState(context.Context, FileState) error
 	ListFileStates(context.Context, string, FileStateFilter) ([]FileState, error)
+	ListFileStatesPage(context.Context, string, FileStateFilter, Pagination) ([]FileState, string, error)
+	GetFileStateByHash(context.Context, string, string) (FileState, error)
 }
 
 type Service struct {
@@ -89,8 +91,18 @@ func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger
 	root := project.CanonicalRootPath
 	err = filepath.WalkDir(root, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			relative, _ := safeRelativePath(root, filePath)
-			return fmt.Errorf("walk failed for relative path %q", relative)
+			if filePath == root {
+				return fmt.Errorf("walk failed for project root")
+			}
+			relative, ok := safeRelativePath(root, filePath)
+			if !ok {
+				return ErrPathEscapesRoot
+			}
+			run.FilesSkipped++
+			state := svc.skippedState(project, relative, SkipReasonStatError, 0, time.Time{}, true, run.StartedAt)
+			seen[state.RelativePathHash] = struct{}{}
+			markRunFileError(&run, state.SkippedReason)
+			return svc.saveSkipped(ctx, project, run, state, false)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -119,7 +131,11 @@ func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return fmt.Errorf("stat failed for relative path %q", relative)
+			run.FilesSkipped++
+			state := svc.skippedState(project, relative, SkipReasonStatError, 0, time.Time{}, true, run.StartedAt)
+			seen[state.RelativePathHash] = struct{}{}
+			markRunFileError(&run, state.SkippedReason)
+			return svc.saveSkipped(ctx, project, run, state, false)
 		}
 		if !info.Mode().IsRegular() {
 			run.FilesSkipped++
@@ -143,6 +159,7 @@ func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger
 		} else {
 			run.FilesSkipped++
 		}
+		markRunFileError(&run, state.SkippedReason)
 		return err
 	})
 	if err != nil {
@@ -285,16 +302,12 @@ func (svc *Service) ListFiles(ctx context.Context, projectID string, filter File
 	if err != nil {
 		return FileList{}, err
 	}
-	states, err := svc.state.ListFileStates(ctx, project.ID, filter)
+	states, nextToken, err := svc.state.ListFileStatesPage(ctx, project.ID, filter, pagination)
 	if err != nil {
 		return FileList{}, err
 	}
-	window, nextToken, err := paginate(states, pagination)
-	if err != nil {
-		return FileList{}, err
-	}
-	files := make([]FileMetadata, 0, len(window))
-	for _, state := range window {
+	files := make([]FileMetadata, 0, len(states))
+	for _, state := range states {
 		files = append(files, MetadataForFileState(project, state))
 	}
 	return FileList{Files: files, NextPageToken: nextToken}, nil
@@ -337,16 +350,15 @@ func (svc *Service) GetFile(ctx context.Context, projectID string, fileID string
 	if !validOpaqueID(fileID) {
 		return FileMetadata{}, ErrInvalidInput
 	}
-	states, err := svc.state.ListFileStates(ctx, project.ID, FileStateFilter{})
+	prefix := project.GraphNamespace + ":"
+	if !strings.HasPrefix(fileID, prefix) {
+		return FileMetadata{}, ErrIngestionNotFound
+	}
+	state, err := svc.state.GetFileStateByHash(ctx, project.ID, strings.TrimPrefix(fileID, prefix))
 	if err != nil {
 		return FileMetadata{}, err
 	}
-	for _, state := range states {
-		if repoFileID(project.GraphNamespace, state.RelativePathHash) == fileID {
-			return MetadataForFileState(project, state), nil
-		}
-	}
-	return FileMetadata{}, ErrIngestionNotFound
+	return MetadataForFileState(project, state), nil
 }
 
 func (svc *Service) ListChunks(ctx context.Context, projectID string, fileID string, pagination Pagination, maxChunkBytes int) (ChunkList, error) {
@@ -478,11 +490,13 @@ func (svc *Service) ingestExistingFile(ctx context.Context, project projectregis
 	}
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
-		return FileState{}, nil, nil, nil, fmt.Errorf("read failed for relative path %q", relative)
+		state := svc.skippedState(project, relative, SkipReasonReadError, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
+		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
 	}
 	chunkSet, safety, err := BuildChunks(relative, content, options)
 	if err != nil {
-		return FileState{}, nil, nil, nil, err
+		state := svc.skippedState(project, relative, SkipReasonChunkError, int64(len(content)), info.ModTime().UTC(), true, run.StartedAt)
+		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
 	}
 	if !safety.Eligible {
 		state := fileStateFromSafety(project, relative, safety, "", info.ModTime().UTC(), run.StartedAt)
@@ -491,7 +505,8 @@ func (svc *Service) ingestExistingFile(ctx context.Context, project projectregis
 
 	symbols, headings, err := parseEligible(relative, content)
 	if err != nil {
-		return FileState{}, nil, nil, nil, fmt.Errorf("parse failed for relative path %q", relative)
+		state := svc.skippedState(project, relative, SkipReasonParseError, int64(len(content)), info.ModTime().UTC(), true, run.StartedAt)
+		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
 	}
 	state := fileStateFromSafety(project, relative, safety, chunkSet.ContentSHA256, info.ModTime().UTC(), run.StartedAt)
 	if err := svc.state.SaveFileState(ctx, state); err != nil {
@@ -614,6 +629,22 @@ func parseEligible(relative string, content []byte) ([]Symbol, []Heading, error)
 		return nil, headings, err
 	default:
 		return nil, nil, nil
+	}
+}
+
+func markRunFileError(run *Run, reason SkipReason) {
+	if run == nil || !isFileErrorReason(reason) {
+		return
+	}
+	run.ErrorCategory = "file_errors"
+}
+
+func isFileErrorReason(reason SkipReason) bool {
+	switch reason {
+	case SkipReasonStatError, SkipReasonReadError, SkipReasonChunkError, SkipReasonParseError:
+		return true
+	default:
+		return false
 	}
 }
 

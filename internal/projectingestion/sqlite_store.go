@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -144,7 +145,61 @@ func (store *SQLiteStore) SaveFileState(ctx context.Context, state FileState) er
 	return err
 }
 
+func (store *SQLiteStore) GetFileStateByHash(ctx context.Context, projectID string, relativePathHash string) (FileState, error) {
+	row := store.db.QueryRowContext(ctx, `SELECT
+		project_id,
+		relative_path_hash,
+		relative_path,
+		relative_path_safe,
+		status,
+		present,
+		content_sha256,
+		size_bytes,
+		modified_at,
+		last_event_at,
+		last_ingested_at,
+		skipped_reason
+	FROM project_file_ingestion_state
+	WHERE project_id = ? AND relative_path_hash = ?`, projectID, relativePathHash)
+	state, err := scanFileState(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FileState{}, ErrIngestionNotFound
+	}
+	return state, err
+}
+
 func (store *SQLiteStore) ListFileStates(ctx context.Context, projectID string, filter FileStateFilter) ([]FileState, error) {
+	rows, err := store.queryFileStates(ctx, projectID, filter, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanFileStates(rows)
+}
+
+func (store *SQLiteStore) ListFileStatesPage(ctx context.Context, projectID string, filter FileStateFilter, pagination Pagination) ([]FileState, string, error) {
+	pageSize, offset, err := paginationWindow(pagination)
+	if err != nil {
+		return nil, "", err
+	}
+	rows, err := store.queryFileStates(ctx, projectID, filter, pageSize+1, offset)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	states, err := scanFileStates(rows)
+	if err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(states) > pageSize {
+		states = states[:pageSize]
+		next = strconv.Itoa(offset + pageSize)
+	}
+	return states, next, nil
+}
+
+func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string, filter FileStateFilter, limit int, offset int) (*sql.Rows, error) {
 	query := `SELECT
 		project_id,
 		relative_path_hash,
@@ -170,13 +225,14 @@ func (store *SQLiteStore) ListFileStates(ctx context.Context, projectID string, 
 		args = append(args, "%"+strings.ToLower(filter.Extension))
 	}
 	query += ` ORDER BY relative_path_hash`
-
-	rows, err := store.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
 	}
-	defer rows.Close()
+	return store.db.QueryContext(ctx, query, args...)
+}
 
+func scanFileStates(rows *sql.Rows) ([]FileState, error) {
 	var states []FileState
 	for rows.Next() {
 		state, err := scanFileState(rows)

@@ -77,6 +77,109 @@ func TestIngestProject_StoresEligibleContentGraphState(t *testing.T) {
 	}
 }
 
+func TestIngestProject_InvalidGoSyntaxDoesNotFailFullScan(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "good.go"), "package main\n\nfunc Run() {}\n")
+	writeFile(t, filepath.Join(root, "cmd", "bad.go"), "package main\n\nfunc Broken(\n")
+
+	svc, _, state := newTestService(t, root)
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.ErrorCategory != "file_errors" {
+		t.Fatalf("expected completed run with file-local errors, got %#v", run)
+	}
+	if run.FilesIngested != 1 || run.FilesSkipped != 1 {
+		t.Fatalf("unexpected run counts: %#v", run)
+	}
+
+	skipped, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusSkipped})
+	if err != nil {
+		t.Fatalf("list skipped states: %v", err)
+	}
+	if len(skipped) != 1 || skipped[0].SkippedReason != SkipReasonParseError {
+		t.Fatalf("expected one parse-error state, got %#v", skipped)
+	}
+	if skipped[0].ContentSHA256 != "" {
+		t.Fatalf("parse-error state must not store content hash: %#v", skipped[0])
+	}
+}
+
+func TestIngestProject_FileLocalReadAndChunkErrorsDoNotBlockUsefulFiles(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "good.go"), "package main\n\nfunc Run() {}\n")
+	unreadable := filepath.Join(root, "docs", "unreadable.txt")
+	writeFile(t, unreadable, "safe text\n")
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatalf("chmod unreadable file: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
+
+	svc, _, state := newTestServiceWithMaxChunkBytes(t, root, 1)
+	writeFile(t, filepath.Join(root, "docs", "wide.txt"), "é\n")
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.ErrorCategory != "file_errors" {
+		t.Fatalf("expected completed run with file-local errors, got %#v", run)
+	}
+	if run.FilesIngested != 1 || run.FilesSkipped != 2 {
+		t.Fatalf("unexpected run counts: %#v", run)
+	}
+
+	skipped, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusSkipped})
+	if err != nil {
+		t.Fatalf("list skipped states: %v", err)
+	}
+	reasons := map[SkipReason]bool{}
+	for _, fileState := range skipped {
+		reasons[fileState.SkippedReason] = true
+		if fileState.ContentSHA256 != "" {
+			t.Fatalf("file-local error state must not store content hash: %#v", fileState)
+		}
+	}
+	for _, reason := range []SkipReason{SkipReasonReadError, SkipReasonChunkError} {
+		if !reasons[reason] {
+			t.Fatalf("expected skip reason %q in %#v", reason, skipped)
+		}
+	}
+}
+
+func TestIngestProject_WalkErrorsAreFileLocal(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "good.go"), "package main\n\nfunc Run() {}\n")
+	lockedDir := filepath.Join(root, "locked")
+	if err := os.MkdirAll(lockedDir, 0o700); err != nil {
+		t.Fatalf("create locked dir: %v", err)
+	}
+	if err := os.Chmod(lockedDir, 0); err != nil {
+		t.Fatalf("chmod locked dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(lockedDir, 0o700) })
+
+	svc, _, state := newTestService(t, root)
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.FilesIngested != 1 {
+		t.Fatalf("expected useful file to ingest despite walk error, got %#v", run)
+	}
+
+	skipped, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusSkipped})
+	if err != nil {
+		t.Fatalf("list skipped states: %v", err)
+	}
+	if len(skipped) != 1 || skipped[0].SkippedReason != SkipReasonStatError {
+		t.Fatalf("expected one stat-error state, got %#v", skipped)
+	}
+}
+
 func TestListFiles_FiltersByExtensionBeforePagination(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -116,6 +219,29 @@ func TestListFiles_FiltersByExtensionBeforePagination(t *testing.T) {
 
 	if _, err := svc.ListFiles(ctx, "example-service", FileStateFilter{Extension: "bad/path"}, Pagination{}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected invalid extension input, got %v", err)
+	}
+}
+
+func TestGetFile_UsesDirectStateLookup(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	svc, _, _ := newTestService(t, root)
+	fileHash := hashValue("cmd/main.go")
+	svc.state = &lookupOnlyStateStore{state: FileState{
+		ProjectID:        "example-service",
+		RelativePathHash: fileHash,
+		RelativePath:     "cmd/main.go",
+		RelativePathSafe: true,
+		Status:           FileStatusEligible,
+		Present:          true,
+	}}
+
+	metadata, err := svc.GetFile(ctx, "example-service", repoFileID("example_ns", fileHash))
+	if err != nil {
+		t.Fatalf("get file: %v", err)
+	}
+	if metadata.RelativePath != "cmd/main.go" {
+		t.Fatalf("expected direct lookup metadata, got %#v", metadata)
 	}
 }
 
@@ -338,10 +464,20 @@ func TestIngestPath_RejectsPathEscape(t *testing.T) {
 
 func newTestService(t *testing.T, root string) (*Service, *ladybug.MemoryGraph, *SQLiteStore) {
 	t.Helper()
-	return newTestServiceWithUpdatePolicy(t, root, projectregistry.UpdatePolicyManual)
+	return newTestServiceWithOptions(t, root, projectregistry.UpdatePolicyManual, 1024)
 }
 
 func newTestServiceWithUpdatePolicy(t *testing.T, root string, updatePolicy string) (*Service, *ladybug.MemoryGraph, *SQLiteStore) {
+	t.Helper()
+	return newTestServiceWithOptions(t, root, updatePolicy, 1024)
+}
+
+func newTestServiceWithMaxChunkBytes(t *testing.T, root string, maxChunkBytes int) (*Service, *ladybug.MemoryGraph, *SQLiteStore) {
+	t.Helper()
+	return newTestServiceWithOptions(t, root, projectregistry.UpdatePolicyManual, maxChunkBytes)
+}
+
+func newTestServiceWithOptions(t *testing.T, root string, updatePolicy string, maxChunkBytes int) (*Service, *ladybug.MemoryGraph, *SQLiteStore) {
 	t.Helper()
 	registry, err := projectregistry.NewRegistry([]config.Project{{
 		ID:                    "example-service",
@@ -355,7 +491,7 @@ func newTestServiceWithUpdatePolicy(t *testing.T, root string, updatePolicy stri
 		Include:               []string{"**/*.go", "**/*.md", "**/*.txt"},
 		FollowSymlinks:        false,
 		MaxFileBytes:          4096,
-		MaxChunkBytes:         1024,
+		MaxChunkBytes:         maxChunkBytes,
 		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
 	}}, projectregistry.Options{
 		ContentGraphEnabled:          true,
@@ -418,4 +554,35 @@ func assertNoPropertyContains(t *testing.T, properties map[string]string, forbid
 			t.Fatalf("property %q leaked forbidden value %q in %#v", key, forbidden, properties)
 		}
 	}
+}
+
+type lookupOnlyStateStore struct {
+	state FileState
+}
+
+func (store *lookupOnlyStateStore) SaveRun(context.Context, Run) error {
+	return errors.New("unexpected SaveRun")
+}
+
+func (store *lookupOnlyStateStore) GetRun(context.Context, string, string) (Run, error) {
+	return Run{}, errors.New("unexpected GetRun")
+}
+
+func (store *lookupOnlyStateStore) SaveFileState(context.Context, FileState) error {
+	return errors.New("unexpected SaveFileState")
+}
+
+func (store *lookupOnlyStateStore) ListFileStates(context.Context, string, FileStateFilter) ([]FileState, error) {
+	return nil, errors.New("unexpected ListFileStates")
+}
+
+func (store *lookupOnlyStateStore) ListFileStatesPage(context.Context, string, FileStateFilter, Pagination) ([]FileState, string, error) {
+	return nil, "", errors.New("unexpected ListFileStatesPage")
+}
+
+func (store *lookupOnlyStateStore) GetFileStateByHash(_ context.Context, projectID string, relativePathHash string) (FileState, error) {
+	if store.state.ProjectID != projectID || store.state.RelativePathHash != relativePathHash {
+		return FileState{}, ErrIngestionNotFound
+	}
+	return store.state, nil
 }

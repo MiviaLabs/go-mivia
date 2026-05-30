@@ -140,23 +140,9 @@ func effectiveMaxChunkBytes(project projectregistry.Project, requested int) int 
 }
 
 func paginate[T any](items []T, pagination Pagination) ([]T, string, error) {
-	pageSize := pagination.PageSize
-	if pageSize < 0 {
-		return nil, "", fmt.Errorf("%w: page_size is invalid", ErrInvalidInput)
-	}
-	if pageSize == 0 {
-		pageSize = DefaultPageSize
-	}
-	if pageSize > MaxPageSize {
-		return nil, "", fmt.Errorf("%w: page_size exceeds max %d", ErrInvalidInput, MaxPageSize)
-	}
-	offset := 0
-	if strings.TrimSpace(pagination.PageToken) != "" {
-		parsed, err := strconv.Atoi(strings.TrimSpace(pagination.PageToken))
-		if err != nil || parsed < 0 {
-			return nil, "", fmt.Errorf("%w: page_token is invalid", ErrInvalidInput)
-		}
-		offset = parsed
+	pageSize, offset, err := paginationWindow(pagination)
+	if err != nil {
+		return nil, "", err
 	}
 	if offset >= len(items) {
 		return []T{}, "", nil
@@ -170,6 +156,28 @@ func paginate[T any](items []T, pagination Pagination) ([]T, string, error) {
 		next = strconv.Itoa(end)
 	}
 	return items[offset:end], next, nil
+}
+
+func paginationWindow(pagination Pagination) (int, int, error) {
+	pageSize := pagination.PageSize
+	if pageSize < 0 {
+		return 0, 0, fmt.Errorf("%w: page_size is invalid", ErrInvalidInput)
+	}
+	if pageSize == 0 {
+		pageSize = DefaultPageSize
+	}
+	if pageSize > MaxPageSize {
+		return 0, 0, fmt.Errorf("%w: page_size exceeds max %d", ErrInvalidInput, MaxPageSize)
+	}
+	offset := 0
+	if strings.TrimSpace(pagination.PageToken) != "" {
+		parsed, err := strconv.Atoi(strings.TrimSpace(pagination.PageToken))
+		if err != nil || parsed < 0 {
+			return 0, 0, fmt.Errorf("%w: page_token is invalid", ErrInvalidInput)
+		}
+		offset = parsed
+	}
+	return pageSize, offset, nil
 }
 
 func validOpaqueID(id string) bool {

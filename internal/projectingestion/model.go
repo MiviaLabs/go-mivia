@@ -54,6 +54,10 @@ const (
 	SkipReasonInvalidUTF8       SkipReason = "invalid_utf8"
 	SkipReasonSensitiveContent  SkipReason = "sensitive_content"
 	SkipReasonUnsupportedPolicy SkipReason = "unsupported_policy"
+	SkipReasonStatError         SkipReason = "stat_error"
+	SkipReasonReadError         SkipReason = "read_error"
+	SkipReasonChunkError        SkipReason = "chunk_error"
+	SkipReasonParseError        SkipReason = "parse_error"
 )
 
 type FileState struct {
