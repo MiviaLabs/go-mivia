@@ -4,11 +4,65 @@ Generic Go microservices monorepo for AI-agent work.
 
 ## Overview
 
-This repository contains the local MiviaLabs agent service platform. The current service is `agent-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, research metadata, and project metadata workflows.
+This repository contains the local MiviaLabs agent service platform. The current service is `agent-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, research metadata, project registry, project ingestion, and semantic code-context workflows.
 
 The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion. It does not ingest PII, call live AI or browsing providers, expose public APIs, run embeddings/vector storage, or use production database infrastructure.
 
 Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only.
+
+## Feature Map
+
+```mermaid
+flowchart TB
+  Client["Local engineer, Codex Desktop, or MCP client"]
+  Server["agent-server localhost"]
+  REST["REST /api/v1"]
+  MCP["MCP /mcp"]
+  Tasks["Tasks and research metadata"]
+  Registry["Local project registry"]
+  Digest["Metadata-only digest"]
+  Scheduler["Fair ingestion scheduler"]
+  Live["Live watcher and rescan queue"]
+  Workers["Parallel full-scan file workers"]
+  Safety["Safety gates: path, symlink, include/exclude, size, binary, UTF-8, sensitive markers"]
+  Extractors["Extractors: Go AST, Tree-sitter JS/TS/TSX/C#/Python, Markdown, infra/config"]
+  Graph["Ladybug graph: files, chunks, symbols, references, calls, headings"]
+  SQLite["SQLite: config, run state, file state, extractor cache"]
+  Queries["Bounded query APIs: files, chunks, outlines, symbol source, refs, callers, callees, call graph"]
+  Boundaries["No public exposure, auth changes, provider calls, crawling, embeddings, raw DB queries, PII, secrets, roots, prompts, or skipped sensitive content"]
+
+  Client --> Server
+  Server --> REST
+  Server --> MCP
+  REST --> Tasks
+  MCP --> Tasks
+  REST --> Registry
+  MCP --> Registry
+  Registry --> Digest
+  Registry --> Scheduler
+  Live --> Scheduler
+  Scheduler --> Workers
+  Workers --> Safety
+  Safety --> Extractors
+  Extractors --> Graph
+  Extractors --> SQLite
+  Graph --> Queries
+  SQLite --> Queries
+  Queries --> REST
+  Queries --> MCP
+  Server --> Boundaries
+  Safety --> Boundaries
+```
+
+| Area | What exists now | Guardrails |
+| --- | --- | --- |
+| Local control surface | Health checks, REST `/api/v1`, MCP Streamable HTTP `/mcp` | Localhost-only default; no public/auth production posture |
+| Tasks and research metadata | Local task records, research-run/source metadata, redaction boundary | No raw prompts, provider payloads, raw fetched content, or PII |
+| Project registry | Optional local TOML projects with metadata-only digest or content graph mode | Root paths and local config values stay out of REST/MCP responses |
+| Ingestion scheduler | Async manual ingestion, live watcher rescan, global/per-project limits, live path priority | No one project can monopolize scheduler workers |
+| Full-scan ingestion | Parallel bounded file workers, periodic running counters, stale cleanup after workers drain | Source is stored only for eligible chunks after safety gates |
+| Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
+| Query APIs | Files, chunks, outlines, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned |
 
 ## Start Here
 
@@ -32,15 +86,23 @@ flowchart LR
   Agent["AI agent or Codex Desktop"]
   Server["agent-server on localhost"]
   Projects["Local projects"]
-  Graph["Local graph context"]
-  SQLite["Local run and config state"]
+  Scheduler["Fair scheduler and live watcher"]
+  Safety["Safety gates"]
+  Graph["Local semantic graph"]
+  SQLite["Local run, file, config, and cache state"]
+  APIs["REST and MCP bounded APIs"]
 
   Engineer --> Agent
   Agent --> Server
-  Server --> Projects
-  Server --> Graph
-  Server --> SQLite
-  Server --> Agent
+  Server --> APIs
+  APIs --> Scheduler
+  Scheduler --> Projects
+  Projects --> Safety
+  Safety --> Graph
+  Safety --> SQLite
+  Graph --> APIs
+  SQLite --> APIs
+  APIs --> Agent
 
   Graph --> Value["Faster, safer codebase understanding"]
   SQLite --> Value
@@ -50,7 +112,8 @@ flowchart LR
 What this enables:
 
 - Engineers can opt local projects into metadata-only digest or content graph ingestion.
-- Agents can ask for bounded project files, chunks, symbols, and ingestion status through MCP instead of guessing from stale chat context.
+- Agents can ask for bounded project files, chunks, outlines, symbols, symbol source, references, direct call edges, call graphs, and ingestion status through MCP instead of guessing from stale chat context.
+- Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
 - Local state can persist per project when `graph_storage = "persistent"`, or stay process-local with `graph_storage = "in_memory"`.
 - The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, provider calls, embeddings, vectors, skipped sensitive content, secrets, raw prompts, provider payloads, and PII.
 
@@ -71,6 +134,7 @@ flowchart TB
   Symbols["Symbols and references"]
   Registry["Project registry"]
   Ingestion["Content graph ingestion"]
+  Calls["References and call graph"]
   Store["Local graph and SQLite state"]
   Guardrails["Safety gates and policy boundaries"]
 
@@ -83,9 +147,11 @@ flowchart TB
   MCP --> Ingestion
   Ingestion --> Guardrails
   Guardrails --> Store
+  Store --> Calls
   Store --> MCP
 
   Symbols --> Decision["Grounded implementation decisions"]
+  Calls --> Decision
   Store --> Decision
   Decision --> Agent
 ```

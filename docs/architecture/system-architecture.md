@@ -17,7 +17,7 @@ Local task plans and research plans are not stable technical documentation. Do n
 - HTTP surfaces: `/healthz`, `/readyz`, REST under `/api/v1`, and MCP Streamable HTTP under `/mcp`.
 - Domain services: `internal/agentcontrol` for tasks and research runs; `internal/research` for redacted research source metadata.
 - Local project services: `internal/projectregistry` loads optional local project config from `configs/agent-server.local.toml` or explicit `MIVIA_CONFIG_PATH`, validates local roots and patterns, exposes bounded project metadata, runs manual metadata-only digest, and routes content graph data to per-project `persistent` or `in_memory` graph storage.
-- Project ingestion services: `internal/projectingestion` handles eligible local source safety gates, chunking, promoted AST extraction, extractor cache, bounded graph writes, SQLite run/file state, bounded REST/MCP query views, fair scheduling, and live watcher orchestration.
+- Project ingestion services: `internal/projectingestion` handles eligible local source safety gates, chunking, promoted AST extraction, extractor cache, bounded graph writes, SQLite run/file state, bounded REST/MCP query views, fair scheduling, live watcher orchestration, parallel full-scan file workers, and periodic running-progress persistence.
 - Stores: Ladybug graph abstraction for graph data; SQLite for local app configuration and ingestion state. Project graph storage can be persistent or process-local per project.
 - Boundary: localhost-only by default; no approved production deployment, public API exposure, auth model, live provider, external crawling, embedding provider, vector dimension, or PII processing.
 
@@ -36,6 +36,8 @@ flowchart TB
   ProjectIngestion["content graph ingestion"]
   Scheduler["fair ingestion scheduler"]
   Watcher["live watcher orchestrator"]
+  FullScanWorkers["bounded full-scan file workers"]
+  SemanticGraph["symbols, references, calls, headings"]
   ResearchService["internal/research service"]
   Redaction["research redaction boundary"]
   Ladybug["Ladybug graph abstraction"]
@@ -57,6 +59,9 @@ flowchart TB
   ProjectRegistry --> Scheduler
   Watcher --> Scheduler
   Scheduler --> ProjectIngestion
+  ProjectIngestion --> FullScanWorkers
+  FullScanWorkers --> SemanticGraph
+  SemanticGraph --> Ladybug
   ProjectIngestion --> Ladybug
   ProjectIngestion --> SQLite
   ConfigFile --> ProjectRegistry
@@ -128,22 +133,25 @@ sequenceDiagram
   participant Server as agent-server
   participant Registry as project registry
   participant Scheduler as fair scheduler
+  participant Workers as full-scan file workers
   participant Ingestion as project ingestion service
   participant Watcher as live watcher
   participant Graph as project graph store
   participant SQLite as SQLite ingestion state
 
-  Client->>Server: Manual ingest, latest status, file list, outline, chunk list, or symbol list
+  Client->>Server: Manual ingest, latest status, file list, outline, chunk list, symbol source, references, calls, or call graph
   Server->>Registry: Resolve enabled content_graph project
   Registry-->>Server: Project with graph_storage setting
   Server->>Scheduler: Submit manual ingestion asynchronously
   Server->>SQLite: Read latest run status or bounded query metadata
   Watcher->>Scheduler: Submit live path event or overflow rescan
   Scheduler->>Ingestion: Run bounded full scan or priority path task
-  Ingestion->>Ingestion: Apply path, symlink, include/exclude, size, binary, UTF-8, and sensitive-marker gates
-  Ingestion->>Ingestion: Extract metadata with promoted parser registry
-  Ingestion->>Graph: Store eligible file versions, chunks, symbols, references, calls, headings, and run metadata
-  Ingestion->>SQLite: Store run, file state, and extractor cache metadata
+  Ingestion->>Workers: Enumerate safely and dispatch eligible regular files
+  Workers->>Workers: Apply size, binary, UTF-8, sensitive-marker gates, chunking, and promoted extraction
+  Workers-->>Ingestion: Return prepared file metadata only
+  Ingestion->>Graph: Serially store eligible file versions, chunks, symbols, references, calls, headings, and run metadata
+  Ingestion->>SQLite: Store run, file state, extractor cache metadata, and periodic running counters
+  Ingestion->>Ingestion: Tombstone stale files only after enumeration and workers drain
   Ingestion-->>Server: Run metadata with stable run ID
   Server-->>Client: JSON without roots, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, or provider payloads
 ```
@@ -176,7 +184,7 @@ sequenceDiagram
 - Content graph ingestion is approved only for explicitly opted-in `content_graph` projects. It may store eligible local source chunks after all gates pass. Skipped sensitive content, matched sensitive-marker text, secrets, PII, raw prompts, provider payloads, and absolute roots must not be stored or returned.
 - Promoted AST extraction runs after safety gates. Go uses the Go stdlib parser; JS, JSX, TS, TSX, C#, and Python use mandatory Tree-sitter extractors with embedded queries and startup validation; Markdown and infrastructure/config files use metadata-only extractors. No regex fallback is allowed for promoted Tree-sitter languages.
 - The SQLite extractor cache stores only serialized symbols, headings, references, and calls keyed by project, relative-path hash, content hash, extractor name, and extractor version. It does not store raw source, AST node text, chunks, absolute roots, skipped sensitive content, matched sensitive text, secrets, prompts, provider payloads, or PII. Symbol source APIs return text only from eligible indexed chunks and only under explicit caps.
-- Full scans commit graph writes in bounded windows and run through a fair scheduler. REST and MCP manual ingestion calls enqueue work and return run metadata without waiting for scan completion. Live path events have priority over full-scan continuation, and global plus per-project limits prevent one project from monopolizing ingestion workers.
+- Full scans run through a fair scheduler, dispatch bounded per-project file workers, persist running progress counters, and tombstone stale files only after enumeration and workers drain. REST and MCP manual ingestion calls enqueue work and return run metadata without waiting for scan completion. Live path events have priority over full-scan continuation, and global plus per-project limits prevent one project from monopolizing ingestion workers.
 
 ## Operational Boundaries
 
