@@ -125,12 +125,8 @@ func (store *RichContentGraphStore) GetRichContentItem(ctx context.Context, proj
 	if projectID == "" || provider == "" || itemID == "" {
 		return RichContentReadResult{}, ErrInvalidInput
 	}
-	artifactID := integrationArtifactID(projectID, provider, itemID)
-	artifactNode, err := store.graph.GetNode(ctx, "IntegrationArtifact", artifactID)
+	artifactNode, err := store.findArtifactNode(ctx, projectID, provider, itemID)
 	if err != nil {
-		if errors.Is(err, ladybug.ErrNodeNotFound) {
-			return RichContentReadResult{}, ErrNotFound
-		}
 		return RichContentReadResult{}, err
 	}
 	artifact, err := artifactFromNode(artifactNode)
@@ -143,7 +139,7 @@ func (store *RichContentGraphStore) GetRichContentItem(ctx context.Context, proj
 	chunkNodes, err := store.graph.ListNodes(ctx, "IntegrationContentChunk", map[string]string{
 		"project_id":  projectID,
 		"provider":    string(provider),
-		"artifact_id": artifactID,
+		"artifact_id": artifact.ID,
 	})
 	if err != nil {
 		return RichContentReadResult{}, err
@@ -153,6 +149,30 @@ func (store *RichContentGraphStore) GetRichContentItem(ctx context.Context, proj
 		return RichContentReadResult{}, err
 	}
 	return RichContentReadResult{Artifact: artifact, Chunks: chunks}, nil
+}
+
+func (store *RichContentGraphStore) findArtifactNode(ctx context.Context, projectID string, provider Provider, itemIDOrKey string) (ladybug.Node, error) {
+	artifactID := integrationArtifactID(projectID, provider, itemIDOrKey)
+	node, err := store.graph.GetNode(ctx, "IntegrationArtifact", artifactID)
+	if err == nil {
+		return node, nil
+	}
+	if err != nil && !errors.Is(err, ladybug.ErrNodeNotFound) {
+		return ladybug.Node{}, err
+	}
+	nodes, err := store.graph.ListNodes(ctx, "IntegrationArtifact", map[string]string{
+		"project_id": projectID,
+		"provider":   string(provider),
+	})
+	if err != nil {
+		return ladybug.Node{}, err
+	}
+	for _, node := range nodes {
+		if node.Properties["item_id"] == itemIDOrKey || node.Properties["item_key"] == itemIDOrKey {
+			return node, nil
+		}
+	}
+	return ladybug.Node{}, ErrNotFound
 }
 
 func (store *RichContentGraphStore) SearchRichContent(ctx context.Context, projectID string, options RichContentSearchOptions) ([]RichContentSearchResult, error) {

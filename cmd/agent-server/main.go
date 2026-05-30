@@ -119,7 +119,10 @@ func run() error {
 		return err
 	}
 	defer func() { _ = projectIntegrationScheduler.Stop(context.Background()) }()
-	projectIntegrationService, err := projectintegrations.NewServiceWithOptions(cfg.Projects, projectIntegrationStore, projectintegrations.ServiceOptions{Runner: projectIntegrationScheduler})
+	projectIntegrationService, err := projectintegrations.NewServiceWithOptions(cfg.Projects, projectIntegrationStore, projectintegrations.ServiceOptions{
+		Runner:      projectIntegrationScheduler,
+		RichContent: projectintegrations.NewRichContentGraphStore(projectGraph),
+	})
 	if err != nil {
 		return err
 	}

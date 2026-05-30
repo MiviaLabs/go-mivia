@@ -20,15 +20,22 @@ type PollRunner interface {
 	RunProviderPoll(context.Context, string, Provider, SyncKind) (PollRunResult, error)
 }
 
+type RichContentReader interface {
+	GetRichContentItem(context.Context, string, Provider, string, RichContentReadOptions) (RichContentReadResult, error)
+	SearchRichContent(context.Context, string, RichContentSearchOptions) ([]RichContentSearchResult, error)
+}
+
 type ServiceOptions struct {
-	Runner PollRunner
+	Runner      PollRunner
+	RichContent RichContentReader
 }
 
 type Service struct {
-	projects map[string]config.Project
-	store    Store
-	runner   PollRunner
-	now      func() time.Time
+	projects    map[string]config.Project
+	store       Store
+	runner      PollRunner
+	richContent RichContentReader
+	now         func() time.Time
 }
 
 type ProviderSummary struct {
@@ -101,6 +108,22 @@ type ProviderPollStatus struct {
 	SyncState SyncStateStatus
 }
 
+type LocalSearchInput struct {
+	ProjectID       string
+	Provider        Provider
+	Query           string
+	MaxResults      int
+	MaxSnippetBytes int
+	CaseSensitive   bool
+}
+
+type LocalReadInput struct {
+	ProjectID     string
+	Provider      Provider
+	ItemIDOrKey   string
+	MaxChunkBytes int
+}
+
 func NewService(projects []config.Project, store Store) (*Service, error) {
 	return NewServiceWithOptions(projects, store, ServiceOptions{})
 }
@@ -118,10 +141,11 @@ func NewServiceWithOptions(projects []config.Project, store Store, options Servi
 		byID[id] = cloneConfigProject(project)
 	}
 	return &Service{
-		projects: byID,
-		store:    store,
-		runner:   options.Runner,
-		now:      time.Now,
+		projects:    byID,
+		store:       store,
+		runner:      options.Runner,
+		richContent: options.RichContent,
+		now:         time.Now,
 	}, nil
 }
 
@@ -232,6 +256,54 @@ func (service *Service) PollProvider(ctx context.Context, projectID string, prov
 		Run:       syncRunStatusView(result.Run),
 		SyncState: syncStateStatus(result.State),
 	}, nil
+}
+
+func (service *Service) SearchLocalContent(ctx context.Context, input LocalSearchInput) ([]RichContentSearchResult, error) {
+	if service == nil {
+		return nil, fmt.Errorf("%w: service is nil", ErrInvalidInput)
+	}
+	if service.richContent == nil {
+		return nil, fmt.Errorf("%w: integration rich content unavailable", ErrNotFound)
+	}
+	project, err := service.project(input.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(input.Query) == "" {
+		return nil, ErrInvalidInput
+	}
+	if input.Provider != "" {
+		if _, err := providerStatusConfig(project, input.Provider); err != nil {
+			return nil, err
+		}
+	}
+	return service.richContent.SearchRichContent(ctx, project.ID, RichContentSearchOptions{
+		Provider:        input.Provider,
+		Query:           input.Query,
+		MaxResults:      input.MaxResults,
+		MaxSnippetBytes: input.MaxSnippetBytes,
+		CaseSensitive:   input.CaseSensitive,
+	})
+}
+
+func (service *Service) ReadLocalContent(ctx context.Context, input LocalReadInput) (RichContentReadResult, error) {
+	if service == nil {
+		return RichContentReadResult{}, fmt.Errorf("%w: service is nil", ErrInvalidInput)
+	}
+	if service.richContent == nil {
+		return RichContentReadResult{}, fmt.Errorf("%w: integration rich content unavailable", ErrNotFound)
+	}
+	project, err := service.project(input.ProjectID)
+	if err != nil {
+		return RichContentReadResult{}, err
+	}
+	if strings.TrimSpace(input.ItemIDOrKey) == "" {
+		return RichContentReadResult{}, ErrInvalidInput
+	}
+	if _, err := providerStatusConfig(project, input.Provider); err != nil {
+		return RichContentReadResult{}, err
+	}
+	return service.richContent.GetRichContentItem(ctx, project.ID, input.Provider, input.ItemIDOrKey, RichContentReadOptions{MaxChunkBytes: input.MaxChunkBytes})
 }
 
 func (service *Service) project(projectID string) (config.Project, error) {

@@ -152,13 +152,15 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.list"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.status"`)) ||
-		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.poll"`)) {
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.poll"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.search"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.jira.issue.get"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.confluence.page.get"`)) {
 		t.Fatalf("expected integration tools, got %s", list.Body.String())
 	}
 	for _, forbidden := range [][]byte{
 		[]byte(`"projects.integrations.ingest"`),
-		[]byte(`"projects.integrations.read"`),
-		[]byte(`"projects.integrations.search"`),
+		[]byte(`"source":"remote"`),
 	} {
 		if bytes.Contains(list.Body.Bytes(), forbidden) {
 			t.Fatalf("unexpected later-phase integration tool %s in %s", forbidden, list.Body.String())

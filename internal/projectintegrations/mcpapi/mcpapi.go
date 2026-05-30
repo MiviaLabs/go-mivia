@@ -41,6 +41,39 @@ func ToolDefinitions() []map[string]any {
 				"kind":     map[string]any{"type": "string", "enum": []string{string(projectintegrations.SyncKindInitialFull), string(projectintegrations.SyncKindIncremental)}},
 			}, []string{"id", "provider"}),
 		},
+		{
+			"name":        "projects.integrations.search",
+			"title":       "Search Local Project Integration Content",
+			"description": "Search locally ingested integration rich content only. Does not call remote providers or resolve credentials.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":                map[string]any{"type": "string", "minLength": 1},
+				"provider":          map[string]any{"type": "string", "enum": []string{string(projectintegrations.ProviderJira), string(projectintegrations.ProviderConfluence)}},
+				"query":             map[string]any{"type": "string", "minLength": 1},
+				"max_results":       map[string]any{"type": "integer", "minimum": 1, "maximum": 50},
+				"max_snippet_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096},
+				"case_sensitive":    map[string]any{"type": "boolean"},
+			}, []string{"id", "query"}),
+		},
+		{
+			"name":        "projects.jira.issue.get",
+			"title":       "Read Local Jira Issue Content",
+			"description": "Read one locally ingested Jira issue by key or ID. Does not call Jira or resolve credentials.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":              map[string]any{"type": "string", "minLength": 1},
+				"key":             map[string]any{"type": "string", "minLength": 1},
+				"max_chunk_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 16384},
+			}, []string{"id", "key"}),
+		},
+		{
+			"name":        "projects.confluence.page.get",
+			"title":       "Read Local Confluence Page Content",
+			"description": "Read one locally ingested Confluence page by page ID. Does not call Confluence or resolve credentials.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":              map[string]any{"type": "string", "minLength": 1},
+				"page_id":         map[string]any{"type": "string", "minLength": 1},
+				"max_chunk_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 16384},
+			}, []string{"id", "page_id"}),
+		},
 	}
 }
 
@@ -91,6 +124,71 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			return nil, err
 		}
 		return toolResult(status), nil
+	case "projects.integrations.search", "projects_integrations_search":
+		var input struct {
+			ID              string          `json:"id"`
+			Provider        string          `json:"provider,omitempty"`
+			Query           string          `json:"query"`
+			MaxResults      int             `json:"max_results,omitempty"`
+			MaxSnippetBytes int             `json:"max_snippet_bytes,omitempty"`
+			CaseSensitive   bool            `json:"case_sensitive,omitempty"`
+			Meta            json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid integration arguments", projectintegrations.ErrInvalidInput)
+		}
+		results, err := service.SearchLocalContent(ctx, projectintegrations.LocalSearchInput{
+			ProjectID:       strings.TrimSpace(input.ID),
+			Provider:        projectintegrations.Provider(strings.TrimSpace(input.Provider)),
+			Query:           strings.TrimSpace(input.Query),
+			MaxResults:      input.MaxResults,
+			MaxSnippetBytes: input.MaxSnippetBytes,
+			CaseSensitive:   input.CaseSensitive,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return toolResult(map[string]any{"results": results}), nil
+	case "projects.jira.issue.get", "projects_jira_issue_get":
+		var input struct {
+			ID            string          `json:"id"`
+			Key           string          `json:"key"`
+			MaxChunkBytes int             `json:"max_chunk_bytes,omitempty"`
+			Meta          json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid integration arguments", projectintegrations.ErrInvalidInput)
+		}
+		result, err := service.ReadLocalContent(ctx, projectintegrations.LocalReadInput{
+			ProjectID:     strings.TrimSpace(input.ID),
+			Provider:      projectintegrations.ProviderJira,
+			ItemIDOrKey:   strings.TrimSpace(input.Key),
+			MaxChunkBytes: input.MaxChunkBytes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return toolResult(result), nil
+	case "projects.confluence.page.get", "projects_confluence_page_get":
+		var input struct {
+			ID            string          `json:"id"`
+			PageID        string          `json:"page_id"`
+			MaxChunkBytes int             `json:"max_chunk_bytes,omitempty"`
+			Meta          json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid integration arguments", projectintegrations.ErrInvalidInput)
+		}
+		result, err := service.ReadLocalContent(ctx, projectintegrations.LocalReadInput{
+			ProjectID:     strings.TrimSpace(input.ID),
+			Provider:      projectintegrations.ProviderConfluence,
+			ItemIDOrKey:   strings.TrimSpace(input.PageID),
+			MaxChunkBytes: input.MaxChunkBytes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return toolResult(result), nil
 	default:
 		return nil, projectintegrations.ErrNotFound
 	}

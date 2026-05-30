@@ -250,7 +250,10 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		return projectmcpapi.CallToolWithWorkspace(r.Context(), handler.projects, handler.projectDigest, handler.projectIngest, handler.projectWork, params.Name, params.Arguments)
 	case "projects.integrations.list", "projects_integrations_list",
 		"projects.integrations.status", "projects_integrations_status",
-		"projects.integrations.poll", "projects_integrations_poll":
+		"projects.integrations.poll", "projects_integrations_poll",
+		"projects.integrations.search", "projects_integrations_search",
+		"projects.jira.issue.get", "projects_jira_issue_get",
+		"projects.confluence.page.get", "projects_confluence_page_get":
 		return integrationmcpapi.CallTool(r.Context(), handler.integrations, params.Name, params.Arguments)
 	default:
 		if handler.research != nil {
