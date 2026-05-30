@@ -35,7 +35,11 @@ Within the accepted ADR-0007 boundary:
 - source-content hashes may be stored only for content that is also stored after all gates pass
 - the exception applies only to the localhost `agent-server` on the developer machine
 
-No provider, embedding, vector, crawling, public exposure, auth model change, symlink traversal, skipped sensitive content storage, matched sensitive-marker storage, or PII ingestion is approved. PII ingestion remains prohibited unless separately approved by Security/DPO with purpose, legal basis, access model, retention, deletion path, audit trail, and data residency posture.
+No provider, embedding, vector, crawling, public exposure, auth model change, symlink traversal, skipped sensitive content storage, matched sensitive-marker storage, or PII ingestion is approved by the content graph policy. PII ingestion remains prohibited unless separately approved by Security/DPO with purpose, legal basis, access model, retention, deletion path, audit trail, and data residency posture.
+
+## Project Integration Exception
+
+[Project Integrations Security Policy](project-integrations.md) records the approved local exception for configured Jira Cloud and Confluence Cloud rich-content and PII ingestion. That exception is not a research-data exception and does not approve raw provider payload storage, credential persistence, public exposure, embeddings, vectors, external crawling, or broader provider use.
 
 REST and MCP content graph surfaces are localhost-only and bounded. They expose manual ingestion control, run status, file metadata, chunk metadata, and symbol metadata for opted-in projects. Responses use stable opaque IDs and must not expose absolute roots, datastore paths, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, provider payloads, or raw database query results.
 
@@ -71,6 +75,8 @@ Owner decisions still required before production or external-provider use:
 - audit trail
 - data residency and cross-border transfer posture
 - provider terms and retention guarantees
+
+The project-integrations phase-1 retention and deletion decision is recorded separately in [Project Integrations Security Policy](project-integrations.md): keep approved local Jira/Confluence content indefinitely in ignored local stores, with deletion by manual removal of ignored local datastore files for this local phase.
 
 ## Logging Rules
 

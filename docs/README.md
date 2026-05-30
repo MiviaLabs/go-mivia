@@ -18,7 +18,8 @@ This index points only to stable repository documentation. Local task plans and 
 - [Local development runbook](runbooks/local-dev.md): local verification, server startup, REST smoke, MCP smoke, manual ingestion, live mode, watcher troubleshooting, and local reset.
 - [Test reports](reports/tests/README.md): convention for concise local verification and agent A/B experiment reports.
 - [Incident runbook](runbooks/incident.md): bootstrap incident response notes.
-- [Privacy baseline](security/privacy-baseline.md): current PII prohibition and approval gates.
+- [Privacy baseline](security/privacy-baseline.md): default PII prohibition, local exceptions, and approval gates.
+- [Project integrations security policy](security/project-integrations.md): approved local Jira/Confluence rich-content and PII handling boundary.
 - [Research data handling](security/research-data-handling.md): allowed metadata, redaction boundary, and provider restrictions.
 - [Research baseline notes](research/2026-05-30-platform-baseline.md): source-grounded platform notes, not a research plan.
 
