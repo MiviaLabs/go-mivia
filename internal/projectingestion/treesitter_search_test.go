@@ -102,6 +102,51 @@ func TestASTSearchPaginationFiltersAndPrivacy(t *testing.T) {
 	}
 }
 
+func TestASTQueryCatalogAndCoverage(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "safe", "one.ts"), "export function visible() { return 1; }\n")
+	writeFile(t, filepath.Join(root, "safe", "large.ts"), "export function hiddenBySize() { return `"+strings.Repeat("x", 5000)+"`; }\n")
+
+	svc, _, _ := newTestService(t, root)
+	if run, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil || run.Status != RunStatusCompleted {
+		t.Fatalf("ingest project: %#v %v", run, err)
+	}
+
+	catalog, err := svc.ListASTQueries(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("list ast queries: %v", err)
+	}
+	if !astCatalogContains(catalog.Queries, "typescript", "function_declarations", "name") {
+		t.Fatalf("missing expected typescript query metadata: %#v", catalog.Queries)
+	}
+	coverage := astCoverageForLanguage(t, catalog.Coverage, "typescript")
+	if coverage.EligibleFiles != 1 || coverage.SkippedFileTooLarge != 1 || coverage.CoverageScope != string(SkipReasonFileTooLarge) || coverage.CoverageStatus != "partial" || coverage.CoveragePartialCause != string(SkipReasonFileTooLarge) {
+		t.Fatalf("unexpected AST catalog coverage: %#v", coverage)
+	}
+	body := marshalASTResults(t, catalog)
+	if strings.Contains(body, "(function_declaration") || strings.Contains(body, "hiddenBySize") || strings.Contains(body, root) || strings.Contains(body, "content_sha256") {
+		t.Fatalf("AST catalog leaked raw query or skipped/internal data: %s", body)
+	}
+
+	results, err := svc.SearchAST(ctx, "example-service", ASTSearchOptions{
+		Language: "typescript",
+		Query:    "function_declarations",
+		Captures: []string{"name"},
+		PageSize: 10,
+	})
+	if err != nil {
+		t.Fatalf("search ast: %v", err)
+	}
+	if results.Coverage == nil || results.Coverage.SkippedFileTooLarge != 1 || results.Coverage.CoverageStatus != "partial" {
+		t.Fatalf("expected AST search coverage metadata, got %#v", results.Coverage)
+	}
+	body = marshalASTResults(t, results)
+	if strings.Contains(body, "hiddenBySize") || strings.Contains(body, root) || strings.Contains(body, "content_sha256") {
+		t.Fatalf("AST search leaked skipped/internal data: %s", body)
+	}
+}
+
 func TestASTSearchParsesWholeFileAcrossChunkBoundaries(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -140,6 +185,31 @@ func astSearchResultsContain(results []ASTSearchResult, captureName string, capt
 		}
 	}
 	return false
+}
+
+func astCatalogContains(queries []ASTQueryMetadata, language string, id string, capture string) bool {
+	for _, query := range queries {
+		if query.Language != language || query.ID != id {
+			continue
+		}
+		for _, candidate := range query.Captures {
+			if candidate == capture {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func astCoverageForLanguage(t *testing.T, coverage []ASTCoverageMetadata, language string) ASTCoverageMetadata {
+	t.Helper()
+	for _, item := range coverage {
+		if item.Language == language {
+			return item
+		}
+	}
+	t.Fatalf("missing coverage for %s: %#v", language, coverage)
+	return ASTCoverageMetadata{}
 }
 
 func marshalASTResults(t *testing.T, value any) string {

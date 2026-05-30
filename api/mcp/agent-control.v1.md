@@ -353,13 +353,19 @@ Input schema: `id`, optional `name_contains`, `caller_name_contains`, `callee_na
 
 Output: bounded indexed call metadata, including unresolved call nodes where available. No source text, roots, content hashes, skipped sensitive content, raw parser errors, or raw datastore details are returned.
 
+### `projects.search.ast.queries`
+
+Input schema: `id`.
+
+Output: supported named AST query catalog entries for the project surface. Each entry includes query ID, language, supported capture names, query version, and matching file extensions. The response also includes safe per-language coverage counters scoped to `file_too_large`. Raw Tree-sitter query text is not returned, and raw Tree-sitter query syntax is not accepted by the search surface. Sensitive, denied, absent, parse-error, and other skipped files are not catalog inputs. Oversized files are represented only as safe coverage gaps through file/ingestion metadata such as `skipped_reason=file_too_large`, size, and reason counts; source text, chunks, snippets, content hashes, roots, skipped sensitive text, raw parser/SQLite/FTS/Tree-sitter errors, raw prompts, provider payloads, secrets, and PII are not returned.
+
 ### `projects.search.ast`
 
 Input schema: `id`, required `language` (`go`, `python`, `javascript`, `jsx`, `typescript`, `tsx`, `csharp`), required `query` named catalog id, optional `captures`, `extension`, `path_prefix`, `page_size`, `page_token`, `max_matches`, and `max_snippet_bytes`.
 
 Named query ids: `function_declarations`, `class_declarations`, `type_declarations`, `call_expressions`, `imports`, `test_functions`, `assignments`, and `error_handling` where supported by the language.
 
-Output: bounded capture results from eligible indexed chunks only, including safe file metadata, chunk location metadata without full chunk text, capture name/text, span, capped snippet, `query_language`, `query_version`, `result_truncated`, and search index metadata. Raw Tree-sitter query syntax is not accepted. Roots, content hashes, skipped sensitive text, raw parser/Tree-sitter errors, raw SQLite/FTS errors, raw prompts, provider payloads, secrets, and PII are not returned.
+Output: bounded capture results from eligible indexed chunks only, including safe file metadata, chunk location metadata without full chunk text, capture name/text, span, capped snippet, `query_language`, `query_version`, `result_truncated`, `coverage`, and search index metadata. Raw Tree-sitter query syntax is not accepted. Sensitive, denied, absent, parse-error, oversized, and other skipped files are unreachable from AST search. Oversized files may appear only as `file_too_large` coverage counts, file metadata with `skipped_reason=file_too_large`, and ingestion reason counts. Roots, content hashes, skipped sensitive text, raw parser/Tree-sitter errors, raw SQLite/FTS errors, raw prompts, provider payloads, secrets, and PII are not returned.
 
 ### `projects.symbol.source`
 

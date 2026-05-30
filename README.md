@@ -61,8 +61,8 @@ flowchart TB
 | Project registry | Optional local TOML projects with metadata-only digest or content graph mode | Root paths and local config values stay out of REST/MCP responses |
 | Ingestion scheduler | Async manual ingestion, live watcher rescan, global/per-project limits, live path priority | No one project can monopolize scheduler workers |
 | Full-scan ingestion | Parallel bounded file workers, periodic running counters, stale cleanup after workers drain | Source is stored only for eligible chunks after safety gates |
-| Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph, named AST structural search | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
-| Query APIs | Files, chunks, outlines, text/file/symbol/reference/call search, named AST search, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned; raw FTS and raw Tree-sitter syntax are not exposed |
+| Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph, named AST structural search, AST query catalog discovery | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
+| Query APIs | Files, chunks, outlines, text/file/symbol/reference/call search, AST query catalog, named AST search, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned; raw FTS and raw Tree-sitter syntax are not exposed |
 
 ## Start Here
 
@@ -112,7 +112,7 @@ flowchart LR
 What this enables:
 
 - Engineers can opt local projects into metadata-only digest or content graph ingestion.
-- Agents can ask for bounded project files, chunks, outlines, search results, symbols, symbol source, references, direct call edges, call graphs, named AST structural matches, and ingestion status through MCP instead of guessing from stale chat context.
+- Agents can ask for bounded project files, chunks, outlines, search results, symbols, symbol source, references, direct call edges, call graphs, the supported AST query catalog, named AST structural matches, and ingestion status through MCP instead of guessing from stale chat context.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
 - Local state can persist per project when `graph_storage = "persistent"`, or stay process-local with `graph_storage = "in_memory"`.
 - The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, provider calls, embeddings, vectors, skipped sensitive content, secrets, raw prompts, provider payloads, and PII.
@@ -287,7 +287,7 @@ wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored
 wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivialabs-agent-server
 ```
 
-The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, and `projects.file.outline`. Codex Desktop may show underscore-normalized callable names such as `tasks_create` or `projects_search_text`; the server accepts both forms.
+The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, and `projects.file.outline`. Codex Desktop may show underscore-normalized callable names such as `tasks_create` or `projects_search_text`; the server accepts both forms.
 
 ## Local Project APIs
 
@@ -311,6 +311,8 @@ Use REST for scripts, smoke tests, and direct local checks. Use MCP when an agen
 | Symbol search | `GET /api/v1/projects/{id}/search/symbols?name_contains=Run` | `projects.search.symbols` |
 | Reference search | `GET /api/v1/projects/{id}/search/references?target_name_contains=Run` | `projects.search.references` |
 | Call search | `GET /api/v1/projects/{id}/search/calls?callee_name_contains=Run` | `projects.search.calls` |
+| AST query catalog | `GET /api/v1/projects/{id}/search/ast/queries` | `projects.search.ast.queries` |
+| Named AST search | `GET /api/v1/projects/{id}/search/ast?language=typescript&query=call_expressions` | `projects.search.ast` |
 | Symbol source | `GET /api/v1/projects/{id}/symbols/{symbol_id}/source` | `projects.symbol.source` |
 | Symbol references | `GET /api/v1/projects/{id}/symbols/{symbol_id}/references` | `projects.symbol.references` |
 | Symbol callers | `GET /api/v1/projects/{id}/symbols/{symbol_id}/callers` | `projects.symbol.callers` |
@@ -322,6 +324,8 @@ Manual content graph ingestion and search index repair are asynchronous. `POST /
 Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/agent-server.local.toml`. The committed schema example is [configs/agent-server.example.toml](configs/agent-server.example.toml).
 
 Project digest is manual and metadata-only. Content graph ingestion is opt-in with `digest_mode = "content_graph"` and uses the same local path, denylist, binary, UTF-8, size, and sensitive-marker gates before storing eligible source chunks. Promoted AST extraction uses Go stdlib AST for Go, Tree-sitter for JS/TS/TSX/JSX/C#/Python, Markdown headings, and lightweight infrastructure metadata. TS/JS/TSX/JSX, C#, and Python have no regex fallback after startup validation.
+
+`projects.search.ast.queries` returns supported named AST query IDs, languages, captures, query versions, matching extensions, and safe per-language `file_too_large` coverage counts so agents can discover the safe structural-search surface before calling `projects.search.ast`. Raw Tree-sitter query syntax remains blocked. Sensitive, denied, absent, parse-error, and other skipped files are not searched. Oversized files are reported as safe coverage gaps through ingestion/file metadata such as `skipped_reason=file_too_large`, size, and reason counts; their source text, chunks, snippets, content hashes, raw parser/SQLite/FTS/Tree-sitter errors, roots, secrets, PII, raw prompts, and provider payloads are not exposed.
 
 Extractor cache rows live in the local SQLite app DB and store only serialized symbol, heading, reference, and call metadata keyed by project, relative-path hash, content hash, extractor name, and extractor version. Skipped files do not get cache rows or content hashes. REST/MCP responses omit local root paths, datastore paths, skipped sensitive content, matched sensitive text, secrets, raw prompts, provider payloads, and PII. Symbol source is returned only for eligible indexed chunks and is capped by request and project limits.
 

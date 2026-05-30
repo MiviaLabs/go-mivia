@@ -305,7 +305,32 @@ type ASTSearchResultList struct {
 	QueryVersion    string               `json:"query_version"`
 	ResultTruncated bool                 `json:"result_truncated"`
 	MaxSnippetBytes int                  `json:"max_snippet_bytes"`
+	Coverage        *ASTCoverageMetadata `json:"coverage,omitempty"`
 	Index           *SearchIndexMetadata `json:"index,omitempty"`
+}
+
+type ASTQueryCatalog struct {
+	Queries  []ASTQueryMetadata    `json:"queries"`
+	Coverage []ASTCoverageMetadata `json:"coverage,omitempty"`
+	Index    *SearchIndexMetadata  `json:"index,omitempty"`
+}
+
+type ASTQueryMetadata struct {
+	ID         string   `json:"id"`
+	Language   string   `json:"language"`
+	Version    string   `json:"version"`
+	Captures   []string `json:"captures"`
+	Extensions []string `json:"extensions"`
+}
+
+type ASTCoverageMetadata struct {
+	Language             string   `json:"language"`
+	Extensions           []string `json:"extensions"`
+	CoverageScope        string   `json:"coverage_scope"`
+	EligibleFiles        int      `json:"eligible_files"`
+	SkippedFileTooLarge  int      `json:"skipped_file_too_large"`
+	CoverageStatus       string   `json:"coverage_status"`
+	CoveragePartialCause string   `json:"coverage_partial_cause,omitempty"`
 }
 
 type HeadingMetadata struct {

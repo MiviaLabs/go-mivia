@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,7 +151,7 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search_index.rebuild"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
 		t.Fatalf("expected ingestion tools, got %s", list.Body.String())
 	}
-	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.text"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.calls"`)) {
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.text"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.calls"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.ast.queries"`)) {
 		t.Fatalf("expected project search tools, got %s", list.Body.String())
 	}
 
@@ -264,6 +265,10 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	searchCalls := postMCP(t, handler, `{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"projects_search_calls","arguments":{"id":"example-service","caller_name_contains":"Run","callee_name_contains":"helper"}}}`)
 	if bytes.Contains(searchCalls.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(searchCalls.Body.Bytes(), []byte(`"callee_name":"helper"`)) {
 		t.Fatalf("expected call search success, got %s", searchCalls.Body.String())
+	}
+	astQueries := postMCP(t, handler, `{"jsonrpc":"2.0","id":171,"method":"tools/call","params":{"name":"projects_search_ast_queries","arguments":{"id":"example-service"}}}`)
+	if bytes.Contains(astQueries.Body.Bytes(), []byte(`"error":{`)) || bytes.Contains(astQueries.Body.Bytes(), []byte(`"isError":true`)) || !bytes.Contains(astQueries.Body.Bytes(), []byte(`"id":"function_declarations"`)) || strings.Contains(astQueries.Body.String(), "(function_declaration") {
+		t.Fatalf("expected AST query catalog success, got %s", astQueries.Body.String())
 	}
 
 	repair := postMCP(t, handler, `{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"projects_search_index_rebuild","arguments":{"id":"example-service"}}}`)

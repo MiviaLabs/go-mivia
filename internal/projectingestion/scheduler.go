@@ -288,6 +288,14 @@ func (scheduler *Scheduler) SearchCalls(ctx context.Context, projectID string, o
 	return api.SearchCalls(ctx, projectID, options)
 }
 
+func (scheduler *Scheduler) ListASTQueries(ctx context.Context, projectID string) (ASTQueryCatalog, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return ASTQueryCatalog{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListASTQueries(ctx, projectID)
+}
+
 func (scheduler *Scheduler) SearchAST(ctx context.Context, projectID string, options ASTSearchOptions) (ASTSearchResultList, error) {
 	api, ok := scheduler.runner.(API)
 	if !ok {

@@ -162,6 +162,63 @@ func astSearchFileStates(ctx context.Context, svc *Service, project projectregis
 	return out, nil
 }
 
+func astSearchCoverage(ctx context.Context, svc *Service, project projectregistry.Project, entry astSearchQuery, options ASTSearchOptions) (ASTCoverageMetadata, error) {
+	extensions := entry.Extensions
+	if options.Extension != "" {
+		extensions = []string{options.Extension}
+	}
+	coverage := ASTCoverageMetadata{
+		Language:       entry.Language,
+		Extensions:     append([]string(nil), extensions...),
+		CoverageScope:  string(SkipReasonFileTooLarge),
+		CoverageStatus: "complete",
+	}
+	present := true
+	for _, extension := range extensions {
+		eligible, err := svc.state.ListFileStates(ctx, project.ID, FileStateFilter{
+			Status:     FileStatusEligible,
+			Extension:  extension,
+			PathPrefix: options.PathPrefix,
+			Present:    &present,
+		})
+		if err != nil {
+			return ASTCoverageMetadata{}, err
+		}
+		coverage.EligibleFiles += len(eligible)
+		oversized, err := svc.state.ListFileStates(ctx, project.ID, FileStateFilter{
+			Status:        FileStatusSkipped,
+			Extension:     extension,
+			PathPrefix:    options.PathPrefix,
+			SkippedReason: SkipReasonFileTooLarge,
+			Present:       &present,
+		})
+		if err != nil {
+			return ASTCoverageMetadata{}, err
+		}
+		coverage.SkippedFileTooLarge += len(oversized)
+	}
+	if coverage.SkippedFileTooLarge > 0 {
+		coverage.CoverageStatus = "partial"
+		coverage.CoveragePartialCause = string(SkipReasonFileTooLarge)
+	}
+	return coverage, nil
+}
+
+func astSearchCatalogCoverage(ctx context.Context, svc *Service, project projectregistry.Project) ([]ASTCoverageMetadata, error) {
+	out := make([]ASTCoverageMetadata, 0, len(astSearchLanguageExtensions))
+	for language, extensions := range astSearchLanguageExtensions {
+		coverage, err := astSearchCoverage(ctx, svc, project, astSearchQuery{Language: language, Extensions: extensions}, ASTSearchOptions{})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, coverage)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Language < out[j].Language
+	})
+	return out, nil
+}
+
 func astSearchAllChunks(ctx context.Context, svc *Service, project projectregistry.Project, fileID string) ([]ChunkMetadata, error) {
 	var chunks []ChunkMetadata
 	pageToken := ""

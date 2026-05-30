@@ -423,6 +423,19 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 			PageToken:          input.PageToken,
 		})
 		return toolResult(calls), err
+	case "projects.search.ast.queries", "projects_search_ast_queries":
+		var input struct {
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		catalog, err := ingestion.ListASTQueries(ctx, strings.TrimSpace(input.ID))
+		return toolResult(catalog), err
 	case "projects.search.ast", "projects_search_ast":
 		var input struct {
 			ID              string          `json:"id"`
@@ -805,6 +818,14 @@ func ingestionToolDefinitions() []map[string]any {
 				"confidence":           map[string]any{"type": "string"},
 				"case_sensitive":       map[string]any{"type": "boolean"},
 			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.search.ast.queries",
+			"title":       "List Project AST Search Queries",
+			"description": "List supported named AST query catalog metadata and safe per-language coverage counts. Raw Tree-sitter query syntax, skipped file paths, roots, and parser internals are never returned.",
+			"inputSchema": objectSchema(map[string]any{
+				"id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id"}),
 		},
 		{
 			"name":        "projects.search.ast",

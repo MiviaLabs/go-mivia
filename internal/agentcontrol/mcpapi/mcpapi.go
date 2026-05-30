@@ -216,6 +216,8 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		"projects.search.symbols", "projects_search_symbols",
 		"projects.search.references", "projects_search_references",
 		"projects.search.calls", "projects_search_calls",
+		"projects.search.ast.queries", "projects_search_ast_queries",
+		"projects.search.ast", "projects_search_ast",
 		"projects.symbol.source", "projects_symbol_source",
 		"projects.symbol.references", "projects_symbol_references",
 		"projects.symbol.callers", "projects_symbol_callers",

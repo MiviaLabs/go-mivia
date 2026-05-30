@@ -1,6 +1,6 @@
 # Project Search And Embedded AST Search Plan
 
-Status: Phase 1-3 implemented; Phase 4 pre-hardening passed for representative live projects; Phase 4 named AST search implemented
+Status: Phase 1-3 implemented; Phase 4 pre-hardening passed for representative live projects; Phase 4 named AST search implemented; follow-up catalog/coverage contracts documented
 Date: 2026-05-30
 Classification: Internal; PII-prohibited
 Mode: Free-text plan; no Jira or Confluence used by repository constraint.
@@ -303,6 +303,13 @@ Checkpoint update on 2026-05-30:
 - `projects.digest` remains metadata-only; content-graph projects now return a specific `project digest unsupported` MCP error instead of looking like malformed arguments or an active-ingestion block.
 - No confirmed C# discrepancy remained before continuing Phase 4 AST implementation.
 
+Follow-up update on 2026-05-31:
+
+- REST, MCP, OpenAPI, README, agent guide, and repo-local MCP skill docs now document an AST query catalog discovery surface before named AST search.
+- The catalog surface reports supported named query IDs, languages, capture names, query versions, and matching extensions. It does not expose raw Tree-sitter query text.
+- Raw Tree-sitter query syntax remains blocked; `projects.search.ast` accepts only named catalog IDs.
+- Sensitive, denied, absent, parse-error, and other skipped files remain unreachable. Oversized files are reported only as safe coverage gaps through file/ingestion metadata such as `skipped_reason=file_too_large`, size, and reason counts; their source text, chunks, snippets, content hashes, parser details, roots, secrets, PII, raw prompts, and provider payloads are not exposed.
+
 ### 8.2 Structural Search Contract
 
 Add `projects.search.ast` only after Phase 1 is stable, Phase 3 FTS does not need public contract changes, and the pre-hardening checkpoint above passes.
@@ -311,7 +318,7 @@ Inputs:
 
 - `id`
 - `language`: `go`, `python`, `javascript`, `typescript`, `tsx`, `jsx`, `csharp`
-- `query`: constrained named-query ID
+- `query`: constrained named-query ID discovered from `projects.search.ast.queries`
 - `captures`: optional capture-name allowlist
 - `extension`, `path_prefix`, pagination
 - `max_matches`, `max_snippet_bytes`
@@ -361,7 +368,10 @@ Go decision:
 
 ### 8.5 Named Query Catalog
 
-Do not expose only raw query text. Add a curated query catalog for common agent tasks:
+Do not expose raw query text. Add a curated query catalog discovery surface for common agent tasks:
+
+- REST: `GET /api/v1/projects/{id}/search/ast/queries`
+- MCP: `projects.search.ast.queries`
 
 - function/method declarations
 - class/type declarations
@@ -375,12 +385,20 @@ Do not expose only raw query text. Add a curated query catalog for common agent 
 Each query entry should define:
 
 - language
-- query text
-- expected captures
+- query ID
+- expected capture names
 - tests with fixture code
 - version
+- matching extensions
 
-Raw Tree-sitter query input can be allowed later under stricter caps, but named queries are the only supported initial REST/MCP path.
+Raw Tree-sitter query input is not supported. Any later raw-query mode requires a separate design with stricter caps, sanitized errors, and explicit owner approval.
+
+Coverage guidance:
+
+- Catalog discovery describes supported query coverage, not per-file participation.
+- `projects.search.ast` searches eligible indexed chunks only.
+- Sensitive, denied, absent, parse-error, and other skipped files stay unreachable.
+- Oversized files are coverage gaps only. Report them through safe `file_too_large` scoped coverage counts, `skipped_reason=file_too_large`, size, and ingestion reason counts; do not expose their source text, chunks, snippets, content hashes, raw parser/SQLite/FTS/Tree-sitter errors, roots, secrets, PII, raw prompts, or provider payloads.
 
 ## 9. Phase 5: Optional AST-Grep Parity Layer
 

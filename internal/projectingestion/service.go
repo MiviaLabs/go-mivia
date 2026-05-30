@@ -63,6 +63,7 @@ type API interface {
 	SearchSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
 	SearchReferences(context.Context, string, ReferenceSearchOptions) (SymbolReferenceList, error)
 	SearchCalls(context.Context, string, ReferenceSearchOptions) (SymbolCallEdgeList, error)
+	ListASTQueries(context.Context, string) (ASTQueryCatalog, error)
 	SearchAST(context.Context, string, ASTSearchOptions) (ASTSearchResultList, error)
 	GetSymbol(context.Context, string, string) (SymbolMetadata, error)
 	GetSymbolSource(context.Context, string, string, SymbolSourceOptions) (SymbolSource, error)
@@ -928,9 +929,35 @@ func (svc *Service) SearchAST(ctx context.Context, projectID string, options AST
 	if err != nil {
 		return ASTSearchResultList{}, err
 	}
+	entry, ok := astSearchCatalogEntry(normalized.Language, normalized.Query)
+	if !ok {
+		return ASTSearchResultList{}, ErrInvalidInput
+	}
+	coverage, err := astSearchCoverage(ctx, svc, project, entry, normalized)
+	if err != nil {
+		return ASTSearchResultList{}, err
+	}
 	index := svc.searchIndexMetadata(ctx, project.ID)
+	results.Coverage = &coverage
 	results.Index = &index
 	return results, nil
+}
+
+func (svc *Service) ListASTQueries(ctx context.Context, projectID string) (ASTQueryCatalog, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return ASTQueryCatalog{}, err
+	}
+	coverage, err := astSearchCatalogCoverage(ctx, svc, project)
+	if err != nil {
+		return ASTQueryCatalog{}, err
+	}
+	index := svc.searchIndexMetadata(ctx, project.ID)
+	return ASTQueryCatalog{
+		Queries:  astSearchCatalogMetadata(),
+		Coverage: coverage,
+		Index:    &index,
+	}, nil
 }
 
 func (svc *Service) ListHeadings(ctx context.Context, projectID string, fileID string, pagination Pagination) (HeadingList, error) {

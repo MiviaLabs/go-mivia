@@ -24,6 +24,24 @@ func astSearchCatalogEntry(language string, queryID string) (astSearchQuery, boo
 	return astSearchQuery{}, false
 }
 
+func astSearchCatalogMetadata() []ASTQueryMetadata {
+	out := make([]ASTQueryMetadata, 0, len(astSearchCatalog))
+	for _, entry := range astSearchCatalog {
+		out = append(out, astSearchQueryMetadata(entry))
+	}
+	return out
+}
+
+func astSearchQueryMetadata(entry astSearchQuery) ASTQueryMetadata {
+	return ASTQueryMetadata{
+		ID:         entry.ID,
+		Language:   entry.Language,
+		Version:    entry.Version,
+		Captures:   append([]string(nil), entry.Captures...),
+		Extensions: append([]string(nil), entry.Extensions...),
+	}
+}
+
 func astSearchLanguageSupported(language string) bool {
 	_, ok := astSearchLanguageExtensions[normalizeASTLanguage(language)]
 	return ok

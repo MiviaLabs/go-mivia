@@ -35,6 +35,7 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("GET /api/v1/projects/{id}/search/symbols", searchSymbolsHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/search/references", searchReferencesHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/search/calls", searchCallsHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/search/ast/queries", listASTQueriesHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/search/ast", searchASTHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/source", getSymbolSourceHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/references", listSymbolReferencesHandler(ingestion))
@@ -241,6 +242,13 @@ func searchASTHandler(ingestion projectingestion.API) http.Handler {
 		}
 		results, err := ingestion.SearchAST(r.Context(), strings.TrimSpace(r.PathValue("id")), options)
 		writeIngestionResult(w, results, err, http.StatusOK)
+	})
+}
+
+func listASTQueriesHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		catalog, err := ingestion.ListASTQueries(r.Context(), strings.TrimSpace(r.PathValue("id")))
+		writeIngestionResult(w, catalog, err, http.StatusOK)
 	})
 }
 

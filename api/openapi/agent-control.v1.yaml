@@ -581,11 +581,27 @@ paths:
                 $ref: '#/components/schemas/ProjectSymbolCallEdgeList'
         '400': {$ref: '#/components/responses/BadRequest'}
         '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{id}/search/ast/queries:
+    get:
+      operationId: listProjectASTQueries
+      summary: List eligible indexed project AST query catalog
+      description: Returns supported named AST query IDs, languages, capture names, query versions, matching extensions, and safe per-language coverage counts scoped to file_too_large. Raw Tree-sitter query text and raw Tree-sitter query syntax are not exposed. Sensitive, denied, absent, parse-error, and other skipped files are not catalog inputs. Oversized files are represented only as safe coverage gaps through file/ingestion metadata such as skipped_reason=file_too_large, size, and reason counts. Source text, chunks, snippets, content hashes, skipped sensitive text, roots, secrets, PII, raw prompts, provider payloads, and raw parser/SQLite/FTS/Tree-sitter errors are not returned.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Project AST query catalog
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectASTQueryCatalog'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /projects/{id}/search/ast:
     get:
       operationId: searchProjectAST
       summary: Search eligible indexed project AST
-      description: Runs a named Tree-sitter structural query over eligible indexed chunks only. The query parameter is a catalog id, not raw Tree-sitter syntax. Skipped sensitive content, roots, content hashes, raw parser internals, raw prompts, provider payloads, and raw datastore errors are not returned.
+      description: Runs a named Tree-sitter structural query over eligible indexed chunks only. The query parameter is a catalog id, not raw Tree-sitter syntax. Sensitive, denied, absent, parse-error, oversized, and other skipped files are unreachable from AST search. Oversized files may appear only as file_too_large coverage counts, file metadata with skipped_reason=file_too_large, and ingestion reason counts. Skipped sensitive content, roots, content hashes, raw parser internals, raw prompts, provider payloads, secrets, PII, and raw datastore errors are not returned.
       parameters:
         - $ref: '#/components/parameters/ID'
         - $ref: '#/components/parameters/PageSize'
@@ -1251,8 +1267,73 @@ components:
         max_snippet_bytes:
           type: integer
           minimum: 1
+        coverage:
+          $ref: '#/components/schemas/ProjectASTCoverage'
+          description: Safe coverage-gap metadata only. It does not expose source text, paths for sensitive skips, content hashes, or parser internals.
         index:
           $ref: '#/components/schemas/ProjectSearchIndex'
+    ProjectASTQueryCatalog:
+      type: object
+      additionalProperties: false
+      required: [queries]
+      properties:
+        queries:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectASTQuery'
+        coverage:
+          type: array
+          description: Safe per-language coverage-gap metadata only. It does not expose source text, paths for sensitive skips, content hashes, or parser internals.
+          items:
+            $ref: '#/components/schemas/ProjectASTCoverage'
+        index:
+          $ref: '#/components/schemas/ProjectSearchIndex'
+    ProjectASTQuery:
+      type: object
+      additionalProperties: false
+      required: [id, language, version, captures, extensions]
+      properties:
+        id:
+          type: string
+          description: Named query id. This is not raw Tree-sitter query syntax.
+        language:
+          type: string
+          enum: [go, python, javascript, jsx, typescript, tsx, csharp]
+        version:
+          type: string
+        captures:
+          type: array
+          items: {type: string}
+        extensions:
+          type: array
+          items: {type: string}
+    ProjectASTCoverage:
+      type: object
+      additionalProperties: false
+      required: [language, extensions, coverage_scope, eligible_files, skipped_file_too_large, coverage_status]
+      properties:
+        language:
+          type: string
+        extensions:
+          type: array
+          items: {type: string}
+        coverage_scope:
+          type: string
+          enum: [file_too_large]
+          description: Scope of the coverage gap counters; this does not mean complete semantic coverage for every possible skip reason.
+        eligible_files:
+          type: integer
+          minimum: 0
+        skipped_file_too_large:
+          type: integer
+          minimum: 0
+          description: Count of oversized skipped files in this language coverage set. File paths and source are not returned.
+        coverage_status:
+          type: string
+          enum: [complete, partial]
+        coverage_partial_cause:
+          type: string
+          enum: [file_too_large]
     ProjectASTSearchResult:
       type: object
       additionalProperties: false

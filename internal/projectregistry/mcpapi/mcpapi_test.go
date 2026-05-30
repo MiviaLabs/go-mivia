@@ -387,6 +387,19 @@ func TestCallToolWithIngestion_SearchToolsSupportDottedAndUnderscoreNames(t *tes
 		t.Fatalf("unexpected call search result: %#v", calls)
 	}
 
+	astQueriesResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_search_ast_queries", json.RawMessage(`{"id":"example-service"}`))
+	if err != nil {
+		t.Fatalf("call ast query catalog tool: %v", err)
+	}
+	astQueries := astQueriesResult["structuredContent"].(projectingestion.ASTQueryCatalog)
+	if len(astQueries.Queries) == 0 || len(astQueries.Coverage) == 0 {
+		t.Fatalf("unexpected ast query catalog result: %#v", astQueries)
+	}
+	astQueriesBody := marshalResult(t, astQueriesResult)
+	if !strings.Contains(astQueriesBody, `"id":"function_declarations"`) || strings.Contains(astQueriesBody, "(function_declaration") || strings.Contains(astQueriesBody, "content_sha256") {
+		t.Fatalf("unexpected ast query catalog body: %s", astQueriesBody)
+	}
+
 	astResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_search_ast", json.RawMessage(`{"id":"example-service","language":"go","query":"call_expressions","captures":["callee"],"page_size":10,"max_snippet_bytes":16}`))
 	if err != nil {
 		t.Fatalf("call ast search tool: %v", err)
@@ -395,8 +408,11 @@ func TestCallToolWithIngestion_SearchToolsSupportDottedAndUnderscoreNames(t *tes
 	if len(ast.Results) == 0 || ast.Results[0].CaptureName != "callee" || ast.Results[0].CaptureText != "helper" || ast.Results[0].Chunk.Text != "" {
 		t.Fatalf("unexpected ast search result: %#v", ast)
 	}
+	if ast.Coverage == nil || ast.Coverage.Language != "go" || ast.Coverage.EligibleFiles == 0 {
+		t.Fatalf("missing ast search coverage: %#v", ast.Coverage)
+	}
 
-	body := marshalResult(t, map[string]any{"text": textResult, "files": filesResult, "symbols": symbolsResult, "refs": refsResult, "calls": callsResult, "ast": astResult})
+	body := marshalResult(t, map[string]any{"text": textResult, "files": filesResult, "symbols": symbolsResult, "refs": refsResult, "calls": callsResult, "ast_queries": astQueriesResult, "ast": astResult})
 	for _, forbidden := range []string{"root_path", "content_sha256", "access_token", "provider_payload", "raw_prompt"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("search tool response leaked %q: %s", forbidden, body)
