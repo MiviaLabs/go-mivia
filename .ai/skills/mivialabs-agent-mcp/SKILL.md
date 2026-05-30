@@ -15,12 +15,15 @@ Mandatory MCP-first surfaces:
 
 - Project discovery, enabled state, digest mode, update policy, and graph storage.
 - Ingestion run state, live/manual freshness, skipped reason counts, and rescan status.
-- Indexed file discovery, opaque file IDs, file metadata, outlines, headings, symbols, and bounded chunks.
+- Indexed file discovery, opaque file IDs, file metadata, outlines, headings, symbols, references, call sites, and bounded chunks.
 - Any task asking what the indexed project graph knows or whether local content graph ingestion is current.
+- Planning and review context that can be answered from indexed files, symbols, references, calls, headings, or chunks.
 
 Do not bypass MCP with raw database queries, absolute root inspection, or broad shell scans when an MCP tool can answer the indexed-context question. Use shell only for current git/disk/runtime facts, tests, build output, logs, generated files, and edits not yet ingested.
 
-If MCP is unavailable, stale, or missing the project, state that explicitly, then fall back to Serena plus shell for the minimum evidence needed.
+Do not use Serena for indexed project discovery, symbol overview/listing, references, call sites, search, bounded source chunks, or planning context when MiviaLabs MCP is available and current.
+
+If MCP is unavailable, stale, missing the project, or lacks the needed semantic operation, state that explicitly, then fall back to Serena plus shell for the minimum evidence needed.
 
 ## Inputs
 
@@ -36,16 +39,17 @@ Do not assume the current repository is the server repo. Do not assume any speci
 
 | Need | First choice | Avoid |
 | --- | --- | --- |
-| Code symbols, references, call sites, edit targets | Serena or host semantic tool | MCP chunks as a substitute for semantic navigation |
+| Code symbols, references, call sites, edit targets | MiviaLabs MCP when indexed and current | Serena as first resort in indexed MiviaLabs projects |
 | Indexed project map, ingestion state, file IDs, chunks, symbols | MiviaLabs MCP | Raw DB queries, absolute paths, broad shell scans |
 | Routine indexed text, path, symbol, reference, or call discovery | `projects.search.*` | Serena `search_for_pattern`, raw DB queries, broad shell scans |
-| Current git/disk/runtime state, tests, builds, logs, unindexed edits | Shell or host tooling | MCP as proof of current working-tree state |
+| Current git/test/runtime state, builds, logs, generated files | Shell or host tooling | MCP as proof of git or runtime state |
 
 If unclear:
 
-1. Code structure -> Serena or host semantic tool.
+1. Indexed code structure -> MiviaLabs MCP.
 2. Indexed project discovery -> MCP.
 3. Current local state -> shell.
+4. Non-indexed semantic gap -> Serena or host semantic tool, with the fallback stated.
 
 ## Safe Sequence
 
@@ -60,10 +64,10 @@ Use the smallest sequence that answers the task:
 7. Treat `projects.ingest` as asynchronous. It returns quickly with queued run metadata and a `run_id`; poll `projects.ingestion_status` with that `run_id` until `completed` or `failed`.
 8. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
 9. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `name_contains`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph` for common indexed navigation. Use `projects.symbol.source` only when bounded eligible source text for one symbol is needed. Set `include_chunk_text=true` with a small `max_chunk_bytes` when eligible file source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
-10. Switch to semantic tools for symbol bodies, references, and edit planning.
-11. Switch to shell for tests, diffs, logs, generated files, and anything changed after the last ingestion.
+10. Switch to Serena or another semantic tool only if MCP cannot answer the required symbol body, reference, call, or edit-planning question.
+11. Switch to shell for tests, diffs, logs, and generated files. For edited indexed files, rely on live ingestion as the normal freshness path and poll latest ingestion status when search results look unexpected.
 
-If MCP is down, the project is not listed, or indexed content is stale for the task, say so and fall back to semantic tools plus shell. Do not invent MCP facts.
+If MCP is down, the project is not listed, or live ingestion cannot provide current indexed context, say so and fall back to Serena or another semantic tool plus shell. Do not invent MCP facts.
 
 ## Tools
 
