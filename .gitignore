@@ -36,3 +36,18 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.log
+
+# Local agent planning artifacts
+.ai/tasks/active/*
+!.ai/tasks/active/
+!.ai/tasks/active/README.md
+.ai/tasks/done/*
+!.ai/tasks/done/
+!.ai/tasks/done/README.md
+.ai/tasks/research/*
+!.ai/tasks/research/
+!.ai/tasks/research/README.md
+.ai/research-plans/
+docs/research/plans/
+*research-plan*.md
+*.research-plan.md

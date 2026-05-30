@@ -13,6 +13,9 @@ Classification: Internal; PII-prohibited
 - `MCP-Protocol-Version` must be `2025-06-18` when present.
 - `Origin`, when present, must be localhost or loopback.
 - HTTP `GET /mcp` returns 405 until SSE streams are implemented.
+- MCP `_meta` fields are accepted in tool-call params and arguments for client compatibility.
+- Tool-call `arguments` may be an object or a JSON-encoded object string.
+- The server accepts both dotted tool names, for example `tasks.create`, and Codex-style underscore aliases, for example `tasks_create`.
 
 ## Tools
 
@@ -130,7 +133,18 @@ Resource templates:
 - `mivialabs://research-runs/{id}`
 - `mivialabs://research-sources/{id}`
 
-`resources/read` returns `application/json` text content for the requested task or research-run metadata.
+`resources/read` returns `application/json` text content for the requested task, research-run, or research-source metadata.
+
+## Codex Desktop Registration
+
+Run the server locally, then register:
+
+```powershell
+codex mcp add mivialabs-agent-server --url http://127.0.0.1:8080/mcp
+codex mcp get mivialabs-agent-server
+```
+
+Codex Desktop exposes the tools through generated callable names. In this environment, `tasks.create` appeared as `tasks_create` and was verified through native Codex MCP invocation.
 
 ## Security And Privacy Constraints
 

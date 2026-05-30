@@ -7,7 +7,8 @@ Agent entrypoints:
 - Read this file first.
 - Then read every applicable rule in `.ai/rules/`.
 - Use `.ai/skills/` for repeatable planning, implementation, review, and security workflows.
-- Use `.ai/handoffs/` and `.ai/tasks/` for durable phase handoffs.
+- Use `.ai/handoffs/` for durable phase handoffs.
+- Use `.ai/tasks/` only as an ignored local planning workspace. Do not commit task plans or research plans, and do not link them from technical docs.
 - Treat `AGENTS.md` and `CLAUDE.md` as thin adapters only.
 
 Source-of-truth order:
