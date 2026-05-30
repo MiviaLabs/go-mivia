@@ -111,3 +111,9 @@ The server exposes bounded project metadata on localhost only:
 - MCP resources: `mivialabs://projects/{id}`, `mivialabs://projects/{id}/digest-runs/{run_id}`
 
 Project responses omit local root paths by default. Digest runs are manual and metadata-only: graph writes store relative path, extension/language hint, file size, mtime, and a metadata fingerprint. They do not store or return raw source content or file-content hashes.
+
+## Local Use Boundary
+
+Project configuration and digest APIs are intended only for engineer local computers. The server must remain bound to localhost/loopback until a separate auth and exposure review approves a different model.
+
+SQLite stores configured project root paths as local developer-machine configuration state. REST and MCP project responses omit those root paths by default.
