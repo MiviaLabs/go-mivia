@@ -21,6 +21,7 @@ Source-of-truth order:
 Required rule set:
 
 - `.ai/rules/00-operating-doctrine.md`
+- `.ai/rules/05-external-systems.md`
 - `.ai/rules/10-security-privacy.md`
 - `.ai/rules/20-go-service-standards.md`
 - `.ai/rules/30-docker-data.md`
