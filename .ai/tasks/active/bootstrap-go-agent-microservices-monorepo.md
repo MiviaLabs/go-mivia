@@ -392,6 +392,9 @@ Implement Phase 5 only. Add the initial OpenAPI REST contract, MCP capability do
 
 ## Phase 6 - Research And Deep-Research Boundaries
 
+Status: Completed
+Verified: 2026-05-30
+
 Files:
 
 - `internal/research/provider`
@@ -426,6 +429,31 @@ Implementation details:
 5. Add REST hooks under `/api/v1/research-runs`.
 6. Add MCP tools/resources for research-run create/get only; defer broad crawling and provider execution.
 7. Add `docs/security/research-data-handling.md` with PII prohibition, retention open questions, logging rules, and owner decisions required before live crawling.
+
+Verification performed:
+
+- `go test ./internal/research/... ./internal/agentcontrol/...`
+- `go mod tidy`
+- `go test ./...`
+- `make check`
+- OpenAPI YAML parse with PyYAML for the research-source paths.
+- Searched `internal/research/**/*_test.go` for live network calls (`http.Get`, `http.Post`, `net.Dial`, `urlopen`, `curl`); no matches.
+- Local smoke test with `go run ./cmd/agent-server` on `127.0.0.1:18082`:
+  - `GET /healthz`
+  - `GET /readyz`
+  - `POST /api/v1/tasks`
+  - `POST /api/v1/research-runs`
+  - `POST /api/v1/research-runs/{id}/sources` with sensitive URL/email input and redacted response assertion
+  - `GET /api/v1/research-runs/{id}/sources/{source_id}`
+  - MCP `tools/list`
+  - MCP `tools/call` for `research_sources.get`
+
+Residual risk:
+
+- Research providers are fixture-only; no live provider integration, crawling, embedding, or external retention posture is approved.
+- Redaction is a defensive bootstrap control, not approval for PII processing or legal basis.
+- Source metadata uses the Ladybug graph abstraction with the default in-memory graph; native Ladybug execution remains gated.
+- Retention, deletion, access model, audit trail, data residency, and DPO/security ownership remain open before production or external-provider use.
 
 Prompt:
 

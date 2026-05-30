@@ -85,12 +85,50 @@ Input schema:
 
 Output: structured `ResearchRun` metadata plus a JSON text content block.
 
+### `research_sources.create`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["research_run_id", "artifact_ref", "source_type", "summary"],
+  "properties": {
+    "research_run_id": { "type": "string", "minLength": 1 },
+    "artifact_ref": { "type": "string", "minLength": 1 },
+    "source_type": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: structured redacted `ResearchSource` metadata plus a JSON text content block.
+
+### `research_sources.get`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: structured redacted `ResearchSource` metadata plus a JSON text content block.
+
 ## Resources
 
 Resource templates:
 
 - `mivialabs://tasks/{id}`
 - `mivialabs://research-runs/{id}`
+- `mivialabs://research-sources/{id}`
 
 `resources/read` returns `application/json` text content for the requested task or research-run metadata.
 

@@ -12,6 +12,7 @@ var ErrNotFound = errors.New("not found")
 type TaskStore interface {
 	CreateTask(context.Context, model.Task) (model.Task, error)
 	GetTask(context.Context, string) (model.Task, error)
+	UpdateTask(context.Context, model.Task) (model.Task, error)
 }
 
 type ResearchRunStore interface {

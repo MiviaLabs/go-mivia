@@ -4,6 +4,9 @@ import "time"
 
 const (
 	TaskStatusPending = "pending"
+	TaskStatusRunning = "running"
+	TaskStatusDone    = "done"
+	TaskStatusFailed  = "failed"
 
 	ResearchRunStatusPending = "pending"
 )

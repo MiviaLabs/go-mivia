@@ -95,3 +95,42 @@ func TestCreateResearchRun_ObviousPIISummary_ReturnsInvalidInput(t *testing.T) {
 		t.Fatalf("expected invalid input, got %v", err)
 	}
 }
+
+func TestTaskTransitions_ValidLifecycle_UpdatesStatus(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	task, err := svc.CreateTask(context.Background(), model.CreateTaskInput{Title: "Lifecycle"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	running, err := svc.StartTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	if running.Status != model.TaskStatusRunning {
+		t.Fatalf("expected running, got %s", running.Status)
+	}
+
+	done, err := svc.CompleteTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+	if done.Status != model.TaskStatusDone {
+		t.Fatalf("expected done, got %s", done.Status)
+	}
+}
+
+func TestTaskTransitions_InvalidTransition_ReturnsInvalidInput(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	task, err := svc.CreateTask(context.Background(), model.CreateTaskInput{Title: "Lifecycle"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	_, err = svc.CompleteTask(context.Background(), task.ID)
+	if !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected invalid transition, got %v", err)
+	}
+}
