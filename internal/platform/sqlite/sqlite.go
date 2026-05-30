@@ -34,6 +34,10 @@ func (db *DB) Ping(ctx context.Context) error {
 	return db.db.PingContext(ctx)
 }
 
+func (db *DB) SQLDB() *sql.DB {
+	return db.db
+}
+
 func (db *DB) Close() error {
 	return db.db.Close()
 }

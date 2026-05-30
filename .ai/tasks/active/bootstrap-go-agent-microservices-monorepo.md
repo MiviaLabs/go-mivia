@@ -310,6 +310,9 @@ Implement Phase 4 only. Add a single `cmd/agent-server` with shared config, logg
 
 ## Phase 5 - Contracts, LadybugDB Schema, REST, And MCP
 
+Status: Completed
+Verified: 2026-05-30
+
 Files:
 
 - `api/openapi/agent-control.v1.yaml`
@@ -355,6 +358,31 @@ Implementation details:
 8. Add Ladybug-backed store methods for create/get only; defer search, graph traversal, and background processing.
 9. Add SQLite-backed config methods for read/write of non-secret app settings and runtime flags.
 10. Add tests for validation, schema bootstrap idempotency, create/get persistence, app-config persistence, REST adapter behavior, and MCP dispatch behavior.
+
+Verification performed:
+
+- `go test ./internal/agentcontrol/... ./internal/platform/ladybug/... ./internal/platform/sqlite/...`
+- `go mod tidy`
+- `go test ./...`
+- `make check`
+- OpenAPI YAML parse with PyYAML; no OpenAPI-specific validator was installed.
+- Local smoke test with `go run ./cmd/agent-server` on `127.0.0.1:18081`:
+  - `GET /healthz`
+  - `GET /readyz`
+  - `POST /api/v1/tasks`
+  - `GET /api/v1/tasks/{id}`
+  - `POST /api/v1/research-runs`
+  - `GET /api/v1/research-runs/{id}`
+  - MCP `tools/list`
+  - MCP `tools/call` for `tasks.create`
+  - MCP `resources/read` for `mivialabs://tasks/{id}`
+
+Residual risk:
+
+- LadybugDB graph persistence is behind the `internal/platform/ladybug.Graph` interface and default in-memory graph until native `go-ladybug` builds are explicitly enabled.
+- Native Ladybug schema execution is not exercised in normal `go test ./...`; this remains gated by `scripts/ladybug-libs.sh` and future integration verification.
+- OpenAPI was parsed as YAML, but full contract validation needs an OpenAPI validator in local or CI tooling.
+- Provider, embedding model, vector dimension, vector index, and live research execution remain unapproved per ADR-0004.
 
 Prompt:
 
