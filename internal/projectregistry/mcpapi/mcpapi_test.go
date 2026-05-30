@@ -41,6 +41,13 @@ func TestCallTool_DigestAndReadDigestRunResource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("call digest tool: %v", err)
 	}
+	aliasResult, err := mcpapi.CallTool(context.Background(), registry, digest, "projects_digest", json.RawMessage(`{"project_id":"example-service"}`))
+	if err != nil {
+		t.Fatalf("call digest tool with project_id alias: %v", err)
+	}
+	if aliasResult["structuredContent"].(projectregistry.DigestRunMetadata).ProjectID != "example-service" {
+		t.Fatalf("unexpected digest alias result: %#v", aliasResult["structuredContent"])
+	}
 	body := marshalResult(t, result)
 	for _, forbidden := range []string{"package main", "content_sha256", "root_path"} {
 		if strings.Contains(body, forbidden) {

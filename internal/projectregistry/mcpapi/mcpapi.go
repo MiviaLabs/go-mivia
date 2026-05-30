@@ -39,8 +39,9 @@ func ToolDefinitionsWithIngestion(includeIngestion bool) []map[string]any {
 			"title":       "Run Metadata-Only Project Digest",
 			"description": "Run a manual metadata-only digest for an enabled local project.",
 			"inputSchema": objectSchema(map[string]any{
-				"id": map[string]any{"type": "string", "minLength": 1},
-			}, []string{"id"}),
+				"id":         map[string]any{"type": "string", "minLength": 1},
+				"project_id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{}),
 		},
 	}
 	if includeIngestion {
@@ -107,8 +108,9 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		return toolResult(projectregistry.MetadataForProject(project)), nil
 	case "projects.digest", "projects_digest":
 		var input struct {
-			ID   string          `json:"id"`
-			Meta json.RawMessage `json:"_meta,omitempty"`
+			ID        string          `json:"id"`
+			ProjectID string          `json:"project_id,omitempty"`
+			Meta      json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid project arguments", projectregistry.ErrInvalidInput)
@@ -116,7 +118,11 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		if digest == nil {
 			return nil, fmt.Errorf("%w: digest service is not configured", projectregistry.ErrDigestUnsupported)
 		}
-		run, err := digest.DigestProject(ctx, strings.TrimSpace(input.ID))
+		projectID := strings.TrimSpace(input.ID)
+		if projectID == "" {
+			projectID = strings.TrimSpace(input.ProjectID)
+		}
+		run, err := digest.DigestProject(ctx, projectID)
 		return toolResult(projectregistry.MetadataForDigestRun(run)), err
 	case "projects.ingest", "projects_ingest":
 		var input struct {

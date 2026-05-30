@@ -244,6 +244,84 @@ func Run() {
 	}
 }
 
+func TestSymbolSourceFallsBackToLineRangeWhenByteSpanMissing(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "Makefile"), "build:\n\tgo build ./...\n")
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	symbols, err := svc.ListSymbols(ctx, "example-service", SymbolFilter{NameContains: "build"}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbols: %v", err)
+	}
+	build := findSymbolMetadata(t, symbols.Symbols, "build")
+	if build.StartByte != 0 || build.EndByte != 0 {
+		t.Fatalf("expected line-only make target fixture, got %#v", build)
+	}
+	source, err := svc.GetSymbolSource(ctx, "example-service", build.ID, SymbolSourceOptions{MaxSourceBytes: 80})
+	if err != nil {
+		t.Fatalf("get symbol source: %v", err)
+	}
+	if source.Text != "build:\n" || source.TextTruncated {
+		t.Fatalf("expected line-range fallback source, got %#v", source)
+	}
+}
+
+func TestTypeScriptIngestionStoresMethodSourceAndCallEdges(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "src", "booking.service.ts"), `export class BookingService {
+	create() {
+		return this.repo.save(this.build());
+	}
+	build() {
+		return helper();
+	}
+}
+
+function helper() {
+	return true;
+}
+`)
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	symbols, err := svc.SearchSymbols(ctx, "example-service", SymbolFilter{NameContains: "build"}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search symbols: %v", err)
+	}
+	build := findSymbolMetadata(t, symbols.Symbols, "build")
+	if build.Kind != string(SymbolKindMethod) {
+		t.Fatalf("expected TypeScript method symbol, got %#v", build)
+	}
+	source, err := svc.GetSymbolSource(ctx, "example-service", build.ID, SymbolSourceOptions{MaxSourceBytes: 200})
+	if err != nil {
+		t.Fatalf("get symbol source: %v", err)
+	}
+	if !strings.Contains(source.Text, "build()") || !strings.Contains(source.Text, "helper()") {
+		t.Fatalf("expected TypeScript method source, got %#v", source)
+	}
+	calls, err := svc.SearchCalls(ctx, "example-service", ReferenceSearchOptions{CallerNameContains: "create", CalleeNameContains: "build", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search calls: %v", err)
+	}
+	if len(calls.Edges) == 0 {
+		t.Fatalf("expected TypeScript create -> build call edge, got %#v", calls)
+	}
+	callees, err := svc.ListSymbolCallees(ctx, "example-service", build.ID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbol callees: %v", err)
+	}
+	if len(callees.Edges) == 0 || callees.Edges[0].CalleeName != "helper" {
+		t.Fatalf("expected build -> helper callee edge, got %#v", callees)
+	}
+}
+
 func TestSearchQueriesReturnBoundedEligibleIndexedResults(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

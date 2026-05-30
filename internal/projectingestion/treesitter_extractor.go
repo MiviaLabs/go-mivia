@@ -179,11 +179,13 @@ func (extractor treeSitterExtractor) Parse(ctx context.Context, relative string,
 	var calls []Call
 	if extractor.name == string(ExtractorTreeSitterCSharp) {
 		symbols = extractCSharpSymbols(root, content)
+		references, calls = extractCSharpOccurrences(root, content)
 	} else if extractor.name == string(ExtractorTreeSitterPython) {
 		symbols = extractPythonSymbols(root, content)
 		references, calls = extractPythonOccurrences(root, content)
 	} else {
 		symbols = extractJavaScriptFamilySymbols(root, content)
+		references, calls = extractJavaScriptFamilyOccurrences(root, content)
 	}
 	return ExtractorResult{Symbols: dedupeSymbols(symbols), References: dedupeReferences(references), Calls: dedupeCalls(calls)}, nil
 }
@@ -226,6 +228,10 @@ func extractJavaScriptFamilySymbols(root *tree_sitter.Node, content []byte) []Sy
 			}
 		case "class_declaration":
 			if symbol, ok := namedSymbolFromNode(node, content, SymbolKindClass); ok {
+				symbols = append(symbols, symbol)
+			}
+		case "method_definition":
+			if symbol, ok := namedSymbolFromNode(node, content, SymbolKindMethod); ok {
 				symbols = append(symbols, symbol)
 			}
 		case "interface_declaration", "type_alias_declaration", "enum_declaration":
@@ -324,6 +330,109 @@ func csharpImportSymbolFromNode(node *tree_sitter.Node, content []byte) (Symbol,
 		StartColumn: int(node.StartPosition().Column) + 1,
 		EndColumn:   int(node.EndPosition().Column) + 1,
 	}, true
+}
+
+func extractCSharpOccurrences(root *tree_sitter.Node, content []byte) ([]Reference, []Call) {
+	if root == nil {
+		return nil, nil
+	}
+	var references []Reference
+	var calls []Call
+	var visit func(node *tree_sitter.Node, enclosing string)
+	visit = func(node *tree_sitter.Node, enclosing string) {
+		if node == nil {
+			return
+		}
+		current := enclosing
+		switch node.Kind() {
+		case "method_declaration", "constructor_declaration", "property_declaration":
+			if name := nameTextFromNode(node, content); name != "" {
+				current = name
+			}
+		case "invocation_expression":
+			if current != "" {
+				callee, receiver := csharpInvocationTarget(node, content)
+				if callee != "" {
+					calls = append(calls, Call{
+						CallerName:       current,
+						CalleeName:       callee,
+						Receiver:         receiver,
+						StartLine:        int(node.StartPosition().Row) + 1,
+						EndLine:          int(node.EndPosition().Row) + 1,
+						StartByte:        int(node.StartByte()),
+						EndByte:          int(node.EndByte()),
+						StartColumn:      int(node.StartPosition().Column) + 1,
+						EndColumn:        int(node.EndPosition().Column) + 1,
+						ResolutionStatus: "unresolved",
+						Confidence:       "candidate",
+					})
+				}
+			}
+		case "identifier":
+			if current != "" && csharpIdentifierReferenceNode(node) {
+				name := strings.TrimSpace(node.Utf8Text(content))
+				if name != "" {
+					references = append(references, Reference{
+						Kind:                "identifier",
+						Name:                name,
+						TargetName:          name,
+						EnclosingSymbolName: current,
+						StartLine:           int(node.StartPosition().Row) + 1,
+						EndLine:             int(node.EndPosition().Row) + 1,
+						StartByte:           int(node.StartByte()),
+						EndByte:             int(node.EndByte()),
+						StartColumn:         int(node.StartPosition().Column) + 1,
+						EndColumn:           int(node.EndPosition().Column) + 1,
+						ResolutionStatus:    "unresolved",
+						Confidence:          "candidate",
+					})
+				}
+			}
+		}
+		childCursor := node.Walk()
+		defer childCursor.Close()
+		for _, child := range node.NamedChildren(childCursor) {
+			child := child
+			visit(&child, current)
+		}
+	}
+	visit(root, "")
+	return references, calls
+}
+
+func csharpInvocationTarget(node *tree_sitter.Node, content []byte) (string, string) {
+	value := strings.TrimSpace(node.Utf8Text(content))
+	if paren := strings.Index(value, "("); paren >= 0 {
+		value = strings.TrimSpace(value[:paren])
+	}
+	if value == "" {
+		return "", ""
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) == 1 {
+		return parts[0], ""
+	}
+	callee := strings.TrimSpace(parts[len(parts)-1])
+	receiver := strings.TrimSpace(strings.Join(parts[:len(parts)-1], "."))
+	if callee == "" {
+		return "", ""
+	}
+	return callee, receiver
+}
+
+func csharpIdentifierReferenceNode(node *tree_sitter.Node) bool {
+	parent := node.Parent()
+	if parent == nil {
+		return true
+	}
+	switch parent.Kind() {
+	case "method_declaration", "constructor_declaration", "property_declaration", "class_declaration",
+		"interface_declaration", "struct_declaration", "record_declaration", "enum_declaration",
+		"namespace_declaration", "file_scoped_namespace_declaration", "using_directive", "parameter":
+		return false
+	default:
+		return true
+	}
 }
 
 func extractPythonSymbols(root *tree_sitter.Node, content []byte) []Symbol {
@@ -425,11 +534,15 @@ func importSymbolFromNode(node *tree_sitter.Node, content []byte) (Symbol, bool)
 		return Symbol{}, false
 	}
 	return Symbol{
-		Kind:       SymbolKindImport,
-		Name:       importPath,
-		ImportPath: importPath,
-		StartLine:  int(node.StartPosition().Row) + 1,
-		EndLine:    int(node.EndPosition().Row) + 1,
+		Kind:        SymbolKindImport,
+		Name:        importPath,
+		ImportPath:  importPath,
+		StartLine:   int(node.StartPosition().Row) + 1,
+		EndLine:     int(node.EndPosition().Row) + 1,
+		StartByte:   int(node.StartByte()),
+		EndByte:     int(node.EndByte()),
+		StartColumn: int(node.StartPosition().Column) + 1,
+		EndColumn:   int(node.EndPosition().Column) + 1,
 	}, true
 }
 
@@ -461,6 +574,117 @@ func functionVariableSymbolFromNode(node *tree_sitter.Node, content []byte) (Sym
 		StartColumn: int(node.StartPosition().Column) + 1,
 		EndColumn:   int(node.EndPosition().Column) + 1,
 	}, true
+}
+
+func extractJavaScriptFamilyOccurrences(root *tree_sitter.Node, content []byte) ([]Reference, []Call) {
+	if root == nil {
+		return nil, nil
+	}
+	var references []Reference
+	var calls []Call
+	var visit func(node *tree_sitter.Node, enclosing string)
+	visit = func(node *tree_sitter.Node, enclosing string) {
+		if node == nil {
+			return
+		}
+		current := enclosing
+		switch node.Kind() {
+		case "function_declaration", "generator_function_declaration", "method_definition":
+			if name := nameTextFromNode(node, content); name != "" {
+				current = name
+			}
+		case "variable_declarator":
+			if _, ok := functionVariableSymbolFromNode(node, content); ok {
+				if name := nameTextFromNode(node, content); name != "" {
+					current = name
+				}
+			}
+		case "call_expression":
+			if current != "" {
+				if functionNode := node.ChildByFieldName("function"); functionNode != nil {
+					callee, receiver := javascriptCallTarget(functionNode, content)
+					if callee != "" {
+						calls = append(calls, Call{
+							CallerName:       current,
+							CalleeName:       callee,
+							Receiver:         receiver,
+							StartLine:        int(node.StartPosition().Row) + 1,
+							EndLine:          int(node.EndPosition().Row) + 1,
+							StartByte:        int(node.StartByte()),
+							EndByte:          int(node.EndByte()),
+							StartColumn:      int(node.StartPosition().Column) + 1,
+							EndColumn:        int(node.EndPosition().Column) + 1,
+							ResolutionStatus: "unresolved",
+							Confidence:       "candidate",
+						})
+					}
+				}
+			}
+		case "identifier", "property_identifier":
+			if current != "" && javascriptIdentifierReferenceNode(node) {
+				name := strings.TrimSpace(node.Utf8Text(content))
+				if name != "" {
+					references = append(references, Reference{
+						Kind:                node.Kind(),
+						Name:                name,
+						TargetName:          name,
+						EnclosingSymbolName: current,
+						StartLine:           int(node.StartPosition().Row) + 1,
+						EndLine:             int(node.EndPosition().Row) + 1,
+						StartByte:           int(node.StartByte()),
+						EndByte:             int(node.EndByte()),
+						StartColumn:         int(node.StartPosition().Column) + 1,
+						EndColumn:           int(node.EndPosition().Column) + 1,
+						ResolutionStatus:    "unresolved",
+						Confidence:          "candidate",
+					})
+				}
+			}
+		}
+		childCursor := node.Walk()
+		defer childCursor.Close()
+		for _, child := range node.NamedChildren(childCursor) {
+			child := child
+			visit(&child, current)
+		}
+	}
+	visit(root, "")
+	return references, calls
+}
+
+func javascriptCallTarget(node *tree_sitter.Node, content []byte) (string, string) {
+	value := strings.TrimSpace(node.Utf8Text(content))
+	if value == "" {
+		return "", ""
+	}
+	value = strings.TrimPrefix(value, "await ")
+	parts := strings.Split(value, ".")
+	if len(parts) == 1 {
+		return parts[0], ""
+	}
+	callee := strings.TrimSpace(parts[len(parts)-1])
+	receiver := strings.TrimSpace(strings.Join(parts[:len(parts)-1], "."))
+	if callee == "" {
+		return "", ""
+	}
+	return callee, receiver
+}
+
+func javascriptIdentifierReferenceNode(node *tree_sitter.Node) bool {
+	parent := node.Parent()
+	if parent == nil {
+		return true
+	}
+	switch parent.Kind() {
+	case "function_declaration", "generator_function_declaration", "method_definition", "class_declaration",
+		"interface_declaration", "type_alias_declaration", "enum_declaration", "import_statement", "formal_parameters":
+		return false
+	case "variable_declarator":
+		nameNode := parent.ChildByFieldName("name")
+		return nameNode == nil || nameNode.StartByte() != node.StartByte() || nameNode.EndByte() != node.EndByte()
+	default:
+		return true
+	}
 }
 
 func extractPythonOccurrences(root *tree_sitter.Node, content []byte) ([]Reference, []Call) {

@@ -36,6 +36,35 @@ public class Service
 	assertSymbol(t, result.Symbols, SymbolKindMethod, "Run", "", "", 14, 14)
 }
 
+func TestTreeSitterCSharpExtractsReferencesAndCalls(t *testing.T) {
+	result := parseWithExtractor(t, newTreeSitterCSharpExtractor(), "src/Service.cs", []byte(`
+public class Service
+{
+	public void Helper() {}
+	public void Run()
+	{
+		Helper();
+		System.Console.WriteLine("ok");
+	}
+}
+`))
+
+	if !hasCall(result.Calls, "Run", "Helper") {
+		t.Fatalf("expected Run -> Helper call, got %#v", result.Calls)
+	}
+	if !hasCall(result.Calls, "Run", "WriteLine") {
+		t.Fatalf("expected Run -> WriteLine call, got %#v", result.Calls)
+	}
+	if !hasReference(result.References, "Run", "Helper") {
+		t.Fatalf("expected Helper reference in Run, got %#v", result.References)
+	}
+	for _, call := range result.Calls {
+		if call.StartByte <= 0 || call.EndByte <= call.StartByte {
+			t.Fatalf("expected call byte span, got %#v", call)
+		}
+	}
+}
+
 func TestBadCSharpSyntaxRecordsParseError(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

@@ -105,6 +105,14 @@ func findSymbol(t *testing.T, symbols []Symbol, kind SymbolKind, name string) Sy
 	return Symbol{}
 }
 
+func assertSymbolHasByteSpan(t *testing.T, symbols []Symbol, kind SymbolKind, name string) {
+	t.Helper()
+	symbol := findSymbol(t, symbols, kind, name)
+	if symbol.EndByte <= symbol.StartByte {
+		t.Fatalf("expected byte span for %s %s, got %#v", kind, name, symbol)
+	}
+}
+
 func hasCall(calls []Call, caller string, callee string) bool {
 	for _, call := range calls {
 		if call.CallerName == caller && call.CalleeName == callee {

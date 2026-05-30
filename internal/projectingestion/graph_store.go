@@ -656,9 +656,6 @@ func (store *GraphStore) GetSymbolSource(ctx context.Context, project projectreg
 	if err != nil {
 		return SymbolSource{}, err
 	}
-	if symbol.StartByte <= 0 && symbol.EndByte <= 0 {
-		return SymbolSource{Symbol: symbol, MaxBytes: maxSourceBytes}, nil
-	}
 	nodes, err := store.graph.ListNodes(ctx, "ContentChunk", map[string]string{
 		"project_id":   project.ID,
 		"repo_file_id": symbol.FileID,
@@ -697,7 +694,33 @@ func (store *GraphStore) GetSymbolSource(ctx context.Context, project projectreg
 		}
 	}
 	text, truncated := truncateUTF8Bytes(builder.String(), maxSourceBytes)
+	if text == "" && symbol.StartLine > 0 && symbol.EndLine >= symbol.StartLine {
+		text, truncated = symbolSourceByLine(nodes, symbol.StartLine, symbol.EndLine, maxSourceBytes)
+	}
 	return SymbolSource{Symbol: symbol, Text: text, TextTruncated: truncated, MaxBytes: maxSourceBytes}, nil
+}
+
+func symbolSourceByLine(nodes []ladybug.Node, startLine int, endLine int, maxSourceBytes int) (string, bool) {
+	var builder strings.Builder
+	for _, node := range nodes {
+		chunkStartLine, _ := strconv.Atoi(node.Properties["start_line"])
+		chunkEndLine, _ := strconv.Atoi(node.Properties["end_line"])
+		if chunkEndLine < startLine || chunkStartLine > endLine {
+			continue
+		}
+		lines := strings.SplitAfter(node.Properties["text"], "\n")
+		for index, line := range lines {
+			lineNumber := chunkStartLine + index
+			if lineNumber < startLine || lineNumber > endLine {
+				continue
+			}
+			builder.WriteString(line)
+			if builder.Len() >= maxSourceBytes {
+				return truncateUTF8Bytes(builder.String(), maxSourceBytes)
+			}
+		}
+	}
+	return truncateUTF8Bytes(builder.String(), maxSourceBytes)
 }
 
 func (store *GraphStore) ListSymbolReferences(ctx context.Context, project projectregistry.Project, symbolID string, pagination Pagination) (SymbolReferenceList, error) {

@@ -165,14 +165,15 @@ Input schema:
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["id"],
+  "required": [],
   "properties": {
-    "id": { "type": "string", "minLength": 1 }
+    "id": { "type": "string", "minLength": 1 },
+    "project_id": { "type": "string", "minLength": 1 }
   }
 }
 ```
 
-Output: metadata-only digest run counts and status. The digest stores file metadata and metadata fingerprints only; raw source content and file-content hashes are not stored or returned.
+Output: metadata-only digest run counts and status. Pass either `id` or `project_id`; `id` remains the preferred contract. The digest stores file metadata and metadata fingerprints only; raw source content and file-content hashes are not stored or returned.
 
 ### `projects.ingest`
 
