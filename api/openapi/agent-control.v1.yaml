@@ -116,6 +116,50 @@ paths:
                 $ref: '#/components/schemas/ResearchSource'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects:
+    get:
+      operationId: listProjects
+      summary: List configured local projects
+      responses:
+        '200':
+          description: Configured local project metadata without root paths
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectList'
+  /projects/{id}:
+    get:
+      operationId: getProject
+      summary: Get configured local project metadata
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Project metadata without root path exposure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/digest-runs:
+    post:
+      operationId: createProjectDigestRun
+      summary: Run a manual metadata-only project digest
+      description: Stores project/file metadata and metadata fingerprints only; raw source content and file-content hashes are not stored or returned.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '201':
+          description: Created metadata-only project digest run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDigestRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   parameters:
     ID:
@@ -243,6 +287,73 @@ components:
           type: object
           additionalProperties:
             type: string
+    ProjectList:
+      type: object
+      additionalProperties: false
+      required: [projects]
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+    Project:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, enabled, classification, graph_namespace, digest_mode, update_policy, validation_status]
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        classification:
+          type: string
+        graph_namespace:
+          type: string
+        digest_mode:
+          type: string
+          enum: [metadata_only]
+        update_policy:
+          type: string
+          enum: [manual]
+        validation_status:
+          type: string
+        validation_error:
+          type: string
+      description: Project metadata response intentionally omits local root paths, include/exclude patterns, raw source content, and file-content hashes.
+    ProjectDigestRun:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, graph_namespace, status, files_scanned, files_stored, files_skipped, started_at, completed_at]
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        graph_namespace:
+          type: string
+        status:
+          type: string
+          enum: [completed, failed]
+        files_scanned:
+          type: integer
+          minimum: 0
+        files_stored:
+          type: integer
+          minimum: 0
+        files_skipped:
+          type: integer
+          minimum: 0
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+      description: Digest run metadata only; raw source content and file-content hashes are not stored or returned.
     ErrorResponse:
       type: object
       additionalProperties: false

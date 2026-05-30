@@ -125,6 +125,55 @@ Input schema:
 
 Output: structured redacted `ResearchSource` metadata plus a JSON text content block.
 
+### `projects.list`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [],
+  "properties": {}
+}
+```
+
+Output: configured local project metadata without root paths, include/exclude patterns, raw source content, or file-content hashes.
+
+### `projects.get`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: one configured local project metadata object without local root path exposure.
+
+### `projects.digest`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: metadata-only digest run counts and status. The digest stores file metadata and metadata fingerprints only; raw source content and file-content hashes are not stored or returned.
+
 ## Resources
 
 Resource templates:
@@ -132,8 +181,10 @@ Resource templates:
 - `mivialabs://tasks/{id}`
 - `mivialabs://research-runs/{id}`
 - `mivialabs://research-sources/{id}`
+- `mivialabs://projects/{id}`
+- `mivialabs://projects/{id}/digest-runs/{run_id}`
 
-`resources/read` returns `application/json` text content for the requested task, research-run, or research-source metadata.
+`resources/read` returns `application/json` text content for the requested task, research-run, research-source, project, or project-digest-run metadata.
 
 ## Codex Desktop Registration
 
@@ -151,3 +202,5 @@ Codex Desktop exposes the tools through generated callable names. In this enviro
 - No raw LadybugDB or SQLite query execution is exposed.
 - Raw prompts, source content, fetched provider payloads, secrets, tokens, credentials, and PII are prohibited in requests, responses, fixtures, logs, and stores.
 - Research-run create accepts only a redacted `goal_summary`; live provider execution and broad crawling are out of scope.
+- Project responses omit local root paths by default.
+- Project digest is manual and metadata-only; it does not store or return raw source content or file-content hashes.

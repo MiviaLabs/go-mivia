@@ -6,11 +6,17 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/mcpapi"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/service"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
+	ladybugschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 )
 
 func TestToolsList_ReturnsTaskAndResearchTools(t *testing.T) {
@@ -113,6 +119,25 @@ func TestResourcesRead_ReturnsTaskJSON(t *testing.T) {
 	}
 }
 
+func TestProjectToolsListAndCall_WhenProjectRegistryConfigured(t *testing.T) {
+	handler := newHandlerWithProjects(t)
+	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", list.Code, list.Body.String())
+	}
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.list"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.digest"`)) {
+		t.Fatalf("expected project tools, got %s", list.Body.String())
+	}
+
+	call := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.digest","arguments":{"id":"example-service"}}}`)
+	if call.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", call.Code, call.Body.String())
+	}
+	if bytes.Contains(call.Body.Bytes(), []byte("package main")) || bytes.Contains(call.Body.Bytes(), []byte("content_sha256")) {
+		t.Fatalf("project digest leaked content markers: %s", call.Body.String())
+	}
+}
+
 type rpcResponse struct {
 	Result struct {
 		StructuredContent map[string]any `json:"structuredContent"`
@@ -123,6 +148,36 @@ func newHandler() http.Handler {
 	mem := store.NewMemoryStore()
 	svc := service.New(mem, mem)
 	return mcpapi.NewHandler(svc, slog.Default())
+}
+
+func newHandlerWithProjects(t *testing.T) http.Handler {
+	t.Helper()
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	registry, err := projectregistry.NewRegistry([]config.Project{{
+		ID:             "example-service",
+		DisplayName:    "Example Service",
+		RootPath:       root,
+		Enabled:        true,
+		Classification: projectregistry.ClassificationInternal,
+		GraphNamespace: "example-service",
+		DigestMode:     projectregistry.DigestModeMetadataOnly,
+		UpdatePolicy:   projectregistry.UpdatePolicyManual,
+		Include:        []string{"**/*.go"},
+	}}, projectregistry.Options{})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(t.Context(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	digest := projectregistry.NewDigestService(registry, graph)
+	return mcpapi.NewHandlerWithResearchAndProjects(svc, nil, registry, digest, slog.Default())
 }
 
 func postMCP(t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {

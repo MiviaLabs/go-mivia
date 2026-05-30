@@ -1,10 +1,17 @@
 package projectregistry
 
+import "errors"
+
 const (
 	DigestModeMetadataOnly = "metadata_only"
 	UpdatePolicyManual     = "manual"
 	ClassificationInternal = "internal"
 	ValidationStatusValid  = "valid"
+)
+
+var (
+	ErrProjectNotFound = errors.New("project not found")
+	ErrInvalidInput    = errors.New("invalid project input")
 )
 
 type Project struct {
@@ -23,6 +30,19 @@ type Project struct {
 	FollowSymlinks    bool
 	ValidationStatus  string
 	ValidationError   string
+}
+
+type ProjectMetadata struct {
+	ID               string `json:"id"`
+	DisplayName      string `json:"display_name"`
+	Description      string `json:"description,omitempty"`
+	Enabled          bool   `json:"enabled"`
+	Classification   string `json:"classification"`
+	GraphNamespace   string `json:"graph_namespace"`
+	DigestMode       string `json:"digest_mode"`
+	UpdatePolicy     string `json:"update_policy"`
+	ValidationStatus string `json:"validation_status"`
+	ValidationError  string `json:"validation_error,omitempty"`
 }
 
 type Registry struct {
@@ -57,4 +77,27 @@ func cloneProject(project Project) Project {
 	project.Include = append([]string(nil), project.Include...)
 	project.Exclude = append([]string(nil), project.Exclude...)
 	return project
+}
+
+func MetadataForProject(project Project) ProjectMetadata {
+	return ProjectMetadata{
+		ID:               project.ID,
+		DisplayName:      project.DisplayName,
+		Description:      project.Description,
+		Enabled:          project.Enabled,
+		Classification:   project.Classification,
+		GraphNamespace:   project.GraphNamespace,
+		DigestMode:       project.DigestMode,
+		UpdatePolicy:     project.UpdatePolicy,
+		ValidationStatus: project.ValidationStatus,
+		ValidationError:  project.ValidationError,
+	}
+}
+
+func MetadataForProjects(projects []Project) []ProjectMetadata {
+	metadata := make([]ProjectMetadata, 0, len(projects))
+	for _, project := range projects {
+		metadata = append(metadata, MetadataForProject(project))
+	}
+	return metadata
 }

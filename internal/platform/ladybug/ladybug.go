@@ -13,7 +13,10 @@ type NativeRuntimeStatus struct {
 	Reason    string
 }
 
-var ErrNodeNotFound = errors.New("ladybug node not found")
+var (
+	ErrNodeNotFound         = errors.New("ladybug node not found")
+	ErrRelationshipNotFound = errors.New("ladybug relationship not found")
+)
 
 type Node struct {
 	Label      string
@@ -21,24 +24,39 @@ type Node struct {
 	Properties map[string]string
 }
 
+type NodeRef struct {
+	Label string
+	ID    string
+}
+
+type Relationship struct {
+	Type       string
+	From       NodeRef
+	To         NodeRef
+	Properties map[string]string
+}
+
 type Graph interface {
 	Bootstrap(context.Context, schema.GraphSchema) error
 	PutNode(context.Context, Node) error
 	GetNode(context.Context, string, string) (Node, error)
+	PutRelationship(context.Context, Relationship) error
 }
 
 type MemoryGraph struct {
-	mu            sync.RWMutex
-	nodeLabels    map[string]struct{}
-	relationships map[string]schema.Relationship
-	nodes         map[string]Node
+	mu                  sync.RWMutex
+	nodeLabels          map[string]struct{}
+	relationshipSchemas map[string]schema.Relationship
+	nodes               map[string]Node
+	relationships       map[string]Relationship
 }
 
 func NewMemoryGraph() *MemoryGraph {
 	return &MemoryGraph{
-		nodeLabels:    make(map[string]struct{}),
-		relationships: make(map[string]schema.Relationship),
-		nodes:         make(map[string]Node),
+		nodeLabels:          make(map[string]struct{}),
+		relationshipSchemas: make(map[string]schema.Relationship),
+		nodes:               make(map[string]Node),
+		relationships:       make(map[string]Relationship),
 	}
 }
 
@@ -49,7 +67,7 @@ func (graph *MemoryGraph) Bootstrap(_ context.Context, graphSchema schema.GraphS
 		graph.nodeLabels[label] = struct{}{}
 	}
 	for _, rel := range graphSchema.Relationships {
-		graph.relationships[rel.Type] = rel
+		graph.relationshipSchemas[rel.Type] = rel
 	}
 	return nil
 }
@@ -80,17 +98,45 @@ func (graph *MemoryGraph) GetNode(_ context.Context, label string, id string) (N
 	}, nil
 }
 
+func (graph *MemoryGraph) PutRelationship(_ context.Context, relationship Relationship) error {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	copied := Relationship{
+		Type:       relationship.Type,
+		From:       relationship.From,
+		To:         relationship.To,
+		Properties: copyProperties(relationship.Properties),
+	}
+	graph.relationships[relationshipKey(relationship.Type, relationship.From, relationship.To)] = copied
+	return nil
+}
+
+func (graph *MemoryGraph) GetRelationship(_ context.Context, relationshipType string, from NodeRef, to NodeRef) (Relationship, error) {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
+	relationship, ok := graph.relationships[relationshipKey(relationshipType, from, to)]
+	if !ok {
+		return Relationship{}, ErrRelationshipNotFound
+	}
+	return Relationship{
+		Type:       relationship.Type,
+		From:       relationship.From,
+		To:         relationship.To,
+		Properties: copyProperties(relationship.Properties),
+	}, nil
+}
+
 func (graph *MemoryGraph) SchemaSnapshot() schema.GraphSchema {
 	graph.mu.RLock()
 	defer graph.mu.RUnlock()
 	out := schema.GraphSchema{
 		NodeLabels:    make([]string, 0, len(graph.nodeLabels)),
-		Relationships: make([]schema.Relationship, 0, len(graph.relationships)),
+		Relationships: make([]schema.Relationship, 0, len(graph.relationshipSchemas)),
 	}
 	for label := range graph.nodeLabels {
 		out.NodeLabels = append(out.NodeLabels, label)
 	}
-	for _, rel := range graph.relationships {
+	for _, rel := range graph.relationshipSchemas {
 		out.Relationships = append(out.Relationships, rel)
 	}
 	return out
@@ -98,6 +144,10 @@ func (graph *MemoryGraph) SchemaSnapshot() schema.GraphSchema {
 
 func nodeKey(label string, id string) string {
 	return label + ":" + id
+}
+
+func relationshipKey(relationshipType string, from NodeRef, to NodeRef) string {
+	return relationshipType + ":" + nodeKey(from.Label, from.ID) + "->" + nodeKey(to.Label, to.ID)
 }
 
 func copyProperties(in map[string]string) map[string]string {

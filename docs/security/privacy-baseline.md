@@ -19,7 +19,8 @@ Allowed:
 - redacted research goal summaries
 - redacted source artifact references
 - source type
-- content hashes
+- redacted research metadata hashes
+- project metadata fingerprints
 - policy metadata
 - non-secret SQLite app settings and runtime flags
 

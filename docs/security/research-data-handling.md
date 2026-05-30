@@ -10,12 +10,14 @@ Research and deep-research code may store metadata only:
 
 - artifact reference or URL after sensitive query parameters are redacted
 - retrieval timestamp
-- content hash
+- metadata hash over redacted metadata
 - source type
 - redacted summary
 - policy metadata
 
 Raw provider payloads, raw fetched content, raw prompts, credentials, tokens, secrets, personal data, and proprietary third-party content must not be stored in LadybugDB, SQLite, fixtures, logs, REST responses, MCP responses, traces, or metrics.
+
+Project digests follow the same metadata-only posture. They store project/file metadata and metadata fingerprints only; they must not store raw source content or file-content hashes.
 
 ## Provider Policy
 

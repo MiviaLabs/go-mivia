@@ -21,6 +21,9 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/logging"
 	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	projecthttpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/httpapi"
+	projectstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/store"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
 	researchhttpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/httpapi"
 	researchstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
@@ -58,8 +61,19 @@ func run() error {
 	if err := graph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
 		return err
 	}
+	projectRegistry, err := projectregistry.NewRegistry(cfg.Projects, projectregistry.Options{
+		LadybugPath: cfg.LadybugPath,
+		SQLitePath:  cfg.SQLitePath,
+	})
+	if err != nil {
+		return err
+	}
+	if err := projectstore.NewSQLiteStore(sqliteDB.SQLDB()).SaveProjects(ctx, projectRegistry.List()); err != nil {
+		return err
+	}
 	agentStore := store.NewLadybugStore(graph)
 	researchService := research.NewService(researchstore.NewLadybugMetadataStore(graph))
+	projectDigestService := projectregistry.NewDigestService(projectRegistry, graph)
 	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
 	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
 		return err
@@ -89,7 +103,8 @@ func run() error {
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
 	httpapi.RegisterRoutes(mux, agentService)
 	researchhttpapi.RegisterRoutes(mux, researchService)
-	mux.Handle("/mcp", mcpapi.NewHandlerWithResearch(agentService, researchService, logger))
+	projecthttpapi.RegisterRoutes(mux, projectRegistry, projectDigestService)
+	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchAndProjects(agentService, researchService, projectRegistry, projectDigestService, logger))
 
 	handler := httpserver.Chain(
 		mux,

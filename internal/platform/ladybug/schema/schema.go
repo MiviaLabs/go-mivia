@@ -18,6 +18,8 @@ func BootstrapSchema() GraphSchema {
 			"Agent",
 			"Task",
 			"ResearchRun",
+			"Project",
+			"DigestRun",
 			"Source",
 			"Document",
 			"Chunk",
@@ -30,6 +32,8 @@ func BootstrapSchema() GraphSchema {
 			{Type: "DOCUMENT_HAS_CHUNK", From: "Document", To: "Chunk"},
 			{Type: "DOCUMENT_LINKS_TO_DOCUMENT", From: "Document", To: "Document"},
 			{Type: "TASK_TOUCHED_REPO_FILE", From: "Task", To: "RepoFile"},
+			{Type: "PROJECT_HAS_REPO_FILE", From: "Project", To: "RepoFile"},
+			{Type: "PROJECT_HAS_DIGEST_RUN", From: "Project", To: "DigestRun"},
 		},
 	}
 }
