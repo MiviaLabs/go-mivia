@@ -230,6 +230,24 @@ Input schema:
 
 Output: bounded file metadata using stable opaque `file_id` values. `extension` accepts values with or without a leading dot, matches case-insensitively, and rejects whitespace or path separators. Sensitive skips return reason codes only and omit relative paths.
 
+### `projects.files.get`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "file_id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "file_id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: bounded file metadata for one opaque file id. Safe relative paths include a normalized lowercase `extension` field. Sensitive skips omit relative paths, extensions, content hashes, skipped sensitive content, and matched sensitive text.
+
 ### `projects.file.chunks`
 
 Input schema:

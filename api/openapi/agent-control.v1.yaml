@@ -225,6 +225,25 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/files/{file_id}:
+    get:
+      operationId: getProjectFile
+      summary: Get project ingestion file metadata
+      description: Returns bounded metadata for one opaque file id. Sensitive skips omit relative paths, extensions, and content hashes.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/FileID'
+      responses:
+        '200':
+          description: Project file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectFile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects/{id}/files/{file_id}/chunks:
     get:
       operationId: listProjectFileChunks
@@ -558,6 +577,9 @@ components:
         relative_path:
           type: string
           description: Root-relative path for safe eligible files only.
+        extension:
+          type: string
+          description: Lowercase file extension, including leading dot, for safe relative paths only.
         status:
           type: string
           enum: [eligible, skipped, absent]

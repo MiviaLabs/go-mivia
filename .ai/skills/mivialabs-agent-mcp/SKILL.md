@@ -38,11 +38,12 @@ Use the smallest sequence that answers the task:
 1. Confirm the MCP endpoint is localhost or loopback.
 2. Call `tools/list`.
 3. Call `projects.list` or `projects.get` to confirm `enabled`, `digest_mode`, `update_policy`, and `graph_storage`.
-4. Call `projects.files.list` or `projects.symbols.list` with small `page_size` to confirm indexed content exists.
+4. Call `projects.files.list` or `projects.symbols.list` with small `page_size` to confirm indexed content exists and narrow to stable opaque IDs.
 5. Call `projects.ingest` only when a manual rescan is needed; then call `projects.ingestion_status` with the returned `run_id`.
-6. Call `projects.file.chunks` only after a `file_id` is known; keep `max_chunk_bytes` bounded.
-7. Switch to semantic tools for symbol bodies, references, and edit planning.
-8. Switch to shell for tests, diffs, logs, generated files, and anything changed after the last ingestion.
+6. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
+7. Call `projects.file.chunks` only after a `file_id` is known; keep `page_size` and `max_chunk_bytes` bounded.
+8. Switch to semantic tools for symbol bodies, references, and edit planning.
+9. Switch to shell for tests, diffs, logs, generated files, and anything changed after the last ingestion.
 
 If MCP is down, the project is not listed, or indexed content is stale for the task, say so and fall back to semantic tools plus shell. Do not invent MCP facts.
 
@@ -56,7 +57,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Research metadata only | `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get` |
 | Project registry | `projects.list`, `projects.get` |
 | Metadata digest | `projects.digest` |
-| Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.files.list`, `projects.file.chunks`, `projects.symbols.list` |
+| Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list` |
 
 Resources:
 

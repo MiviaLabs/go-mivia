@@ -99,6 +99,9 @@ func TestListFiles_FiltersByExtensionBeforePagination(t *testing.T) {
 	if len(first.Files) != 1 || !strings.HasSuffix(first.Files[0].RelativePath, ".go") || first.NextPageToken == "" {
 		t.Fatalf("unexpected first page: %#v", first)
 	}
+	if first.Files[0].Extension != ".go" {
+		t.Fatalf("expected normalized extension in metadata, got %#v", first.Files[0])
+	}
 
 	second, err := svc.ListFiles(ctx, "example-service", FileStateFilter{
 		Status:    FileStatusEligible,
@@ -257,6 +260,55 @@ func TestIngestPath_DeletedFileCreatesTombstone(t *testing.T) {
 	}
 	if states[0].Present || states[0].ContentSHA256 != "" {
 		t.Fatalf("deleted file must be tombstoned without content hash: %#v", states[0])
+	}
+	fileID := repoFileID("example_ns", states[0].RelativePathHash)
+	chunks, err := svc.ListChunks(ctx, "example-service", fileID, Pagination{}, 0)
+	if err != nil {
+		t.Fatalf("list chunks for tombstoned file: %v", err)
+	}
+	if len(chunks.Chunks) != 0 {
+		t.Fatalf("deleted file retained stale chunks: %#v", chunks)
+	}
+}
+
+func TestIngestProject_ReplacesStaleGraphEntriesForChangedFile(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	filePath := filepath.Join(root, "cmd", "main.go")
+	writeFile(t, filePath, "package main\n\nfunc OldName() {}\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("initial ingest: %v", err)
+	}
+	writeFile(t, filePath, "package main\n\nfunc NewName() {}\n")
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("second ingest: %v", err)
+	}
+
+	symbols, err := svc.ListSymbols(ctx, "example-service", Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbols: %v", err)
+	}
+	names := map[string]bool{}
+	for _, symbol := range symbols.Symbols {
+		names[symbol.Name] = true
+	}
+	if names["OldName"] || !names["NewName"] {
+		t.Fatalf("expected stale symbol removal and new symbol, got %#v", symbols.Symbols)
+	}
+
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	goState := findState(t, states, "cmd/main.go")
+	chunks, err := svc.ListChunks(ctx, "example-service", repoFileID("example_ns", goState.RelativePathHash), Pagination{}, 0)
+	if err != nil {
+		t.Fatalf("list chunks: %v", err)
+	}
+	if len(chunks.Chunks) != 1 || strings.Contains(chunks.Chunks[0].Text, "OldName") || !strings.Contains(chunks.Chunks[0].Text, "NewName") {
+		t.Fatalf("expected stale chunk replacement, got %#v", chunks.Chunks)
 	}
 }
 

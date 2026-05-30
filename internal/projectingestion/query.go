@@ -2,6 +2,7 @@ package projectingestion
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ type FileMetadata struct {
 	ID             string    `json:"id"`
 	ProjectID      string    `json:"project_id"`
 	RelativePath   string    `json:"relative_path,omitempty"`
+	Extension      string    `json:"extension,omitempty"`
 	Status         string    `json:"status"`
 	Present        bool      `json:"present"`
 	SizeBytes      int64     `json:"size_bytes"`
@@ -121,6 +123,7 @@ func MetadataForFileState(project projectregistry.Project, state FileState) File
 	}
 	if state.RelativePathSafe {
 		metadata.RelativePath = state.RelativePath
+		metadata.Extension = strings.ToLower(path.Ext(state.RelativePath))
 	}
 	return metadata
 }

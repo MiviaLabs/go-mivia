@@ -173,7 +173,15 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	fileItems := filesRPC.Result.StructuredContent["files"].([]any)
 	fileID := fileItems[0].(map[string]any)["id"].(string)
 
-	chunks := postMCP(t, handler, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"projects.file.chunks","arguments":{"id":"example-service","file_id":"`+fileID+`","max_chunk_bytes":10}}}`)
+	fileGet := postMCP(t, handler, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"projects.files.get","arguments":{"id":"example-service","file_id":"`+fileID+`"}}}`)
+	if bytes.Contains(fileGet.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected file get success, got %s", fileGet.Body.String())
+	}
+	if !bytes.Contains(fileGet.Body.Bytes(), []byte(`"extension":".go"`)) {
+		t.Fatalf("expected file get extension metadata, got %s", fileGet.Body.String())
+	}
+
+	chunks := postMCP(t, handler, `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"projects.file.chunks","arguments":{"id":"example-service","file_id":"`+fileID+`","max_chunk_bytes":10}}}`)
 	if bytes.Contains(chunks.Body.Bytes(), []byte(`"error"`)) {
 		t.Fatalf("expected chunks success, got %s", chunks.Body.String())
 	}
@@ -181,7 +189,7 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 		t.Fatalf("chunk response leaked forbidden metadata: %s", chunks.Body.String())
 	}
 
-	read := postMCP(t, handler, `{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"mivialabs://projects/example-service/files/`+fileID+`"}}`)
+	read := postMCP(t, handler, `{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"mivialabs://projects/example-service/files/`+fileID+`"}}`)
 	if read.Code != http.StatusOK || bytes.Contains(read.Body.Bytes(), []byte(`"error"`)) {
 		t.Fatalf("expected file resource success, got %s", read.Body.String())
 	}

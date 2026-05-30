@@ -8,6 +8,7 @@ import (
 	"path"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
@@ -18,6 +19,7 @@ type graphBackend interface {
 	PutNode(context.Context, ladybug.Node) error
 	GetNode(context.Context, string, string) (ladybug.Node, error)
 	ListNodes(context.Context, string, map[string]string) ([]ladybug.Node, error)
+	DeleteNodes(context.Context, string, map[string]string) error
 	PutRelationship(context.Context, ladybug.Relationship) error
 }
 
@@ -43,6 +45,9 @@ func (store *GraphStore) putEligibleFile(ctx context.Context, project projectreg
 		return err
 	}
 	repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+	if err := store.deleteDerivedFileNodes(ctx, project.ID, repoFileID); err != nil {
+		return err
+	}
 	if err := store.putRepoFile(ctx, project, repoFileID, state, true); err != nil {
 		return err
 	}
@@ -165,10 +170,39 @@ func (store *GraphStore) putSkippedFile(ctx context.Context, project projectregi
 		return err
 	}
 	repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+	if err := store.deleteDerivedFileNodes(ctx, project.ID, repoFileID); err != nil {
+		return err
+	}
 	if err := store.putRepoFile(ctx, project, repoFileID, state, state.RelativePathSafe); err != nil {
 		return err
 	}
 	return store.putRelationship(ctx, "INGESTION_RUN_SKIPPED_FILE", "IngestionRun", run.ID, "RepoFile", repoFileID, project.ID)
+}
+
+func (store *GraphStore) PutFileState(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
+	return store.withBatch(ctx, func(store *GraphStore) error {
+		return store.putFileState(ctx, project, run, state)
+	})
+}
+
+func (store *GraphStore) putFileState(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
+	if err := store.putProject(ctx, project); err != nil {
+		return err
+	}
+	if err := store.putRun(ctx, run); err != nil {
+		return err
+	}
+	repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+	if err := store.deleteDerivedFileNodes(ctx, project.ID, repoFileID); err != nil {
+		return err
+	}
+	if err := store.putRepoFile(ctx, project, repoFileID, state, state.RelativePathSafe); err != nil {
+		return err
+	}
+	if err := store.putRelationship(ctx, "PROJECT_HAS_REPO_FILE", "Project", project.ID, "RepoFile", repoFileID, project.ID); err != nil {
+		return err
+	}
+	return store.putRelationship(ctx, "INGESTION_RUN_TOUCHED_FILE", "IngestionRun", run.ID, "RepoFile", repoFileID, project.ID)
 }
 
 func (store *GraphStore) PutRun(ctx context.Context, project projectregistry.Project, run Run) error {
@@ -370,9 +404,19 @@ func (store *GraphStore) putRepoFile(ctx context.Context, project projectregistr
 	}
 	if includeRelativePath && state.RelativePathSafe {
 		props["relative_path"] = state.RelativePath
-		props["extension"] = path.Ext(state.RelativePath)
+		props["extension"] = strings.ToLower(path.Ext(state.RelativePath))
 	}
 	return store.graph.PutNode(ctx, ladybug.Node{Label: "RepoFile", ID: repoFileID, Properties: props})
+}
+
+func (store *GraphStore) deleteDerivedFileNodes(ctx context.Context, projectID string, repoFileID string) error {
+	filter := map[string]string{"project_id": projectID, "repo_file_id": repoFileID}
+	for _, label := range []string{"CodeSymbol", "DocumentHeading", "ContentChunk", "FileVersion"} {
+		if err := store.graph.DeleteNodes(ctx, label, filter); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (store *GraphStore) putRelationship(ctx context.Context, relType string, fromLabel string, fromID string, toLabel string, toID string, projectID string) error {
@@ -450,6 +494,7 @@ func fileMetadataFromNode(node ladybug.Node) (FileMetadata, error) {
 	}
 	if relativePathSafe {
 		metadata.RelativePath = node.Properties["relative_path"]
+		metadata.Extension = node.Properties["extension"]
 	}
 	return metadata, nil
 }

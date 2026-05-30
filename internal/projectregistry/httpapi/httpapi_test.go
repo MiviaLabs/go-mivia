@@ -181,6 +181,22 @@ func TestProjectIngestionRoutes_ListFilesFiltersByExtension(t *testing.T) {
 	if len(fileList.Files) != 1 || fileList.Files[0].RelativePath != "cmd/main.go" || fileList.NextPageToken != "" {
 		t.Fatalf("unexpected filtered file list: %#v", fileList)
 	}
+	if fileList.Files[0].Extension != ".go" {
+		t.Fatalf("expected extension metadata, got %#v", fileList.Files[0])
+	}
+
+	file := httptest.NewRecorder()
+	mux.ServeHTTP(file, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files/"+fileList.Files[0].ID, nil))
+	if file.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", file.Code, file.Body.String())
+	}
+	var fileMetadata projectingestion.FileMetadata
+	if err := json.Unmarshal(file.Body.Bytes(), &fileMetadata); err != nil {
+		t.Fatalf("decode file: %v", err)
+	}
+	if fileMetadata.ID != fileList.Files[0].ID || fileMetadata.RelativePath != "cmd/main.go" || fileMetadata.Extension != ".go" {
+		t.Fatalf("unexpected file metadata: %#v", fileMetadata)
+	}
 
 	for _, query := range []string{"extension=bad/path", "extension=bad%20path", "extension=go.md", "extension=g*"} {
 		invalid := httptest.NewRecorder()

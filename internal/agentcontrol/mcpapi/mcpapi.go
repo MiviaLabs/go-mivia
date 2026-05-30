@@ -206,7 +206,8 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		return toolResult(run), err
 	case "projects.list", "projects_list", "projects.get", "projects_get", "projects.digest", "projects_digest",
 		"projects.ingest", "projects_ingest", "projects.ingestion_status", "projects_ingestion_status",
-		"projects.files.list", "projects_files_list", "projects.file.chunks", "projects_file_chunks",
+		"projects.files.list", "projects_files_list", "projects.files.get", "projects_files_get",
+		"projects.file.chunks", "projects_file_chunks",
 		"projects.symbols.list", "projects_symbols_list":
 		if handler.projects == nil {
 			return nil, projectregistry.ErrProjectNotFound

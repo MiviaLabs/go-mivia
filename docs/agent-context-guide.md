@@ -66,6 +66,7 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
 | Get ingestion run | `GET /projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
 | List indexed files | `GET /projects/{id}/files?status=eligible&extension=.go` | `projects.files.list` |
+| Get indexed file metadata | `GET /projects/{id}/files/{file_id}` | `projects.files.get` |
 | Read bounded chunks | `GET /projects/{id}/files/{file_id}/chunks` | `projects.file.chunks` |
 | List symbols | `GET /projects/{id}/symbols` | `projects.symbols.list` |
 
@@ -92,6 +93,7 @@ Check project context:
 curl -fsS http://127.0.0.1:8080/api/v1/projects
 curl -fsS http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo
 curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/files?page_size=5'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/files/<file_id>'
 curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/symbols?page_size=10'
 ```
 

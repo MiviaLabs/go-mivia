@@ -205,6 +205,9 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 		if err := svc.state.SaveFileState(ctx, state); err != nil {
 			return run, err
 		}
+		if err := svc.graph.PutFileState(ctx, project, run, state); err != nil {
+			return run, err
+		}
 		run.Status = RunStatusCompleted
 		run.FinishedAt = svc.now().UTC()
 		return run, svc.persistRun(ctx, project, run)
@@ -528,6 +531,9 @@ func (svc *Service) tombstoneMissingFiles(ctx context.Context, project projectre
 		state.LastEventAt = run.StartedAt
 		state.LastIngestedAt = run.StartedAt
 		if err := svc.state.SaveFileState(ctx, state); err != nil {
+			return err
+		}
+		if err := svc.graph.putFileState(ctx, project, run, state); err != nil {
 			return err
 		}
 	}

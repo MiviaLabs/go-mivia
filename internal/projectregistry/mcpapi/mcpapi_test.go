@@ -91,6 +91,21 @@ func TestCallToolWithIngestion_ListFilesFiltersByExtension(t *testing.T) {
 	if len(fileList.Files) != 1 || fileList.Files[0].RelativePath != "cmd/main.go" || fileList.NextPageToken != "" {
 		t.Fatalf("unexpected extension filtered file list: %#v", fileList)
 	}
+	if fileList.Files[0].Extension != ".go" {
+		t.Fatalf("expected extension metadata, got %#v", fileList.Files[0])
+	}
+
+	getResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.files.get", marshalArgs(t, map[string]string{
+		"id":      "example-service",
+		"file_id": fileList.Files[0].ID,
+	}))
+	if err != nil {
+		t.Fatalf("call files get tool: %v", err)
+	}
+	file := getResult["structuredContent"].(projectingestion.FileMetadata)
+	if file.ID != fileList.Files[0].ID || file.RelativePath != "cmd/main.go" || file.Extension != ".go" {
+		t.Fatalf("unexpected file get result: %#v", file)
+	}
 
 	for _, args := range []string{
 		`{"id":"example-service","extension":"bad path"}`,
@@ -192,4 +207,13 @@ func marshalResult(t *testing.T, value any) string {
 		t.Fatalf("marshal result: %v", err)
 	}
 	return string(encoded)
+}
+
+func marshalArgs(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	return encoded
 }

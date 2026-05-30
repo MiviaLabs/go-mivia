@@ -85,6 +85,22 @@ func (router *ProjectGraphRouter) ListNodes(ctx context.Context, label string, f
 	return nodes, nil
 }
 
+func (router *ProjectGraphRouter) DeleteNodes(ctx context.Context, label string, filter map[string]string) error {
+	if projectID := strings.TrimSpace(filter["project_id"]); projectID != "" {
+		backend, err := router.backendForProjectID(projectID)
+		if err != nil {
+			return err
+		}
+		return backend.DeleteNodes(ctx, label, filter)
+	}
+	for _, backend := range router.allBackends {
+		if err := backend.DeleteNodes(ctx, label, filter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (router *ProjectGraphRouter) PutRelationship(ctx context.Context, relationship ladybug.Relationship) error {
 	projectID := strings.TrimSpace(relationship.Properties["project_id"])
 	if projectID == "" {

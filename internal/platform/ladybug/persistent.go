@@ -64,6 +64,15 @@ func (graph *PersistentGraph) ListNodes(ctx context.Context, label string, filte
 	return graph.graph.ListNodes(ctx, label, filter)
 }
 
+func (graph *PersistentGraph) DeleteNodes(ctx context.Context, label string, filter map[string]string) error {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	if err := graph.graph.DeleteNodes(ctx, label, filter); err != nil {
+		return err
+	}
+	return graph.persist()
+}
+
 func (graph *PersistentGraph) PutRelationship(ctx context.Context, relationship Relationship) error {
 	graph.mu.Lock()
 	defer graph.mu.Unlock()

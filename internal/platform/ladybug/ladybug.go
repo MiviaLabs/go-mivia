@@ -41,6 +41,7 @@ type Graph interface {
 	PutNode(context.Context, Node) error
 	GetNode(context.Context, string, string) (Node, error)
 	ListNodes(context.Context, string, map[string]string) ([]Node, error)
+	DeleteNodes(context.Context, string, map[string]string) error
 	PutRelationship(context.Context, Relationship) error
 }
 
@@ -121,6 +122,32 @@ func (graph *MemoryGraph) ListNodes(_ context.Context, label string, filter map[
 		})
 	}
 	return nodes, nil
+}
+
+func (graph *MemoryGraph) DeleteNodes(_ context.Context, label string, filter map[string]string) error {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	deleted := make(map[string]struct{})
+	for key, node := range graph.nodes {
+		if node.Label != label {
+			continue
+		}
+		if !matchesProperties(node.Properties, filter) {
+			continue
+		}
+		delete(graph.nodes, key)
+		deleted[key] = struct{}{}
+	}
+	for key, relationship := range graph.relationships {
+		if _, ok := deleted[nodeKey(relationship.From.Label, relationship.From.ID)]; ok {
+			delete(graph.relationships, key)
+			continue
+		}
+		if _, ok := deleted[nodeKey(relationship.To.Label, relationship.To.ID)]; ok {
+			delete(graph.relationships, key)
+		}
+	}
+	return nil
 }
 
 func (graph *MemoryGraph) PutRelationship(_ context.Context, relationship Relationship) error {

@@ -165,6 +165,20 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		}
 		files, err := ingestion.ListFiles(ctx, strings.TrimSpace(input.ID), filter, projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
 		return toolResult(files), err
+	case "projects.files.get", "projects_files_get":
+		var input struct {
+			ID     string          `json:"id"`
+			FileID string          `json:"file_id"`
+			Meta   json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		file, err := ingestion.GetFile(ctx, strings.TrimSpace(input.ID), strings.TrimSpace(input.FileID))
+		return toolResult(file), err
 	case "projects.file.chunks", "projects_file_chunks":
 		var input struct {
 			ID            string          `json:"id"`
@@ -282,6 +296,15 @@ func ingestionToolDefinitions() []map[string]any {
 				"status":    map[string]any{"type": "string", "enum": []string{"eligible", "skipped", "absent"}},
 				"extension": map[string]any{"type": "string", "description": "File extension filter, with or without a leading dot. Whitespace and path separators are invalid."},
 			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.files.get",
+			"title":       "Get Project File",
+			"description": "Fetch bounded file ingestion metadata by opaque file id without root paths or skipped sensitive content.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":      map[string]any{"type": "string", "minLength": 1},
+				"file_id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id", "file_id"}),
 		},
 		{
 			"name":        "projects.file.chunks",

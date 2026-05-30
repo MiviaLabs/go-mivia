@@ -23,6 +23,7 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("POST /api/v1/projects/{id}/ingestion-runs", createIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/{run_id}", getIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files", listFilesHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}", getFileHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}/chunks", listChunksHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols", listSymbolsHandler(ingestion))
 	}
@@ -105,6 +106,17 @@ func listChunksHandler(ingestion *projectingestion.Service) http.Handler {
 			maxChunkBytes,
 		)
 		writeIngestionResult(w, chunks, err, http.StatusOK)
+	})
+}
+
+func getFileHandler(ingestion *projectingestion.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		file, err := ingestion.GetFile(
+			r.Context(),
+			strings.TrimSpace(r.PathValue("id")),
+			strings.TrimSpace(r.PathValue("file_id")),
+		)
+		writeIngestionResult(w, file, err, http.StatusOK)
 	})
 }
 
