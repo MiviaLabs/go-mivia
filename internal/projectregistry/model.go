@@ -117,6 +117,10 @@ func ProjectIncludesRelativePath(project Project, relativePath string) bool {
 	return includedByPatterns(project.Include, relativePath) && !matchesAnyPattern(project.Exclude, relativePath)
 }
 
+func ProjectMayIncludeRelativePath(project Project, relativePath string) bool {
+	return mayIncludeByPatterns(project.Include, relativePath) && !matchesAnyPattern(project.Exclude, relativePath)
+}
+
 func ProjectExcludesRelativePath(project Project, relativePath string) bool {
 	return matchesAnyPattern(project.Exclude, relativePath)
 }

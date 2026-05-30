@@ -112,6 +112,9 @@ func (svc *Service) ingestProject(ctx context.Context, projectID string, trigger
 			if projectregistry.ProjectExcludesRelativePath(project, relative) {
 				return filepath.SkipDir
 			}
+			if !projectregistry.ProjectMayIncludeRelativePath(project, relative) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		info, err := entry.Info()

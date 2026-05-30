@@ -262,6 +262,7 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 					orchestrator.logWarn("live ingestion rescan failed",
 						slog.String("project_id", projectWatcher.project.ID),
 						slog.String("error_category", "ingest_failed"),
+						slog.String("error", err.Error()),
 					)
 					continue
 				}
@@ -288,6 +289,7 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 					slog.String("project_id", projectWatcher.project.ID),
 					slog.String("relative_path_hash", pathHash),
 					slog.String("error_category", "ingest_failed"),
+					slog.String("error", err.Error()),
 				)
 				continue
 			}
@@ -349,6 +351,9 @@ func (orchestrator *Orchestrator) addWatchesUnder(projectWatcher *projectWatcher
 			return ErrPathEscapesRoot
 		}
 		if relative != "" && projectregistry.ProjectExcludesRelativePath(project, relative) {
+			return filepath.SkipDir
+		}
+		if !projectregistry.ProjectMayIncludeRelativePath(project, relative) {
 			return filepath.SkipDir
 		}
 		if err := projectWatcher.watcher.Add(current); err != nil {

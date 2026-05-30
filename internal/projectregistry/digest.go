@@ -413,6 +413,48 @@ func includedByPatterns(patterns []string, relative string) bool {
 	return matchesAnyPattern(patterns, relative)
 }
 
+func mayIncludeByPatterns(patterns []string, relative string) bool {
+	if len(patterns) == 0 || strings.Trim(relative, "/") == "" {
+		return true
+	}
+	relative = strings.Trim(relative, "/")
+	for _, pattern := range patterns {
+		if mayMatchDescendant(pattern, relative) {
+			return true
+		}
+	}
+	return false
+}
+
+func mayMatchDescendant(pattern string, relative string) bool {
+	pattern = strings.Trim(pattern, "/")
+	if pattern == relative || strings.HasPrefix(pattern, relative+"/") {
+		return true
+	}
+	if strings.HasSuffix(pattern, "/**") {
+		prefix := strings.TrimSuffix(pattern, "/**")
+		return prefix == relative || strings.HasPrefix(prefix, relative+"/") || strings.HasPrefix(relative, prefix+"/")
+	}
+	patternParts := strings.Split(pattern, "/")
+	relativeParts := strings.Split(relative, "/")
+	if len(patternParts) > 0 && patternParts[0] == "**" {
+		return true
+	}
+	if len(patternParts) < len(relativeParts) {
+		return false
+	}
+	for i, part := range relativeParts {
+		if patternParts[i] == "**" {
+			return true
+		}
+		matched, err := path.Match(patternParts[i], part)
+		if err != nil || !matched {
+			return false
+		}
+	}
+	return true
+}
+
 func matchesAnyPattern(patterns []string, relative string) bool {
 	for _, pattern := range patterns {
 		if matchSlashPattern(pattern, relative) {

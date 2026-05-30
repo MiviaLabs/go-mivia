@@ -54,6 +54,33 @@ func TestMergeExcludePatterns_AddsDefaultsAndStoragePathsUnderRoot(t *testing.T)
 	}
 }
 
+func TestProjectMayIncludeRelativePath(t *testing.T) {
+	scopedProject := Project{
+		Include: []string{"apps/**", "libs/**/*.ts", "docs/*.md", "**/*.json"},
+		Exclude: []string{"apps/generated/**"},
+	}
+
+	for _, relative := range []string{"apps", "apps/api", "libs", "libs/shared", "docs", "package.json", "infra"} {
+		if !ProjectMayIncludeRelativePath(scopedProject, relative) {
+			t.Fatalf("expected %q to be traversable", relative)
+		}
+	}
+	for _, relative := range []string{"apps/generated"} {
+		if ProjectMayIncludeRelativePath(scopedProject, relative) {
+			t.Fatalf("expected %q not to be traversable", relative)
+		}
+	}
+
+	prefixProject := Project{
+		Include: []string{"apps/**", "libs/**/*.ts", "docs/*.md"},
+	}
+	for _, relative := range []string{"infra", "tools"} {
+		if ProjectMayIncludeRelativePath(prefixProject, relative) {
+			t.Fatalf("expected %q not to be traversable", relative)
+		}
+	}
+}
+
 func assertContains(t *testing.T, values []string, expected string) {
 	t.Helper()
 	if !contains(values, expected) {
