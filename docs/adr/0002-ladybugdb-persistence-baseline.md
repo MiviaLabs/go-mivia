@@ -78,4 +78,3 @@ Phase 3 verification:
 - `github.com/LadybugDB/go-ladybug` module README in the local Go module cache: CGO-backed official Go binding with native library setup requirements.
 - `modernc.org/sqlite` module version list checked with `go list -m -versions modernc.org/sqlite`; bootstrap pins `v1.51.0`.
 - `.ai/rules/30-docker-data.md`
-- `.ai/tasks/active/bootstrap-go-agent-microservices-monorepo.md`

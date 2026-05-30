@@ -17,7 +17,11 @@ Research and deep-research code may store metadata only:
 
 Raw provider payloads, raw fetched content, raw prompts, credentials, tokens, secrets, personal data, and proprietary third-party content must not be stored in LadybugDB, SQLite, fixtures, logs, REST responses, MCP responses, traces, or metrics.
 
-Project digests follow the same metadata-only posture. They store project/file metadata and metadata fingerprints only; they must not store raw source content or file-content hashes.
+Local project configuration is optional, local-only, and intended only for engineer local computers. Use `MIVIA_CONFIG_PATH` to point at an ignored local copy of `configs/agent-server.example.toml`. Local config must not contain secrets, tokens, PII, raw prompts, raw source content, provider payloads, or personal data.
+
+REST and MCP project APIs return bounded project metadata only. They expose `GET /api/v1/projects`, `GET /api/v1/projects/{id}`, `POST /api/v1/projects/{id}/digest-runs`, `projects.list`, `projects.get`, and `projects.digest` on the localhost server; public exposure and auth models remain out of scope until separately approved.
+
+Project digests follow the same metadata-only posture. They are manual and store project/file metadata plus metadata fingerprints only. The metadata fingerprint is derived from relative path, extension/language hint, file size, and mtime; it is not a file-content hash. Digest storage and REST/MCP responses must not store or return raw source content or file-content hashes.
 
 ## Provider Policy
 
