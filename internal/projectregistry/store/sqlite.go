@@ -50,10 +50,13 @@ func (store *SQLiteStore) SaveProjects(ctx context.Context, projects []projectre
 			include_patterns,
 			exclude_patterns,
 			follow_symlinks,
+			max_file_bytes,
+			max_chunk_bytes,
+			sensitive_marker_policy,
 			validation_status,
 			validation_error,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			graph_namespace = excluded.graph_namespace,
 			display_name = excluded.display_name,
@@ -66,6 +69,9 @@ func (store *SQLiteStore) SaveProjects(ctx context.Context, projects []projectre
 			include_patterns = excluded.include_patterns,
 			exclude_patterns = excluded.exclude_patterns,
 			follow_symlinks = excluded.follow_symlinks,
+			max_file_bytes = excluded.max_file_bytes,
+			max_chunk_bytes = excluded.max_chunk_bytes,
+			sensitive_marker_policy = excluded.sensitive_marker_policy,
 			validation_status = excluded.validation_status,
 			validation_error = excluded.validation_error,
 			updated_at = excluded.updated_at`,
@@ -81,6 +87,9 @@ func (store *SQLiteStore) SaveProjects(ctx context.Context, projects []projectre
 			string(includePatterns),
 			string(excludePatterns),
 			boolToInt(project.FollowSymlinks),
+			project.MaxFileBytes,
+			project.MaxChunkBytes,
+			project.SensitiveMarkerPolicy,
 			project.ValidationStatus,
 			project.ValidationError,
 			updatedAt,
@@ -107,6 +116,9 @@ func (store *SQLiteStore) GetProject(ctx context.Context, id string) (projectreg
 		include_patterns,
 		exclude_patterns,
 		follow_symlinks,
+		max_file_bytes,
+		max_chunk_bytes,
+		sensitive_marker_policy,
 		validation_status,
 		validation_error
 	FROM configured_projects WHERE id = ?`, id)
@@ -132,6 +144,9 @@ func (store *SQLiteStore) ListProjects(ctx context.Context) ([]projectregistry.P
 		include_patterns,
 		exclude_patterns,
 		follow_symlinks,
+		max_file_bytes,
+		max_chunk_bytes,
+		sensitive_marker_policy,
 		validation_status,
 		validation_error
 	FROM configured_projects ORDER BY id`)
@@ -177,6 +192,9 @@ func scanProject(scanner projectScanner) (projectregistry.Project, error) {
 		&includePatterns,
 		&excludePatterns,
 		&followSymlinks,
+		&project.MaxFileBytes,
+		&project.MaxChunkBytes,
+		&project.SensitiveMarkerPolicy,
 		&project.ValidationStatus,
 		&project.ValidationError,
 	)

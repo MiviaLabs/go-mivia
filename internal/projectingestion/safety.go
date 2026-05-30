@@ -224,7 +224,7 @@ func looksBinary(content []byte) bool {
 
 func containsSensitiveContent(content []byte) bool {
 	value := string(content)
-	if redaction.ContainsSensitive(value) {
+	if redaction.Redact(value) != value {
 		return true
 	}
 	for _, pattern := range contentMarkerPatterns {

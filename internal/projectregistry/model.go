@@ -107,3 +107,11 @@ func MetadataForProjects(projects []Project) []ProjectMetadata {
 	}
 	return metadata
 }
+
+func ProjectIncludesRelativePath(project Project, relativePath string) bool {
+	return includedByPatterns(project.Include, relativePath) && !matchesAnyPattern(project.Exclude, relativePath)
+}
+
+func ProjectExcludesRelativePath(project Project, relativePath string) bool {
+	return matchesAnyPattern(project.Exclude, relativePath)
+}

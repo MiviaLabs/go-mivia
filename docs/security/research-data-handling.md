@@ -25,15 +25,17 @@ Project digests follow the same metadata-only posture. They are manual and store
 
 ## Content Graph Approval Gate
 
-[ADR-0007](../adr/0007-content-graph-ingestion-and-live-updates.md) is proposed as an approval gate for future content graph ingestion and live updates. It does not relax the current source-content prohibition.
+[ADR-0007](../adr/0007-content-graph-ingestion-and-live-updates.md) is accepted as the approval gate for future content graph ingestion and live updates. It approves a narrow local-source exception for explicitly opted-in `content_graph` projects only.
 
-Until ADR-0007 is accepted with named engineering owner and Security/DPO owner approvals:
+Within the accepted ADR-0007 boundary:
 
-- no source content, chunk text, symbol text extracted from source, source-content hashes, file-version content state, or live watcher state may be stored in LadybugDB, SQLite, fixtures, logs, REST responses, MCP responses, traces, or metrics
-- no provider, embedding, vector, crawling, public exposure, auth model, or symlink traversal work is approved
-- only metadata-only/manual project digest behavior remains approved
+- local eligible project source content may be stored only for projects explicitly configured as `content_graph`
+- storage is allowed only after path safety, symlink rejection, include/exclude matching, default denylist checks, size limits, binary/NUL rejection, UTF-8 validation, and sensitive-marker gates pass
+- skipped sensitive files may be represented only by non-sensitive reason codes and, where needed, hash-only state that does not reveal skipped content
+- source-content hashes may be stored only for content that is also stored after all gates pass
+- the exception applies only to the localhost `agent-server` on the developer machine
 
-If ADR-0007 is accepted later, this policy must be updated before any implementation stores source content or source-content hashes. PII ingestion remains prohibited unless separately approved by Security/DPO with purpose, legal basis, access model, retention, deletion path, audit trail, and data residency posture.
+No provider, embedding, vector, crawling, public exposure, auth model change, symlink traversal, skipped sensitive content storage, matched sensitive-marker storage, or PII ingestion is approved. PII ingestion remains prohibited unless separately approved by Security/DPO with purpose, legal basis, access model, retention, deletion path, audit trail, and data residency posture.
 
 ## Provider Policy
 

@@ -1,8 +1,10 @@
 # ADR-0007: Content Graph Ingestion And Live Updates
 
-Status: Proposed; approval gate only
+Status: Accepted
 Date: 2026-05-30
 Classification: Internal; PII-prohibited
+Engineering owner approval: Mac Lisowski, 2026-05-30
+Security/DPO owner approval: Mac Lisowski, 2026-05-30
 
 ## Context
 
@@ -10,18 +12,18 @@ Current local project digest is manual and metadata-only. It stores relative pat
 
 Future content graph work would require a narrow exception to the current source-content prohibition so local agents can answer codebase questions from eligible project files. That exception has security, privacy, retention, deletion, and operational consequences, so it must be explicitly approved before implementation stores source content, source-derived text, source-content hashes, or live watcher state.
 
-This ADR does not approve source-content storage. It defines the approval gate and the exact exception requested.
+This ADR approves the narrow local-source exception below for explicitly opted-in `content_graph` projects only. All permanent prohibitions still apply.
 
 ## Decision
 
 Create a hard approval gate for any future `content_graph` ingestion or `live` update behavior.
 
-No implementation may store source content, chunk text, symbol text extracted from source, source-content hashes, file-version content state, or live watcher state until all of these are true:
+Implementation may store source content, chunk text, symbol text extracted from source, source-content hashes, file-version content state, or live watcher state only when all of these remain true:
 
-- This ADR status is changed to `Accepted`.
-- A named engineering owner approves the local-source exception.
-- A named Security/DPO owner approves the security and privacy posture.
-- `docs/security/research-data-handling.md` is updated in the same or earlier approved change to reflect the accepted exception.
+- This ADR status is `Accepted`.
+- The named engineering owner has approved the local-source exception.
+- The named Security/DPO owner has approved the security and privacy posture.
+- `docs/security/research-data-handling.md` reflects the accepted exception.
 - Verification proves the implementation preserves the permanent prohibitions in this ADR.
 
 The requested exception, if accepted, is narrow:
@@ -42,7 +44,7 @@ Permanent prohibitions:
 
 ## Data Handling Boundary
 
-Data owner: the named engineering owner recorded when this ADR is accepted.
+Data owner: Mac Lisowski.
 
 Purpose: local codebase navigation and retrieval for explicitly opted-in `content_graph` projects on a developer workstation.
 
@@ -58,10 +60,10 @@ Local-only boundary: all approved behavior remains on the developer workstation 
 
 ## Consequences
 
-- Phase 1 may add only this ADR and policy gate language.
-- Later disabled config scaffolding may be implemented only when explicitly approved for that phase.
+- Phase 1 added this ADR and policy gate language.
+- Later disabled config scaffolding and manual ingestion may be implemented only within the accepted local-source exception.
 - Source-content storage, source-content hashes, ingestion storage schemas, parsers, REST/MCP ingestion APIs, watcher code, provider work, embeddings, vectors, public exposure, auth changes, crawling, and symlink traversal remain out of scope until their phase and approval gates are satisfied.
-- If either required owner rejects the exception, future work must stop before source-content storage. Metadata-only/manual digest may continue unchanged.
+- If either required owner revokes the exception, future work must stop before source-content storage. Metadata-only/manual digest may continue unchanged.
 
 ## Required Owner Review
 
