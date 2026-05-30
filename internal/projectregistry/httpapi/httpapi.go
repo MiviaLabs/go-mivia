@@ -10,6 +10,7 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
 )
 
 func RegisterRoutes(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService) {
@@ -17,6 +18,10 @@ func RegisterRoutes(mux *http.ServeMux, registry *projectregistry.Registry, dige
 }
 
 func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API) {
+	RegisterRoutesWithWorkspace(mux, registry, digest, ingestion, nil)
+}
+
+func RegisterRoutesWithWorkspace(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, workspace projectworkspace.API) {
 	mux.Handle("GET /api/v1/projects", listProjectsHandler(registry))
 	mux.Handle("GET /api/v1/projects/{id}", getProjectHandler(registry))
 	mux.Handle("POST /api/v1/projects/{id}/digest-runs", createDigestRunHandler(digest))
@@ -43,6 +48,12 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/callees", listSymbolCalleesHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/call-graph", getSymbolCallGraphHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/headings", listHeadingsHandler(ingestion))
+	}
+	if workspace != nil {
+		mux.Handle("GET /api/v1/projects/{id}/workspace/git/status", workspaceGitStatusHandler(workspace))
+		mux.Handle("GET /api/v1/projects/{id}/workspace/git/diff", workspaceGitDiffHandler(workspace))
+		mux.Handle("GET /api/v1/projects/{id}/workspace/files/read", workspaceFileReadHandler(workspace))
+		mux.Handle("POST /api/v1/projects/{id}/workspace/files/edit", workspaceFileEditHandler(workspace))
 	}
 }
 
@@ -345,6 +356,101 @@ func getFileOutlineHandler(ingestion projectingestion.API) http.Handler {
 	})
 }
 
+func workspaceGitStatusHandler(workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		includeUntracked := true
+		if raw := strings.TrimSpace(r.URL.Query().Get("include_untracked")); raw != "" {
+			value, err := strconv.ParseBool(raw)
+			if err != nil {
+				writeWorkspaceResult(w, nil, projectworkspace.ErrInvalidInput, http.StatusOK)
+				return
+			}
+			includeUntracked = value
+		}
+		pageSize, err := positiveIntQuery(r, "page_size")
+		if err != nil {
+			writeWorkspaceResult(w, nil, err, http.StatusOK)
+			return
+		}
+		status, err := workspace.GitStatus(r.Context(), strings.TrimSpace(r.PathValue("id")), projectworkspace.GitStatusOptions{
+			IncludeUntracked: includeUntracked,
+			PathPrefix:       r.URL.Query().Get("path_prefix"),
+			PageSize:         pageSize,
+			PageToken:        r.URL.Query().Get("page_token"),
+		})
+		writeWorkspaceResult(w, status, err, http.StatusOK)
+	})
+}
+
+func workspaceGitDiffHandler(workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contextLines, err := optionalNonNegativeIntQuery(r, "context_lines")
+		if err != nil {
+			writeWorkspaceResult(w, nil, err, http.StatusOK)
+			return
+		}
+		maxDiffBytes, err := positiveIntQuery(r, "max_diff_bytes")
+		if err != nil {
+			writeWorkspaceResult(w, nil, err, http.StatusOK)
+			return
+		}
+		diff, err := workspace.GitDiff(r.Context(), strings.TrimSpace(r.PathValue("id")), projectworkspace.GitDiffOptions{
+			Scope:        r.URL.Query().Get("scope"),
+			FileID:       r.URL.Query().Get("file_id"),
+			RelativePath: r.URL.Query().Get("relative_path"),
+			PathPrefix:   r.URL.Query().Get("path_prefix"),
+			ContextLines: contextLines,
+			MaxDiffBytes: maxDiffBytes,
+			PageToken:    r.URL.Query().Get("page_token"),
+		})
+		writeWorkspaceResult(w, diff, err, http.StatusOK)
+	})
+}
+
+func workspaceFileReadHandler(workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		maxBytes, err := positiveIntQuery(r, "max_bytes")
+		if err != nil {
+			writeWorkspaceResult(w, nil, err, http.StatusOK)
+			return
+		}
+		file, err := workspace.ReadFile(r.Context(), strings.TrimSpace(r.PathValue("id")), projectworkspace.ReadFileOptions{
+			FileID:       r.URL.Query().Get("file_id"),
+			RelativePath: r.URL.Query().Get("relative_path"),
+			MaxBytes:     maxBytes,
+		})
+		writeWorkspaceResult(w, file, err, http.StatusOK)
+	})
+}
+
+func workspaceFileEditHandler(workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			FileID       string                       `json:"file_id,omitempty"`
+			RelativePath string                       `json:"relative_path,omitempty"`
+			EditToken    string                       `json:"edit_token"`
+			DryRun       bool                         `json:"dry_run,omitempty"`
+			Edits        []projectworkspace.ExactEdit `json:"edits"`
+		}
+		if !httpserver.RequireJSON(r) {
+			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		if err := httpserver.DecodeJSON(r, &input); err != nil {
+			writeWorkspaceResult(w, nil, projectworkspace.ErrInvalidInput, http.StatusOK)
+			return
+		}
+		result, err := workspace.EditFile(r.Context(), strings.TrimSpace(r.PathValue("id")), projectworkspace.EditFileOptions{
+			FileID:       input.FileID,
+			RelativePath: input.RelativePath,
+			EditToken:    input.EditToken,
+			DryRun:       input.DryRun,
+			Edits:        input.Edits,
+		})
+		writeWorkspaceResult(w, result, err, http.StatusOK)
+	})
+}
+
 func writeResult(w http.ResponseWriter, body any, err error, successStatus int) {
 	if err == nil {
 		httpserver.WriteJSON(w, successStatus, body)
@@ -380,6 +486,29 @@ func writeIngestionResult(w http.ResponseWriter, body any, err error, successSta
 		errors.Is(err, projectingestion.ErrPathEscapesRoot) ||
 		errors.Is(err, projectingestion.ErrPathNotProjectLocal) {
 		httpserver.WriteError(w, http.StatusBadRequest, "invalid_project_ingestion_request", "project ingestion request is invalid")
+		return
+	}
+	httpserver.WriteError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+}
+
+func writeWorkspaceResult(w http.ResponseWriter, body any, err error, successStatus int) {
+	if err == nil {
+		httpserver.WriteJSON(w, successStatus, body)
+		return
+	}
+	if errors.Is(err, projectworkspace.ErrProjectNotFound) {
+		httpserver.WriteError(w, http.StatusNotFound, "not_found", "project workspace resource not found")
+		return
+	}
+	if errors.Is(err, projectworkspace.ErrInvalidInput) ||
+		errors.Is(err, projectworkspace.ErrWorkspaceDisabled) ||
+		errors.Is(err, projectworkspace.ErrWorkspaceReadOnly) ||
+		errors.Is(err, projectworkspace.ErrGitUnavailable) ||
+		errors.Is(err, projectworkspace.ErrUnsafeContent) ||
+		errors.Is(err, projectworkspace.ErrEditTokenInvalid) ||
+		errors.Is(err, projectworkspace.ErrEditConflict) ||
+		errors.Is(err, projectworkspace.ErrIngestionUnsupported) {
+		httpserver.WriteError(w, http.StatusBadRequest, "invalid_project_workspace_request", "project workspace request is invalid")
 		return
 	}
 	httpserver.WriteError(w, http.StatusInternalServerError, "internal_error", "internal server error")
@@ -602,6 +731,18 @@ func positiveIntQuery(r *http.Request, name string) (int, error) {
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil || value <= 0 {
+		return 0, projectregistry.ErrInvalidInput
+	}
+	return value, nil
+}
+
+func optionalNonNegativeIntQuery(r *http.Request, name string) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
 		return 0, projectregistry.ErrInvalidInput
 	}
 	return value, nil

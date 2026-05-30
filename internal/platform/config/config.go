@@ -42,7 +42,12 @@ type Config struct {
 	ReadHeaderTimeout time.Duration
 	ShutdownTimeout   time.Duration
 	Ingestion         Ingestion
+	Workspace         Workspace
 	Projects          []Project
+}
+
+type Workspace struct {
+	Enabled bool
 }
 
 type Ingestion struct {
@@ -76,6 +81,7 @@ type Project struct {
 	GraphStorage          string
 	DigestMode            string
 	UpdatePolicy          string
+	WorkspaceMode         string
 	Include               []string
 	Exclude               []string
 	FollowSymlinks        bool
@@ -128,6 +134,7 @@ func defaultConfig(configPath string) Config {
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ShutdownTimeout:   defaultShutdownTimeout,
 		Ingestion:         defaultIngestion(),
+		Workspace:         Workspace{Enabled: false},
 		Projects:          nil,
 	}
 }
@@ -225,6 +232,9 @@ func applyEnvOverrides(cfg *Config) error {
 		return err
 	}
 	cfg.Ingestion.SensitiveMarkerPolicy = getenv("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY", cfg.Ingestion.SensitiveMarkerPolicy)
+	if cfg.Workspace.Enabled, err = getenvBool("MIVIA_WORKSPACE_ENABLED", cfg.Workspace.Enabled); err != nil {
+		return err
+	}
 	return nil
 }
 

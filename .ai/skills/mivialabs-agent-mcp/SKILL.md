@@ -13,9 +13,10 @@ When a MiviaLabs MCP server is available for the target project, agents must use
 
 Mandatory MCP-first surfaces:
 
-- Project discovery, enabled state, digest mode, update policy, and graph storage.
+- Project discovery, enabled state, digest mode, update policy, workspace mode, and graph storage.
 - Ingestion run state, live/manual freshness, skipped reason counts, and rescan status.
 - Indexed file discovery, opaque file IDs, file metadata, outlines, headings, symbols, references, call sites, and bounded chunks.
+- Governed workspace git status/diff, current eligible file reads, and token-guarded exact edits when `[workspace].enabled = true` and the project is opted in.
 - Any task asking what the indexed project graph knows or whether local content graph ingestion is current.
 - Planning and review context that can be answered from indexed files, symbols, references, calls, headings, or chunks.
 
@@ -42,7 +43,8 @@ Do not assume the current repository is the server repo. Do not assume any speci
 | Code symbols, references, call sites, edit targets | MiviaLabs MCP when indexed and current | Serena as first resort in indexed MiviaLabs projects |
 | Indexed project map, ingestion state, file IDs, chunks, symbols | MiviaLabs MCP | Raw DB queries, absolute paths, broad shell scans |
 | Routine indexed text, path, symbol, reference, call, named AST discovery, or AST query-catalog discovery | `projects.search.*` | Serena `search_for_pattern`, raw DB queries, broad shell scans |
-| Current git/test/runtime state, builds, logs, generated files | Shell or host tooling | MCP as proof of git or runtime state |
+| Governed git status/diff for opted-in projects | MCP workspace tools | Broad shell scans as first resort |
+| Current tests/runtime state, builds, logs, generated files, process control, arbitrary commands, non-opted-in repos | Shell or host tooling | MCP as proof of those runtime facts |
 
 If unclear:
 
@@ -67,7 +69,8 @@ Use the smallest sequence that answers the task:
 9. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
 10. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `name_contains`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph` for common indexed navigation. Use `projects.symbol.source` only when bounded eligible source text for one symbol is needed. Set `include_chunk_text=true` with a small `max_chunk_bytes` when eligible file source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
 11. Switch to Serena or another semantic tool only if MCP cannot answer the required symbol body, reference, call, or edit-planning question.
-12. Switch to shell for tests, diffs, logs, and generated files. For edited indexed files, rely on live ingestion as the normal freshness path and poll latest ingestion status when search results look unexpected.
+12. Use `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, and `projects.workspace.file_edit` only for opted-in workspaces. `file_edit` requires the opaque token from a current file read and queues path ingestion after successful non-dry-run edits.
+13. Switch to shell for tests, builds, logs, generated files, process control, arbitrary commands, and non-opted-in repos. For edited indexed files, rely on live ingestion as the normal freshness path and poll latest ingestion status when search results look unexpected.
 
 If MCP is down, the project is not listed, or live ingestion cannot provide current indexed context, say so and fall back to Serena or another semantic tool plus shell. Do not invent MCP facts.
 
@@ -82,6 +85,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Project registry | `projects.list`, `projects.get` |
 | Metadata digest | `projects.digest` |
 | Content graph | `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline` |
+| Governed workspace | `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit` plus underscore aliases |
 
 ## Indexed Metadata Contract
 
@@ -104,6 +108,10 @@ Resources:
 - `mivialabs://projects/{id}/files/{file_id}`
 - `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`
 - `mivialabs://projects/{id}/symbols/{symbol_id}`
+
+## Workspace Boundary
+
+Workspace tools are default-disabled and require both global `[workspace].enabled = true` and per-project `workspace_mode = "read_only"` or `"edit"` with `digest_mode = "content_graph"`. `read_only` allows governed git status/diff and current eligible file reads. `edit` additionally allows exact byte-span edits guarded by an opaque per-process token from `projects.workspace.file_read`. There is no arbitrary shell endpoint, public exposure, auth change, provider call, embedding/vector/crawling path, raw DB query endpoint, raw patch upload endpoint, or git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool.
 
 ## Raw HTTP Fallback
 

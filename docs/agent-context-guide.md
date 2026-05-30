@@ -4,7 +4,7 @@ Status: Current local guide
 Date: 2026-05-30
 Classification: Internal; PII-prohibited
 
-`agent-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, symbol navigation, call graph views, and named AST structural search, and keeps source understanding inside the developer machine.
+`agent-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, symbol navigation, call graph views, named AST structural search, and governed workspace git/read/edit operations, and keeps source understanding inside the developer machine.
 
 ## Who It Helps
 
@@ -30,7 +30,7 @@ flowchart LR
   Store --> MCP
   Indexed --> Agent
   Serena --> Code["Edit-time semantic gaps"]
-  Shell --> Disk["Git, tests, build, logs, current disk"]
+  Shell --> Disk["Tests, build, logs, process control, generated files"]
   Code --> Agent
   Disk --> Agent
   MCP --> Agent
@@ -38,9 +38,9 @@ flowchart LR
 
 MiviaLabs MCP, Serena, and shell are complementary:
 
-- Use MiviaLabs MCP first for indexed project context: project metadata, ingestion state, file IDs, outlines, headings, chunks, search, symbols, references, calls, symbol source, call graph, and named AST structural search.
+- Use MiviaLabs MCP first for indexed project context: project metadata, ingestion state, file IDs, outlines, headings, chunks, search, symbols, references, calls, symbol source, call graph, named AST structural search, and governed workspace git status/diff/read/edit when opted in.
 - Use Serena only when MCP is unavailable, stale, missing the project, or lacks the edit-time semantic operation needed for a precise code change.
-- Use shell for current disk and git truth: diffs, tests, builds, logs, generated files, and newly changed files.
+- Use shell for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repositories.
 
 ## When To Use What
 
@@ -91,6 +91,10 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Traverse symbol call graph | `GET /projects/{id}/symbols/{symbol_id}/call-graph` | `projects.symbol.call_graph` |
 | List document headings | `GET /projects/{id}/headings?file_id={file_id}` | `projects.headings.list` |
 | Get file outline, optionally with bounded eligible chunk text | `GET /projects/{id}/files/{file_id}/outline` | `projects.file.outline` |
+| Get governed git status | `GET /projects/{id}/workspace/git/status` | `projects.workspace.git_status` |
+| Get capped governed git diff | `GET /projects/{id}/workspace/git/diff` | `projects.workspace.git_diff` |
+| Read current eligible file with edit token | `GET /projects/{id}/workspace/files/read` | `projects.workspace.file_read` |
+| Apply exact token-guarded file edit | `POST /projects/{id}/workspace/files/edit` | `projects.workspace.file_edit` |
 
 `projects.ingest`, `projects.search_index.rebuild`, `POST /ingestion-runs`, and `POST /search-index/rebuild` are asynchronous submissions. They return queued run metadata with a `run_id`; poll `projects.ingestion_status` or use latest status before trusting indexed content.
 
@@ -99,6 +103,8 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 Search tools are backed by governed indexed state. Text search is literal-only and returns capped snippets from eligible chunks. File, symbol, reference, and call search use indexed metadata and pagination. Raw FTS syntax and raw SQLite errors are not exposed.
 
 `projects.search.ast.queries` returns supported named query IDs, languages, capture names, query versions, matching extensions, and safe per-language `file_too_large` coverage counts. It does not expose raw Tree-sitter query text. `projects.search.ast` accepts named query IDs only, such as `function_declarations`, `class_declarations`, `type_declarations`, `call_expressions`, `imports`, `test_functions`, `assignments`, and `error_handling`. It does not accept raw Tree-sitter query syntax and only runs over eligible indexed chunks.
+
+Workspace tools require `[workspace].enabled = true` plus per-project `workspace_mode = "read_only"` or `"edit"` and `digest_mode = "content_graph"`. `read_only` allows governed git status/diff and current eligible file reads. `edit` additionally allows exact byte-span edits with an opaque token returned by `projects.workspace.file_read`; successful non-dry-run edits queue path ingestion. There is no arbitrary shell endpoint, raw patch upload, public exposure, provider call, embedding/vector/crawling path, raw DB query endpoint, or git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool.
 
 MCP resources also expose stable IDs:
 
@@ -146,6 +152,7 @@ The server is local-only. It must not expose:
 
 - Absolute roots or datastore paths.
 - Raw database queries.
+- Raw command lines, raw stderr, raw patches, and git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore operations.
 - Secrets, credentials, tokens, PII, raw prompts, or provider payloads.
 - Skipped sensitive content or matched sensitive text.
 - Public network access, provider calls, embeddings, vectors, crawling, production deployment, symlink traversal, or auth-model changes.

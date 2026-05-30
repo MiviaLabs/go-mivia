@@ -18,6 +18,7 @@ Local task plans and research plans are not stable technical documentation. Do n
 - Domain services: `internal/agentcontrol` for tasks and research runs; `internal/research` for redacted research source metadata.
 - Local project services: `internal/projectregistry` loads optional local project config from `configs/agent-server.local.toml` or explicit `MIVIA_CONFIG_PATH`, validates local roots and patterns, exposes bounded project metadata, runs manual metadata-only digest, and routes content graph data to per-project `persistent` or `in_memory` graph storage.
 - Project ingestion services: `internal/projectingestion` handles eligible local source safety gates, chunking, promoted AST extraction, extractor cache, SQLite FTS5 search indexing, bounded graph writes, SQLite run/file state, bounded REST/MCP query views, fair scheduling, live watcher orchestration, parallel full-scan file workers, search-index repair, startup recovery for interrupted runs, and periodic running-progress persistence.
+- Project workspace services: `internal/projectworkspace` handles governed git status/diff, current eligible file reads with opaque edit tokens, and token-guarded exact byte-span edits for explicitly opted-in workspaces.
 - Stores: Ladybug graph abstraction for graph data; SQLite for local app configuration, ingestion state, extractor cache, and FTS-backed governed search. Project graph storage can be persistent or process-local per project.
 - Boundary: localhost-only by default; no approved production deployment, public API exposure, auth model, live provider, external crawling, embedding provider, vector dimension, or PII processing.
 
@@ -34,6 +35,7 @@ flowchart TB
   ProjectRegistry["internal/projectregistry registry"]
   ProjectDigest["metadata-only project digest"]
   ProjectIngestion["content graph ingestion"]
+  ProjectWorkspace["governed workspace status/diff/read/edit"]
   Scheduler["fair ingestion scheduler"]
   Watcher["live watcher orchestrator"]
   FullScanWorkers["bounded full-scan file workers"]
@@ -57,6 +59,7 @@ flowchart TB
   REST --> ProjectRegistry
   MCP --> ProjectRegistry
   ProjectRegistry --> ProjectDigest
+  ProjectRegistry --> ProjectWorkspace
   ProjectDigest --> Ladybug
   ProjectRegistry --> Scheduler
   Watcher --> Scheduler
@@ -71,6 +74,9 @@ flowchart TB
   ASTSearch --> MCP
   ProjectIngestion --> Ladybug
   ProjectIngestion --> SQLite
+  ProjectWorkspace --> ProjectIngestion
+  ProjectWorkspace --> REST
+  ProjectWorkspace --> MCP
   ConfigFile --> ProjectRegistry
   REST --> ResearchService
   MCP --> ResearchService
@@ -161,6 +167,33 @@ sequenceDiagram
   Ingestion->>Ingestion: Tombstone stale files only after enumeration and workers drain
   Ingestion-->>Server: Run metadata with stable run ID
   Server-->>Client: JSON without roots, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, provider payloads, content hashes, raw SQLite/FTS errors, or raw parser details
+```
+
+## Governed Workspace Sequence
+
+```mermaid
+sequenceDiagram
+  participant Client as REST or MCP client
+  participant Server as agent-server
+  participant Workspace as projectworkspace service
+  participant Registry as project registry
+  participant Git as explicit git argv
+  participant Disk as current project disk
+  participant Safety as ingestion safety gates
+  participant Scheduler as ingestion scheduler
+
+  Client->>Server: git status, git diff, file read, or exact edit
+  Server->>Workspace: Pass strict decoded request
+  Workspace->>Registry: Require global workspace gate and project workspace_mode
+  Registry-->>Workspace: Enabled content_graph project without exposing root
+  Workspace->>Git: Status/diff with explicit argv only, no shell
+  Workspace->>Disk: Read current selected file only
+  Workspace->>Safety: Apply path, include/exclude, symlink, size, binary, UTF-8, and sensitive-marker gates
+  Workspace-->>Client: Bounded redacted response with no roots, command lines, stderr, hashes, skipped sensitive text, secrets, PII, prompts, provider payloads, raw parser/SQLite/FTS errors, or stack traces
+  Client->>Workspace: Exact edit with opaque token and old_text byte spans
+  Workspace->>Safety: Recheck full new content before write
+  Workspace->>Disk: Atomic same-directory replace
+  Workspace->>Scheduler: Queue path ingestion after successful non-dry-run edit
 ```
 
 ## Governed Search Flow

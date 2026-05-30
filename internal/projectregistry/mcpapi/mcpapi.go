@@ -12,6 +12,7 @@ import (
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
 )
 
 func ToolDefinitions() []map[string]any {
@@ -19,6 +20,10 @@ func ToolDefinitions() []map[string]any {
 }
 
 func ToolDefinitionsWithIngestion(includeIngestion bool) []map[string]any {
+	return ToolDefinitionsWithWorkspace(includeIngestion, false)
+}
+
+func ToolDefinitionsWithWorkspace(includeIngestion bool, includeWorkspace bool) []map[string]any {
 	tools := []map[string]any{
 		{
 			"name":        "projects.list",
@@ -46,6 +51,9 @@ func ToolDefinitionsWithIngestion(includeIngestion bool) []map[string]any {
 	}
 	if includeIngestion {
 		tools = append(tools, ingestionToolDefinitions()...)
+	}
+	if includeWorkspace {
+		tools = append(tools, workspaceToolDefinitions()...)
 	}
 	return tools
 }
@@ -82,6 +90,10 @@ func CallTool(ctx context.Context, registry *projectregistry.Registry, digest *p
 }
 
 func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, name string, arguments json.RawMessage) (map[string]any, error) {
+	return CallToolWithWorkspace(ctx, registry, digest, ingestion, nil, name, arguments)
+}
+
+func CallToolWithWorkspace(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, workspace projectworkspace.API, name string, arguments json.RawMessage) (map[string]any, error) {
 	switch name {
 	case "projects.list", "projects_list":
 		var input struct {
@@ -596,6 +608,104 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 			MaxChunkBytes:    input.MaxChunkBytes,
 		})
 		return toolResult(outline), err
+	case "projects.workspace.git_status", "projects_workspace_git_status":
+		var input struct {
+			ID               string          `json:"id"`
+			IncludeUntracked *bool           `json:"include_untracked,omitempty"`
+			PathPrefix       string          `json:"path_prefix,omitempty"`
+			PageSize         int             `json:"page_size,omitempty"`
+			PageToken        string          `json:"page_token,omitempty"`
+			Meta             json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if workspace == nil {
+			return nil, projectworkspace.ErrWorkspaceDisabled
+		}
+		includeUntracked := true
+		if input.IncludeUntracked != nil {
+			includeUntracked = *input.IncludeUntracked
+		}
+		status, err := workspace.GitStatus(ctx, strings.TrimSpace(input.ID), projectworkspace.GitStatusOptions{
+			IncludeUntracked: includeUntracked,
+			PathPrefix:       input.PathPrefix,
+			PageSize:         input.PageSize,
+			PageToken:        input.PageToken,
+		})
+		return toolResult(status), err
+	case "projects.workspace.git_diff", "projects_workspace_git_diff":
+		var input struct {
+			ID           string          `json:"id"`
+			Scope        string          `json:"scope,omitempty"`
+			FileID       string          `json:"file_id,omitempty"`
+			RelativePath string          `json:"relative_path,omitempty"`
+			PathPrefix   string          `json:"path_prefix,omitempty"`
+			ContextLines int             `json:"context_lines,omitempty"`
+			MaxDiffBytes int             `json:"max_diff_bytes,omitempty"`
+			PageToken    string          `json:"page_token,omitempty"`
+			Meta         json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if workspace == nil {
+			return nil, projectworkspace.ErrWorkspaceDisabled
+		}
+		diff, err := workspace.GitDiff(ctx, strings.TrimSpace(input.ID), projectworkspace.GitDiffOptions{
+			Scope:        input.Scope,
+			FileID:       input.FileID,
+			RelativePath: input.RelativePath,
+			PathPrefix:   input.PathPrefix,
+			ContextLines: input.ContextLines,
+			MaxDiffBytes: input.MaxDiffBytes,
+			PageToken:    input.PageToken,
+		})
+		return toolResult(diff), err
+	case "projects.workspace.file_read", "projects_workspace_file_read":
+		var input struct {
+			ID           string          `json:"id"`
+			FileID       string          `json:"file_id,omitempty"`
+			RelativePath string          `json:"relative_path,omitempty"`
+			MaxBytes     int             `json:"max_bytes,omitempty"`
+			Meta         json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if workspace == nil {
+			return nil, projectworkspace.ErrWorkspaceDisabled
+		}
+		file, err := workspace.ReadFile(ctx, strings.TrimSpace(input.ID), projectworkspace.ReadFileOptions{
+			FileID:       input.FileID,
+			RelativePath: input.RelativePath,
+			MaxBytes:     input.MaxBytes,
+		})
+		return toolResult(file), err
+	case "projects.workspace.file_edit", "projects_workspace_file_edit":
+		var input struct {
+			ID           string                       `json:"id"`
+			FileID       string                       `json:"file_id,omitempty"`
+			RelativePath string                       `json:"relative_path,omitempty"`
+			EditToken    string                       `json:"edit_token"`
+			DryRun       bool                         `json:"dry_run,omitempty"`
+			Edits        []projectworkspace.ExactEdit `json:"edits"`
+			Meta         json.RawMessage              `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if workspace == nil {
+			return nil, projectworkspace.ErrWorkspaceDisabled
+		}
+		result, err := workspace.EditFile(ctx, strings.TrimSpace(input.ID), projectworkspace.EditFileOptions{
+			FileID:       input.FileID,
+			RelativePath: input.RelativePath,
+			EditToken:    input.EditToken,
+			DryRun:       input.DryRun,
+			Edits:        input.Edits,
+		})
+		return toolResult(result), err
 	default:
 		return nil, projectregistry.ErrProjectNotFound
 	}
@@ -914,6 +1024,73 @@ func ingestionToolDefinitions() []map[string]any {
 				"include_chunk_text": map[string]any{"type": "boolean"},
 				"max_chunk_bytes":    map[string]any{"type": "integer", "minimum": 1},
 			}, []string{"id", "file_id"}),
+		},
+	}
+}
+
+func workspaceToolDefinitions() []map[string]any {
+	pageProperties := map[string]any{
+		"page_size":  map[string]any{"type": "integer", "minimum": 1, "maximum": projectworkspace.MaxPageSize},
+		"page_token": map[string]any{"type": "string"},
+	}
+	return []map[string]any{
+		{
+			"name":        "projects.workspace.git_status",
+			"title":       "Get Governed Project Git Status",
+			"description": "Return parsed git status for an opted-in local project without roots, raw command lines, or raw stderr.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":                map[string]any{"type": "string", "minLength": 1},
+				"include_untracked": map[string]any{"type": "boolean"},
+				"path_prefix":       map[string]any{"type": "string"},
+			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.workspace.git_diff",
+			"title":       "Get Governed Project Git Diff",
+			"description": "Return capped safe git diff output for an opted-in local project without arbitrary shell execution.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":             map[string]any{"type": "string", "minLength": 1},
+				"scope":          map[string]any{"type": "string", "enum": []string{projectworkspace.DiffScopeWorkingTree, projectworkspace.DiffScopeStaged, projectworkspace.DiffScopeHead}},
+				"file_id":        map[string]any{"type": "string"},
+				"relative_path":  map[string]any{"type": "string"},
+				"path_prefix":    map[string]any{"type": "string"},
+				"context_lines":  map[string]any{"type": "integer", "minimum": 0, "maximum": 10},
+				"max_diff_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": projectworkspace.MaxDiffBytes},
+				"page_token":     map[string]any{"type": "string"},
+			}, []string{"id"}),
+		},
+		{
+			"name":        "projects.workspace.file_read",
+			"title":       "Read Current Workspace File",
+			"description": "Read one current eligible text file and return an opaque edit token for exact edits.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":            map[string]any{"type": "string", "minLength": 1},
+				"file_id":       map[string]any{"type": "string"},
+				"relative_path": map[string]any{"type": "string"},
+				"max_bytes":     map[string]any{"type": "integer", "minimum": 1, "maximum": projectworkspace.MaxReadBytes},
+			}, []string{"id"}),
+		},
+		{
+			"name":        "projects.workspace.file_edit",
+			"title":       "Apply Exact Workspace File Edit",
+			"description": "Apply token-guarded exact byte-span edits to one eligible file and queue path ingestion after successful writes.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":            map[string]any{"type": "string", "minLength": 1},
+				"file_id":       map[string]any{"type": "string"},
+				"relative_path": map[string]any{"type": "string"},
+				"edit_token":    map[string]any{"type": "string", "minLength": 1},
+				"dry_run":       map[string]any{"type": "boolean"},
+				"edits": map[string]any{
+					"type":     "array",
+					"minItems": 1,
+					"items": objectSchema(map[string]any{
+						"start_byte": map[string]any{"type": "integer", "minimum": 0},
+						"end_byte":   map[string]any{"type": "integer", "minimum": 0},
+						"old_text":   map[string]any{"type": "string"},
+						"new_text":   map[string]any{"type": "string"},
+					}, []string{"start_byte", "end_byte", "old_text", "new_text"}),
+				},
+			}, []string{"id", "edit_token", "edits"}),
 		},
 	}
 }

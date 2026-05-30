@@ -7,6 +7,9 @@ const (
 	DigestModeContentGraph        = "content_graph"
 	UpdatePolicyManual            = "manual"
 	UpdatePolicyLive              = "live"
+	WorkspaceModeDisabled         = "disabled"
+	WorkspaceModeReadOnly         = "read_only"
+	WorkspaceModeEdit             = "edit"
 	GraphStoragePersistent        = "persistent"
 	GraphStorageInMemory          = "in_memory"
 	ClassificationInternal        = "internal"
@@ -31,6 +34,7 @@ type Project struct {
 	GraphStorage          string
 	DigestMode            string
 	UpdatePolicy          string
+	WorkspaceMode         string
 	Include               []string
 	Exclude               []string
 	FollowSymlinks        bool
@@ -51,6 +55,7 @@ type ProjectMetadata struct {
 	GraphStorage     string `json:"graph_storage"`
 	DigestMode       string `json:"digest_mode"`
 	UpdatePolicy     string `json:"update_policy"`
+	WorkspaceMode    string `json:"workspace_mode"`
 	ValidationStatus string `json:"validation_status"`
 	ValidationError  string `json:"validation_error,omitempty"`
 }
@@ -100,6 +105,7 @@ func MetadataForProject(project Project) ProjectMetadata {
 		GraphStorage:     project.GraphStorage,
 		DigestMode:       project.DigestMode,
 		UpdatePolicy:     project.UpdatePolicy,
+		WorkspaceMode:    project.WorkspaceMode,
 		ValidationStatus: project.ValidationStatus,
 		ValidationError:  project.ValidationError,
 	}

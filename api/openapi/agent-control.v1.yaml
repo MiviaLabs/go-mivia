@@ -160,6 +160,132 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/workspace/git/status:
+    get:
+      operationId: getProjectWorkspaceGitStatus
+      summary: Get governed project git status
+      description: Parsed status for globally enabled and per-project opted-in content_graph workspaces. Does not expose roots, raw command lines, or raw stderr.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: include_untracked
+          in: query
+          schema:
+            type: boolean
+            default: true
+        - name: path_prefix
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Governed git status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceGitStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/workspace/git/diff:
+    get:
+      operationId: getProjectWorkspaceGitDiff
+      summary: Get governed project git diff
+      description: Capped safe diff for opted-in content_graph workspaces. No arbitrary shell, commit, push, checkout, reset, raw patch, roots, command lines, or raw stderr are exposed.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum: [working_tree, staged, head]
+            default: working_tree
+        - name: file_id
+          in: query
+          schema:
+            type: string
+        - name: relative_path
+          in: query
+          schema:
+            type: string
+        - name: path_prefix
+          in: query
+          schema:
+            type: string
+        - name: context_lines
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 10
+        - name: max_diff_bytes
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 262144
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Governed capped diff
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceGitDiff'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/workspace/files/read:
+    get:
+      operationId: readProjectWorkspaceFile
+      summary: Read one current workspace file
+      description: Reads one eligible current text file by file_id or relative_path and returns an opaque edit token. Tokens are not content hashes.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: file_id
+          in: query
+          schema:
+            type: string
+        - name: relative_path
+          in: query
+          schema:
+            type: string
+        - name: max_bytes
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 262144
+      responses:
+        '200':
+          description: Current eligible file text
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/workspace/files/edit:
+    post:
+      operationId: editProjectWorkspaceFile
+      summary: Apply token-guarded exact byte-span file edits
+      description: Applies ordered non-overlapping exact edits only after a current edit token and old_text spans match. Successful non-dry-run edits queue path ingestion.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceFileEditRequest'
+      responses:
+        '200':
+          description: Edit result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileEditResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /projects/{id}/ingestion-runs:
     post:
       operationId: createProjectIngestionRun
@@ -932,7 +1058,7 @@ components:
     Project:
       type: object
       additionalProperties: false
-      required: [id, display_name, enabled, classification, graph_namespace, graph_storage, digest_mode, update_policy, validation_status]
+      required: [id, display_name, enabled, classification, graph_namespace, graph_storage, digest_mode, update_policy, workspace_mode, validation_status]
       properties:
         id:
           type: string
@@ -955,11 +1081,175 @@ components:
         update_policy:
           type: string
           enum: [manual, live]
+        workspace_mode:
+          type: string
+          enum: [disabled, read_only, edit]
         validation_status:
           type: string
         validation_error:
           type: string
       description: Project metadata response intentionally omits local root paths, include/exclude patterns, raw source content, and file-content hashes.
+    WorkspaceGitStatus:
+      type: object
+      additionalProperties: false
+      required: [project_id, entries, truncated]
+      properties:
+        project_id:
+          type: string
+        branch:
+          type: string
+        head_oid_short:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceGitStatusEntry'
+        truncated:
+          type: boolean
+        next_page_token:
+          type: string
+    WorkspaceGitStatusEntry:
+      type: object
+      additionalProperties: false
+      required: [relative_path, status]
+      properties:
+        relative_path:
+          type: string
+        status:
+          type: string
+        staged_status:
+          type: string
+        worktree_status:
+          type: string
+        renamed_from:
+          type: string
+    WorkspaceGitDiff:
+      type: object
+      additionalProperties: false
+      required: [project_id, scope, files, diff_truncated]
+      properties:
+        project_id:
+          type: string
+        scope:
+          type: string
+          enum: [working_tree, staged, head]
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceGitDiffFile'
+        skipped:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceGitDiffSkip'
+        diff_truncated:
+          type: boolean
+        next_page_token:
+          type: string
+    WorkspaceGitDiffFile:
+      type: object
+      additionalProperties: false
+      required: [relative_path, status, additions, deletions, diff]
+      properties:
+        relative_path:
+          type: string
+        status:
+          type: string
+        additions:
+          type: integer
+          minimum: 0
+        deletions:
+          type: integer
+          minimum: 0
+        diff:
+          type: string
+    WorkspaceGitDiffSkip:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        relative_path:
+          type: string
+        reason:
+          type: string
+    WorkspaceFile:
+      type: object
+      additionalProperties: false
+      required: [project_id, relative_path, size_bytes, modified_at, text, text_truncated, line_count]
+      properties:
+        file_id:
+          type: string
+        project_id:
+          type: string
+        relative_path:
+          type: string
+        extension:
+          type: string
+        size_bytes:
+          type: integer
+          minimum: 0
+        modified_at:
+          type: string
+          format: date-time
+        text:
+          type: string
+        text_truncated:
+          type: boolean
+        line_count:
+          type: integer
+          minimum: 0
+        edit_token:
+          type: string
+          description: Opaque per-process token; not a content hash.
+    WorkspaceFileEditRequest:
+      type: object
+      additionalProperties: false
+      required: [edit_token, edits]
+      properties:
+        file_id:
+          type: string
+        relative_path:
+          type: string
+        edit_token:
+          type: string
+        dry_run:
+          type: boolean
+        edits:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WorkspaceExactEdit'
+    WorkspaceExactEdit:
+      type: object
+      additionalProperties: false
+      required: [start_byte, end_byte, old_text, new_text]
+      properties:
+        start_byte:
+          type: integer
+          minimum: 0
+        end_byte:
+          type: integer
+          minimum: 0
+        old_text:
+          type: string
+        new_text:
+          type: string
+    WorkspaceFileEditResult:
+      type: object
+      additionalProperties: false
+      required: [applied, file, text_truncated]
+      properties:
+        applied:
+          type: boolean
+        file:
+          $ref: '#/components/schemas/WorkspaceFile'
+        diff_preview:
+          type: string
+        text_truncated:
+          type: boolean
+        ingestion_run_id:
+          type: string
+        new_edit_token:
+          type: string
     ProjectDigestRun:
       type: object
       additionalProperties: false

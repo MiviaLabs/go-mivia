@@ -73,6 +73,9 @@ func TestLoadFileConfig_AcceptsContentGraphAndLiveContractValues(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1
 
+[workspace]
+enabled = true
+
 [[projects]]
 id = "example"
 display_name = "Example"
@@ -80,6 +83,7 @@ root_path = "/absolute/path/to/project"
 digest_mode = "content_graph"
 update_policy = "live"
 graph_storage = "in_memory"
+workspace_mode = "edit"
 max_file_bytes = 1024
 max_chunk_bytes = 512
 sensitive_marker_policy = "skip_file"
@@ -100,8 +104,46 @@ sensitive_marker_policy = "skip_file"
 	if project.GraphStorage != graphStorageInMemory {
 		t.Fatalf("unexpected graph storage: %+v", project)
 	}
+	if !merged.Workspace.Enabled || project.WorkspaceMode != "edit" {
+		t.Fatalf("unexpected workspace config: %+v", merged)
+	}
 	if project.MaxFileBytes != 1024 || project.MaxChunkBytes != 512 {
 		t.Fatalf("unexpected project caps: %+v", project)
+	}
+}
+
+func TestLoadFileConfig_RejectsUnsupportedWorkspaceMode(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+workspace_mode = "shell"
+`)
+
+	_, err := loadFileConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "workspace_mode") {
+		t.Fatalf("expected workspace_mode error, got %v", err)
+	}
+}
+
+func TestLoadFileConfig_WorkspaceModeRequiresContentGraph(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+digest_mode = "metadata_only"
+workspace_mode = "read_only"
+`)
+
+	_, err := loadFileConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "content_graph") {
+		t.Fatalf("expected content_graph requirement, got %v", err)
 	}
 }
 

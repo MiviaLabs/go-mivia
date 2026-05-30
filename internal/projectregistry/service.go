@@ -60,6 +60,7 @@ func normalizeProject(configProject config.Project, options Options) (Project, e
 		GraphStorage:          strings.TrimSpace(configProject.GraphStorage),
 		DigestMode:            strings.TrimSpace(configProject.DigestMode),
 		UpdatePolicy:          strings.TrimSpace(configProject.UpdatePolicy),
+		WorkspaceMode:         strings.TrimSpace(configProject.WorkspaceMode),
 		Include:               append([]string(nil), configProject.Include...),
 		Exclude:               append([]string(nil), configProject.Exclude...),
 		FollowSymlinks:        configProject.FollowSymlinks,
@@ -82,6 +83,9 @@ func normalizeProject(configProject config.Project, options Options) (Project, e
 	}
 	if project.UpdatePolicy == "" {
 		project.UpdatePolicy = UpdatePolicyManual
+	}
+	if project.WorkspaceMode == "" {
+		project.WorkspaceMode = WorkspaceModeDisabled
 	}
 	if project.SensitiveMarkerPolicy == "" {
 		project.SensitiveMarkerPolicy = SensitiveMarkerPolicySkipFile
@@ -154,6 +158,15 @@ func validateProject(project Project, options Options) error {
 		}
 	default:
 		return fmt.Errorf("update_policy must be %q or %q", UpdatePolicyManual, UpdatePolicyLive)
+	}
+	switch project.WorkspaceMode {
+	case WorkspaceModeDisabled:
+	case WorkspaceModeReadOnly, WorkspaceModeEdit:
+		if project.DigestMode != DigestModeContentGraph {
+			return fmt.Errorf("workspace_mode %q requires digest_mode %q", project.WorkspaceMode, DigestModeContentGraph)
+		}
+	default:
+		return fmt.Errorf("workspace_mode must be %q, %q, or %q", WorkspaceModeDisabled, WorkspaceModeReadOnly, WorkspaceModeEdit)
 	}
 	if project.FollowSymlinks {
 		return fmt.Errorf("follow_symlinks must be false until symlink traversal is approved")

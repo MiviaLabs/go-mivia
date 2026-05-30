@@ -19,6 +19,7 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	projectmcpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/mcpapi"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
 	researchmcpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/mcpapi"
 	researchstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
@@ -32,6 +33,7 @@ type Handler struct {
 	projects      *projectregistry.Registry
 	projectDigest *projectregistry.DigestService
 	projectIngest projectingestion.API
+	projectWork   projectworkspace.API
 	logger        *slog.Logger
 }
 
@@ -55,12 +57,17 @@ func NewHandlerWithResearchAndProjects(service *service.Service, research *resea
 }
 
 func NewHandlerWithResearchProjectsAndIngestion(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, logger *slog.Logger) http.Handler {
+	return NewHandlerWithResearchProjectsIngestionAndWorkspace(service, research, projects, projectDigest, projectIngest, nil, logger)
+}
+
+func NewHandlerWithResearchProjectsIngestionAndWorkspace(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:       service,
 		research:      research,
 		projects:      projects,
 		projectDigest: projectDigest,
 		projectIngest: projectIngest,
+		projectWork:   projectWork,
 		logger:        logger,
 	}
 }
@@ -224,11 +231,15 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		"projects.symbol.callees", "projects_symbol_callees",
 		"projects.symbol.call_graph", "projects_symbol_call_graph",
 		"projects.headings.list", "projects_headings_list",
-		"projects.file.outline", "projects_file_outline":
+		"projects.file.outline", "projects_file_outline",
+		"projects.workspace.git_status", "projects_workspace_git_status",
+		"projects.workspace.git_diff", "projects_workspace_git_diff",
+		"projects.workspace.file_read", "projects_workspace_file_read",
+		"projects.workspace.file_edit", "projects_workspace_file_edit":
 		if handler.projects == nil {
 			return nil, projectregistry.ErrProjectNotFound
 		}
-		return projectmcpapi.CallToolWithIngestion(r.Context(), handler.projects, handler.projectDigest, handler.projectIngest, params.Name, params.Arguments)
+		return projectmcpapi.CallToolWithWorkspace(r.Context(), handler.projects, handler.projectDigest, handler.projectIngest, handler.projectWork, params.Name, params.Arguments)
 	default:
 		if handler.research != nil {
 			return researchmcpapi.CallTool(r.Context(), handler.research, params.Name, params.Arguments)
@@ -322,6 +333,21 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
+	if errors.Is(err, projectworkspace.ErrInvalidInput) ||
+		errors.Is(err, projectworkspace.ErrWorkspaceDisabled) ||
+		errors.Is(err, projectworkspace.ErrWorkspaceReadOnly) ||
+		errors.Is(err, projectworkspace.ErrGitUnavailable) ||
+		errors.Is(err, projectworkspace.ErrUnsafeContent) ||
+		errors.Is(err, projectworkspace.ErrEditTokenInvalid) ||
+		errors.Is(err, projectworkspace.ErrEditConflict) ||
+		errors.Is(err, projectworkspace.ErrIngestionUnsupported) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
+	if errors.Is(err, projectworkspace.ErrProjectNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
 	writeJSONRPCError(w, id, -32603, "internal error")
 }
 
@@ -362,7 +388,7 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 		},
 	}
 	if handler.projects != nil {
-		tools = append(tools, projectmcpapi.ToolDefinitionsWithIngestion(handler.projectIngest != nil)...)
+		tools = append(tools, projectmcpapi.ToolDefinitionsWithWorkspace(handler.projectIngest != nil, handler.projectWork != nil)...)
 	}
 	return append(tools, researchmcpapi.ToolDefinitions()...)
 }

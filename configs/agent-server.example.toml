@@ -36,6 +36,11 @@ task_warn_after = "30s"
 initial_scan_on_start = false
 sensitive_marker_policy = "skip_file"
 
+[workspace]
+# Disabled by default. Enables only governed local workspace status/diff/read/edit
+# surfaces for projects that also opt in with workspace_mode below.
+enabled = false
+
 [[projects]]
 id = "example-service"
 display_name = "Example Service"
@@ -47,6 +52,7 @@ graph_namespace = "example-service"
 graph_storage = "persistent"
 digest_mode = "metadata_only"
 update_policy = "manual"
+workspace_mode = "disabled"
 include = [
   "**/*.go",
   "go.mod",
@@ -76,6 +82,7 @@ graph_namespace = "disabled-example"
 graph_storage = "persistent"
 digest_mode = "metadata_only"
 update_policy = "manual"
+workspace_mode = "disabled"
 include = [
   "**/*.go",
   "README.md",

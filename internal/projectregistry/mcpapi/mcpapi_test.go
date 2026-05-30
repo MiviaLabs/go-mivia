@@ -17,6 +17,7 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/mcpapi"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
 )
 
 func TestCallTool_ListProjectsRedactsRootPath(t *testing.T) {
@@ -179,6 +180,71 @@ func TestCallToolWithIngestion_LatestStatusToolIsSafe(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("latest status leaked %q: %s", forbidden, body)
 		}
+	}
+}
+
+func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
+	root := t.TempDir()
+	fullPath := filepath.Join(root, "main.go")
+	if err := os.WriteFile(fullPath, []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("write source fixture: %v", err)
+	}
+	registry, err := projectregistry.NewRegistry([]config.Project{{
+		ID:                    "example-service",
+		DisplayName:           "Example Service",
+		RootPath:              root,
+		Enabled:               true,
+		Classification:        projectregistry.ClassificationInternal,
+		GraphNamespace:        "example-service",
+		DigestMode:            projectregistry.DigestModeContentGraph,
+		UpdatePolicy:          projectregistry.UpdatePolicyManual,
+		WorkspaceMode:         projectregistry.WorkspaceModeEdit,
+		Include:               []string{"**/*.go"},
+		FollowSymlinks:        false,
+		MaxFileBytes:          4096,
+		MaxChunkBytes:         1024,
+		SensitiveMarkerPolicy: projectregistry.SensitiveMarkerPolicySkipFile,
+	}}, projectregistry.Options{
+		ContentGraphEnabled:          true,
+		ContentGraphApprovalAccepted: true,
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(context.Background(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	digest := projectregistry.NewDigestService(registry, graph)
+	workspace := projectworkspace.NewService(registry, nil, projectworkspace.Options{Enabled: true})
+
+	readResult, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.file_read", json.RawMessage(`{"id":"example-service","relative_path":"main.go"}`))
+	if err != nil {
+		t.Fatalf("workspace read: %v", err)
+	}
+	file := readResult["structuredContent"].(projectworkspace.WorkspaceFile)
+	if file.EditToken == "" || strings.Contains(marshalResult(t, readResult), "content_sha256") || strings.Contains(marshalResult(t, readResult), root) {
+		t.Fatalf("unsafe workspace read result: %s", marshalResult(t, readResult))
+	}
+
+	editResult, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects_workspace_file_edit", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "main.go",
+		"edit_token":    file.EditToken,
+		"dry_run":       true,
+		"edits": []map[string]any{{
+			"start_byte": 0,
+			"end_byte":   7,
+			"old_text":   "package",
+			"new_text":   "module",
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("workspace edit alias: %v", err)
+	}
+	result := editResult["structuredContent"].(projectworkspace.EditResult)
+	if result.Applied || result.NewEditToken == "" {
+		t.Fatalf("unexpected dry-run edit result: %#v", result)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/httpapi"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
 )
 
 func TestProjectRoutes_ListAndGetRedactRootPath(t *testing.T) {
@@ -255,6 +256,63 @@ func TestProjectIngestionRoutes_SubmitsAsyncWithoutWaitingForScan(t *testing.T) 
 	case <-time.After(testShortTimeout):
 		t.Fatalf("expected scheduler worker to receive submitted scan")
 	}
+}
+
+func TestProjectWorkspaceRoutes_ReadAndEdit(t *testing.T) {
+	registry, digest := newRegistryDigest(t)
+	workspace := &fakeWorkspaceAPI{
+		file: projectworkspace.WorkspaceFile{
+			ProjectID:    "example-service",
+			RelativePath: "main.go",
+			Text:         "package main\n",
+			EditToken:    "opaque-token",
+		},
+		edit: projectworkspace.EditResult{Applied: true, IngestionRunID: "ingest-path-1"},
+	}
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutesWithWorkspace(mux, registry, digest, nil, workspace)
+
+	read := httptest.NewRecorder()
+	mux.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/workspace/files/read?relative_path=main.go", nil))
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), "opaque-token") {
+		t.Fatalf("unexpected workspace read response %d: %s", read.Code, read.Body.String())
+	}
+	assertDoesNotLeak(t, read.Body.String(), "content_sha256", "root_path")
+
+	editBody := `{"relative_path":"main.go","edit_token":"opaque-token","edits":[{"start_byte":0,"end_byte":7,"old_text":"package","new_text":"module"}]}`
+	edit := httptest.NewRecorder()
+	mux.ServeHTTP(edit, httptest.NewRequest(http.MethodPost, "/api/v1/projects/example-service/workspace/files/edit", strings.NewReader(editBody)))
+	if edit.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected content-type guard, got %d: %s", edit.Code, edit.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/example-service/workspace/files/edit", strings.NewReader(editBody))
+	req.Header.Set("Content-Type", "application/json")
+	edit = httptest.NewRecorder()
+	mux.ServeHTTP(edit, req)
+	if edit.Code != http.StatusOK || !strings.Contains(edit.Body.String(), "ingest-path-1") {
+		t.Fatalf("unexpected workspace edit response %d: %s", edit.Code, edit.Body.String())
+	}
+}
+
+type fakeWorkspaceAPI struct {
+	file projectworkspace.WorkspaceFile
+	edit projectworkspace.EditResult
+}
+
+func (fake *fakeWorkspaceAPI) GitStatus(context.Context, string, projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {
+	return projectworkspace.GitStatus{ProjectID: "example-service"}, nil
+}
+
+func (fake *fakeWorkspaceAPI) GitDiff(context.Context, string, projectworkspace.GitDiffOptions) (projectworkspace.GitDiff, error) {
+	return projectworkspace.GitDiff{ProjectID: "example-service"}, nil
+}
+
+func (fake *fakeWorkspaceAPI) ReadFile(context.Context, string, projectworkspace.ReadFileOptions) (projectworkspace.WorkspaceFile, error) {
+	return fake.file, nil
+}
+
+func (fake *fakeWorkspaceAPI) EditFile(context.Context, string, projectworkspace.EditFileOptions) (projectworkspace.EditResult, error) {
+	return fake.edit, nil
 }
 
 func TestProjectIngestionRoutes_SkippedSensitiveContentDoesNotLeak(t *testing.T) {

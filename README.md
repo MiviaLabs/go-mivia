@@ -6,7 +6,7 @@ Generic Go microservices monorepo for AI-agent work.
 
 This repository contains the local MiviaLabs agent service platform. The current service is `agent-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, research metadata, project registry, project ingestion, and semantic code-context workflows.
 
-The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion with governed FTS and named AST search. It does not ingest PII, call live AI or browsing providers, expose public APIs, run embeddings/vector storage, crawl arbitrary roots, or use production database infrastructure.
+The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion with governed FTS, named AST search, git status/diff, and exact token-guarded file edits. It does not ingest PII, call live AI or browsing providers, expose public APIs, run embeddings/vector storage, crawl arbitrary roots, expose arbitrary shell, or use production database infrastructure.
 
 Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only.
 
@@ -31,6 +31,7 @@ flowchart TB
   FTS["SQLite FTS5: eligible indexed search rows"]
   AST["Named AST search catalog"]
   Queries["Bounded query APIs: files, chunks, outlines, FTS search, symbol source, refs, callers, callees, call graph, AST search"]
+  Workspace["Workspace APIs: governed git status/diff, current file read, token-guarded exact edit"]
   Boundaries["No public exposure, auth changes, provider calls, crawling, embeddings, raw DB queries, PII, secrets, roots, prompts, or skipped sensitive content"]
 
   Client --> Server
@@ -54,8 +55,12 @@ flowchart TB
   SQLite --> Queries
   FTS --> Queries
   AST --> Queries
+  Registry --> Workspace
+  Safety --> Workspace
   Queries --> REST
   Queries --> MCP
+  Workspace --> REST
+  Workspace --> MCP
   Server --> Boundaries
   Safety --> Boundaries
 ```
@@ -70,6 +75,7 @@ flowchart TB
 | Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph, named AST structural search, AST query catalog discovery | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
 | Search index | SQLite FTS5 rows for eligible chunks, files, symbols, references, and calls; async rebuild repair through ingestion scheduler | Raw FTS syntax and raw SQLite errors are never exposed |
 | Query APIs | Files, chunks, outlines, text/file/symbol/reference/call search, AST query catalog, named AST search, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned; raw FTS and raw Tree-sitter syntax are not exposed |
+| Workspace APIs | Governed git status/diff, current eligible file read, token-guarded exact byte-span edits | Disabled by default; requires global workspace gate plus per-project `workspace_mode`; no arbitrary shell, raw patch, or git commit/push/reset/checkout tools |
 
 ## Start Here
 
@@ -120,9 +126,10 @@ What this enables:
 
 - Engineers can opt local projects into metadata-only digest or content graph ingestion.
 - Agents can ask for bounded project files, chunks, outlines, search results, symbols, symbol source, references, direct call edges, call graphs, the supported AST query catalog, named AST structural matches, and ingestion status through MCP instead of guessing from stale chat context.
+- Agents can use MCP/REST for governed git status/diff and exact current-file edits on opted-in workspaces; shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
 - Local state can persist per project when `graph_storage = "persistent"`, or stay process-local with `graph_storage = "in_memory"`.
-- The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, provider calls, embeddings, vectors, skipped sensitive content, secrets, raw prompts, provider payloads, and PII.
+- The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, provider calls, embeddings, vectors, arbitrary shell, raw patches, git commit/push/reset/checkout tools, skipped sensitive content, secrets, raw prompts, provider payloads, and PII.
 
 ## Agent Reliability Model
 
@@ -130,7 +137,7 @@ What this enables:
 
 - `agent-server` is first choice for indexed project discovery, ingestion freshness, files, chunks, symbols, references, calls, FTS search, symbol source, call graph, and named AST search.
 - Serena remains useful when MCP is unavailable, stale, missing the project, or lacks the edit-time semantic operation needed for a precise code change.
-- Shell remains the source of truth for git state, tests, builds, logs, generated files, and files changed after the latest indexed ingestion.
+- MCP can handle governed git status/diff and exact edits for opted-in workspaces; shell remains the source of truth for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repositories.
 - This routing reduces blind file scanning, stale assumptions, and unsafe over-broad context collection.
 
 ```mermaid
@@ -210,6 +217,7 @@ sequenceDiagram
 - `configs/`: committed local config examples only; developer-local configs stay ignored.
 - `internal/agentcontrol/`: task and research-run domain, stores, REST adapter, MCP adapter.
 - `internal/projectregistry/`: local project config registry, validation, REST/MCP metadata APIs, and manual metadata-only digest.
+- `internal/projectworkspace/`: governed local workspace git status/diff, file read, and exact edit domain.
 - `internal/research/`: fixture-only research boundaries, redaction, metadata storage, REST/MCP hooks.
 - `internal/platform/`: config, logging, health, HTTP, Ladybug, SQLite platform packages.
 - `docs/`: stable technical documentation index.

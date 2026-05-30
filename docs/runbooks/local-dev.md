@@ -93,6 +93,16 @@ curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/symbols?page_si
 
 Manual ingestion submits work asynchronously through the scheduler. Use the returned `run_id` with `/ingestion-runs/{run_id}` or check `/ingestion-runs/latest` until the run is `completed` before relying on indexed files and symbols.
 
+Governed workspace tools are disabled unless `[workspace].enabled = true` and the project sets `workspace_mode = "read_only"` or `"edit"` with `digest_mode = "content_graph"`. Read-only smoke:
+
+```sh
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/workspace/git/status'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/workspace/git/diff?scope=working_tree&max_diff_bytes=65536'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/workspace/files/read?relative_path=README.md'
+```
+
+Edit mode requires `workspace_mode = "edit"` and an `edit_token` from the file-read response. There is no arbitrary shell, raw patch, public exposure, provider call, embedding/vector/crawling path, raw DB query endpoint, or git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool.
+
 Chunk reads require stable opaque IDs from the file list response:
 
 ```sh
@@ -178,6 +188,10 @@ After registration, new Codex Desktop sessions can discover these tools:
 - `projects.search.symbols`
 - `projects.search.references`
 - `projects.search.calls`
+- `projects.workspace.git_status`
+- `projects.workspace.git_diff`
+- `projects.workspace.file_read`
+- `projects.workspace.file_edit`
 - `projects.search.ast.queries`
 - `projects.search.ast`
 - `projects.symbol.source`

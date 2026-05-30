@@ -47,6 +47,7 @@ Environment variables remain final overrides over file values:
 - `MIVIA_INGESTION_WORKER_COUNT`
 - `MIVIA_INGESTION_INITIAL_SCAN_ON_START`
 - `MIVIA_INGESTION_SENSITIVE_MARKER_POLICY`
+- `MIVIA_WORKSPACE_ENABLED`
 
 ## Field Reference
 
@@ -77,6 +78,7 @@ Environment variables remain final overrides over file values:
 | `ingestion.task_warn_after` | No | Positive duration before slow live ingestion task warning; default `30s`. |
 | `ingestion.initial_scan_on_start` | No | Optional startup rescan for live projects; default `false`. |
 | `ingestion.sensitive_marker_policy` | No | Only `skip_file` is accepted. |
+| `workspace.enabled` | No | Global workspace status/diff/read/edit gate; default `false`. Must stay loopback-only. |
 
 Persisted ingestion runs in `pending` or `running` state are local in-memory queue leftovers after a server restart. Current builds mark them failed with `error_category=server_restarted` during startup; use live startup scans or submit a fresh `projects.ingest` run to repair freshness.
 | `projects.id` | Yes | Stable project slug. |
@@ -89,6 +91,7 @@ Persisted ingestion runs in `pending` or `running` state are local in-memory que
 | `projects.graph_storage` | No | `persistent` or `in_memory`; default `persistent`. |
 | `projects.digest_mode` | No | `metadata_only` or `content_graph`; content graph requires global gate and ADR approval. |
 | `projects.update_policy` | No | `manual` or `live`; live requires `content_graph` plus global live gate. |
+| `projects.workspace_mode` | No | `disabled`, `read_only`, or `edit`; `read_only` and `edit` require `digest_mode = "content_graph"`. |
 | `projects.include` | No | Root-relative include patterns. |
 | `projects.exclude` | No | Root-relative exclude patterns. |
 | `projects.follow_symlinks` | No | Keep `false`; symlink traversal is not approved. |
@@ -120,6 +123,8 @@ Current validation rejects:
 - unsupported `digest_mode`
 - unsupported `update_policy`
 - unsupported `graph_storage`
+- unsupported `workspace_mode`
+- workspace `read_only` or `edit` without `content_graph`
 - invalid Go duration strings
 - non-loopback `server.http_addr`
 - non-positive timeout and request-size values
@@ -161,7 +166,11 @@ The server exposes bounded project metadata on localhost only:
 - `GET /api/v1/projects/{id}/symbols/{symbol_id}/callees`
 - `GET /api/v1/projects/{id}/symbols/{symbol_id}/call-graph`
 - `GET /api/v1/projects/{id}/headings`
-- MCP tools: `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`
+- `GET /api/v1/projects/{id}/workspace/git/status`
+- `GET /api/v1/projects/{id}/workspace/git/diff`
+- `GET /api/v1/projects/{id}/workspace/files/read`
+- `POST /api/v1/projects/{id}/workspace/files/edit`
+- MCP tools: `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`
 - MCP resources: `mivialabs://projects/{id}`, `mivialabs://projects/{id}/digest-runs/{run_id}`, `mivialabs://projects/{id}/files/{file_id}`, `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`, `mivialabs://projects/{id}/files/{file_id}/outline`, `mivialabs://projects/{id}/symbols/{symbol_id}`
 
 Project responses omit local root paths and datastore paths by default. Digest runs are manual and metadata-only: graph writes store relative path, extension/language hint, file size, mtime, and a metadata fingerprint. Content graph ingestion stores eligible local source chunks only after all gates pass. SQLite FTS5 rows are maintained for eligible chunks, files, symbols, references, and calls; text search is literal-only and raw FTS syntax is not exposed. AST metadata is promoted for Go, JS, JSX, TS, TSX, C#, Python, Markdown, and lightweight infrastructure/config files. Named AST structural search supports Go, Python, JavaScript, JSX, TypeScript, TSX, and C# through `projects.search.ast.queries` and `projects.search.ast`. TS/JS/TSX/JSX, C#, and Python parsing is mandatory Tree-sitter; startup validation fails with `extractor_initialization_failed` if a promoted grammar or query cannot initialize.
@@ -173,6 +182,8 @@ Full scans commit graph and FTS writes in bounded windows. Manual and live inges
 File listing accepts optional `status`, `extension`, `path_prefix`, `skipped_reason`, `present`, `modified_since`, `page_size`, and `page_token` filters. Extension values may be `go` or `.go`; matching is case-insensitive and invalidates whitespace or path separators.
 
 File outlines return file, heading, symbol, and chunk location metadata by default. Large outlines can be bounded with symbol `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token`. Agents can request eligible source context inline with `include_chunk_text=true` and `max_chunk_bytes`; skipped sensitive files still have no chunks to return.
+
+Workspace tools are disabled by default. To use them locally, set `[workspace].enabled = true` and opt a project into `workspace_mode = "read_only"` or `"edit"` with `digest_mode = "content_graph"`. Read-only mode allows governed git status, capped git diff, and current eligible file reads. Edit mode also allows token-guarded exact byte-span edits; clients must first read the current file and use the returned opaque edit token. Successful non-dry-run edits queue path ingestion. There is no arbitrary shell endpoint, public exposure, auth change, provider call, embeddings/vector/crawling path, raw DB query endpoint, raw patch upload endpoint, or git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool.
 
 ## Live Update Mode
 

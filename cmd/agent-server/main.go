@@ -25,6 +25,7 @@ import (
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
 	projecthttpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/httpapi"
 	projectstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/store"
+	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
 	researchhttpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/httpapi"
 	researchstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
@@ -129,6 +130,10 @@ func run() error {
 	if err := projectIngestionOrchestrator.Start(ctx); err != nil {
 		return err
 	}
+	var projectWorkspaceService projectworkspace.API
+	if cfg.Workspace.Enabled {
+		projectWorkspaceService = projectworkspace.NewService(projectRegistry, projectIngestionScheduler, projectworkspace.Options{Enabled: true})
+	}
 	agentService := service.New(agentStore, agentStore)
 
 	checker := health.NewChecker(
@@ -154,8 +159,8 @@ func run() error {
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
 	httpapi.RegisterRoutes(mux, agentService)
 	researchhttpapi.RegisterRoutes(mux, researchService)
-	projecthttpapi.RegisterRoutesWithIngestion(mux, projectRegistry, projectDigestService, projectIngestionScheduler)
-	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsAndIngestion(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, logger))
+	projecthttpapi.RegisterRoutesWithWorkspace(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService)
+	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsIngestionAndWorkspace(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, logger))
 
 	handler := httpserver.Chain(
 		mux,

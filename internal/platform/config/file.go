@@ -23,6 +23,7 @@ type fileConfig struct {
 	Server    *fileServerConfig    `toml:"server"`
 	Storage   *fileStorageConfig   `toml:"storage"`
 	Ingestion *fileIngestionConfig `toml:"ingestion"`
+	Workspace *fileWorkspaceConfig `toml:"workspace"`
 	Projects  []fileProjectConfig  `toml:"projects"`
 }
 
@@ -37,6 +38,10 @@ type fileServerConfig struct {
 type fileStorageConfig struct {
 	LadybugPath *string `toml:"ladybug_path"`
 	SQLitePath  *string `toml:"sqlite_path"`
+}
+
+type fileWorkspaceConfig struct {
+	Enabled *bool `toml:"enabled"`
 }
 
 type fileIngestionConfig struct {
@@ -70,6 +75,7 @@ type fileProjectConfig struct {
 	GraphStorage          string   `toml:"graph_storage"`
 	DigestMode            string   `toml:"digest_mode"`
 	UpdatePolicy          string   `toml:"update_policy"`
+	WorkspaceMode         string   `toml:"workspace_mode"`
 	Include               []string `toml:"include"`
 	Exclude               []string `toml:"exclude"`
 	FollowSymlinks        bool     `toml:"follow_symlinks"`
@@ -120,6 +126,14 @@ func (cfg fileConfig) validate() error {
 		case "", graphStoragePersistent, graphStorageInMemory:
 		default:
 			return fmt.Errorf("projects[%d].graph_storage must be %q or %q", i, graphStoragePersistent, graphStorageInMemory)
+		}
+		switch project.WorkspaceMode {
+		case "", "disabled", "read_only", "edit":
+		default:
+			return fmt.Errorf("projects[%d].workspace_mode must be %q, %q, or %q", i, "disabled", "read_only", "edit")
+		}
+		if (project.WorkspaceMode == "read_only" || project.WorkspaceMode == "edit") && project.DigestMode != digestModeContentGraph {
+			return fmt.Errorf("projects[%d].workspace_mode %q requires digest_mode %q", i, project.WorkspaceMode, digestModeContentGraph)
 		}
 		if project.MaxFileBytes != nil && *project.MaxFileBytes <= 0 {
 			return fmt.Errorf("projects[%d].max_file_bytes must be positive", i)
@@ -256,6 +270,10 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		}
 	}
 
+	if cfg.Workspace != nil && cfg.Workspace.Enabled != nil {
+		base.Workspace.Enabled = *cfg.Workspace.Enabled
+	}
+
 	base.Projects = make([]Project, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
 		base.Projects = append(base.Projects, project.toProject())
@@ -287,6 +305,10 @@ func (project fileProjectConfig) toProject() Project {
 	if graphStorage == "" {
 		graphStorage = graphStoragePersistent
 	}
+	workspaceMode := project.WorkspaceMode
+	if workspaceMode == "" {
+		workspaceMode = "disabled"
+	}
 
 	cfgProject := Project{
 		ID:             project.ID,
@@ -299,6 +321,7 @@ func (project fileProjectConfig) toProject() Project {
 		GraphStorage:   graphStorage,
 		DigestMode:     digestMode,
 		UpdatePolicy:   updatePolicy,
+		WorkspaceMode:  workspaceMode,
 		Include:        append([]string(nil), project.Include...),
 		Exclude:        append([]string(nil), project.Exclude...),
 		FollowSymlinks: project.FollowSymlinks,

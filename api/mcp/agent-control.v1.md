@@ -175,6 +175,17 @@ Input schema:
 
 Output: metadata-only digest run counts and status. Pass either `id` or `project_id`; `id` remains the preferred contract. The digest stores file metadata and metadata fingerprints only; raw source content and file-content hashes are not stored or returned.
 
+### Workspace Tools
+
+Workspace tools are available only when `[workspace].enabled = true` and the target project has `workspace_mode = "read_only"` or `"edit"` with `digest_mode = "content_graph"`. They never expose roots, datastore paths, raw command lines, raw stderr, content hashes, skipped sensitive content, secrets, PII, raw prompts, provider payloads, raw parser/SQLite/FTS errors, or stack traces.
+
+- `projects.workspace.git_status` / `projects_workspace_git_status`: parsed git status with `id`, optional `include_untracked`, `path_prefix`, `page_size`, and `page_token`.
+- `projects.workspace.git_diff` / `projects_workspace_git_diff`: capped safe diff with `id`, optional `scope` (`working_tree`, `staged`, `head`), one optional file selector, `path_prefix`, `context_lines`, `max_diff_bytes`, and `page_token`.
+- `projects.workspace.file_read` / `projects_workspace_file_read`: current eligible file text by `file_id` or `relative_path`, capped by `max_bytes`, with an opaque edit token.
+- `projects.workspace.file_edit` / `projects_workspace_file_edit`: `workspace_mode = "edit"` only; applies ordered exact byte-span edits with `edit_token`, `old_text`, and `new_text`. Successful non-dry-run edits queue path ingestion.
+
+No workspace tool executes arbitrary shell commands, accepts raw patches, or performs git commit, push, checkout, reset, branch, merge, rebase, stash, clean, or restore operations. Shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories.
+
 ### `projects.ingest`
 
 Input schema:
