@@ -13,6 +13,8 @@ type SchedulerOptions struct {
 	LivePathPriority      bool
 }
 
+const defaultSchedulerQueueDepth = 10000
+
 type SchedulerDiagnostics struct {
 	QueueDepth             int
 	LiveQueueDepth         int
@@ -73,7 +75,7 @@ type asyncSearchIndexRebuildRunner interface {
 
 func NewScheduler(runner ingestionRunner, options SchedulerOptions) *Scheduler {
 	if options.QueueDepth <= 0 {
-		options.QueueDepth = 128
+		options.QueueDepth = defaultSchedulerQueueDepth
 	}
 	if options.GlobalWorkerCount <= 0 {
 		options.GlobalWorkerCount = 2

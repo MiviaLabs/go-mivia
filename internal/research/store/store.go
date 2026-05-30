@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/provider"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
+	"github.com/MiviaLabs/go-mivia/internal/research/provider"
 )
 
 var ErrNotFound = errors.New("research metadata not found")

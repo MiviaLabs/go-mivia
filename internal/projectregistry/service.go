@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 )
 
 var projectIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)

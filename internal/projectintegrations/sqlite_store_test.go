@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
-	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
+	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
+	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
 )
 
 func TestSQLiteStore_UpsertSourceStoresHashesAndCountsOnly(t *testing.T) {

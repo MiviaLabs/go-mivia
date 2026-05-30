@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
-	ladybugschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
+	ladybugschema "github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
 )
 
 func TestProjectGraphRouter_RoutesByProjectStorage(t *testing.T) {

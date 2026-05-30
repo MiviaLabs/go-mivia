@@ -74,7 +74,7 @@ func TestLoad_ExplicitConfigMissing_ReturnsError(t *testing.T) {
 func TestLoad_FileValuesAndEnvOverrides_ReturnsMergedConfig(t *testing.T) {
 	clearConfigEnv(t)
 	dir := t.TempDir()
-	path := filepath.Join(dir, "agent-server.local.toml")
+	path := filepath.Join(dir, "mivia-server.local.toml")
 	writeFile(t, path, `
 version = 1
 
@@ -301,7 +301,7 @@ sqlite_path = "data/default-file.sqlite"
 
 func TestLoad_ExplicitInvalidConfig_ReturnsError(t *testing.T) {
 	clearConfigEnv(t)
-	path := filepath.Join(t.TempDir(), "agent-server.local.toml")
+	path := filepath.Join(t.TempDir(), "mivia-server.local.toml")
 	writeFile(t, path, "not toml")
 	t.Setenv("MIVIA_CONFIG_PATH", path)
 

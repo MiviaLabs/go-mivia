@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/model"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 )
 
 type LadybugStore struct {

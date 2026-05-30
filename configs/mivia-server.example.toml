@@ -1,4 +1,4 @@
-# Copy this file to configs/agent-server.local.toml and replace placeholder paths.
+# Copy this file to configs/mivia-server.local.toml and replace placeholder paths.
 # Local config files are ignored and must not contain secrets, tokens, PII, raw prompts,
 # raw source content, provider payloads, or personal data.
 

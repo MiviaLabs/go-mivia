@@ -8,7 +8,7 @@ import (
 )
 
 func TestLoadFileConfig_ExampleConfigParses(t *testing.T) {
-	path := filepath.Join(repoRoot(t), "configs", "agent-server.example.toml")
+	path := filepath.Join(repoRoot(t), "configs", "mivia-server.example.toml")
 
 	cfg, err := loadFileConfig(path)
 	if err != nil {
@@ -616,7 +616,7 @@ sensitive_marker_policy = "store"
 
 func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "agent-server.local.toml")
+	path := filepath.Join(t.TempDir(), "mivia-server.local.toml")
 	writeFile(t, path, content)
 	return path
 }

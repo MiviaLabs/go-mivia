@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/model"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
-	ladybugschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
-	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
-	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
+	ladybugschema "github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
+	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
+	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
 )
 
 func TestLadybugStore_CreateAndGetTask(t *testing.T) {

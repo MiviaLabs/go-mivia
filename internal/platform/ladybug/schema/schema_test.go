@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
 )
 
 func TestBootstrapSchema_Idempotent(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/model"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
 )
 
 type MemoryStore struct {

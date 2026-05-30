@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations/mcpapi"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations/mcpapi"
 )
 
 func TestCallToolListsConfiguredProvidersWithRedactedMetadata(t *testing.T) {

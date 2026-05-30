@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/model"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
 )
 
 var ErrInvalidInput = errors.New("invalid input")

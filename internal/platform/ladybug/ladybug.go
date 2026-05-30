@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
 )
 
 type NativeRuntimeStatus struct {

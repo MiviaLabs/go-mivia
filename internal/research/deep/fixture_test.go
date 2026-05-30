@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/deep"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/provider"
+	"github.com/MiviaLabs/go-mivia/internal/research/deep"
+	"github.com/MiviaLabs/go-mivia/internal/research/provider"
 )
 
 func TestFixtureProvider_Collect_DeclaresNoNetwork(t *testing.T) {

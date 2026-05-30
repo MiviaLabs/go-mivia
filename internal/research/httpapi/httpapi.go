@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
+	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
+	"github.com/MiviaLabs/go-mivia/internal/research"
+	"github.com/MiviaLabs/go-mivia/internal/research/store"
 )
 
 func RegisterRoutes(mux *http.ServeMux, svc *research.Service) {

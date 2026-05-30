@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/redaction"
+	"github.com/MiviaLabs/go-mivia/internal/research/redaction"
 )
 
 func TestRedact_RemovesSecretsAndPII(t *testing.T) {

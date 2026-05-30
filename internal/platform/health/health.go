@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
+	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
 )
 
 type Check struct {

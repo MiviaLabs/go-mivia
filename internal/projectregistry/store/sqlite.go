@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
 var ErrNotFound = errors.New("project not found")

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultConfigPath                 = "configs/agent-server.local.toml"
+	defaultConfigPath                 = "configs/mivia-server.local.toml"
 	defaultHTTPAddr                   = "127.0.0.1:8080"
 	defaultLadybugPath                = "data/mivialabs.lbug"
 	defaultSQLitePath                 = "data/mivialabs-config.sqlite"
@@ -23,7 +23,7 @@ const (
 	defaultIngestionDebounceInterval  = 2 * time.Second
 	defaultIngestionMaxFileBytes      = int64(1 << 20)
 	defaultIngestionMaxChunkBytes     = 16 * 1024
-	defaultIngestionQueueDepth        = 128
+	defaultIngestionQueueDepth        = 10000
 	defaultIngestionWorkerCount       = 2
 	defaultIngestionGlobalWorkerCount = 10
 	defaultIngestionPerProjectLimit   = 2

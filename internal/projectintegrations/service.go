@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 )
 
 type Store interface {

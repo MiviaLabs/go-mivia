@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
+	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
 func ToolDefinitions() []map[string]any {

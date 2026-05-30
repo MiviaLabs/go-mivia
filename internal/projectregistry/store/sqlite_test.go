@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
-	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
-	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/store"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
+	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry/store"
 )
 
 func TestSQLiteStore_SaveAndGetProject(t *testing.T) {

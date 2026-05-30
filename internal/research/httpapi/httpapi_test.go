@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
-	ladybugschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/httpapi"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/provider"
-	researchstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
+	ladybugschema "github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
+	"github.com/MiviaLabs/go-mivia/internal/research"
+	"github.com/MiviaLabs/go-mivia/internal/research/httpapi"
+	"github.com/MiviaLabs/go-mivia/internal/research/provider"
+	researchstore "github.com/MiviaLabs/go-mivia/internal/research/store"
 )
 
 func TestSourceRoutes_RedactRawContentFromResponses(t *testing.T) {

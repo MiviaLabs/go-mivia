@@ -7,10 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/httpapi"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/model"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/service"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/httpapi"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
 )
 
 func TestTaskRoutes_CreateAndGet(t *testing.T) {

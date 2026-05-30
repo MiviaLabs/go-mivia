@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
 type OrchestratorOptions struct {
@@ -90,7 +90,7 @@ func NewOrchestrator(registry *projectregistry.Registry, ingestion ingestionRunn
 		options.DebounceInterval = 2 * time.Second
 	}
 	if options.QueueDepth <= 0 {
-		options.QueueDepth = 128
+		options.QueueDepth = defaultSchedulerQueueDepth
 	}
 	if options.WorkerCount <= 0 {
 		options.WorkerCount = 1
@@ -360,9 +360,18 @@ func (orchestrator *Orchestrator) debounceLoop(ctx context.Context, projectWatch
 				resetTimer(timer, orchestrator.options.DebounceInterval)
 			}
 		case <-timer.C:
+			overflowed := false
 			for relative := range pending {
-				orchestrator.enqueueTask(ctx, projectWatcher, ingestTask{relativePath: relative})
+				if !orchestrator.enqueueTask(ctx, projectWatcher, ingestTask{relativePath: relative}) {
+					overflowed = true
+					break
+				}
+			}
+			for relative := range pending {
 				delete(pending, relative)
+			}
+			if overflowed {
+				orchestrator.enqueueTask(ctx, projectWatcher, ingestTask{rescan: true})
 			}
 		}
 	}
@@ -434,13 +443,24 @@ func (orchestrator *Orchestrator) workerLoop(ctx context.Context, projectWatcher
 	}
 }
 
-func (orchestrator *Orchestrator) enqueueTask(ctx context.Context, projectWatcher *projectWatcher, task ingestTask) {
+func (orchestrator *Orchestrator) enqueueTask(ctx context.Context, projectWatcher *projectWatcher, task ingestTask) bool {
 	select {
 	case projectWatcher.tasks <- task:
+		return true
 	case <-ctx.Done():
+		return false
 	default:
-		orchestrator.logWarn("live ingestion task queue full; rescan queued", slog.String("project_id", projectWatcher.project.ID))
-		orchestrator.enqueueRescan(projectWatcher)
+		if !task.rescan {
+			orchestrator.logWarn("live ingestion task queue full; path events coalesced to rescan", slog.String("project_id", projectWatcher.project.ID))
+			return false
+		}
+		orchestrator.logWarn("live ingestion task queue full; rescan deferred", slog.String("project_id", projectWatcher.project.ID))
+		select {
+		case projectWatcher.tasks <- task:
+			return true
+		case <-ctx.Done():
+			return false
+		}
 	}
 }
 

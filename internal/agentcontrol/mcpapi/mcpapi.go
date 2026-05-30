@@ -12,19 +12,19 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/model"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/service"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations"
-	integrationmcpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations/mcpapi"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
-	projectmcpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/mcpapi"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
-	researchmcpapi "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/mcpapi"
-	researchstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
+	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
+	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
+	integrationmcpapi "github.com/MiviaLabs/go-mivia/internal/projectintegrations/mcpapi"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	projectmcpapi "github.com/MiviaLabs/go-mivia/internal/projectregistry/mcpapi"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
+	"github.com/MiviaLabs/go-mivia/internal/research"
+	researchmcpapi "github.com/MiviaLabs/go-mivia/internal/research/mcpapi"
+	researchstore "github.com/MiviaLabs/go-mivia/internal/research/store"
 )
 
 const ProtocolVersion = "2025-06-18"
@@ -138,7 +138,7 @@ func (handler *Handler) dispatch(w http.ResponseWriter, r *http.Request, req jso
 				"resources": map[string]any{},
 			},
 			"serverInfo": map[string]string{
-				"name":    "mivialabs-agent-server",
+				"name":    "mivia-server",
 				"version": "0.0.0-bootstrap",
 			},
 		})

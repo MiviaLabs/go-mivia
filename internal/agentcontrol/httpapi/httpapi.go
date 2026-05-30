@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/model"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/service"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/store"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/httpserver"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
+	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
 )
 
 func RegisterRoutes(mux *http.ServeMux, svc *service.Service) {

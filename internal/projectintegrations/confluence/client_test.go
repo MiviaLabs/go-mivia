@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations"
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 )
 
 func TestClient_SearchPagesSendsBasicAuthAndCQLRequest(t *testing.T) {

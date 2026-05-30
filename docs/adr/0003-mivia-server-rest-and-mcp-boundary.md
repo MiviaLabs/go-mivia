@@ -1,4 +1,4 @@
-# ADR-0003: Agent Server REST And MCP Boundary
+# ADR-0003: Mivia Server REST And MCP Boundary
 
 Status: Accepted for bootstrap
 Date: 2026-05-30

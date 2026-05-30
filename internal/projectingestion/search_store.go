@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
 type searchMutationStore interface {

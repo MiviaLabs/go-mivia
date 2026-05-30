@@ -9,7 +9,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations"
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 )
 
 func ToolDefinitions() []map[string]any {

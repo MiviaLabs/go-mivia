@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 )
 
 func TestPlanJiraQuery_HonorsAllowlistAndBoundsPageSize(t *testing.T) {
@@ -220,7 +220,7 @@ func TestPlannerRejectsMissingAllowlists(t *testing.T) {
 func loadIntegrationProject(t *testing.T) config.Project {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "agent-server.local.toml")
+	path := filepath.Join(dir, "mivia-server.local.toml")
 	toml := `version = 1
 
 [[projects]]

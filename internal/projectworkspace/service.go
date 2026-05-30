@@ -18,8 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
 type Options struct {

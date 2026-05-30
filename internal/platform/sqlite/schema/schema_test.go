@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"testing"
 
-	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
+	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
+	"github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
 )
 
 func TestBootstrap_Idempotent(t *testing.T) {

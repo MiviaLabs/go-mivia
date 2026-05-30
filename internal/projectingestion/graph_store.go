@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
 type graphBackend interface {

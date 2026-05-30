@@ -9,8 +9,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research"
-	researchstore "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
+	"github.com/MiviaLabs/go-mivia/internal/research"
+	researchstore "github.com/MiviaLabs/go-mivia/internal/research/store"
 )
 
 func ToolDefinitions() []map[string]any {

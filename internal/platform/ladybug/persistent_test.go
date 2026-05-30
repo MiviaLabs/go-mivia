@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
 )
 
 func TestPersistentGraph_ReloadsNodesAndRelationships(t *testing.T) {

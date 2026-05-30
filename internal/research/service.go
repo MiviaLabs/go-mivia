@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/provider"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/redaction"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/store"
+	"github.com/MiviaLabs/go-mivia/internal/research/provider"
+	"github.com/MiviaLabs/go-mivia/internal/research/redaction"
+	"github.com/MiviaLabs/go-mivia/internal/research/store"
 )
 
 var ErrInvalidInput = errors.New("invalid research input")

@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
-	ladybugschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
-	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
-	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/mcpapi"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
+	ladybugschema "github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
+	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
+	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry/mcpapi"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
 func TestCallTool_ListProjectsRedactsRootPath(t *testing.T) {
@@ -193,7 +193,7 @@ func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 		"README.md":                            "Localhost endpoint: http://127.0.0.1:8080/mcp\n",
 		"api/mcp/agent-control.v1.md":          "MCP-Protocol-Version: 2025-06-18\n",
 		"docs/configuration/local-projects.md": "Workspace file reads are token-guarded and localhost-only.\n",
-		"configs/agent-server.example.toml":    "credential_ref = \"env:MIVIA_EXAMPLE_TOKEN\"\n",
+		"configs/mivia-server.example.toml":    "credential_ref = \"env:MIVIA_EXAMPLE_TOKEN\"\n",
 	}
 	for relativePath, content := range workspaceFiles {
 		path := filepath.Join(root, filepath.FromSlash(relativePath))

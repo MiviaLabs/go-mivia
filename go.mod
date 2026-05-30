@@ -1,4 +1,4 @@
-module github.com/MiviaLabs/mivialabs-agents-monorepo
+module github.com/MiviaLabs/go-mivia
 
 go 1.26
 

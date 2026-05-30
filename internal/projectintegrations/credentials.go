@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 )
 
 var ErrCredentialUnavailable = errors.New("integration credential unavailable")

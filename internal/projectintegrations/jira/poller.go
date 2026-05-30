@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectintegrations"
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 )
 
 type Poller struct {

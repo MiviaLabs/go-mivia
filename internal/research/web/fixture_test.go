@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/provider"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/research/web"
+	"github.com/MiviaLabs/go-mivia/internal/research/provider"
+	"github.com/MiviaLabs/go-mivia/internal/research/web"
 )
 
 func TestFixtureProvider_Collect_RedactsSummaryAndUsesNoNetwork(t *testing.T) {

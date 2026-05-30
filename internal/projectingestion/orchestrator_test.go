@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
 func TestOrchestrator_GlobalDisabledDoesNotStartWatchers(t *testing.T) {
@@ -147,6 +147,47 @@ func TestOrchestrator_OverflowAndQueueFullTriggerRescan(t *testing.T) {
 	case <-projectWatcher.rescans:
 	case <-time.After(time.Second):
 		t.Fatal("expected queue full to request rescan")
+	}
+}
+
+func TestOrchestrator_TaskQueueFullDefersSingleRescanWithoutRequeueLoop(t *testing.T) {
+	registry := newLiveRegistry(t)
+	project, _ := registry.Get("live_project")
+	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{})
+	projectWatcher := &projectWatcher{
+		project: project,
+		tasks:   make(chan ingestTask, 1),
+	}
+	projectWatcher.tasks <- ingestTask{relativePath: "busy.go"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if orchestrator.enqueueTask(ctx, projectWatcher, ingestTask{relativePath: "overflow.go"}) {
+		t.Fatal("expected path task enqueue to fail when task queue is full")
+	}
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- orchestrator.enqueueTask(ctx, projectWatcher, ingestTask{rescan: true})
+	}()
+	select {
+	case <-done:
+		t.Fatal("expected rescan enqueue to wait for task queue capacity")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	<-projectWatcher.tasks
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("expected deferred rescan enqueue to succeed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for deferred rescan enqueue")
+	}
+	task := <-projectWatcher.tasks
+	if !task.rescan || task.relativePath != "" {
+		t.Fatalf("expected one deferred rescan task, got %#v", task)
 	}
 }
 

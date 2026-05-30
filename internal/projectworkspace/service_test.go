@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
 func TestWorkspaceService_ReadEditAndQueueIngestion(t *testing.T) {
@@ -147,13 +147,13 @@ func TestWorkspaceService_GitStatusAndDiffAreGoverned(t *testing.T) {
 
 func TestWorkspaceService_GitDiffReturnsCredentialReferenceConfigDiff(t *testing.T) {
 	root := t.TempDir()
-	writeFixture(t, root, "configs/agent-server.example.toml", "[projects.integrations.jira]\n")
+	writeFixture(t, root, "configs/mivia-server.example.toml", "[projects.integrations.jira]\n")
 	runGit(t, root, "init")
 	runGit(t, root, "config", "user.email", "test@example.invalid")
 	runGit(t, root, "config", "user.name", "Test User")
-	runGit(t, root, "add", "configs/agent-server.example.toml")
+	runGit(t, root, "add", "configs/mivia-server.example.toml")
 	runGit(t, root, "commit", "-m", "initial")
-	writeFixture(t, root, "configs/agent-server.example.toml", `[projects.integrations.jira]
+	writeFixture(t, root, "configs/mivia-server.example.toml", `[projects.integrations.jira]
 enabled = true
 site_url = "https://example.atlassian.net"
 email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE_SERVICE"
@@ -162,7 +162,7 @@ project_keys = ["ABC"]
 `)
 
 	svc := NewService(newWorkspaceRegistryWithInclude(t, root, projectregistry.WorkspaceModeReadOnly, []string{"configs/*.toml"}), nil, Options{Enabled: true})
-	diff, err := svc.GitDiff(context.Background(), "example-service", GitDiffOptions{RelativePath: "configs/agent-server.example.toml", MaxDiffBytes: 4096})
+	diff, err := svc.GitDiff(context.Background(), "example-service", GitDiffOptions{RelativePath: "configs/mivia-server.example.toml", MaxDiffBytes: 4096})
 	if err != nil {
 		t.Fatalf("git diff: %v", err)
 	}

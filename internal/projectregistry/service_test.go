@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 )
 
 func TestNewRegistry_ValidProjects_ReturnsRegistry(t *testing.T) {

@@ -12,15 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
-	ladybugschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug/schema"
-	sqliteplatform "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite"
-	sqliteschema "github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/sqlite/schema"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectingestion"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry/httpapi"
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectworkspace"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
+	ladybugschema "github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
+	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
+	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry/httpapi"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
 func TestProjectRoutes_ListAndGetRedactRootPath(t *testing.T) {

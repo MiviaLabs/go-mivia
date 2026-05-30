@@ -1,5 +1,5 @@
 # the name by which the project can be referenced within Serena
-project_name: "mivialabs-agents-monorepo"
+project_name: "go-mivia"
 
 
 # list of languages for which language servers are started; choose from:
@@ -121,7 +121,7 @@ added_modes:
 # initial prompt for the project. It will always be given to the LLM upon activating the project
 # (contrary to the memories, which are loaded on demand).
 initial_prompt: |
-  This is the MiviaLabs agents monorepo for Go-based AI-agent microservices.
+  This is the Mivia go-mivia repository for Go-based local AI-agent services.
   Before non-trivial work, read AGENTS.md when present, then .ai/INDEX.md when present, and follow the repository's task, handoff, security, privacy, and verification rules.
   Treat code, config, tests, migrations, container definitions, logs, and generated runtime artifacts as the source of truth over docs or comments.
   Use Serena semantic tools first for Go symbol discovery and references; use rg for text searches when semantic lookup is not enough.

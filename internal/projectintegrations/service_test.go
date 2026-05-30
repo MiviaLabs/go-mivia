@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 )
 
 func TestService_ListProvidersIncludesConfiguredJiraAndConfluence(t *testing.T) {

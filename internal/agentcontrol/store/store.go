@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/agentcontrol/model"
+	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
 )
 
 var ErrNotFound = errors.New("not found")
