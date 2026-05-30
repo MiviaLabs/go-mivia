@@ -27,6 +27,7 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 	return &DB{db: db}, nil
 }
 
