@@ -79,7 +79,7 @@ func TestSQLiteStore_SyncRunLifecycle(t *testing.T) {
 	}
 }
 
-func TestSQLiteStore_UpdateSyncStateHashesCursor(t *testing.T) {
+func TestSQLiteStore_UpdateSyncStatePersistsApprovedRawCursorAndHash(t *testing.T) {
 	ctx := context.Background()
 	store, db := newTestSQLiteStore(t)
 	if _, err := store.UpsertSource(ctx, testSourceInput()); err != nil {
@@ -101,21 +101,21 @@ func TestSQLiteStore_UpdateSyncStateHashesCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update state: %v", err)
 	}
-	if state.CursorHash == "" || strings.Contains(state.CursorHash, "raw-provider-cursor") {
-		t.Fatalf("expected cursor hash, got %#v", state)
+	if state.Cursor != "raw-provider-cursor" || state.CursorHash == "" || strings.Contains(state.CursorHash, "raw-provider-cursor") {
+		t.Fatalf("expected raw cursor plus hash, got %#v", state)
 	}
 
 	got, err := store.GetSyncState(ctx, "project-1", ProviderJira)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
 	}
-	if got.EmptyPollCount != 1 || got.CurrentIdleSleep != 3*time.Minute || got.CursorHash != state.CursorHash {
+	if got.EmptyPollCount != 1 || got.CurrentIdleSleep != 3*time.Minute || got.Cursor != "raw-provider-cursor" || got.CursorHash != state.CursorHash {
 		t.Fatalf("unexpected state: %#v", got)
 	}
-	assertTableOmits(t, db, "project_integration_sync_state", "raw-provider-cursor")
+	assertTableOmits(t, db, "project_integration_sync_state", "MIVIA_ATLASSIAN", "/home/mac/secret", "api-token")
 }
 
-func TestSQLiteStore_UpsertItemStoresItemHashesWithoutRichContent(t *testing.T) {
+func TestSQLiteStore_UpsertItemStoresApprovedRawIDsAndHashesWithoutRichContent(t *testing.T) {
 	ctx := context.Background()
 	store, db := newTestSQLiteStore(t)
 	if _, err := store.UpsertSource(ctx, testSourceInput()); err != nil {
@@ -136,18 +136,18 @@ func TestSQLiteStore_UpsertItemStoresItemHashesWithoutRichContent(t *testing.T) 
 	if err != nil {
 		t.Fatalf("upsert item: %v", err)
 	}
-	if item.ItemIDHash == "10001" || item.ItemKeyHash == "ACME-123" {
-		t.Fatalf("expected item hashes, got %#v", item)
+	if item.ItemID != "10001" || item.ItemKey != "ACME-123" || item.ItemIDHash == "10001" || item.ItemKeyHash == "ACME-123" {
+		t.Fatalf("expected raw item identifiers plus hashes, got %#v", item)
 	}
 
 	items, err := store.ListItems(ctx, "project-1", ProviderJira)
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}
-	if len(items) != 1 || items[0].ItemIDHash != item.ItemIDHash || items[0].ItemType != "issue" {
+	if len(items) != 1 || items[0].ItemID != "10001" || items[0].ItemKey != "ACME-123" || items[0].ItemIDHash != item.ItemIDHash || items[0].ItemType != "issue" {
 		t.Fatalf("unexpected items: %#v", items)
 	}
-	assertTableOmits(t, db, "project_integration_items", "10001", "ACME-123", "page body", "comment text")
+	assertTableOmits(t, db, "project_integration_items", "page body", "comment text", "MIVIA_ATLASSIAN", "/home/mac/secret", "api-token")
 }
 
 func TestSQLiteStore_RejectsInvalidInputs(t *testing.T) {

@@ -65,7 +65,8 @@ type PollItem struct {
 }
 
 type PollResult struct {
-	Items []PollItem
+	Items  []PollItem
+	Cursor string
 }
 
 type PollRunResult struct {
@@ -180,7 +181,7 @@ func (runner *Runner) RunProviderPoll(ctx context.Context, projectID string, pro
 	if err := runner.store.UpdateSyncRun(ctx, run); err != nil {
 		return PollRunResult{}, err
 	}
-	updatedState, err := runner.store.UpdateSyncState(ctx, syncStateInputForRun(state, run, finishedAt))
+	updatedState, err := runner.store.UpdateSyncState(ctx, syncStateInputForRun(state, run, result.Cursor, finishedAt))
 	if err != nil {
 		return PollRunResult{}, err
 	}
@@ -250,7 +251,7 @@ func (runner *Runner) upsertItems(ctx context.Context, run SyncRun, items []Poll
 	return upserted, nil
 }
 
-func syncStateInputForRun(previous SyncState, run SyncRun, now time.Time) SyncStateInput {
+func syncStateInputForRun(previous SyncState, run SyncRun, cursor string, now time.Time) SyncStateInput {
 	input := SyncStateInput{
 		ProjectID:             run.ProjectID,
 		Provider:              run.Provider,
@@ -262,7 +263,11 @@ func syncStateInputForRun(previous SyncState, run SyncRun, now time.Time) SyncSt
 		LastEmptyPollAt:       previous.LastEmptyPollAt,
 		EmptyPollCount:        previous.EmptyPollCount,
 		CurrentIdleSleep:      0,
+		Cursor:                cursor,
 		UpdatedAt:             now,
+	}
+	if strings.TrimSpace(input.Cursor) == "" {
+		input.Cursor = previous.Cursor
 	}
 	if run.Kind == SyncKindInitialFull {
 		input.LastFullSyncAt = now

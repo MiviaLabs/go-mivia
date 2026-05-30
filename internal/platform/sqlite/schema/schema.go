@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 11
+const Version = 12
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -191,6 +191,7 @@ var statements = []string{
 		last_empty_poll_at TEXT NOT NULL DEFAULT '',
 		empty_poll_count INTEGER NOT NULL DEFAULT 0 CHECK (empty_poll_count >= 0),
 		current_idle_sleep_ms INTEGER NOT NULL DEFAULT 0 CHECK (current_idle_sleep_ms >= 0),
+		cursor TEXT NOT NULL DEFAULT '',
 		cursor_hash TEXT NOT NULL DEFAULT '',
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY(project_id, provider),
@@ -201,6 +202,8 @@ var statements = []string{
 	`CREATE TABLE IF NOT EXISTS project_integration_items (
 		project_id TEXT NOT NULL,
 		provider TEXT NOT NULL,
+		item_id TEXT NOT NULL DEFAULT '',
+		item_key TEXT NOT NULL DEFAULT '',
 		item_id_hash TEXT NOT NULL,
 		item_key_hash TEXT NOT NULL DEFAULT '',
 		item_type TEXT NOT NULL,
@@ -355,6 +358,24 @@ var extractorCacheColumns = []columnDefinition{
 	},
 }
 
+var integrationSyncStateColumns = []columnDefinition{
+	{
+		Name:       "cursor",
+		Definition: "cursor TEXT NOT NULL DEFAULT ''",
+	},
+}
+
+var integrationItemColumns = []columnDefinition{
+	{
+		Name:       "item_id",
+		Definition: "item_id TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "item_key",
+		Definition: "item_key TEXT NOT NULL DEFAULT ''",
+	},
+}
+
 type columnDefinition struct {
 	Name       string
 	Definition string
@@ -370,6 +391,12 @@ func Bootstrap(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
 	}
 	if err := ensureColumns(ctx, db, "project_extractor_cache", extractorCacheColumns); err != nil {
+		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
+	}
+	if err := ensureColumns(ctx, db, "project_integration_sync_state", integrationSyncStateColumns); err != nil {
+		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
+	}
+	if err := ensureColumns(ctx, db, "project_integration_items", integrationItemColumns); err != nil {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, versionStatement, Component, Version); err != nil {

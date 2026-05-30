@@ -112,6 +112,7 @@ type SyncState struct {
 	LastEmptyPollAt       time.Time
 	EmptyPollCount        int
 	CurrentIdleSleep      time.Duration
+	Cursor                string
 	CursorHash            string
 	UpdatedAt             time.Time
 }
@@ -132,6 +133,8 @@ type ItemMetadataInput struct {
 type ItemMetadata struct {
 	ProjectID     string
 	Provider      Provider
+	ItemID        string
+	ItemKey       string
 	ItemIDHash    string
 	ItemKeyHash   string
 	ItemType      string

@@ -235,9 +235,10 @@ func (store *SQLiteStore) UpdateSyncState(ctx context.Context, input SyncStateIn
 		last_empty_poll_at,
 		empty_poll_count,
 		current_idle_sleep_ms,
+		cursor,
 		cursor_hash,
 		updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(project_id, provider) DO UPDATE SET
 		last_run_id = excluded.last_run_id,
 		last_successful_run_id = excluded.last_successful_run_id,
@@ -247,6 +248,7 @@ func (store *SQLiteStore) UpdateSyncState(ctx context.Context, input SyncStateIn
 		last_empty_poll_at = excluded.last_empty_poll_at,
 		empty_poll_count = excluded.empty_poll_count,
 		current_idle_sleep_ms = excluded.current_idle_sleep_ms,
+		cursor = excluded.cursor,
 		cursor_hash = excluded.cursor_hash,
 		updated_at = excluded.updated_at`,
 		state.ProjectID,
@@ -259,6 +261,7 @@ func (store *SQLiteStore) UpdateSyncState(ctx context.Context, input SyncStateIn
 		formatTime(state.LastEmptyPollAt),
 		state.EmptyPollCount,
 		durationMillis(state.CurrentIdleSleep),
+		state.Cursor,
 		state.CursorHash,
 		formatTime(state.UpdatedAt),
 	)
@@ -280,6 +283,7 @@ func (store *SQLiteStore) GetSyncState(ctx context.Context, projectID string, pr
 		last_empty_poll_at,
 		empty_poll_count,
 		current_idle_sleep_ms,
+		cursor,
 		cursor_hash,
 		updated_at
 	FROM project_integration_sync_state
@@ -299,6 +303,8 @@ func (store *SQLiteStore) UpsertItem(ctx context.Context, input ItemMetadataInpu
 	_, err = store.db.ExecContext(ctx, `INSERT INTO project_integration_items (
 		project_id,
 		provider,
+		item_id,
+		item_key,
 		item_id_hash,
 		item_key_hash,
 		item_type,
@@ -307,8 +313,10 @@ func (store *SQLiteStore) UpsertItem(ctx context.Context, input ItemMetadataInpu
 		first_seen_at,
 		last_seen_at,
 		last_run_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(project_id, provider, item_id_hash) DO UPDATE SET
+		item_id = excluded.item_id,
+		item_key = excluded.item_key,
 		item_key_hash = excluded.item_key_hash,
 		item_type = excluded.item_type,
 		item_status = excluded.item_status,
@@ -317,6 +325,8 @@ func (store *SQLiteStore) UpsertItem(ctx context.Context, input ItemMetadataInpu
 		last_run_id = excluded.last_run_id`,
 		item.ProjectID,
 		string(item.Provider),
+		item.ItemID,
+		item.ItemKey,
 		item.ItemIDHash,
 		item.ItemKeyHash,
 		item.ItemType,
@@ -336,6 +346,8 @@ func (store *SQLiteStore) ListItems(ctx context.Context, projectID string, provi
 	rows, err := store.db.QueryContext(ctx, `SELECT
 		project_id,
 		provider,
+		item_id,
+		item_key,
 		item_id_hash,
 		item_key_hash,
 		item_type,
@@ -435,6 +447,7 @@ func stateFromInput(input SyncStateInput) (SyncState, error) {
 		LastEmptyPollAt:       input.LastEmptyPollAt.UTC(),
 		EmptyPollCount:        input.EmptyPollCount,
 		CurrentIdleSleep:      input.CurrentIdleSleep,
+		Cursor:                strings.TrimSpace(input.Cursor),
 		CursorHash:            optionalHash("cursor", input.Cursor),
 		UpdatedAt:             input.UpdatedAt.UTC(),
 	}, nil
@@ -447,6 +460,8 @@ func itemFromInput(input ItemMetadataInput) (ItemMetadata, error) {
 	return ItemMetadata{
 		ProjectID:     strings.TrimSpace(input.ProjectID),
 		Provider:      input.Provider,
+		ItemID:        strings.TrimSpace(input.ItemID),
+		ItemKey:       strings.TrimSpace(input.ItemKey),
 		ItemIDHash:    optionalHash("item_id", input.ItemID),
 		ItemKeyHash:   optionalHash("item_key", input.ItemKey),
 		ItemType:      strings.TrimSpace(input.ItemType),
@@ -556,6 +571,7 @@ func scanState(rows scanner) (SyncState, error) {
 	var lastIncrementalSyncAt string
 	var lastEmptyPollAt string
 	var currentIdleSleepMS int64
+	var cursor string
 	var updatedAt string
 	err := rows.Scan(
 		&state.ProjectID,
@@ -568,6 +584,7 @@ func scanState(rows scanner) (SyncState, error) {
 		&lastEmptyPollAt,
 		&state.EmptyPollCount,
 		&currentIdleSleepMS,
+		&cursor,
 		&state.CursorHash,
 		&updatedAt,
 	)
@@ -575,6 +592,7 @@ func scanState(rows scanner) (SyncState, error) {
 		return SyncState{}, err
 	}
 	state.Provider = Provider(provider)
+	state.Cursor = cursor
 	state.CurrentIdleSleep = time.Duration(currentIdleSleepMS) * time.Millisecond
 	var parseErr error
 	if state.LastSuccessAt, parseErr = parseOptionalTime(lastSuccessAt); parseErr != nil {
@@ -604,6 +622,8 @@ func scanItem(rows scanner) (ItemMetadata, error) {
 	err := rows.Scan(
 		&item.ProjectID,
 		&provider,
+		&item.ItemID,
+		&item.ItemKey,
 		&item.ItemIDHash,
 		&item.ItemKeyHash,
 		&item.ItemType,

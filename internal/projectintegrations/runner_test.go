@@ -17,7 +17,7 @@ const (
 	testAPIValue   = "FORBIDDEN_API_MARKER"
 )
 
-func TestRunner_RunProviderPollCompletesAndStoresMetadataOnly(t *testing.T) {
+func TestRunner_RunProviderPollCompletesAndStoresApprovedProviderIdentifiers(t *testing.T) {
 	ctx := context.Background()
 	recorder, db := newRecordingSQLiteStore(t)
 	clock := newStepClock(testTime())
@@ -54,8 +54,27 @@ func TestRunner_RunProviderPollCompletesAndStoresMetadataOnly(t *testing.T) {
 		t.Fatalf("credentials were not resolved at call time")
 	}
 	assertTableOmits(t, db, "project_integration_sources", "https://example.atlassian.net", "ACME", "ENG")
-	assertTableOmits(t, db, "project_integration_items", "10001", "10002", "ACME-1", "ACME-2", "FORBIDDEN_REMOTE_BODY_MARKER", "page body", "comment text")
+	assertTableOmits(t, db, "project_integration_items", "FORBIDDEN_REMOTE_BODY_MARKER", "page body", "comment text", testEmailValue, testAPIValue)
 	assertNoSensitiveText(t, fmt.Sprintf("%#v", result), testEmailValue, testAPIValue, "10001", "ACME-1", "FORBIDDEN_REMOTE_BODY_MARKER")
+}
+
+func TestRunner_RunProviderPollPersistsApprovedCursor(t *testing.T) {
+	ctx := context.Background()
+	recorder, _ := newRecordingSQLiteStore(t)
+	runner := newTestRunner(t, recorder, runnerTestProject(), RunnerOptions{
+		JiraClient: &fakeJiraPoller{result: PollResult{Cursor: "next-page-token-123"}},
+		Now:        newStepClock(testTime()).Now,
+		NewRunID:   fixedRunID("run-cursor"),
+	})
+
+	result, err := runner.RunProviderPoll(ctx, "project-1", ProviderJira, SyncKindIncremental)
+	if err != nil {
+		t.Fatalf("run poll: %v", err)
+	}
+	if result.State.Cursor != "next-page-token-123" || !strings.HasPrefix(result.State.CursorHash, "sha256:") {
+		t.Fatalf("expected raw cursor plus hash in local state, got %#v", result.State)
+	}
+	assertNoSensitiveText(t, fmt.Sprintf("%#v", result.Run), "next-page-token-123", testEmailValue, testAPIValue)
 }
 
 func TestRunner_RunProviderPollNoOpIncrementalPersistsIdleSleep(t *testing.T) {
