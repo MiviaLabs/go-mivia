@@ -144,3 +144,8 @@ type ItemMetadata struct {
 	LastSeenAt    time.Time
 	LastRunID     string
 }
+
+type RichContentPayload struct {
+	Item   RichContentItem
+	Chunks []RichContentChunk
+}

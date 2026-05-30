@@ -21,6 +21,10 @@ type RunnerStore interface {
 	UpsertItem(context.Context, ItemMetadataInput) (ItemMetadata, error)
 }
 
+type RichContentStore interface {
+	PutRichContentItem(context.Context, RichContentItem, []RichContentChunk) (RichContentGraphResult, error)
+}
+
 type JiraPoller interface {
 	PollJira(context.Context, Credentials, JiraQueryPlan) (PollResult, error)
 }
@@ -37,6 +41,7 @@ type Planner struct {
 type RunnerOptions struct {
 	Projects           []config.Project
 	Store              RunnerStore
+	RichContentStore   RichContentStore
 	CredentialResolver CredentialResolver
 	JiraClient         JiraPoller
 	ConfluenceClient   ConfluencePoller
@@ -48,6 +53,7 @@ type RunnerOptions struct {
 type Runner struct {
 	projects           map[string]config.Project
 	store              RunnerStore
+	richContentStore   RichContentStore
 	credentialResolver CredentialResolver
 	jiraClient         JiraPoller
 	confluenceClient   ConfluencePoller
@@ -65,8 +71,9 @@ type PollItem struct {
 }
 
 type PollResult struct {
-	Items  []PollItem
-	Cursor string
+	Items       []PollItem
+	RichContent []RichContentPayload
+	Cursor      string
 }
 
 type PollRunResult struct {
@@ -104,6 +111,7 @@ func NewRunner(options RunnerOptions) (*Runner, error) {
 	return &Runner{
 		projects:           projects,
 		store:              options.Store,
+		richContentStore:   options.RichContentStore,
 		credentialResolver: options.CredentialResolver,
 		jiraClient:         options.JiraClient,
 		confluenceClient:   options.ConfluenceClient,
@@ -170,6 +178,13 @@ func (runner *Runner) RunProviderPoll(ctx context.Context, projectID string, pro
 		return PollRunResult{Run: run}, redactedPollError(provider, run.ErrorCategory)
 	}
 	run.ItemsUpserted = upserted
+	if err := runner.putRichContent(ctx, result.RichContent); err != nil {
+		run.Status = SyncRunStatusFailed
+		run.ErrorCategory = string(ErrorCategoryRequestFailed)
+		run.FinishedAt = finishedAt
+		_ = runner.store.UpdateSyncRun(ctx, run)
+		return PollRunResult{Run: run}, redactedPollError(provider, run.ErrorCategory)
+	}
 	run.EmptyPoll = len(result.Items) == 0
 	run.IdleSleep = idleSleepForRun(plannedKind, run.EmptyPoll, state.CurrentIdleSleep, pollingFor(project, provider))
 	if run.EmptyPoll {
@@ -186,6 +201,18 @@ func (runner *Runner) RunProviderPoll(ctx context.Context, projectID string, pro
 		return PollRunResult{}, err
 	}
 	return PollRunResult{Run: run, State: updatedState}, nil
+}
+
+func (runner *Runner) putRichContent(ctx context.Context, payloads []RichContentPayload) error {
+	if runner.richContentStore == nil || len(payloads) == 0 {
+		return nil
+	}
+	for _, payload := range payloads {
+		if _, err := runner.richContentStore.PutRichContentItem(ctx, payload.Item, payload.Chunks); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (runner *Runner) pollProvider(ctx context.Context, project config.Project, provider Provider, kind SyncKind, state SyncState) (PollResult, error) {

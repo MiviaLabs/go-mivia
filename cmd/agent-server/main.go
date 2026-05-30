@@ -103,6 +103,7 @@ func run() error {
 	projectIntegrationRunner, err := projectintegrations.NewRunner(projectintegrations.RunnerOptions{
 		Projects:           cfg.Projects,
 		Store:              projectIntegrationStore,
+		RichContentStore:   projectintegrations.NewRichContentGraphStore(projectGraph),
 		CredentialResolver: projectintegrations.NewCredentialResolver(),
 		JiraClient:         newJiraPollerByProject(cfg.Projects),
 		ConfluenceClient:   newConfluencePollerByProject(cfg.Projects),

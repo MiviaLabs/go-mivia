@@ -77,6 +77,73 @@ func TestRunner_RunProviderPollPersistsApprovedCursor(t *testing.T) {
 	assertNoSensitiveText(t, fmt.Sprintf("%#v", result.Run), "next-page-token-123", testEmailValue, testAPIValue)
 }
 
+func TestRunner_RunProviderPollWritesRichContentToGraphStore(t *testing.T) {
+	ctx := context.Background()
+	recorder, _ := newRecordingSQLiteStore(t)
+	richStore := &fakeRichContentStore{}
+	runner := newTestRunner(t, recorder, runnerTestProject(), RunnerOptions{
+		RichContentStore: richStore,
+		JiraClient: &fakeJiraPoller{result: PollResult{
+			Items: []PollItem{{ID: "10001", Key: "ACME-1", Type: "Task", Status: "Open", UpdatedAt: testTime()}},
+			RichContent: []RichContentPayload{{
+				Item: RichContentItem{
+					ProjectID: "project-1",
+					Provider:  ProviderJira,
+					ItemID:    "10001",
+					ItemKey:   "ACME-1",
+					ItemType:  "Task",
+					Fields:    []RichContentField{{Name: "summary", Text: "Safe summary"}},
+				},
+				Chunks: []RichContentChunk{{FieldName: "summary", Text: "Safe summary"}},
+			}},
+		}},
+		Now:      newStepClock(testTime()).Now,
+		NewRunID: fixedRunID("run-rich-content"),
+	})
+
+	result, err := runner.RunProviderPoll(ctx, "project-1", ProviderJira, SyncKindInitialFull)
+	if err != nil {
+		t.Fatalf("run poll: %v", err)
+	}
+	if result.Run.Status != SyncRunStatusCompleted || len(richStore.items) != 1 {
+		t.Fatalf("expected completed run with rich content write, run=%#v writes=%#v", result.Run, richStore.items)
+	}
+	if richStore.items[0].ItemID != "10001" || richStore.chunks[0][0].Text != "Safe summary" {
+		t.Fatalf("unexpected rich content write: items=%#v chunks=%#v", richStore.items, richStore.chunks)
+	}
+	assertNoSensitiveText(t, fmt.Sprintf("%#v", result), "Safe summary", testEmailValue, testAPIValue)
+}
+
+func TestRunner_RunProviderPollRichContentGraphErrorsAreRedactedAndDoNotAdvanceState(t *testing.T) {
+	ctx := context.Background()
+	recorder, _ := newRecordingSQLiteStore(t)
+	runner := newTestRunner(t, recorder, runnerTestProject(), RunnerOptions{
+		RichContentStore: &fakeRichContentStore{err: fmt.Errorf("graph failed FORBIDDEN_REMOTE_BODY_MARKER ACME-1 %s", testAPIValue)},
+		JiraClient: &fakeJiraPoller{result: PollResult{
+			Items: []PollItem{{ID: "10001", Key: "ACME-1", Type: "Task", Status: "Open", UpdatedAt: testTime()}},
+			RichContent: []RichContentPayload{{
+				Item:   RichContentItem{ProjectID: "project-1", Provider: ProviderJira, ItemID: "10001"},
+				Chunks: []RichContentChunk{{FieldName: "summary", Text: "FORBIDDEN_REMOTE_BODY_MARKER"}},
+			}},
+		}},
+		Now:      newStepClock(testTime()).Now,
+		NewRunID: fixedRunID("run-rich-content-failed"),
+	})
+
+	result, err := runner.RunProviderPoll(ctx, "project-1", ProviderJira, SyncKindInitialFull)
+	if err == nil {
+		t.Fatal("expected rich content graph write error")
+	}
+	if result.Run.Status != SyncRunStatusFailed || result.Run.ErrorCategory != string(ErrorCategoryRequestFailed) {
+		t.Fatalf("unexpected failed run: %#v", result.Run)
+	}
+	if _, stateErr := recorder.GetSyncState(ctx, "project-1", ProviderJira); !errors.Is(stateErr, ErrNotFound) {
+		t.Fatalf("sync state should not advance after graph failure, got %v", stateErr)
+	}
+	assertNoSensitiveText(t, err.Error(), "FORBIDDEN_REMOTE_BODY_MARKER", "ACME-1", testAPIValue)
+	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusFailed)
+}
+
 func TestRunner_RunProviderPollNoOpIncrementalPersistsIdleSleep(t *testing.T) {
 	ctx := context.Background()
 	recorder, _ := newRecordingSQLiteStore(t)
@@ -267,6 +334,21 @@ func (poller *fakeConfluencePoller) PollConfluence(_ context.Context, credential
 	return poller.result, nil
 }
 
+type fakeRichContentStore struct {
+	items  []RichContentItem
+	chunks [][]RichContentChunk
+	err    error
+}
+
+func (store *fakeRichContentStore) PutRichContentItem(_ context.Context, item RichContentItem, chunks []RichContentChunk) (RichContentGraphResult, error) {
+	if store.err != nil {
+		return RichContentGraphResult{}, store.err
+	}
+	store.items = append(store.items, item)
+	store.chunks = append(store.chunks, append([]RichContentChunk(nil), chunks...))
+	return RichContentGraphResult{ArtifactID: "artifact-" + item.ItemID, ChunksWritten: len(chunks), ContentSHA256: "sha256:test"}, nil
+}
+
 type stepClock struct {
 	next time.Time
 }
@@ -303,6 +385,7 @@ func newTestRunner(t *testing.T, store RunnerStore, project config.Project, over
 	options := RunnerOptions{
 		Projects:           []config.Project{project},
 		Store:              store,
+		RichContentStore:   overrides.RichContentStore,
 		CredentialResolver: resolver,
 		JiraClient:         overrides.JiraClient,
 		ConfluenceClient:   overrides.ConfluenceClient,
