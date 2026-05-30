@@ -44,6 +44,50 @@ func TestToolsCall_CreateAndGetTask(t *testing.T) {
 	}
 }
 
+func TestToolsCall_AllowsMCPMeta(t *testing.T) {
+	handler := newHandler()
+	res := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tasks.create","arguments":{"title":"MCP task"},"_meta":{"progressToken":"token-1"}}}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", res.Code, res.Body.String())
+	}
+	if bytes.Contains(res.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected tool call success, got %s", res.Body.String())
+	}
+}
+
+func TestToolsCall_AllowsMetaInsideArguments(t *testing.T) {
+	handler := newHandler()
+	res := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tasks.create","arguments":{"title":"MCP task","_meta":{"source":"codex"}}}}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", res.Code, res.Body.String())
+	}
+	if bytes.Contains(res.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected tool call success, got %s", res.Body.String())
+	}
+}
+
+func TestToolsCall_AllowsJSONStringArguments(t *testing.T) {
+	handler := newHandler()
+	res := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tasks.create","arguments":"{\"title\":\"MCP task\"}"}}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", res.Code, res.Body.String())
+	}
+	if bytes.Contains(res.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected tool call success, got %s", res.Body.String())
+	}
+}
+
+func TestToolsCall_AllowsUnderscoreToolAlias(t *testing.T) {
+	handler := newHandler()
+	res := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tasks_create","arguments":{"title":"MCP task"}}}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", res.Code, res.Body.String())
+	}
+	if bytes.Contains(res.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected tool call success, got %s", res.Body.String())
+	}
+}
+
 func TestToolsCall_RejectsRawQueryArgument(t *testing.T) {
 	res := postMCP(t, newHandler(), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tasks.create","arguments":{"title":"Task","query":"MATCH (n)"}}}`)
 	if !bytes.Contains(res.Body.Bytes(), []byte(`"code":-32602`)) {

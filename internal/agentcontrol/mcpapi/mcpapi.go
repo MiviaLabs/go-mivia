@@ -130,6 +130,7 @@ func (handler *Handler) dispatch(w http.ResponseWriter, r *http.Request, req jso
 type toolsCallParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+	Meta      json.RawMessage `json:"_meta,omitempty"`
 }
 
 func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[string]any, error) {
@@ -138,32 +139,44 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		return nil, fmt.Errorf("%w: invalid tool params", service.ErrInvalidInput)
 	}
 	switch params.Name {
-	case "tasks.create":
-		var input model.CreateTaskInput
+	case "tasks.create", "tasks_create":
+		var input struct {
+			Title string          `json:"title"`
+			Meta  json.RawMessage `json:"_meta,omitempty"`
+		}
 		if err := decodeRaw(params.Arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid task arguments", service.ErrInvalidInput)
 		}
-		task, err := handler.service.CreateTask(r.Context(), input)
+		task, err := handler.service.CreateTask(r.Context(), model.CreateTaskInput{Title: input.Title})
 		return toolResult(task), err
-	case "tasks.get":
+	case "tasks.get", "tasks_get":
 		var input struct {
-			ID string `json:"id"`
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(params.Arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid task arguments", service.ErrInvalidInput)
 		}
 		task, err := handler.service.GetTask(r.Context(), input.ID)
 		return toolResult(task), err
-	case "research_runs.create":
-		var input model.CreateResearchRunInput
+	case "research_runs.create", "research_runs_create":
+		var input struct {
+			TaskID      string          `json:"task_id"`
+			GoalSummary string          `json:"goal_summary"`
+			Meta        json.RawMessage `json:"_meta,omitempty"`
+		}
 		if err := decodeRaw(params.Arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid research arguments", service.ErrInvalidInput)
 		}
-		run, err := handler.service.CreateResearchRun(r.Context(), input)
+		run, err := handler.service.CreateResearchRun(r.Context(), model.CreateResearchRunInput{
+			TaskID:      input.TaskID,
+			GoalSummary: input.GoalSummary,
+		})
 		return toolResult(run), err
-	case "research_runs.get":
+	case "research_runs.get", "research_runs_get":
 		var input struct {
-			ID string `json:"id"`
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(params.Arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid research arguments", service.ErrInvalidInput)
@@ -179,7 +192,8 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 }
 
 type resourceReadParams struct {
-	URI string `json:"uri"`
+	URI  string          `json:"uri"`
+	Meta json.RawMessage `json:"_meta,omitempty"`
 }
 
 func (handler *Handler) readResource(r *http.Request, raw json.RawMessage) (map[string]any, error) {
@@ -330,6 +344,10 @@ func resourceResult(uri string, value any) (map[string]any, error) {
 }
 
 func decodeRaw(raw json.RawMessage, dst any) error {
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err == nil {
+		raw = json.RawMessage(encoded)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {

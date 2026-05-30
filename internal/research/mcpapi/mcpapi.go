@@ -51,16 +51,30 @@ func ResourceTemplates() []map[string]any {
 
 func CallTool(ctx context.Context, svc *research.Service, name string, arguments json.RawMessage) (map[string]any, error) {
 	switch name {
-	case "research_sources.create":
-		var input research.CreateSourceInput
+	case "research_sources.create", "research_sources_create":
+		var input struct {
+			ResearchRunID  string            `json:"research_run_id"`
+			ArtifactRef    string            `json:"artifact_ref"`
+			SourceType     string            `json:"source_type"`
+			Summary        string            `json:"summary"`
+			PolicyMetadata map[string]string `json:"policy_metadata,omitempty"`
+			Meta           json.RawMessage   `json:"_meta,omitempty"`
+		}
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid source arguments", research.ErrInvalidInput)
 		}
-		source, err := svc.CreateSource(ctx, input)
+		source, err := svc.CreateSource(ctx, research.CreateSourceInput{
+			ResearchRunID:  input.ResearchRunID,
+			ArtifactRef:    input.ArtifactRef,
+			SourceType:     input.SourceType,
+			Summary:        input.Summary,
+			PolicyMetadata: input.PolicyMetadata,
+		})
 		return toolResult(source), err
-	case "research_sources.get":
+	case "research_sources.get", "research_sources_get":
 		var input struct {
-			ID string `json:"id"`
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid source arguments", research.ErrInvalidInput)
@@ -121,6 +135,10 @@ func resourceResult(uri string, value any) (map[string]any, error) {
 }
 
 func decodeRaw(raw json.RawMessage, dst any) error {
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err == nil {
+		raw = json.RawMessage(encoded)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
