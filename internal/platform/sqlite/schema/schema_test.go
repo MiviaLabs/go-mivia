@@ -70,6 +70,29 @@ func TestBootstrap_IngestionTablesExist(t *testing.T) {
 	}
 }
 
+func TestBootstrap_SearchIndexTablesExist(t *testing.T) {
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := schema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+
+	for _, table := range []string{
+		"project_search_index_state",
+		"project_search_chunks_fts",
+		"project_search_files_fts",
+		"project_search_symbols_fts",
+		"project_search_references_fts",
+		"project_search_calls_fts",
+	} {
+		assertTable(t, db.SQLDB(), table)
+	}
+}
+
 func TestBootstrap_ConfiguredProjectIngestionColumnsExist(t *testing.T) {
 	db, err := sqliteplatform.Open(":memory:")
 	if err != nil {

@@ -78,6 +78,8 @@ type ReferenceSearchOptions struct {
 type SearchIndexMetadata struct {
 	IndexStatus    string `json:"index_status"`
 	IngestionRunID string `json:"ingestion_run_id,omitempty"`
+	Degraded       bool   `json:"degraded,omitempty"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
 }
 
 type FileOutlineOptions struct {

@@ -22,6 +22,7 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 	mux.Handle("POST /api/v1/projects/{id}/digest-runs", createDigestRunHandler(digest))
 	if ingestion != nil {
 		mux.Handle("POST /api/v1/projects/{id}/ingestion-runs", createIngestionRunHandler(ingestion))
+		mux.Handle("POST /api/v1/projects/{id}/search-index/rebuild", rebuildSearchIndexHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/latest", getLatestIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/{run_id}", getIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files", listFilesHandler(ingestion))
@@ -73,6 +74,13 @@ func createIngestionRunHandler(ingestion projectingestion.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		run, err := ingestion.SubmitIngestProject(r.Context(), strings.TrimSpace(r.PathValue("id")), projectingestion.TriggerManual)
 		writeIngestionResult(w, projectingestion.MetadataForRun(run), err, http.StatusCreated)
+	})
+}
+
+func rebuildSearchIndexHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		run, err := ingestion.SubmitRebuildSearchIndex(r.Context(), strings.TrimSpace(r.PathValue("id")))
+		writeIngestionResult(w, projectingestion.MetadataForRun(run), err, http.StatusAccepted)
 	})
 }
 

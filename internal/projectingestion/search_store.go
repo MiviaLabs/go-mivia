@@ -16,6 +16,9 @@ import (
 type searchMutationStore interface {
 	UpsertSearchFile(context.Context, projectregistry.Project, FileState, []Chunk, []Symbol, []Reference, []Call) error
 	DeleteSearchFile(context.Context, string, string) error
+	DeleteSearchProject(context.Context, string) error
+	MarkSearchIndexDegraded(context.Context, string, string) error
+	ClearSearchIndexDegraded(context.Context, string) error
 }
 
 type searchQueryStore interface {
@@ -24,6 +27,12 @@ type searchQueryStore interface {
 	SearchSymbols(context.Context, projectregistry.Project, SymbolFilter, Pagination) (SymbolList, error)
 	SearchReferences(context.Context, projectregistry.Project, ReferenceSearchOptions) (SymbolReferenceList, error)
 	SearchCalls(context.Context, projectregistry.Project, ReferenceSearchOptions) (SymbolCallEdgeList, error)
+	SearchIndexHealth(context.Context, string) (SearchIndexHealth, error)
+}
+
+type SearchIndexHealth struct {
+	Degraded bool
+	Reason   string
 }
 
 type graphSearchAdapter struct {
@@ -48,6 +57,10 @@ func (adapter graphSearchAdapter) SearchReferences(ctx context.Context, project 
 
 func (adapter graphSearchAdapter) SearchCalls(ctx context.Context, project projectregistry.Project, options ReferenceSearchOptions) (SymbolCallEdgeList, error) {
 	return adapter.graph.SearchCalls(ctx, project, options)
+}
+
+func (adapter graphSearchAdapter) SearchIndexHealth(context.Context, string) (SearchIndexHealth, error) {
+	return SearchIndexHealth{}, nil
 }
 
 func (store *SQLiteStore) UpsertSearchFile(ctx context.Context, project projectregistry.Project, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call) error {
@@ -163,19 +176,93 @@ func (store *SQLiteStore) DeleteSearchFile(ctx context.Context, projectID string
 	return tx.Commit()
 }
 
+func (store *SQLiteStore) DeleteSearchProject(ctx context.Context, projectID string) error {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range searchFTSTables() {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE project_id = ?", projectID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (store *SQLiteStore) MarkSearchIndexDegraded(ctx context.Context, projectID string, reason string) error {
+	reason = safeSearchIndexReason(reason)
+	_, err := store.db.ExecContext(ctx, `INSERT INTO project_search_index_state (
+		project_id, status, degraded_reason, updated_at
+	) VALUES (?, 'degraded', ?, CURRENT_TIMESTAMP)
+	ON CONFLICT(project_id) DO UPDATE SET
+		status = excluded.status,
+		degraded_reason = excluded.degraded_reason,
+		updated_at = excluded.updated_at`, projectID, reason)
+	return err
+}
+
+func (store *SQLiteStore) ClearSearchIndexDegraded(ctx context.Context, projectID string) error {
+	_, err := store.db.ExecContext(ctx, `INSERT INTO project_search_index_state (
+		project_id, status, degraded_reason, updated_at
+	) VALUES (?, 'ready', '', CURRENT_TIMESTAMP)
+	ON CONFLICT(project_id) DO UPDATE SET
+		status = excluded.status,
+		degraded_reason = excluded.degraded_reason,
+		updated_at = excluded.updated_at`, projectID)
+	return err
+}
+
+func (store *SQLiteStore) SearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
+	var status, reason string
+	err := store.db.QueryRowContext(ctx, `SELECT status, degraded_reason
+		FROM project_search_index_state
+		WHERE project_id = ?`, projectID).Scan(&status, &reason)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return SearchIndexHealth{}, sanitizeSearchError(err)
+	}
+	if status == "degraded" {
+		return SearchIndexHealth{Degraded: true, Reason: safeSearchIndexReason(reason)}, nil
+	}
+	var eligibleFiles int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM project_file_ingestion_state
+		WHERE project_id = ?
+			AND status = ?
+			AND present = 1
+			AND relative_path_safe = 1
+			AND content_sha256 != ''`, projectID, string(FileStatusEligible)).Scan(&eligibleFiles); err != nil {
+		return SearchIndexHealth{}, sanitizeSearchError(err)
+	}
+	var indexedFiles int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM project_search_files_fts
+		WHERE project_id = ?`, projectID).Scan(&indexedFiles); err != nil {
+		return SearchIndexHealth{}, sanitizeSearchError(err)
+	}
+	if eligibleFiles != indexedFiles {
+		return SearchIndexHealth{Degraded: true, Reason: "search_index_drift"}, nil
+	}
+	return SearchIndexHealth{}, nil
+}
+
 func deleteSearchFileTx(ctx context.Context, tx *sql.Tx, projectID string, fileID string) error {
-	for _, table := range []string{
-		"project_search_chunks_fts",
-		"project_search_files_fts",
-		"project_search_symbols_fts",
-		"project_search_references_fts",
-		"project_search_calls_fts",
-	} {
+	for _, table := range searchFTSTables() {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE project_id = ? AND file_id = ?", projectID, fileID); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func searchFTSTables() []string {
+	return []string{
+		"project_search_chunks_fts",
+		"project_search_files_fts",
+		"project_search_symbols_fts",
+		"project_search_references_fts",
+		"project_search_calls_fts",
+	}
 }
 
 func (store *SQLiteStore) SearchText(ctx context.Context, project projectregistry.Project, options TextSearchOptions) (TextSearchResultList, error) {
@@ -734,4 +821,19 @@ func sanitizeSearchError(err error) error {
 		return fmt.Errorf("%w: invalid search query", ErrInvalidInput)
 	}
 	return fmt.Errorf("%w: search index unavailable", ErrUnsupportedIngest)
+}
+
+func safeSearchIndexReason(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "search_index_write_failed":
+		return "search_index_write_failed"
+	case "search_index_delete_failed":
+		return "search_index_delete_failed"
+	case "search_index_rebuild_failed":
+		return "search_index_rebuild_failed"
+	case "search_index_drift":
+		return "search_index_drift"
+	default:
+		return "search_index_degraded"
+	}
 }

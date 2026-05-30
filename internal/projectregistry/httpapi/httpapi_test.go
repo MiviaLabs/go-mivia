@@ -384,6 +384,20 @@ func Run() {
 		t.Fatalf("expected empty safe secret search, got %d: %s", secret.Code, secret.Body.String())
 	}
 	assertDoesNotLeak(t, secret.Body.String(), root, "access_token", "placeholder", "content_sha256", "secrets/token.go")
+
+	repair := httptest.NewRecorder()
+	mux.ServeHTTP(repair, httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/search-index/rebuild", nil))
+	if repair.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for search-index rebuild, got %d: %s", repair.Code, repair.Body.String())
+	}
+	assertDoesNotLeak(t, repair.Body.String(), root, "root_path", "content_sha256", "access_token", "placeholder", "project_search")
+	var repairRun projectingestion.RunMetadata
+	if err := json.Unmarshal(repair.Body.Bytes(), &repairRun); err != nil {
+		t.Fatalf("decode repair run: %v", err)
+	}
+	if repairRun.ID == "" || repairRun.Status != string(projectingestion.RunStatusPending) {
+		t.Fatalf("expected queued repair run metadata, got %#v", repairRun)
+	}
 }
 
 func newMux(t *testing.T) (*http.ServeMux, string) {

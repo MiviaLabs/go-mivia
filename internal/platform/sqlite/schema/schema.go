@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 9
+const Version = 10
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -137,6 +137,13 @@ var statements = []string{
 		ON project_extractor_cache(project_id, relative_path_hash)`,
 	`CREATE INDEX IF NOT EXISTS idx_project_extractor_cache_project_extractor
 		ON project_extractor_cache(project_id, extractor_name, extractor_version)`,
+	`CREATE TABLE IF NOT EXISTS project_search_index_state (
+		project_id TEXT PRIMARY KEY,
+		status TEXT NOT NULL,
+		degraded_reason TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL,
+		FOREIGN KEY(project_id) REFERENCES configured_projects(id)
+	)`,
 	`CREATE VIRTUAL TABLE IF NOT EXISTS project_search_chunks_fts USING fts5(
 		project_id UNINDEXED,
 		file_id UNINDEXED,

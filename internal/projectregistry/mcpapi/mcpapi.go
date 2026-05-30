@@ -131,6 +131,19 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		}
 		run, err := ingestion.SubmitIngestProject(ctx, strings.TrimSpace(input.ID), projectingestion.TriggerManual)
 		return toolResult(projectingestion.MetadataForRun(run)), err
+	case "projects.search_index.rebuild", "projects_search_index_rebuild":
+		var input struct {
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		run, err := ingestion.SubmitRebuildSearchIndex(ctx, strings.TrimSpace(input.ID))
+		return toolResult(projectingestion.MetadataForRun(run)), err
 	case "projects.ingestion_status", "projects_ingestion_status":
 		var input struct {
 			ID    string          `json:"id"`
@@ -602,6 +615,14 @@ func ingestionToolDefinitions() []map[string]any {
 			"name":        "projects.ingest",
 			"title":       "Run Content Graph Ingestion",
 			"description": "Run bounded manual content_graph ingestion for an opted-in local project.",
+			"inputSchema": objectSchema(map[string]any{
+				"id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id"}),
+		},
+		{
+			"name":        "projects.search_index.rebuild",
+			"title":       "Rebuild Project Search Index",
+			"description": "Queue repair for the local SQLite FTS search index for an opted-in project by deleting indexed search rows and re-running governed content_graph ingestion. Returns safe queued run metadata only.",
 			"inputSchema": objectSchema(map[string]any{
 				"id": map[string]any{"type": "string", "minLength": 1},
 			}, []string{"id"}),

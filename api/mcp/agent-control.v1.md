@@ -191,6 +191,23 @@ Input schema:
 
 Output: queued manual `content_graph` ingestion run metadata for an opted-in local project. The tool submits work through the scheduler and returns quickly with a `run_id`; poll `projects.ingestion_status` or call `projects.ingestion_status_latest` before relying on indexed data. The response does not include absolute roots, source-content hashes, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, or provider payloads.
 
+### `projects.search_index.rebuild`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: queued repair `content_graph` ingestion run metadata for the opted-in project. The tool submits local SQLite FTS repair through the scheduler, returns quickly with a `run_id`, and callers must poll `projects.ingestion_status` or call `projects.ingestion_status_latest` before relying on search results. The tool does not expose raw database queries, absolute roots, content hashes, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, provider payloads, or raw SQLite/FTS errors.
+
 ### `projects.ingestion_status`
 
 Input schema:

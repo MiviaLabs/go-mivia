@@ -482,6 +482,110 @@ func caseneedle() {}
 	}
 }
 
+func TestSearchIndexMetadataReportsFTSDrift(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), `package main
+
+func DriftNeedle() {}
+
+func CallDrift() {
+	DriftNeedle()
+}
+`)
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if _, err := state.db.ExecContext(ctx, "DELETE FROM project_search_files_fts WHERE project_id = ?", "example-service"); err != nil {
+		t.Fatalf("delete fts file row: %v", err)
+	}
+
+	results, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "DriftNeedle", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search text: %v", err)
+	}
+	if results.Index == nil || !results.Index.Degraded || results.Index.DegradedReason != "search_index_drift" {
+		t.Fatalf("expected degraded drift metadata, got %#v", results.Index)
+	}
+	assertNoSearchLeak(t, root, results.Index, "project_search_files_fts", "content_sha256")
+
+	files, err := svc.SearchFiles(ctx, "example-service", FileSearchOptions{PathContains: "main", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search files: %v", err)
+	}
+	if files.Index == nil || !files.Index.Degraded || files.Index.DegradedReason != "search_index_drift" {
+		t.Fatalf("expected degraded file search metadata, got %#v", files.Index)
+	}
+	symbols, err := svc.SearchSymbols(ctx, "example-service", SymbolFilter{NameContains: "Drift"}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search symbols: %v", err)
+	}
+	if symbols.Index == nil || !symbols.Index.Degraded || symbols.Index.DegradedReason != "search_index_drift" {
+		t.Fatalf("expected degraded symbol search metadata, got %#v", symbols.Index)
+	}
+	refs, err := svc.SearchReferences(ctx, "example-service", ReferenceSearchOptions{TargetNameContains: "DriftNeedle", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search references: %v", err)
+	}
+	if refs.Index == nil || !refs.Index.Degraded || refs.Index.DegradedReason != "search_index_drift" {
+		t.Fatalf("expected degraded reference search metadata, got %#v", refs.Index)
+	}
+	calls, err := svc.SearchCalls(ctx, "example-service", ReferenceSearchOptions{CalleeNameContains: "DriftNeedle", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search calls: %v", err)
+	}
+	if calls.Index == nil || !calls.Index.Degraded || calls.Index.DegradedReason != "search_index_drift" {
+		t.Fatalf("expected degraded call search metadata, got %#v", calls.Index)
+	}
+}
+
+func TestRebuildSearchIndexRepairsDriftAndClearsDegradedState(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc RepairNeedle() {}\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if err := state.DeleteSearchProject(ctx, "example-service"); err != nil {
+		t.Fatalf("delete search project: %v", err)
+	}
+	if err := state.MarkSearchIndexDegraded(ctx, "example-service", "search_index_write_failed"); err != nil {
+		t.Fatalf("mark degraded: %v", err)
+	}
+
+	before, err := svc.SearchFiles(ctx, "example-service", FileSearchOptions{PathContains: "main", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search files before repair: %v", err)
+	}
+	if len(before.Files) != 0 || before.Index == nil || !before.Index.Degraded {
+		t.Fatalf("expected degraded empty search before repair, got %#v", before)
+	}
+
+	run, err := svc.RebuildSearchIndex(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("rebuild search index: %v", err)
+	}
+	if run.Status != RunStatusCompleted {
+		t.Fatalf("expected completed rebuild ingestion, got %#v", run)
+	}
+
+	after, err := svc.SearchFiles(ctx, "example-service", FileSearchOptions{PathContains: "main", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search files after repair: %v", err)
+	}
+	if len(after.Files) != 1 || after.Files[0].RelativePath != "cmd/main.go" {
+		t.Fatalf("expected repaired FTS file result, got %#v", after)
+	}
+	if after.Index == nil || after.Index.Degraded || after.Index.DegradedReason != "" {
+		t.Fatalf("expected degraded state cleared after repair, got %#v", after.Index)
+	}
+	requireTextMatches(t, ctx, svc, "RepairNeedle", 1)
+}
+
 func TestSymbolSemanticEdgesDeletedWhenFileSkipped(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

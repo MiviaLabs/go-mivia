@@ -386,6 +386,31 @@ func TestCallToolWithIngestion_SearchToolsSupportDottedAndUnderscoreNames(t *tes
 			t.Fatalf("search tool response leaked %q: %s", forbidden, body)
 		}
 	}
+
+	scheduler := projectingestion.NewScheduler(ingestion, projectingestion.SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 1, PerProjectWorkerLimit: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := scheduler.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("start scheduler: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = scheduler.Stop(context.Background())
+	})
+	repairResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, scheduler, "projects.search_index.rebuild", json.RawMessage(`{"id":"example-service"}`))
+	if err != nil {
+		t.Fatalf("call search index rebuild tool: %v", err)
+	}
+	repairRun := repairResult["structuredContent"].(projectingestion.RunMetadata)
+	if repairRun.ID == "" || repairRun.Status != string(projectingestion.RunStatusPending) {
+		t.Fatalf("expected queued repair run metadata, got %#v", repairRun)
+	}
+	repairBody := marshalResult(t, repairResult)
+	for _, forbidden := range []string{"root_path", "content_sha256", "access_token", "provider_payload", "raw_prompt", "project_search"} {
+		if strings.Contains(repairBody, forbidden) {
+			t.Fatalf("repair tool response leaked %q: %s", forbidden, repairBody)
+		}
+	}
 }
 
 func newServices(t *testing.T) (*projectregistry.Registry, *projectregistry.DigestService) {

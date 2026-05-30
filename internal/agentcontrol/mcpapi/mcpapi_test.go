@@ -147,7 +147,7 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	handler, root := newHandlerWithProjectIngestion(t)
 
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search_index.rebuild"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
 		t.Fatalf("expected ingestion tools, got %s", list.Body.String())
 	}
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.text"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.calls"`)) {
@@ -259,6 +259,14 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	searchCalls := postMCP(t, handler, `{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"projects_search_calls","arguments":{"id":"example-service","caller_name_contains":"Run","callee_name_contains":"helper"}}}`)
 	if bytes.Contains(searchCalls.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(searchCalls.Body.Bytes(), []byte(`"callee_name":"helper"`)) {
 		t.Fatalf("expected call search success, got %s", searchCalls.Body.String())
+	}
+
+	repair := postMCP(t, handler, `{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"projects_search_index_rebuild","arguments":{"id":"example-service"}}}`)
+	if bytes.Contains(repair.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(repair.Body.Bytes(), []byte(`"status":"pending"`)) {
+		t.Fatalf("expected search index repair success, got %s", repair.Body.String())
+	}
+	if bytes.Contains(repair.Body.Bytes(), []byte(root)) || bytes.Contains(repair.Body.Bytes(), []byte("content_sha256")) || bytes.Contains(repair.Body.Bytes(), []byte("project_search")) {
+		t.Fatalf("repair response leaked forbidden metadata: %s", repair.Body.String())
 	}
 
 	read := postMCP(t, handler, `{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"mivialabs://projects/example-service/files/`+fileID+`"}}`)

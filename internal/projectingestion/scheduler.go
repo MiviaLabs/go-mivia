@@ -58,6 +58,11 @@ type asyncProjectRunner interface {
 	FailPreparedProjectRun(context.Context, Run, string) (Run, error)
 }
 
+type asyncSearchIndexRebuildRunner interface {
+	asyncProjectRunner
+	ExecutePreparedSearchIndexRebuild(context.Context, Run) (Run, error)
+}
+
 func NewScheduler(runner ingestionRunner, options SchedulerOptions) *Scheduler {
 	if options.QueueDepth <= 0 {
 		options.QueueDepth = 128
@@ -133,6 +138,54 @@ func (scheduler *Scheduler) IngestProject(ctx context.Context, projectID string,
 
 func (scheduler *Scheduler) SubmitIngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
 	return scheduler.SubmitFullScanAsync(ctx, projectID, trigger)
+}
+
+func (scheduler *Scheduler) SubmitRebuildSearchIndex(ctx context.Context, projectID string) (Run, error) {
+	if scheduler == nil {
+		return Run{}, fmt.Errorf("%w: scheduler is required", ErrUnsupportedIngest)
+	}
+	scheduler.mu.Lock()
+	started := scheduler.started
+	scheduler.mu.Unlock()
+	if !started {
+		return Run{}, fmt.Errorf("%w: scheduler is not started", ErrUnsupportedIngest)
+	}
+	runner, ok := scheduler.runner.(asyncSearchIndexRebuildRunner)
+	if !ok {
+		return Run{}, fmt.Errorf("%w: async search index repair runner is required", ErrUnsupportedIngest)
+	}
+	run, err := runner.PrepareProjectRun(ctx, projectID, TriggerManual)
+	if err != nil {
+		return run, err
+	}
+	task := schedulerTask{
+		projectID:   run.ProjectID,
+		trigger:     TriggerManual,
+		taskType:    "search_index_rebuild",
+		preparedRun: run,
+	}
+	select {
+	case scheduler.fullCh <- task:
+		return run, nil
+	case <-ctx.Done():
+		_, _ = runner.FailPreparedProjectRun(context.Background(), run, "enqueue_canceled")
+		return run, ctx.Err()
+	default:
+		failed, failErr := runner.FailPreparedProjectRun(ctx, run, "queue_full")
+		if failErr != nil {
+			return failed, failErr
+		}
+		return failed, fmt.Errorf("%w: ingestion queue is full", ErrUnsupportedIngest)
+	}
+}
+
+func (scheduler *Scheduler) RebuildSearchIndex(ctx context.Context, projectID string) (Run, error) {
+	return scheduler.submit(ctx, scheduler.fullCh, schedulerTask{
+		projectID: projectID,
+		trigger:   TriggerManual,
+		taskType:  "search_index_rebuild",
+		done:      make(chan schedulerResult, 1),
+	})
 }
 
 func (scheduler *Scheduler) IngestPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
@@ -404,7 +457,9 @@ func (scheduler *Scheduler) nextTask(ctx context.Context) (schedulerTask, bool) 
 
 func (scheduler *Scheduler) runTask(ctx context.Context, task schedulerTask) {
 	if !scheduler.acquireProject(ctx, task.projectID) {
-		task.done <- schedulerResult{err: ctx.Err()}
+		if task.done != nil {
+			task.done <- schedulerResult{err: ctx.Err()}
+		}
 		return
 	}
 	defer scheduler.releaseProject(task.projectID)
@@ -412,6 +467,22 @@ func (scheduler *Scheduler) runTask(ctx context.Context, task schedulerTask) {
 	var result schedulerResult
 	if task.taskType == "path" {
 		result.run, result.err = scheduler.runner.IngestPath(ctx, task.projectID, task.relativePath, task.trigger)
+	} else if task.taskType == "search_index_rebuild" {
+		if task.preparedRun.ID != "" {
+			runner, ok := scheduler.runner.(asyncSearchIndexRebuildRunner)
+			if !ok {
+				result.err = fmt.Errorf("%w: async search index repair runner is required", ErrUnsupportedIngest)
+			} else {
+				result.run, result.err = runner.ExecutePreparedSearchIndexRebuild(ctx, task.preparedRun)
+			}
+		} else {
+			runner, ok := scheduler.runner.(API)
+			if !ok {
+				result.err = fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+			} else {
+				result.run, result.err = runner.RebuildSearchIndex(ctx, task.projectID)
+			}
+		}
 	} else if task.preparedRun.ID != "" {
 		runner, ok := scheduler.runner.(asyncProjectRunner)
 		if !ok {

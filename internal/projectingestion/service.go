@@ -49,6 +49,8 @@ type API interface {
 	IngestProject(context.Context, string, Trigger) (Run, error)
 	IngestPath(context.Context, string, string, Trigger) (Run, error)
 	SubmitIngestProject(context.Context, string, Trigger) (Run, error)
+	SubmitRebuildSearchIndex(context.Context, string) (Run, error)
+	RebuildSearchIndex(context.Context, string) (Run, error)
 	RunMetadata(context.Context, string, string) (RunMetadata, error)
 	LatestRunMetadata(context.Context, string) (RunMetadata, error)
 	ListFiles(context.Context, string, FileStateFilter, Pagination) (FileList, error)
@@ -127,6 +129,76 @@ func (svc *Service) IngestProject(ctx context.Context, projectID string, trigger
 
 func (svc *Service) SubmitIngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
 	return Run{}, fmt.Errorf("%w: manual ingestion submission requires scheduler", ErrUnsupportedIngest)
+}
+
+func (svc *Service) SubmitRebuildSearchIndex(ctx context.Context, projectID string) (Run, error) {
+	return Run{}, fmt.Errorf("%w: search index repair submission requires scheduler", ErrUnsupportedIngest)
+}
+
+func (svc *Service) RebuildSearchIndex(ctx context.Context, projectID string) (Run, error) {
+	project, err := svc.projectForIngestion(projectID, TriggerManual)
+	if err != nil {
+		return Run{}, err
+	}
+	run := svc.startRun(project, TriggerManual)
+	run.Status = RunStatusRunning
+	if err := svc.persistRun(ctx, project, run); err != nil {
+		return run, err
+	}
+	return svc.executeSearchIndexRebuild(ctx, project, run)
+}
+
+func (svc *Service) ExecutePreparedSearchIndexRebuild(ctx context.Context, run Run) (Run, error) {
+	if strings.TrimSpace(run.ID) == "" || strings.TrimSpace(run.ProjectID) == "" {
+		return Run{}, ErrInvalidInput
+	}
+	project, err := svc.projectForIngestion(run.ProjectID, TriggerManual)
+	if err != nil {
+		return run, err
+	}
+	run.ProjectID = project.ID
+	run.Trigger = TriggerManual
+	run.Mode = project.DigestMode
+	run.Status = RunStatusRunning
+	if run.StartedAt.IsZero() {
+		run.StartedAt = svc.now().UTC()
+	}
+	if err := svc.persistRun(ctx, project, run); err != nil {
+		return run, err
+	}
+	return svc.executeSearchIndexRebuild(ctx, project, run)
+}
+
+func (svc *Service) executeSearchIndexRebuild(ctx context.Context, project projectregistry.Project, run Run) (Run, error) {
+	search, ok := svc.state.(searchMutationStore)
+	if !ok {
+		run.Status = RunStatusFailed
+		run.ErrorCategory = "search_index_rebuild_failed"
+		run.FinishedAt = svc.now().UTC()
+		_ = svc.persistRun(ctx, project, run)
+		return run, fmt.Errorf("%w: search index repair requires SQLite search store", ErrUnsupportedIngest)
+	}
+	if err := search.DeleteSearchProject(ctx, project.ID); err != nil {
+		_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
+		run.Status = RunStatusFailed
+		run.ErrorCategory = "search_index_delete_failed"
+		run.FinishedAt = svc.now().UTC()
+		_ = svc.persistRun(ctx, project, run)
+		return run, err
+	}
+	run, err := svc.executeProjectRun(ctx, project, run)
+	if err != nil {
+		_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_rebuild_failed")
+		return run, err
+	}
+	if run.Status != RunStatusCompleted {
+		_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_rebuild_failed")
+		return run, nil
+	}
+	if err := search.ClearSearchIndexDegraded(ctx, project.ID); err != nil {
+		return run, err
+	}
+	return run, nil
 }
 
 func (svc *Service) SetFullScanBatchSize(size int) {
@@ -506,6 +578,7 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 		}
 		if search, ok := svc.state.(searchMutationStore); ok {
 			if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
+				_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
 				return run, err
 			}
 		}
@@ -1015,10 +1088,26 @@ func NormalizeReferenceSearchOptions(options ReferenceSearchOptions) (ReferenceS
 
 func (svc *Service) searchIndexMetadata(ctx context.Context, projectID string) SearchIndexMetadata {
 	runs, err := svc.state.ListLatestRuns(ctx, projectID, 1)
+	metadata := SearchIndexMetadata{IndexStatus: "unknown"}
 	if err != nil || len(runs) == 0 {
-		return SearchIndexMetadata{IndexStatus: "unknown"}
+		return svc.withSearchIndexHealth(ctx, projectID, metadata)
 	}
-	return SearchIndexMetadata{IndexStatus: string(runs[0].Status), IngestionRunID: runs[0].ID}
+	metadata = SearchIndexMetadata{IndexStatus: string(runs[0].Status), IngestionRunID: runs[0].ID}
+	return svc.withSearchIndexHealth(ctx, projectID, metadata)
+}
+
+func (svc *Service) withSearchIndexHealth(ctx context.Context, projectID string, metadata SearchIndexMetadata) SearchIndexMetadata {
+	search, ok := svc.state.(searchQueryStore)
+	if !ok {
+		return metadata
+	}
+	health, err := search.SearchIndexHealth(ctx, projectID)
+	if err != nil || !health.Degraded {
+		return metadata
+	}
+	metadata.Degraded = true
+	metadata.DegradedReason = health.Reason
+	return metadata
 }
 
 func (svc *Service) searchBackend() searchQueryStore {
@@ -1299,6 +1388,7 @@ func (svc *Service) saveEligiblePreparedFile(ctx context.Context, project projec
 	}
 	if search, ok := svc.state.(searchMutationStore); ok {
 		if err := search.UpsertSearchFile(ctx, project, result.state, result.chunks, result.symbols, result.references, result.calls); err != nil {
+			_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_write_failed")
 			return err
 		}
 	}
@@ -1363,6 +1453,7 @@ func (svc *Service) saveSkipped(ctx context.Context, project projectregistry.Pro
 	}
 	if search, ok := svc.state.(searchMutationStore); ok {
 		if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
+			_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
 			return err
 		}
 	}
@@ -1400,6 +1491,7 @@ func (svc *Service) tombstoneMissingFiles(ctx context.Context, project projectre
 		}
 		if search, ok := svc.state.(searchMutationStore); ok {
 			if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
+				_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
 				return err
 			}
 		}
