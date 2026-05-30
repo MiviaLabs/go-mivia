@@ -69,7 +69,7 @@ Environment variables remain final overrides over file values:
 | `ingestion.max_chunk_bytes` | No | Global chunk cap for ingestion and query responses; project value can override. |
 | `ingestion.queue_depth` | No | Positive live update queue size. |
 | `ingestion.worker_count` | No | Backward-compatible live submitter worker count. |
-| `ingestion.global_worker_count` | No | Positive global scheduler worker count; default `4`. |
+| `ingestion.global_worker_count` | No | Positive global scheduler worker count; default `10`. |
 | `ingestion.per_project_worker_limit` | No | Positive per-project scheduler limit and full-scan file worker cap, no larger than global worker count; default `2`. |
 | `ingestion.live_path_priority` | No | Must remain `true` while live updates are enabled; default `true`. |
 | `ingestion.full_scan_batch_size` | No | Positive full-scan graph write batch size up to `5000`; default `500`. |
@@ -77,6 +77,8 @@ Environment variables remain final overrides over file values:
 | `ingestion.task_warn_after` | No | Positive duration before slow live ingestion task warning; default `30s`. |
 | `ingestion.initial_scan_on_start` | No | Optional startup rescan for live projects; default `false`. |
 | `ingestion.sensitive_marker_policy` | No | Only `skip_file` is accepted. |
+
+Persisted ingestion runs in `pending` or `running` state are local in-memory queue leftovers after a server restart. Current builds mark them failed with `error_category=server_restarted` during startup; use live startup scans or submit a fresh `projects.ingest` run to repair freshness.
 | `projects.id` | Yes | Stable project slug. |
 | `projects.display_name` | Yes | Human-readable name. |
 | `projects.description` | No | Non-sensitive summary. |

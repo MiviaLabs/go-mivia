@@ -95,6 +95,11 @@ func run() error {
 	projectIngestionService.SetFullScanBatchSize(cfg.Ingestion.FullScanBatchSize)
 	projectIngestionService.SetFullScanWorkerCount(cfg.Ingestion.PerProjectWorkerLimit)
 	projectIngestionService.SetExtractorCacheEnabled(cfg.Ingestion.ExtractorCacheEnabled)
+	if failed, err := projectIngestionService.FailInterruptedRuns(ctx, "server_restarted"); err != nil {
+		return err
+	} else if failed > 0 {
+		logger.Warn("failed interrupted ingestion runs after server restart", slog.Int("run_count", failed))
+	}
 	projectIngestionScheduler := projectingestion.NewScheduler(projectIngestionService, projectingestion.SchedulerOptions{
 		QueueDepth:            cfg.Ingestion.QueueDepth,
 		GlobalWorkerCount:     cfg.Ingestion.GlobalWorkerCount,

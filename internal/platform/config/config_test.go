@@ -53,6 +53,9 @@ func TestLoad_DefaultConfigMissing_UsesEnvOnlyDefaults(t *testing.T) {
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("expected no projects when default config is absent, got %d", len(cfg.Projects))
 	}
+	if cfg.Ingestion.GlobalWorkerCount != 10 || cfg.Ingestion.PerProjectWorkerLimit != 2 {
+		t.Fatalf("expected default scheduler worker settings, got %+v", cfg.Ingestion)
+	}
 }
 
 func TestLoad_ExplicitConfigMissing_ReturnsError(t *testing.T) {

@@ -268,6 +268,39 @@ func (svc *Service) FailPreparedProjectRun(ctx context.Context, run Run, errorCa
 	return run, svc.persistRun(ctx, project, run)
 }
 
+func (svc *Service) FailInterruptedRuns(ctx context.Context, errorCategory string) (int, error) {
+	if svc == nil || svc.registry == nil || svc.state == nil {
+		return 0, fmt.Errorf("%w: ingestion service dependencies are required", ErrUnsupportedIngest)
+	}
+	errorCategory = strings.TrimSpace(errorCategory)
+	if errorCategory == "" {
+		errorCategory = "server_restarted"
+	}
+	failed := 0
+	for _, project := range svc.registry.List() {
+		if !project.Enabled || project.DigestMode != projectregistry.DigestModeContentGraph {
+			continue
+		}
+		runs, err := svc.state.ListLatestRuns(ctx, project.ID, 25)
+		if err != nil {
+			return failed, err
+		}
+		for _, run := range runs {
+			if run.Status != RunStatusPending && run.Status != RunStatusRunning {
+				continue
+			}
+			run.Status = RunStatusFailed
+			run.ErrorCategory = errorCategory
+			run.FinishedAt = svc.now().UTC()
+			if err := svc.persistRun(ctx, project, run); err != nil {
+				return failed, err
+			}
+			failed++
+		}
+	}
+	return failed, nil
+}
+
 func (svc *Service) executeProjectRun(ctx context.Context, project projectregistry.Project, run Run) (Run, error) {
 	progress := newFullScanProgress(run)
 	workerCount := svc.effectiveFullScanWorkerCount()

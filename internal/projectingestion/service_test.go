@@ -1432,6 +1432,47 @@ func TestService_LatestRunMetadataIsSafe(t *testing.T) {
 	}
 }
 
+func TestService_FailInterruptedRunsMarksPendingAndRunningFailed(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	svc, _, _ := newTestService(t, root)
+	project := svc.registry.List()[0]
+	startedAt := time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC)
+	for _, run := range []Run{
+		{ID: "pending", ProjectID: project.ID, Trigger: TriggerManual, Mode: project.DigestMode, Status: RunStatusPending, StartedAt: startedAt},
+		{ID: "running", ProjectID: project.ID, Trigger: TriggerManual, Mode: project.DigestMode, Status: RunStatusRunning, StartedAt: startedAt.Add(time.Minute)},
+		{ID: "completed", ProjectID: project.ID, Trigger: TriggerManual, Mode: project.DigestMode, Status: RunStatusCompleted, StartedAt: startedAt.Add(2 * time.Minute), FinishedAt: startedAt.Add(3 * time.Minute)},
+	} {
+		if err := svc.persistRun(ctx, project, run); err != nil {
+			t.Fatalf("persist run %s: %v", run.ID, err)
+		}
+	}
+
+	failed, err := svc.FailInterruptedRuns(ctx, "")
+	if err != nil {
+		t.Fatalf("fail interrupted runs: %v", err)
+	}
+	if failed != 2 {
+		t.Fatalf("expected two interrupted runs failed, got %d", failed)
+	}
+	for _, id := range []string{"pending", "running"} {
+		run, err := svc.GetRun(ctx, project.ID, id)
+		if err != nil {
+			t.Fatalf("get run %s: %v", id, err)
+		}
+		if run.Status != RunStatusFailed || run.ErrorCategory != "server_restarted" || run.FinishedAt.IsZero() {
+			t.Fatalf("expected interrupted run %s to be failed safely, got %#v", id, run)
+		}
+	}
+	completed, err := svc.GetRun(ctx, project.ID, "completed")
+	if err != nil {
+		t.Fatalf("get completed run: %v", err)
+	}
+	if completed.Status != RunStatusCompleted || completed.ErrorCategory != "" {
+		t.Fatalf("completed run should not change: %#v", completed)
+	}
+}
+
 func TestService_FileOutlineFiltersPaginatesAndOptionallyIncludesChunkText(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

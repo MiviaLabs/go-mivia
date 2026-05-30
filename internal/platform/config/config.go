@@ -24,7 +24,7 @@ const (
 	defaultIngestionMaxChunkBytes     = 16 * 1024
 	defaultIngestionQueueDepth        = 128
 	defaultIngestionWorkerCount       = 2
-	defaultIngestionGlobalWorkerCount = 4
+	defaultIngestionGlobalWorkerCount = 10
 	defaultIngestionPerProjectLimit   = 2
 	defaultIngestionFullScanBatchSize = 500
 	defaultIngestionTaskWarnAfter     = 30 * time.Second

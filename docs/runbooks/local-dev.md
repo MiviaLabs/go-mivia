@@ -195,7 +195,7 @@ extractor_cache_enabled = true
 debounce_interval = "2s"
 queue_depth = 128
 worker_count = 2
-global_worker_count = 4
+global_worker_count = 10
 per_project_worker_limit = 2
 live_path_priority = true
 full_scan_batch_size = 500
@@ -208,6 +208,8 @@ digest_mode = "content_graph"
 update_policy = "live"
 graph_storage = "persistent"
 ```
+
+On server startup, persisted `pending` or `running` ingestion runs from a prior process are marked failed with `error_category=server_restarted`; queued work is in memory and cannot resume after a restart. Use live startup scans or submit a new `projects.ingest` run for freshness.
 
 The watcher uses `github.com/fsnotify/fsnotify` and watches directories, not individual files. It registers each eligible directory because filesystem notifications are not recursive. Overflow or full queues trigger a scheduled project rescan. The scheduler prioritizes live path events over full-scan continuation and enforces global and per-project worker limits. Manual ingestion remains available as fallback, returns queued metadata immediately, and runs through the same scheduler.
 
