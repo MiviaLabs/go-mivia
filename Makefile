@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: check lint test test-integration tidy
+.PHONY: check lint secret-scan test test-integration tidy
 
 check: lint test
 
@@ -12,6 +12,13 @@ test:
 
 tidy:
 	go mod tidy
+
+secret-scan:
+	@if command -v gitleaks >/dev/null 2>&1; then \
+		gitleaks detect --source . --config .gitleaks.toml --redact; \
+	else \
+		echo "gitleaks not installed; skipping local secret scan"; \
+	fi
 
 test-integration:
 	@echo "No integration tests yet. Database runtime is deferred pending ADR approval."

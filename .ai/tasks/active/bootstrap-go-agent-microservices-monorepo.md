@@ -1,6 +1,6 @@
 # Bootstrap Go Agent Microservices Monorepo
 
-Status: Active
+Status: Completed
 Last verified: 2026-05-30
 Classification: Internal; PII-prohibited until policy owner approves
 Owners: Engineering owner TBD; Security/DPO TBD
@@ -463,6 +463,9 @@ Implement Phase 6 only. Add research/deep-research package boundaries, provider 
 
 ## Phase 7 - CI, Security, Observability, Runbooks
 
+Status: Completed
+Verified: 2026-05-30
+
 Files:
 
 - `.github/workflows/ci.yml`
@@ -491,8 +494,31 @@ Implementation details:
 6. Add `docs/security/privacy-baseline.md` with PII prohibition, logging exclusions, retention open questions, and DPO review gates.
 7. Add `docs/adr/0005-observability-baseline.md` for structured logs now, metrics/tracing later.
 
+Verification performed:
+
+- `actionlint .github/workflows/ci.yml`
+- `go mod tidy`
+- `go test ./...`
+- `make check`
+- `make secret-scan` in WSL; skipped because `gitleaks` is not installed there.
+- Windows `gitleaks detect --source . --config .gitleaks.toml --redact --no-git`; no leaks found.
+- Phase 7 code review for CI correctness, secret scanning scope, Ladybug native gating, logging/privacy posture, docs consistency, and no external database runtime.
+
+Residual risk:
+
+- CI has not run remotely in GitHub from this branch.
+- Ladybug native setup is gated behind the `RUN_LADYBUG_NATIVE` repository variable and was not exercised locally in Phase 7.
+- Production/non-localhost exposure still requires authn/authz, origin policy, rate limits, audit logging, monitoring, incident response, and owner approval.
+- PII processing, external providers, embedding provider, vector dimension, retention, deletion, and data residency remain unapproved.
+
 Prompt:
 
 ```text
 Implement Phase 7 only. Add CI, dependabot, secret scanning config, local-dev runbook, incident runbook, privacy baseline, and ADR-0005 for observability. CI must run gofmt check, go vet, go test ./..., and secret scanning. Ladybug native library setup must be either tested in CI or gated behind a clearly named optional integration job with residual risk documented. Keep observability minimal: structured logs with request ID, service, task ID, and no raw prompt/source/PII. Do not add PostgreSQL, pgvector, Neo4j, or database Compose runtime. Run make check, go test ./..., and secret scanning if installed.
+```
+
+Next prompt:
+
+```text
+No bootstrap implementation phase remains. Before production, public API exposure, PII processing, live provider integration, embeddings, vector storage, or native LadybugDB production use, create a new owner-approved ADR/task covering authn/authz, privacy/DPO approval, retention/deletion, auditability, provider terms, observability, rollback, and production operations.
 ```

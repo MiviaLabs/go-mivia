@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Check gofmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t go_files < <(find . -path './.git' -prune -o -name '*.go' -print)
+          if ((${#go_files[@]} == 0)); then
+            exit 0
+          fi
+          unformatted="$(gofmt -l "${go_files[@]}")"
+          if [[ -n "${unformatted}" ]]; then
+            echo "gofmt required for:"
+            echo "${unformatted}"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  ladybug-native-gated:
+    name: Ladybug native gated
+    runs-on: ubuntu-latest
+    if: ${{ vars.RUN_LADYBUG_NATIVE == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache: true
+
+      - name: Install Ladybug native libraries
+        run: ./scripts/ladybug-libs.sh
+
+      - name: Test Ladybug native import gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo_root="${GITHUB_WORKSPACE}"
+          export CGO_LDFLAGS="-L${repo_root}/lib-ladybug -llbug -Wl,-rpath,${repo_root}/lib-ladybug"
+          go test -tags 'ladybug_native system_ladybug' ./internal/platform/ladybug/...
