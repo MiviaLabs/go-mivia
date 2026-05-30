@@ -7,6 +7,21 @@ description: Use with the MiviaLabs localhost MCP server for any indexed project
 
 Portable skill. It can be copied into any repository indexed by a running MiviaLabs `agent-server`.
 
+## Mandatory Use Gate
+
+When a MiviaLabs MCP server is available for the target project, agents must use it for indexed project context before broad shell scans, manual file walking, or chat-only assumptions.
+
+Mandatory MCP-first surfaces:
+
+- Project discovery, enabled state, digest mode, update policy, and graph storage.
+- Ingestion run state, live/manual freshness, skipped reason counts, and rescan status.
+- Indexed file discovery, opaque file IDs, file metadata, outlines, headings, symbols, and bounded chunks.
+- Any task asking what the indexed project graph knows or whether local content graph ingestion is current.
+
+Do not bypass MCP with raw database queries, absolute root inspection, or broad shell scans when an MCP tool can answer the indexed-context question. Use shell only for current git/disk/runtime facts, tests, build output, logs, generated files, and edits not yet ingested.
+
+If MCP is unavailable, stale, or missing the project, state that explicitly, then fall back to Serena plus shell for the minimum evidence needed.
+
 ## Inputs
 
 Know or discover:
