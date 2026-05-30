@@ -93,6 +93,7 @@ func run() error {
 	projectDigestService := projectregistry.NewDigestService(projectRegistry, projectGraph)
 	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(projectGraph), projectingestion.NewSQLiteStore(sqliteDB.SQLDB()))
 	projectIngestionService.SetFullScanBatchSize(cfg.Ingestion.FullScanBatchSize)
+	projectIngestionService.SetFullScanWorkerCount(cfg.Ingestion.PerProjectWorkerLimit)
 	projectIngestionService.SetExtractorCacheEnabled(cfg.Ingestion.ExtractorCacheEnabled)
 	projectIngestionScheduler := projectingestion.NewScheduler(projectIngestionService, projectingestion.SchedulerOptions{
 		QueueDepth:            cfg.Ingestion.QueueDepth,

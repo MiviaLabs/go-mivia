@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -75,6 +76,106 @@ func TestIngestProject_StoresEligibleContentGraphState(t *testing.T) {
 	}
 	if symbolNode.Properties["name"] != "Run" {
 		t.Fatalf("expected Run symbol, got %#v", symbolNode.Properties)
+	}
+}
+
+func TestIngestProject_ProcessesFilesConcurrentlyWithinFullScan(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "one.slow"), "one\n")
+	writeFile(t, filepath.Join(root, "two.slow"), "two\n")
+
+	svc, _, _ := newTestService(t, root)
+	svc.SetFullScanWorkerCount(2)
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	svc.extractors = NewExtractorRegistry(staticExtractor{
+		name:    "blocking-test",
+		version: "1",
+		supports: func(relative string) bool {
+			return strings.HasSuffix(relative, ".slow")
+		},
+		parse: func(ctx context.Context, relative string, _ []byte) (ExtractorResult, error) {
+			started <- relative
+			select {
+			case <-release:
+				return ExtractorResult{}, nil
+			case <-ctx.Done():
+				return ExtractorResult{}, ctx.Err()
+			}
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+		if err == nil && run.FilesIngested != 2 {
+			err = fmt.Errorf("expected two ingested files, got %#v", run)
+		}
+		done <- err
+	}()
+
+	first := receiveStartedFile(t, started)
+	second := receiveStartedFile(t, started)
+	if first == second {
+		t.Fatalf("expected two distinct files to start, got %q and %q", first, second)
+	}
+	close(release)
+	if err := receiveRunResult(t, done); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+}
+
+func TestIngestProject_PersistsRunningProgressDuringFullScan(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	for i := 0; i < fullScanProgressFlushFiles+1; i++ {
+		writeFile(t, filepath.Join(root, fmt.Sprintf("%02d.slow", i)), "content\n")
+	}
+
+	svc, _, _ := newTestService(t, root)
+	svc.SetFullScanWorkerCount(1)
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	started := 0
+	svc.extractors = NewExtractorRegistry(staticExtractor{
+		name:    "progress-test",
+		version: "1",
+		supports: func(relative string) bool {
+			return strings.HasSuffix(relative, ".slow")
+		},
+		parse: func(ctx context.Context, _ string, _ []byte) (ExtractorResult, error) {
+			mu.Lock()
+			started++
+			current := started
+			mu.Unlock()
+			if current == fullScanProgressFlushFiles+1 {
+				close(blocked)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return ExtractorResult{}, ctx.Err()
+				}
+			}
+			return ExtractorResult{}, nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+		done <- err
+	}()
+	waitForSignal(t, blocked)
+
+	metadata := waitForRunProgress(t, ctx, svc, "example-service", "ingest_run_1", fullScanProgressFlushFiles)
+	if metadata.Status != string(RunStatusRunning) || metadata.FilesSeen < fullScanProgressFlushFiles {
+		t.Fatalf("expected persisted running progress, got %#v", metadata)
+	}
+	close(release)
+	if err := receiveRunResult(t, done); err != nil {
+		t.Fatalf("ingest project: %v", err)
 	}
 }
 
@@ -1078,6 +1179,55 @@ func writeBytes(t *testing.T, path string, content []byte) {
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
+}
+
+func receiveStartedFile(t *testing.T, started <-chan string) string {
+	t.Helper()
+	select {
+	case relative := <-started:
+		return relative
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for file processing to start")
+		return ""
+	}
+}
+
+func receiveRunResult(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ingestion run")
+		return nil
+	}
+}
+
+func waitForSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for signal")
+	}
+}
+
+func waitForRunProgress(t *testing.T, ctx context.Context, svc *Service, projectID string, runID string, minFilesSeen int) RunMetadata {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last RunMetadata
+	for time.Now().Before(deadline) {
+		metadata, err := svc.RunMetadata(ctx, projectID, runID)
+		if err != nil {
+			t.Fatalf("run metadata: %v", err)
+		}
+		last = metadata
+		if metadata.FilesSeen >= minFilesSeen {
+			return metadata
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return last
 }
 
 func assertNoPropertyContains(t *testing.T, properties map[string]string, forbidden string) {

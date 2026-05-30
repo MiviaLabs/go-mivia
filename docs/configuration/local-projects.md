@@ -69,8 +69,8 @@ Environment variables remain final overrides over file values:
 | `ingestion.max_chunk_bytes` | No | Global chunk cap for ingestion and query responses; project value can override. |
 | `ingestion.queue_depth` | No | Positive live update queue size. |
 | `ingestion.worker_count` | No | Backward-compatible live submitter worker count. |
-| `ingestion.global_worker_count` | No | Positive global scheduler worker count; default `2`. |
-| `ingestion.per_project_worker_limit` | No | Positive per-project scheduler limit, no larger than global worker count; default `1`. |
+| `ingestion.global_worker_count` | No | Positive global scheduler worker count; default `4`. |
+| `ingestion.per_project_worker_limit` | No | Positive per-project scheduler limit and full-scan file worker cap, no larger than global worker count; default `2`. |
 | `ingestion.live_path_priority` | No | Must remain `true` while live updates are enabled; default `true`. |
 | `ingestion.full_scan_batch_size` | No | Positive full-scan graph write batch size up to `5000`; default `500`. |
 | `ingestion.max_watched_directory_count` | No | Optional watched-directory cap per project; `0` means unlimited. |

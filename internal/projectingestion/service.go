@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -27,6 +28,8 @@ var (
 	ErrPathEscapesRoot     = errors.New("path escapes project root")
 	ErrPathNotProjectLocal = errors.New("path must be project-relative")
 )
+
+const fullScanProgressFlushFiles = 25
 
 type stateStore interface {
 	SaveRun(context.Context, Run) error
@@ -69,6 +72,7 @@ type Service struct {
 	extractors            *ExtractorRegistry
 	extractorCacheEnabled bool
 	fullScanBatchSize     int
+	fullScanWorkerCount   int
 	now                   func() time.Time
 	newID                 func(projectregistry.Project, time.Time) string
 }
@@ -81,6 +85,7 @@ func NewService(registry *projectregistry.Registry, graph *GraphStore, state sta
 		extractors:            NewDefaultExtractorRegistry(),
 		extractorCacheEnabled: true,
 		fullScanBatchSize:     500,
+		fullScanWorkerCount:   1,
 		now:                   func() time.Time { return time.Now().UTC() },
 		newID:                 defaultRunID,
 	}
@@ -121,6 +126,12 @@ func (svc *Service) SubmitIngestProject(ctx context.Context, projectID string, t
 func (svc *Service) SetFullScanBatchSize(size int) {
 	if size > 0 {
 		svc.fullScanBatchSize = size
+	}
+}
+
+func (svc *Service) SetFullScanWorkerCount(count int) {
+	if count > 0 {
+		svc.fullScanWorkerCount = count
 	}
 }
 
@@ -178,9 +189,75 @@ func (svc *Service) FailPreparedProjectRun(ctx context.Context, run Run, errorCa
 }
 
 func (svc *Service) executeProjectRun(ctx context.Context, project projectregistry.Project, run Run) (Run, error) {
-	seen := make(map[string]struct{})
+	progress := newFullScanProgress(run)
+	workerCount := svc.effectiveFullScanWorkerCount()
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan fullScanFileJob, workerCount)
+	results := make(chan fullScanFileResult, workerCount)
+	var workers sync.WaitGroup
+	for range workerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for job := range jobs {
+				result := svc.prepareExistingFile(runCtx, project, job.relative, job.fullPath, job.info, progress.currentRun())
+				select {
+				case results <- result:
+				case <-runCtx.Done():
+					return
+				}
+				if result.err != nil {
+					cancel()
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+
+	var resultErr error
+	var resultMu sync.Mutex
+	resultsDone := make(chan struct{})
+	go func() {
+		defer close(resultsDone)
+		for result := range results {
+			if result.err == nil {
+				if result.state.Status == FileStatusEligible {
+					result.err = svc.saveEligiblePreparedFile(ctx, project, progress.currentRun(), result)
+				} else {
+					result.err = svc.saveSkipped(ctx, project, progress.currentRun(), result.state, false)
+				}
+			}
+			if result.state.RelativePathHash != "" {
+				progress.record(result.state, true, result.chunkCount, result.symbolCount)
+			}
+			if result.err != nil {
+				resultMu.Lock()
+				if resultErr == nil {
+					resultErr = result.err
+				}
+				resultMu.Unlock()
+				cancel()
+				continue
+			}
+			if err := progress.flush(ctx, svc, project, false); err != nil {
+				resultMu.Lock()
+				if resultErr == nil {
+					resultErr = err
+				}
+				resultMu.Unlock()
+				cancel()
+			}
+		}
+	}()
+
 	root := project.CanonicalRootPath
-	err := filepath.WalkDir(root, func(filePath string, entry fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(root, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if filePath == root {
 				return fmt.Errorf("walk failed for project root")
@@ -189,11 +266,12 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 			if !ok {
 				return ErrPathEscapesRoot
 			}
-			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonStatError, 0, time.Time{}, true, run.StartedAt)
-			seen[state.RelativePathHash] = struct{}{}
-			recordRunReason(&run, state.SkippedReason)
-			return svc.saveSkipped(ctx, project, run, state, false)
+			if err := svc.saveSkipped(ctx, project, progress.currentRun(), state, false); err != nil {
+				return err
+			}
+			progress.record(state, false, 0, 0)
+			return progress.flush(ctx, svc, project, false)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -206,11 +284,13 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 			return ErrPathEscapesRoot
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonUnsafePath, 0, time.Time{}, true, run.StartedAt)
-			seen[state.RelativePathHash] = struct{}{}
-			recordRunReason(&run, state.SkippedReason)
-			return svc.saveSkipped(ctx, project, run, state, entry.IsDir())
+			err := svc.saveSkipped(ctx, project, progress.currentRun(), state, entry.IsDir())
+			progress.record(state, false, 0, 0)
+			if flushErr := progress.flush(ctx, svc, project, false); flushErr != nil {
+				return flushErr
+			}
+			return err
 		}
 		if entry.IsDir() {
 			if projectregistry.ProjectExcludesRelativePath(project, relative) {
@@ -223,46 +303,54 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 		}
 		info, err := entry.Info()
 		if err != nil {
-			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonStatError, 0, time.Time{}, true, run.StartedAt)
-			seen[state.RelativePathHash] = struct{}{}
-			recordRunReason(&run, state.SkippedReason)
-			return svc.saveSkipped(ctx, project, run, state, false)
+			if err := svc.saveSkipped(ctx, project, progress.currentRun(), state, false); err != nil {
+				return err
+			}
+			progress.record(state, false, 0, 0)
+			return progress.flush(ctx, svc, project, false)
 		}
 		if !info.Mode().IsRegular() {
-			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonUnsafePath, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
-			seen[state.RelativePathHash] = struct{}{}
-			recordRunReason(&run, state.SkippedReason)
-			return svc.saveSkipped(ctx, project, run, state, false)
+			if err := svc.saveSkipped(ctx, project, progress.currentRun(), state, false); err != nil {
+				return err
+			}
+			progress.record(state, false, 0, 0)
+			return progress.flush(ctx, svc, project, false)
 		}
 		if !projectregistry.ProjectIncludesRelativePath(project, relative) {
-			run.FilesSkipped++
 			state := svc.skippedState(project, relative, SkipReasonDeniedPath, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
-			seen[state.RelativePathHash] = struct{}{}
-			recordRunReason(&run, state.SkippedReason)
-			return svc.saveSkipped(ctx, project, run, state, false)
+			if err := svc.saveSkipped(ctx, project, progress.currentRun(), state, false); err != nil {
+				return err
+			}
+			progress.record(state, false, 0, 0)
+			return progress.flush(ctx, svc, project, false)
 		}
-		state, chunks, symbols, _, err := svc.ingestExistingFile(ctx, project, relative, filePath, info, run)
-		seen[state.RelativePathHash] = struct{}{}
-		run.FilesSeen++
-		if state.Status == FileStatusEligible {
-			run.FilesIngested++
-			run.ChunksStored += len(chunks)
-			run.SymbolsStored += len(symbols)
-		} else {
-			run.FilesSkipped++
+		select {
+		case jobs <- fullScanFileJob{relative: relative, fullPath: filePath, info: info}:
+			return nil
+		case <-runCtx.Done():
+			return runCtx.Err()
 		}
-		recordRunReason(&run, state.SkippedReason)
-		return err
 	})
-	if err != nil {
+	close(jobs)
+	<-resultsDone
+
+	resultMu.Lock()
+	if resultErr != nil && walkErr == nil {
+		walkErr = resultErr
+	}
+	resultMu.Unlock()
+
+	run = progress.currentRun()
+	if walkErr != nil {
 		run.Status = RunStatusFailed
 		run.ErrorCategory = "walk_failed"
 		run.FinishedAt = svc.now().UTC()
 		_ = svc.persistRun(ctx, project, run)
-		return run, err
+		return run, walkErr
 	}
+	seen := progress.seenSnapshot()
 	if err := svc.tombstoneMissingFiles(ctx, project, run, seen); err != nil {
 		run.Status = RunStatusFailed
 		run.ErrorCategory = "tombstone_failed"
@@ -276,6 +364,91 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 		return run, err
 	}
 	return run, nil
+}
+
+func (svc *Service) effectiveFullScanWorkerCount() int {
+	if svc.fullScanWorkerCount > 0 {
+		return svc.fullScanWorkerCount
+	}
+	return 1
+}
+
+type fullScanFileJob struct {
+	relative string
+	fullPath string
+	info     fs.FileInfo
+}
+
+type fullScanFileResult struct {
+	state       FileState
+	chunks      []Chunk
+	symbols     []Symbol
+	references  []Reference
+	calls       []Call
+	headings    []Heading
+	chunkCount  int
+	symbolCount int
+	err         error
+}
+
+type fullScanProgress struct {
+	mu                sync.Mutex
+	run               Run
+	seen              map[string]struct{}
+	changesSinceFlush int
+}
+
+func newFullScanProgress(run Run) *fullScanProgress {
+	return &fullScanProgress{
+		run:  run,
+		seen: make(map[string]struct{}),
+	}
+}
+
+func (progress *fullScanProgress) currentRun() Run {
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	return progress.run
+}
+
+func (progress *fullScanProgress) seenSnapshot() map[string]struct{} {
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	seen := make(map[string]struct{}, len(progress.seen))
+	for hash := range progress.seen {
+		seen[hash] = struct{}{}
+	}
+	return seen
+}
+
+func (progress *fullScanProgress) record(state FileState, countSeen bool, chunkCount int, symbolCount int) {
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	if state.RelativePathHash != "" {
+		progress.seen[state.RelativePathHash] = struct{}{}
+	}
+	if countSeen {
+		progress.run.FilesSeen++
+	}
+	if state.Status == FileStatusEligible {
+		progress.run.FilesIngested++
+		progress.run.ChunksStored += chunkCount
+		progress.run.SymbolsStored += symbolCount
+	} else {
+		progress.run.FilesSkipped++
+	}
+	recordRunReason(&progress.run, state.SkippedReason)
+	progress.changesSinceFlush++
+}
+
+func (progress *fullScanProgress) flush(ctx context.Context, svc *Service, project projectregistry.Project, force bool) error {
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	if !force && progress.changesSinceFlush < fullScanProgressFlushFiles {
+		return nil
+	}
+	progress.changesSinceFlush = 0
+	return svc.persistRun(ctx, project, progress.run)
 }
 
 func (svc *Service) IngestPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
@@ -778,6 +951,20 @@ func normalizeTrigger(trigger Trigger) Trigger {
 }
 
 func (svc *Service) ingestExistingFile(ctx context.Context, project projectregistry.Project, relative string, fullPath string, info fs.FileInfo, run Run) (FileState, []Chunk, []Symbol, []Heading, error) {
+	result := svc.prepareExistingFile(ctx, project, relative, fullPath, info, run)
+	if result.err != nil {
+		return result.state, nil, nil, nil, result.err
+	}
+	if result.state.Status == FileStatusEligible {
+		if err := svc.saveEligiblePreparedFile(ctx, project, run, result); err != nil {
+			return FileState{}, nil, nil, nil, err
+		}
+		return result.state, result.chunks, result.symbols, result.headings, nil
+	}
+	return result.state, nil, nil, nil, svc.saveSkipped(ctx, project, run, result.state, false)
+}
+
+func (svc *Service) prepareExistingFile(ctx context.Context, project projectregistry.Project, relative string, fullPath string, info fs.FileInfo, run Run) fullScanFileResult {
 	options := SafetyOptions{
 		MaxFileBytes:          project.MaxFileBytes,
 		MaxChunkBytes:         project.MaxChunkBytes,
@@ -788,37 +975,50 @@ func (svc *Service) ingestExistingFile(ctx context.Context, project projectregis
 	}
 	if info.Size() > options.MaxFileBytes {
 		state := svc.skippedState(project, relative, SkipReasonFileTooLarge, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
-		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
+		return fullScanFileResult{state: state}
 	}
 	content, err := os.ReadFile(fullPath)
 	if err != nil {
 		state := svc.skippedState(project, relative, SkipReasonReadError, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
-		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
+		return fullScanFileResult{state: state}
 	}
 	chunkSet, safety, err := BuildChunks(relative, content, options)
 	if err != nil {
 		state := svc.skippedState(project, relative, SkipReasonChunkError, int64(len(content)), info.ModTime().UTC(), true, run.StartedAt)
-		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
+		return fullScanFileResult{state: state}
 	}
 	if !safety.Eligible {
 		state := fileStateFromSafety(project, relative, safety, "", info.ModTime().UTC(), run.StartedAt)
-		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
+		return fullScanFileResult{state: state}
 	}
 
 	extractor := svc.extractors.ExtractorFor(relative)
 	result, err := svc.extractEligible(ctx, project, relative, hashValue(relative), chunkSet.ContentSHA256, extractor, content, run.StartedAt)
 	if err != nil {
 		state := svc.skippedState(project, relative, SkipReasonParseError, int64(len(content)), info.ModTime().UTC(), true, run.StartedAt)
-		return state, nil, nil, nil, svc.saveSkipped(ctx, project, run, state, false)
+		return fullScanFileResult{state: state}
 	}
 	state := fileStateFromSafety(project, relative, safety, chunkSet.ContentSHA256, info.ModTime().UTC(), run.StartedAt)
-	if err := svc.state.SaveFileState(ctx, state); err != nil {
-		return FileState{}, nil, nil, nil, err
+	return fullScanFileResult{
+		state:       state,
+		chunks:      chunkSet.Chunks,
+		symbols:     result.Symbols,
+		references:  result.References,
+		calls:       result.Calls,
+		headings:    result.Headings,
+		chunkCount:  len(chunkSet.Chunks),
+		symbolCount: len(result.Symbols),
 	}
-	if err := svc.graph.PutEligibleFile(ctx, project, run, state, chunkSet.Chunks, result.Symbols, result.References, result.Calls, result.Headings); err != nil {
-		return FileState{}, nil, nil, nil, err
+}
+
+func (svc *Service) saveEligiblePreparedFile(ctx context.Context, project projectregistry.Project, run Run, result fullScanFileResult) error {
+	if err := svc.state.SaveFileState(ctx, result.state); err != nil {
+		return err
 	}
-	return state, chunkSet.Chunks, result.Symbols, result.Headings, nil
+	if err := svc.graph.PutEligibleFile(ctx, project, run, result.state, result.chunks, result.symbols, result.references, result.calls, result.headings); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (svc *Service) extractEligible(ctx context.Context, project projectregistry.Project, relative string, relativePathHash string, contentSHA256 string, extractor Extractor, content []byte, eventAt time.Time) (ExtractorResult, error) {
