@@ -22,6 +22,9 @@ Service defaults:
 - Expose `/healthz` for process liveness.
 - Expose `/readyz` for dependency readiness.
 - Read configuration from environment variables and explicit files, not hardcoded secrets.
+- Expose REST endpoints under `/api/v1`.
+- Expose MCP Streamable HTTP under `/mcp` when MCP is implemented.
+- Keep database access behind internal store interfaces; handlers must not execute raw LadybugDB or SQLite query strings from clients.
 
 Logging:
 
@@ -31,5 +34,5 @@ Logging:
 Testing:
 
 - Unit tests first for config, health checks, redaction, state transitions, and migration runners.
-- Integration tests must be opt-in and use local Compose services.
+- Integration tests must be opt-in; local Compose services may be used only after the runtime dependency is approved.
 - No live internet in unit tests.

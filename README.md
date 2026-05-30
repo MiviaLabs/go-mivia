@@ -4,7 +4,7 @@ Generic Go microservices monorepo for AI-agent work.
 
 ## Current Phase
 
-Phase 2 is the repository and Go baseline. The repo intentionally has no service entrypoints, Docker runtime, database migrations, CI, or provider-specific integrations yet.
+Phase 3 selects simple embedded LadybugDB persistence and plans the REST plus MCP server boundary. The repo intentionally has no service entrypoints, Docker runtime, database migrations, CI, or provider-specific integrations yet.
 
 Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only.
 
@@ -15,6 +15,8 @@ Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only
 - Toolchain: `go1.26.3`
 - Module strategy: one root `go.mod`; add `go.work` only if independent module release boundaries become real.
 - Root package: `doc.go` only, used to keep baseline Go verification executable before service packages exist.
+- Persistence: embedded LadybugDB via `github.com/LadybugDB/go-ladybug` for graph data; SQLite via `modernc.org/sqlite` for local app configuration. PostgreSQL, pgvector, Neo4j, and database Compose runtime are out of bootstrap scope.
+- Interfaces planned: REST under `/api/v1` and MCP Streamable HTTP under `/mcp`.
 
 ## Planned Layout
 
@@ -25,7 +27,8 @@ Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only
 - `internal/platform/`: shared platform packages, starting in Phase 4.
 - `internal/<domain>/`: domain packages, starting in Phase 6.
 - `api/`: API contracts, starting in Phase 5.
-- `db/migrations/`: forward-only database migrations, starting in Phase 5.
+- `db/migrations/`: unused during the LadybugDB bootstrap; schema bootstrap belongs behind internal store code until an ADR changes this.
+- `tools/`: build-tagged dependency anchors; not application code.
 
 ## Local Checks
 
@@ -37,6 +40,8 @@ make check
 ```
 
 If `go` is missing, install Go 1.26.x before treating Phase 2 verification as complete.
+
+LadybugDB is CGO-backed. Future service phases must add an explicit native library setup step before importing `github.com/LadybugDB/go-ladybug` in normal build paths. SQLite configuration must stay local, non-secret, and ignored under `data/` by default.
 
 ## Security And Privacy
 
