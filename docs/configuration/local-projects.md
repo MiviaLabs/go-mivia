@@ -8,8 +8,8 @@ Local project configuration is optional. If no local config exists, `mivia-serve
 
 ## Files
 
-- Example config: [configs/mivia-server.example.toml](../../configs/mivia-server.example.toml)
-- Default ignored local config: `configs/mivia-server.local.toml`
+- Example config: [configs/agent-server.example.toml](../../configs/agent-server.example.toml)
+- Default ignored local config: `configs/agent-server.local.toml`
 - Explicit config path override: `MIVIA_CONFIG_PATH`
 - ADR: [ADR-0006](../adr/0006-local-project-configuration.md)
 
@@ -18,16 +18,16 @@ Do not commit local config files. Do not put secrets, tokens, PII, raw prompts, 
 ## Copy Workflow
 
 ```sh
-cp configs/mivia-server.example.toml configs/mivia-server.local.toml
+cp configs/agent-server.example.toml configs/agent-server.local.toml
 ```
 
 Edit only placeholder values such as `root_path`, then start the server:
 
 ```sh
-MIVIA_CONFIG_PATH=configs/mivia-server.local.toml go run ./cmd/mivia-server
+MIVIA_CONFIG_PATH=configs/agent-server.local.toml go run ./cmd/agent-server
 ```
 
-`MIVIA_CONFIG_PATH` is fatal when it points to a missing or invalid file. When it is unset and `configs/mivia-server.local.toml` is absent, startup keeps the current environment-only defaults.
+`MIVIA_CONFIG_PATH` is fatal when it points to a missing or invalid file. When it is unset and `configs/agent-server.local.toml` is absent, startup keeps the current environment-only defaults.
 
 Environment variables remain final overrides over file values:
 
@@ -116,6 +116,63 @@ Credentials are references only. Use either `credentials_file`, or exactly one e
 - `api_token_file`
 
 Do not put raw email addresses, API tokens, passwords, Basic auth values, or real Atlassian content in TOML, examples, fixtures, logs, SQLite, LadybugDB, or MCP status responses. `credentials_file` points to an ignored local JSON file and its path/content must not be exposed in MCP/status/errors.
+
+### Configure Jira And Confluence For A Project
+
+1. Copy the committed example to an ignored local config and restart the server with `MIVIA_CONFIG_PATH` after edits.
+2. Put Atlassian credentials only in an ignored local credential file or env/file refs. The local credential file uses email and API-token entries, but committed TOML must reference only the file path with `credentials_file`.
+3. Add `[projects.integrations.jira]` inside the target `[[projects]]` block. Jira requires `site_url`, `auth_mode = "api_token_basic"`, `credentials_file`, and a non-empty `project_keys` allowlist.
+4. Add `[projects.integrations.confluence]` separately when Confluence is needed. Confluence requires its own non-empty `space_keys` allowlist; Jira project keys and Confluence space keys are separate even when they happen to share the same text.
+5. Keep `ingestion_enabled = true` only for providers that may poll. Use `initial_full_sync = "manual"` unless startup polling is explicitly wanted.
+6. For Jira ticket titles, include `summary` in `default_fields` or `allowed_fields`. The Jira title field is `summary`.
+7. For rich local graph content, opt in narrowly: Jira uses `include_rich_fields` plus `allowed_fields`; Confluence uses `include_body`, `include_comments`, `include_labels`, and `include_properties`.
+8. Trigger an initial run with `projects.integrations.poll`, then poll the returned run ID with `projects.integrations.poll_status`. The poll call queues work and returns quickly.
+9. Use `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get` after polling completes. These search/read tools use local graph data only and do not call Atlassian.
+
+Safe TOML shape:
+
+```toml
+[projects.integrations.jira]
+enabled = true
+site_url = "https://example.atlassian.net"
+auth_mode = "api_token_basic"
+credentials_file = "secrets/atlassian-credentials.json"
+project_keys = ["ABC"]
+ingestion_enabled = true
+initial_full_sync = "manual"
+incremental_interval = "1m"
+empty_poll_sleep = "10m"
+max_idle_sleep = "30m"
+overlap_window = "2m"
+initial_page_size = 100
+incremental_page_size = 100
+max_results = 1000
+default_fields = ["summary", "status", "updated", "issuetype", "project"]
+allowed_fields = ["description", "comment"]
+include_rich_fields = true
+include_comments = true
+
+[projects.integrations.confluence]
+enabled = true
+site_url = "https://example.atlassian.net"
+auth_mode = "api_token_basic"
+credentials_file = "secrets/atlassian-credentials.json"
+space_keys = ["DOCS"]
+ingestion_enabled = true
+initial_full_sync = "manual"
+incremental_interval = "1m"
+empty_poll_sleep = "10m"
+max_idle_sleep = "30m"
+overlap_window = "2m"
+initial_page_size = 100
+incremental_page_size = 100
+max_results = 1000
+body_representation = "storage"
+include_body = true
+include_comments = true
+include_labels = true
+include_properties = true
+```
 
 | Field | Required | Notes |
 | --- | --- | --- |

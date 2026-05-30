@@ -54,6 +54,9 @@ Mivia MCP, Serena, and shell are complementary:
 | Check governed git status/diff for an opted-in workspace | MCP workspace tools |
 | Read or exact-edit an eligible current file in an opted-in workspace | MCP workspace tools |
 | Check whether indexed data is fresh enough for the task | MCP or REST |
+| Check configured Jira/Confluence provider status | MCP `projects.integrations.status` |
+| Poll Jira/Confluence for an opted-in project | MCP `projects.integrations.poll`, then `projects.integrations.poll_status` |
+| Search or read ingested Jira/Confluence context | MCP `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get` |
 | Verify tests, builds, logs, process control, generated files, or non-opted-in repo state | Shell |
 | Inspect a file just created or changed in an opted-in workspace | MCP `projects.workspace.file_read` by safe relative path |
 | Inspect a file outside MCP eligibility or project opt-in | Shell |
@@ -99,8 +102,17 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Get capped governed git diff | `GET /projects/{id}/workspace/git/diff` | `projects.workspace.git_diff` |
 | Read current eligible file with edit token | `GET /projects/{id}/workspace/files/read` | `projects.workspace.file_read` |
 | Apply exact token-guarded file edit | `POST /projects/{id}/workspace/files/edit` | `projects.workspace.file_edit` |
+| List configured integration providers | Not exposed | `projects.integrations.list` |
+| Get redacted integration status | Not exposed | `projects.integrations.status` |
+| Queue one integration poll | Not exposed | `projects.integrations.poll` |
+| Get integration poll status | Not exposed | `projects.integrations.poll_status` |
+| Search local integration graph content | Not exposed | `projects.integrations.search` |
+| Read one local Jira issue | Not exposed | `projects.jira.issue.get` |
+| Read one local Confluence page | Not exposed | `projects.confluence.page.get` |
 
 `projects.ingest`, `projects.search_index.rebuild`, `POST /ingestion-runs`, and `POST /search-index/rebuild` are asynchronous submissions. They return queued run metadata with a `run_id`; poll `projects.ingestion_status` or use latest status before trusting indexed content.
+
+Project integration polling is also asynchronous. Configure Jira and Confluence under the target project in local TOML, restart the server, check `projects.integrations.status`, queue a provider run with `projects.integrations.poll`, then wait on `projects.integrations.poll_status` before relying on `projects.integrations.search` or provider-specific read tools. Integration search/read uses only the local graph; it does not call Atlassian.
 
 `projects.digest` is only for `metadata_only` projects. For `content_graph` projects, use ingestion status and bounded file/search tools; the MCP error is `project digest unsupported`, not an active-ingestion block.
 

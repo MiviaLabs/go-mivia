@@ -239,8 +239,8 @@ sequenceDiagram
 - Go: `1.26`
 - Toolchain: `go1.26.3`
 - Module strategy: one root `go.mod`; add `go.work` only if independent module release boundaries become real.
-- Server: `cmd/mivia-server`
-- Local project config: optional, local-only TOML loaded from `configs/mivia-server.local.toml` or explicit `MIVIA_CONFIG_PATH`; committed example is `configs/mivia-server.example.toml`.
+- Server: `cmd/agent-server`
+- Local project config: optional, local-only TOML loaded from `configs/agent-server.local.toml` or explicit `MIVIA_CONFIG_PATH`; committed example is `configs/agent-server.example.toml`.
 - Persistence: LadybugDB graph abstraction for graph data; SQLite via `modernc.org/sqlite` for local app configuration. Project graph storage is selectable per project with `graph_storage = "persistent"` or `graph_storage = "in_memory"`.
 - Interfaces: REST under `/api/v1`; MCP Streamable HTTP under `/mcp`.
 
@@ -249,7 +249,7 @@ sequenceDiagram
 - `.ai/`: canonical agent workflow rules, skills, and handoffs. Local task and research plans are ignored working artifacts, not technical docs.
 - `api/openapi/`: REST OpenAPI contracts.
 - `api/mcp/`: MCP capability docs.
-- `cmd/mivia-server/`: local agent server entrypoint.
+- `cmd/agent-server/`: local agent server entrypoint.
 - `configs/`: committed local config examples only; developer-local configs stay ignored.
 - `internal/agentcontrol/`: task and research-run domain, stores, REST adapter, MCP adapter.
 - `internal/projectregistry/`: local project config registry, validation, REST/MCP metadata APIs, and manual metadata-only digest.
@@ -298,14 +298,14 @@ Foreground server:
 ```sh
 MIVIA_HTTP_ADDR=127.0.0.1:8080 \
 MIVIA_SQLITE_PATH=:memory: \
-go run ./cmd/mivia-server
+go run ./cmd/agent-server
 ```
 
 Optional local project config:
 
 ```sh
-cp configs/mivia-server.example.toml configs/mivia-server.local.toml
-MIVIA_CONFIG_PATH=configs/mivia-server.local.toml go run ./cmd/mivia-server
+cp configs/agent-server.example.toml configs/agent-server.local.toml
+MIVIA_CONFIG_PATH=configs/agent-server.local.toml go run ./cmd/agent-server
 ```
 
 Use placeholder paths only in committed docs and examples. Local configs are ignored and must not contain secrets, tokens, PII, raw prompts, raw source content, or provider payloads.
@@ -339,7 +339,7 @@ codex mcp get mivia-server
 For a long-running WSL process from Windows, build once and run the binary:
 
 ```powershell
-wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored-runtime-dir>/mivia-server ./cmd/mivia-server
+wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored-runtime-dir>/mivia-server ./cmd/agent-server
 wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivia-server
 ```
 
@@ -387,7 +387,7 @@ Use REST for scripts, smoke tests, and direct local checks. Use MCP first when a
 
 Manual content graph ingestion and search index repair are asynchronous. `POST /ingestion-runs`, `POST /search-index/rebuild`, `projects.ingest`, and `projects.search_index.rebuild` submit work through the fair scheduler and return queued run metadata quickly; clients poll by `run_id` or check latest status before relying on indexed data. Agents should use indexed search tools first for routine text, path, symbol, reference, and call discovery, and workspace tools first for opted-in git status/diff/current eligible file reads/exact edits. Live ingestion is the normal freshness path after workspace edits. Use Serena only for edit-time semantic gaps that MCP cannot answer, and `ast-grep` only for structural search or rewrite work not covered by indexed search. Full task, research, project, REST, and MCP method mapping is in the [agent context server guide](docs/agent-context-guide.md).
 
-Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/mivia-server.local.toml`. The committed schema example is [configs/mivia-server.example.toml](configs/mivia-server.example.toml).
+Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/agent-server.local.toml`. The committed schema example is [configs/agent-server.example.toml](configs/agent-server.example.toml).
 
 Project digest is manual and metadata-only. Content graph ingestion is opt-in with `digest_mode = "content_graph"` and uses the same local path, denylist, binary, UTF-8, size, and sensitive-marker gates before storing eligible source chunks. Promoted AST extraction uses Go stdlib AST for Go, Tree-sitter for JS/TS/TSX/JSX/C#/Python, Markdown headings, and lightweight infrastructure metadata. TS/JS/TSX/JSX, C#, and Python have no regex fallback after startup validation.
 
@@ -397,7 +397,7 @@ Extractor cache rows live in the local SQLite app DB and store only serialized s
 
 Live project updates require both global live enablement and per-project `update_policy = "live"`. The watcher is directory-based, non-recursive at the OS API level, and registers each eligible directory; overflow or full queues trigger a scheduled bounded project rescan. Manual and live full scans run through the fair scheduler. Live path events have priority over full-scan continuations, and per-project limits prevent one project from monopolizing workers. File outlines support symbol `kind`, `name_prefix`, symbol pagination, and opt-in bounded chunk text for eligible files.
 
-Project integrations are configured per project under `[projects.integrations.jira]` and `[projects.integrations.confluence]`. They require Atlassian Cloud hosts, explicit Jira `project_keys` or Confluence `space_keys`, and env/file credential refs. Rich fields and comments are ingested only when configured; search/read tools use local graph data only and do not call Atlassian.
+Project integrations are configured per project under `[projects.integrations.jira]` and `[projects.integrations.confluence]`. They require Atlassian Cloud hosts, explicit Jira `project_keys` or Confluence `space_keys`, and env/file credential refs. Jira ticket titles are `summary`, so include that field when customizing Jira fields. Rich fields, comments, and Confluence page bodies are ingested only when configured; `projects.integrations.poll` queues async polling, `projects.integrations.poll_status` tracks it, and search/read tools use local graph data only without calling Atlassian. Setup details are in [Local project configuration](docs/configuration/local-projects.md).
 
 LadybugDB native imports remain gated behind `scripts/ladybug-libs.sh` and the `ladybug_native system_ladybug` tags. SQLite configuration and persistent graph files must stay local, non-secret, and ignored under `data/` by default.
 
