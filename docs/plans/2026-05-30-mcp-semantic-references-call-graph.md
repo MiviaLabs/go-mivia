@@ -8,16 +8,16 @@
 | Author | plan-task skill |
 | Date | 2026-05-30 |
 | Classification | Internal; PII-prohibited |
-| Owners | MiviaLabs local agent-server owner |
+| Owners | Mivia local mivia-server owner |
 | Linked Epic | N/A |
 
 ## 1. Context
 
-Current MCP content graph ingestion stores eligible chunks and symbol metadata, then exposes files, chunks, symbols, headings, outlines, async ingestion status, and latest ingestion status. Source anchors: `internal/projectingestion/query.go:93`, `internal/projectingestion/query.go:127`, `internal/projectingestion/graph_store.go:107`, `internal/projectingestion/graph_store.go:427`, `internal/projectregistry/mcpapi/mcpapi.go:259`. The existing AST layer extracts declarations and line ranges, but does not model symbol references, call edges, caller/callee traversal, or symbol body source retrieval. The agent guide still routes caller/edit-location understanding to Serena first, which is correct for the current implementation but not the target capability for MiviaLabs MCP. Source anchor: `docs/agent-context-guide.md:42`.
+Current MCP content graph ingestion stores eligible chunks and symbol metadata, then exposes files, chunks, symbols, headings, outlines, async ingestion status, and latest ingestion status. Source anchors: `internal/projectingestion/query.go:93`, `internal/projectingestion/query.go:127`, `internal/projectingestion/graph_store.go:107`, `internal/projectingestion/graph_store.go:427`, `internal/projectregistry/mcpapi/mcpapi.go:259`. The existing AST layer extracts declarations and line ranges, but does not model symbol references, call edges, caller/callee traversal, or symbol body source retrieval. The agent guide still routes caller/edit-location understanding to Serena first, which is correct for the current implementation but not the target capability for Mivia MCP. Source anchor: `docs/agent-context-guide.md:42`.
 
 ## 2. Problem statement
 
-MiviaLabs MCP is useful for orientation, but still not Principal-level semantic navigation: an agent can find symbols and chunks, but cannot ask "who calls this?", "what does this call?", "where is this referenced?", or "give me this symbol body with bounded source text" through MCP.
+Mivia MCP is useful for orientation, but still not Principal-level semantic navigation: an agent can find symbols and chunks, but cannot ask "who calls this?", "what does this call?", "where is this referenced?", or "give me this symbol body with bounded source text" through MCP.
 
 ## 3. Goals
 
@@ -52,7 +52,7 @@ Derived - confirm with reporter.
 
 ## 6. Constraints
 
-- Local-only: REST/MCP remain loopback/default local; no public exposure. Source: `.ai/rules/30-docker-data.md`, `docs/adr/0003-agent-server-rest-and-mcp-boundary.md:50`.
+- Local-only: REST/MCP remain loopback/default local; no public exposure. Source: `.ai/rules/30-docker-data.md`, `docs/adr/0003-mivia-server-rest-and-mcp-boundary.md:50`.
 - Privacy: no PII ingestion without separate approval. Source: `.ai/rules/10-security-privacy.md`.
 - Source exception: eligible local source may be stored only for opted-in `content_graph` projects after safety gates. Source: `docs/adr/0007-content-graph-ingestion-and-live-updates.md:21`.
 - Permanent prohibitions: no skipped sensitive content, matched sensitive-marker text, secrets, PII, raw prompts, provider payloads, absolute roots, crawling, vectors, or raw DB query endpoint. Source: `docs/adr/0007-content-graph-ingestion-and-live-updates.md:36`.
@@ -183,7 +183,7 @@ sequenceDiagram
 13. **Contracts** - edit `api/openapi/agent-control.v1.yaml` and `api/mcp/agent-control.v1.md`:
     - Document REST paths, query params, MCP schemas, response shapes, caps, and privacy guarantees.
 14. **Docs and skill** - update:
-    - `.ai/skills/mivialabs-agent-mcp/SKILL.md`
+    - `.ai/skills/mivia-mcp/SKILL.md`
     - `README.md`
     - `docs/agent-context-guide.md`
     - `docs/configuration/local-projects.md`
@@ -249,7 +249,7 @@ Additive only.
 
 ## 15. Documentation updates
 
-- `.ai/skills/mivialabs-agent-mcp/SKILL.md`
+- `.ai/skills/mivia-mcp/SKILL.md`
 - `README.md`
 - `api/mcp/agent-control.v1.md`
 - `api/openapi/agent-control.v1.yaml`
@@ -321,7 +321,7 @@ Additive only.
   - `docs/architecture/system-architecture.md:172` - security architecture boundary.
   - `docs/configuration/local-projects.md:149` - current MCP tool list.
 - **ADRs:**
-  - `docs/adr/0003-agent-server-rest-and-mcp-boundary.md:50`
+  - `docs/adr/0003-mivia-server-rest-and-mcp-boundary.md:50`
   - `docs/adr/0007-content-graph-ingestion-and-live-updates.md:21`
 - **Policies:** `.ai/rules/10-security-privacy.md`, `.ai/rules/30-docker-data.md`.
 - **Catalog entries:** none present/relevant in this repo scan.

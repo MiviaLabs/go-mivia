@@ -4,12 +4,12 @@ Status: Local registry, content graph ingestion, and live update support
 Date: 2026-05-30
 Classification: Internal; local project-integration rich-content exception only
 
-Local project configuration is optional. If no local config exists, `agent-server` starts with environment-only defaults and an empty project list.
+Local project configuration is optional. If no local config exists, `mivia-server` starts with environment-only defaults and an empty project list.
 
 ## Files
 
-- Example config: [configs/agent-server.example.toml](../../configs/agent-server.example.toml)
-- Default ignored local config: `configs/agent-server.local.toml`
+- Example config: [configs/mivia-server.example.toml](../../configs/mivia-server.example.toml)
+- Default ignored local config: `configs/mivia-server.local.toml`
 - Explicit config path override: `MIVIA_CONFIG_PATH`
 - ADR: [ADR-0006](../adr/0006-local-project-configuration.md)
 
@@ -18,16 +18,16 @@ Do not commit local config files. Do not put secrets, tokens, PII, raw prompts, 
 ## Copy Workflow
 
 ```sh
-cp configs/agent-server.example.toml configs/agent-server.local.toml
+cp configs/mivia-server.example.toml configs/mivia-server.local.toml
 ```
 
 Edit only placeholder values such as `root_path`, then start the server:
 
 ```sh
-MIVIA_CONFIG_PATH=configs/agent-server.local.toml go run ./cmd/agent-server
+MIVIA_CONFIG_PATH=configs/mivia-server.local.toml go run ./cmd/mivia-server
 ```
 
-`MIVIA_CONFIG_PATH` is fatal when it points to a missing or invalid file. When it is unset and `configs/agent-server.local.toml` is absent, startup keeps the current environment-only defaults.
+`MIVIA_CONFIG_PATH` is fatal when it points to a missing or invalid file. When it is unset and `configs/mivia-server.local.toml` is absent, startup keeps the current environment-only defaults.
 
 Environment variables remain final overrides over file values:
 

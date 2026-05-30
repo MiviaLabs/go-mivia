@@ -11,7 +11,7 @@ Scope completed:
 - Preserved `metadata_only/manual` digest behavior.
 
 Changed files:
-- `cmd/agent-server/main.go`
+- `cmd/mivia-server/main.go`
 - `docs/adr/0007-content-graph-ingestion-and-live-updates.md`
 - `docs/security/research-data-handling.md`
 - `internal/projectingestion/graph_store.go`
@@ -39,7 +39,7 @@ Next recommended phase:
 Copy-paste prompt for next agent:
 
 ```text
-Continue in /home/mac/mivialabs/mivialabs-agents-monorepo.
+Continue in /home/mac/mivialabs/go-mivia.
 
 Use WSL-native tooling. Do not use Jira or Confluence.
 

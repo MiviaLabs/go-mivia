@@ -9,9 +9,9 @@ The bootstrap needs a simple server surface that can be used by humans, scripts,
 
 ## Decision
 
-Build one Go `agent-server` first.
+Build one Go `mivia-server` first.
 
-- Service entrypoint: `cmd/agent-server/main.go`.
+- Service entrypoint: `cmd/mivia-server/main.go`.
 - REST API base path: `/api/v1`.
 - MCP Streamable HTTP endpoint: `/mcp`.
 - Liveness endpoint: `/healthz`.

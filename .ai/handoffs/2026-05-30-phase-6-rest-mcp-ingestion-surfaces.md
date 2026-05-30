@@ -14,7 +14,7 @@ Scope completed:
 Changed files:
 - `api/mcp/agent-control.v1.md`
 - `api/openapi/agent-control.v1.yaml`
-- `cmd/agent-server/main.go`
+- `cmd/mivia-server/main.go`
 - `internal/agentcontrol/mcpapi/mcpapi.go`
 - `internal/agentcontrol/mcpapi/mcpapi_test.go`
 - `internal/platform/ladybug/ladybug.go`
@@ -44,7 +44,7 @@ Next recommended phase:
 Copy-paste prompt for next agent:
 
 ```text
-Continue in /home/mac/mivialabs/mivialabs-agents-monorepo.
+Continue in /home/mac/mivialabs/go-mivia.
 
 Use WSL-native tooling. Do not use Jira or Confluence.
 
@@ -75,5 +75,5 @@ No-go scope:
 - No providers, embeddings, vectors, crawling, public exposure, auth model changes, symlink traversal, production deployment, raw DB query endpoints, source content in logs, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, provider payloads, or absolute roots.
 
 Required first verifier:
-- go test ./internal/projectingestion ./cmd/agent-server
+- go test ./internal/projectingestion ./cmd/mivia-server
 ```

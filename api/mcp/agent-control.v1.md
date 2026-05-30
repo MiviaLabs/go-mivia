@@ -586,8 +586,8 @@ Resource templates:
 Run the server locally, then register:
 
 ```powershell
-codex mcp add mivialabs-agent-server --url http://127.0.0.1:8080/mcp
-codex mcp get mivialabs-agent-server
+codex mcp add mivia-server --url http://127.0.0.1:8080/mcp
+codex mcp get mivia-server
 ```
 
 Codex Desktop exposes the tools through generated callable names. In this environment, `tasks.create` appeared as `tasks_create` and was verified through native Codex MCP invocation.

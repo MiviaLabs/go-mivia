@@ -4,16 +4,16 @@ Date: 2026-05-30
 
 ## Scope and Evidence Checked
 
-- Repo rules and boundaries: `AGENTS.md`, `.ai/INDEX.md`, `.ai/rules/00-operating-doctrine.md`, `.ai/rules/05-external-systems.md`, `.ai/rules/10-security-privacy.md`, `.ai/rules/20-go-service-standards.md`, `.ai/rules/30-docker-data.md`, `.ai/skills/mivialabs-agent-mcp/SKILL.md`.
+- Repo rules and boundaries: `AGENTS.md`, `.ai/INDEX.md`, `.ai/rules/00-operating-doctrine.md`, `.ai/rules/05-external-systems.md`, `.ai/rules/10-security-privacy.md`, `.ai/rules/20-go-service-standards.md`, `.ai/rules/30-docker-data.md`, `.ai/skills/mivia-mcp/SKILL.md`.
 - User-facing docs: `docs/agent-context-guide.md`, `docs/configuration/local-projects.md`.
-- Implementation: `cmd/agent-server/main.go`, `internal/projectingestion/*`, `internal/projectregistry/{httpapi,mcpapi,patterns,service}.go`, `internal/agentcontrol/mcpapi/mcpapi.go`, `internal/platform/ladybug/{ladybug,persistent}.go`, `configs/agent-server.local.toml`, `configs/agent-server.example.toml`.
+- Implementation: `cmd/mivia-server/main.go`, `internal/projectingestion/*`, `internal/projectregistry/{httpapi,mcpapi,patterns,service}.go`, `internal/agentcontrol/mcpapi/mcpapi.go`, `internal/platform/ladybug/{ladybug,persistent}.go`, `configs/mivia-server.local.toml`, `configs/mivia-server.example.toml`.
 - Tests checked: `internal/projectingestion/*_test.go`, `internal/projectregistry/**/*_test.go`, `internal/agentcontrol/mcpapi/mcpapi_test.go`.
 - Jira: not checked by repo constraint.
 - Confluence: not checked by repo constraint.
 
 ## Current Architecture Summary
 
-- `agent-server` loads local project config, opens SQLite for project/run/file state, opens a project graph router backed by persistent or memory Ladybug graphs, then exposes REST under `/api/v1` and MCP under `/mcp` (`cmd/agent-server/main.go:52-131`).
+- `mivia-server` loads local project config, opens SQLite for project/run/file state, opens a project graph router backed by persistent or memory Ladybug graphs, then exposes REST under `/api/v1` and MCP under `/mcp` (`cmd/mivia-server/main.go:52-131`).
 - Manual ingestion walks the project root, applies include/exclude and safety gates, chunks eligible UTF-8 files, parses Go symbols and Markdown headings, writes SQLite file state, writes graph nodes, then tombstones missing eligible files (`internal/projectingestion/service.go:71-168`, `internal/projectingestion/service.go:466-543`).
 - Live ingestion starts one fsnotify watcher per live project, recursively watches included directories, debounces file events, and enqueues per-path ingestion or full rescans on overflow/queue pressure (`internal/projectingestion/orchestrator.go:78-130`, `internal/projectingestion/orchestrator.go:185-365`).
 - MCP discovery exposes project metadata, ingestion runs, file metadata, bounded chunks, and symbol lists. File/chunk/symbol responses are paginated with max page size 100 (`internal/projectregistry/mcpapi/mcpapi.go:120-213`, `internal/projectingestion/query.go:14-18`).
@@ -50,8 +50,8 @@ Date: 2026-05-30
 
 6. Watcher startup is not durable for thousands of directories.
    - Startup recursively calls `watcher.Add` for every included directory and returns the first error (`internal/projectingestion/orchestrator.go:324-365`).
-   - `agent-server` treats orchestrator start failure as service startup failure (`cmd/agent-server/main.go:94-104`).
-   - The local MASS config enables live updates, initial startup scan, queue depth 128, worker count 2, and include `**/*` (`configs/agent-server.local.toml:18-27`, `configs/agent-server.local.toml:76-78`).
+   - `mivia-server` treats orchestrator start failure as service startup failure (`cmd/mivia-server/main.go:94-104`).
+   - The local MASS config enables live updates, initial startup scan, queue depth 128, worker count 2, and include `**/*` (`configs/mivia-server.local.toml:18-27`, `configs/mivia-server.local.toml:76-78`).
    - Impact: OS watch limits, mounted filesystem behavior, or one inaccessible directory can prevent the local server from starting instead of degrading to manual ingestion.
 
 7. Error diagnostics are too coarse for large scans.
@@ -68,7 +68,7 @@ Date: 2026-05-30
 
 ## Confirmed Safety/Privacy Posture
 
-- Server docs and config keep the service loopback-local and reject public exposure without separate review (`docs/configuration/local-projects.md`, `configs/agent-server.example.toml:7-12`).
+- Server docs and config keep the service loopback-local and reject public exposure without separate review (`docs/configuration/local-projects.md`, `configs/mivia-server.example.toml:7-12`).
 - MCP/REST project responses are designed to omit roots and datastore paths; tests assert no root leakage in ingestion responses (`internal/projectregistry/httpapi/httpapi_test.go:78-135`, `internal/agentcontrol/mcpapi/mcpapi_test.go:144-189`).
 - Sensitive-content skips are hash-only: no relative path, no content hash, and no chunk text (`internal/projectingestion/service.go:553-604`, `internal/projectingestion/service_test.go:159-198`).
 - Safety gates skip denied paths, secrets-like content, binary content, NUL bytes, invalid UTF-8, oversized files, and symlinks (`internal/projectingestion/safety.go:20-55`, `internal/projectingestion/safety.go:79-113`, `internal/projectingestion/service.go:105-135`).

@@ -8,7 +8,7 @@ Available skills:
 - `project-implement`
 - `project-review`
 - `security-review`
-- `mivialabs-agent-mcp`
+- `mivia-mcp`
 
 Usage rules:
 

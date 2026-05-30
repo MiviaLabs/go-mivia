@@ -13,7 +13,7 @@ Confluence: not checked by repo constraint.
 
 - Full-scan cleanup still ignores previously present skipped states because `tombstoneMissingFiles` continues when `state.Status != eligible` in `internal/projectingestion/service.go`.
 - Re-ingest cleanup is file-scoped at the graph-store call site, but `MemoryGraph.DeleteNodes` still scans by label/filter; within the current abstraction the practical improvement is to keep every changed/absent file using the file-scoped `repo_file_id` filter and extend tests around transitions.
-- Watcher startup still returns watcher factory and directory registration errors from `Orchestrator.Start`, and `cmd/agent-server` still treats that error as service startup failure.
+- Watcher startup still returns watcher factory and directory registration errors from `Orchestrator.Start`, and `cmd/mivia-server` still treats that error as service startup failure.
 - Watch registration still reports only a count on success and no degraded status/counts on failure.
 - Run metadata still exposes only aggregate counters and one `error_category`; skip/error reason counts are not persisted or exposed.
 

@@ -1,10 +1,10 @@
-# MiviaLabs Agents Monorepo
+# Mivia
 
 Generic Go microservices monorepo for AI-agent work.
 
 ## Overview
 
-This repository contains the local MiviaLabs agent service platform. The current service is `agent-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, research metadata, project registry, project ingestion, and semantic code-context workflows.
+This repository contains the local Mivia service platform. The current service is `mivia-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, research metadata, project registry, project ingestion, and semantic code-context workflows.
 
 The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion with governed FTS, named AST search, git status/diff, and exact token-guarded file edits. It also supports approved local Jira/Confluence project integrations with polling-only ingestion and bounded local graph search/read. It does not call live AI or browsing providers, expose public APIs, run embeddings/vector storage, crawl arbitrary roots, expose arbitrary shell, or use production database infrastructure.
 
@@ -15,7 +15,7 @@ Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only
 ```mermaid
 flowchart TB
   Client["Local engineer, Codex Desktop, or MCP client"]
-  Server["agent-server localhost"]
+  Server["mivia-server localhost"]
   REST["REST /api/v1"]
   MCP["MCP /mcp"]
   Tasks["Tasks and research metadata"]
@@ -97,13 +97,13 @@ Use this repo as a local context server for engineers and AI agents:
 
 ## Business View
 
-`agent-server` is a local control and context service for engineers and AI agents. It gives agents a safe, structured way to understand a developer's local projects, remember approved local metadata, run bounded project and integration ingestion, and expose that context through REST and MCP without sending source code to AI providers.
+`mivia-server` is a local control and context service for engineers and AI agents. It gives agents a safe, structured way to understand a developer's local projects, remember approved local metadata, run bounded project and integration ingestion, and expose that context through REST and MCP without sending source code to AI providers.
 
 ```mermaid
 flowchart LR
   Engineer["Engineer"]
   Agent["AI agent or Codex Desktop"]
-  Server["agent-server on localhost"]
+  Server["mivia-server on localhost"]
   Projects["Local projects"]
   Atlassian["Configured Jira and Confluence Cloud"]
   Scheduler["Fair scheduler and live watcher"]
@@ -155,9 +155,9 @@ What this enables:
 
 ## Agent Reliability Model
 
-`agent-server`, Serena, and shell solve different parts of reliable agent work:
+`mivia-server`, Serena, and shell solve different parts of reliable agent work:
 
-- `agent-server` is first choice for indexed project discovery, ingestion freshness, files, chunks, symbols, references, calls, FTS search, symbol source, call graph, named AST search, and locally ingested Jira/Confluence context.
+- `mivia-server` is first choice for indexed project discovery, ingestion freshness, files, chunks, symbols, references, calls, FTS search, symbol source, call graph, named AST search, and locally ingested Jira/Confluence context.
 - Serena remains useful when MCP is unavailable, stale, missing the project, or lacks the edit-time semantic operation needed for a precise code change.
 - MCP can handle governed git status/diff and exact edits for opted-in workspaces; shell remains the source of truth for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repositories.
 - This routing reduces blind file scanning, stale assumptions, and unsafe over-broad context collection.
@@ -165,7 +165,7 @@ What this enables:
 ```mermaid
 flowchart TB
   Agent["AI agent"]
-  MCP["agent-server MCP first for indexed context and opted-in workspace"]
+  MCP["mivia-server MCP first for indexed context and opted-in workspace"]
   Serena["Serena fallback or edit-time semantic tools"]
   Shell["Shell for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repos"]
   Source["Source files"]
@@ -211,7 +211,7 @@ High-level flow:
 sequenceDiagram
   participant Engineer
   participant Agent
-  participant Server as agent-server
+  participant Server as mivia-server
   participant Serena
   participant Shell
   participant Project as Local project
@@ -235,12 +235,12 @@ sequenceDiagram
 
 ## Baseline
 
-- Module: `github.com/MiviaLabs/mivialabs-agents-monorepo`
+- Module: `github.com/MiviaLabs/go-mivia`
 - Go: `1.26`
 - Toolchain: `go1.26.3`
 - Module strategy: one root `go.mod`; add `go.work` only if independent module release boundaries become real.
-- Server: `cmd/agent-server`
-- Local project config: optional, local-only TOML loaded from `configs/agent-server.local.toml` or explicit `MIVIA_CONFIG_PATH`; committed example is `configs/agent-server.example.toml`.
+- Server: `cmd/mivia-server`
+- Local project config: optional, local-only TOML loaded from `configs/mivia-server.local.toml` or explicit `MIVIA_CONFIG_PATH`; committed example is `configs/mivia-server.example.toml`.
 - Persistence: LadybugDB graph abstraction for graph data; SQLite via `modernc.org/sqlite` for local app configuration. Project graph storage is selectable per project with `graph_storage = "persistent"` or `graph_storage = "in_memory"`.
 - Interfaces: REST under `/api/v1`; MCP Streamable HTTP under `/mcp`.
 
@@ -249,7 +249,7 @@ sequenceDiagram
 - `.ai/`: canonical agent workflow rules, skills, and handoffs. Local task and research plans are ignored working artifacts, not technical docs.
 - `api/openapi/`: REST OpenAPI contracts.
 - `api/mcp/`: MCP capability docs.
-- `cmd/agent-server/`: local agent server entrypoint.
+- `cmd/mivia-server/`: local agent server entrypoint.
 - `configs/`: committed local config examples only; developer-local configs stay ignored.
 - `internal/agentcontrol/`: task and research-run domain, stores, REST adapter, MCP adapter.
 - `internal/projectregistry/`: local project config registry, validation, REST/MCP metadata APIs, and manual metadata-only digest.
@@ -298,14 +298,14 @@ Foreground server:
 ```sh
 MIVIA_HTTP_ADDR=127.0.0.1:8080 \
 MIVIA_SQLITE_PATH=:memory: \
-go run ./cmd/agent-server
+go run ./cmd/mivia-server
 ```
 
 Optional local project config:
 
 ```sh
-cp configs/agent-server.example.toml configs/agent-server.local.toml
-MIVIA_CONFIG_PATH=configs/agent-server.local.toml go run ./cmd/agent-server
+cp configs/mivia-server.example.toml configs/mivia-server.local.toml
+MIVIA_CONFIG_PATH=configs/mivia-server.local.toml go run ./cmd/mivia-server
 ```
 
 Use placeholder paths only in committed docs and examples. Local configs are ignored and must not contain secrets, tokens, PII, raw prompts, raw source content, or provider payloads.
@@ -332,15 +332,15 @@ curl -fsS \
 Codex Desktop can register the server directly as a Streamable HTTP MCP server:
 
 ```powershell
-codex mcp add mivialabs-agent-server --url http://127.0.0.1:8080/mcp
-codex mcp get mivialabs-agent-server
+codex mcp add mivia-server --url http://127.0.0.1:8080/mcp
+codex mcp get mivia-server
 ```
 
 For a long-running WSL process from Windows, build once and run the binary:
 
 ```powershell
-wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored-runtime-dir>/mivialabs-agent-server ./cmd/agent-server
-wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivialabs-agent-server
+wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored-runtime-dir>/mivia-server ./cmd/mivia-server
+wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivia-server
 ```
 
 The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.poll`, `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get`. Codex Desktop may show underscore-normalized callable names such as `tasks_create`, `projects_search_text`, or `projects_workspace_file_read`; the server accepts both forms.
@@ -387,7 +387,7 @@ Use REST for scripts, smoke tests, and direct local checks. Use MCP first when a
 
 Manual content graph ingestion and search index repair are asynchronous. `POST /ingestion-runs`, `POST /search-index/rebuild`, `projects.ingest`, and `projects.search_index.rebuild` submit work through the fair scheduler and return queued run metadata quickly; clients poll by `run_id` or check latest status before relying on indexed data. Agents should use indexed search tools first for routine text, path, symbol, reference, and call discovery, and workspace tools first for opted-in git status/diff/current eligible file reads/exact edits. Live ingestion is the normal freshness path after workspace edits. Use Serena only for edit-time semantic gaps that MCP cannot answer, and `ast-grep` only for structural search or rewrite work not covered by indexed search. Full task, research, project, REST, and MCP method mapping is in the [agent context server guide](docs/agent-context-guide.md).
 
-Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/agent-server.local.toml`. The committed schema example is [configs/agent-server.example.toml](configs/agent-server.example.toml).
+Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/mivia-server.local.toml`. The committed schema example is [configs/mivia-server.example.toml](configs/mivia-server.example.toml).
 
 Project digest is manual and metadata-only. Content graph ingestion is opt-in with `digest_mode = "content_graph"` and uses the same local path, denylist, binary, UTF-8, size, and sensitive-marker gates before storing eligible source chunks. Promoted AST extraction uses Go stdlib AST for Go, Tree-sitter for JS/TS/TSX/JSX/C#/Python, Markdown headings, and lightweight infrastructure metadata. TS/JS/TSX/JSX, C#, and Python have no regex fallback after startup validation.
 

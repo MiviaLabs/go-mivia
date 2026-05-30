@@ -31,7 +31,7 @@ The requested exception, if accepted, is narrow:
 - Local eligible project source content may be stored only for projects explicitly configured as `content_graph`.
 - Storage is allowed only after path safety, symlink rejection, include/exclude matching, default denylist checks, size limits, binary/NUL rejection, UTF-8 validation, and sensitive-marker gates pass.
 - Skipped sensitive files may be represented only by non-sensitive reason codes and, where needed, hash-only state that does not reveal the skipped path or content.
-- The exception applies only to the localhost `agent-server` on the developer machine.
+- The exception applies only to the localhost `mivia-server` on the developer machine.
 
 Permanent prohibitions:
 

@@ -7,12 +7,12 @@ Mode: Free-text plan; no Jira or Confluence used by repository constraint.
 
 ## 1. Intent
 
-Agents should not need Serena `search_for_pattern` for routine project discovery. Add governed MiviaLabs MCP/REST search tools over indexed project content first, then add a SQLite FTS-backed search index for scale, then add embedded AST structural search for supported languages so `ast-grep` is no longer required for read-only structural discovery.
+Agents should not need Serena `search_for_pattern` for routine project discovery. Add governed Mivia MCP/REST search tools over indexed project content first, then add a SQLite FTS-backed search index for scale, then add embedded AST structural search for supported languages so `ast-grep` is no longer required for read-only structural discovery.
 
 Priority order:
 
 1. Project search quick wins: text search, symbol search, file search, reference/call search, bounded snippets, REST/MCP docs, privacy tests.
-2. Agent workflow updates: README, MCP skill guidance, OpenAPI/MCP docs, examples that route pattern-search use cases to MiviaLabs MCP first.
+2. Agent workflow updates: README, MCP skill guidance, OpenAPI/MCP docs, examples that route pattern-search use cases to Mivia MCP first.
 3. SQLite FTS search backend: maintain a full eligible search index from ingestion and route text, file, symbol, reference, and call discovery through it under the same governance caps.
 4. Embedded AST structural search: Tree-sitter query powered search for supported parser languages; Go support requires an embedded Go grammar or a separate Go AST query layer.
 5. `ast-grep` replacement boundary: read-only structural search only at first; codemods/rewrites remain out of scope until explicitly designed.
@@ -54,7 +54,7 @@ Library-grounded facts:
 ```mermaid
 flowchart TB
   Agent["Agent or Codex Desktop"]
-  MCP["MiviaLabs MCP"]
+  MCP["Mivia MCP"]
   REST["REST /api/v1"]
   Search["Project search service"]
   Text["projects.search.text"]
@@ -178,11 +178,11 @@ Update:
 - `README.md`
 - `docs/agent-context-guide.md`
 - `docs/architecture/system-architecture.md`
-- `.ai/skills/mivialabs-agent-mcp/SKILL.md`
+- `.ai/skills/mivia-mcp/SKILL.md`
 
 Guidance should say:
 
-1. Use MiviaLabs MCP search first for indexed project text/symbol/reference/call discovery.
+1. Use Mivia MCP search first for indexed project text/symbol/reference/call discovery.
 2. Treat live ingestion as the freshness path for edited files and check ingestion status when results look unexpected.
 3. Use Serena for LSP/editor-aware symbol navigation and edits.
 4. Use `ast-grep` only for structural search not yet covered by embedded AST search or for rewrite/codemod tasks.
@@ -423,7 +423,7 @@ Expected files to touch in Phase 1:
 - `internal/agentcontrol/mcpapi`: update top-level routing/tests if required.
 - `api/openapi/agent-control.v1.yaml`: document REST search endpoints.
 - `api/mcp/agent-control.v1.md`: document MCP search tools.
-- `README.md`, `docs/agent-context-guide.md`, `docs/architecture/system-architecture.md`, `.ai/skills/mivialabs-agent-mcp/SKILL.md`: update guidance and diagrams.
+- `README.md`, `docs/agent-context-guide.md`, `docs/architecture/system-architecture.md`, `.ai/skills/mivia-mcp/SKILL.md`: update guidance and diagrams.
 
 Expected files to touch in Phase 3:
 
@@ -433,7 +433,7 @@ Expected files to touch in Phase 3:
 - `internal/projectingestion/service_test.go`: FTS search behavior, privacy, stale-row cleanup, and transition tests.
 - `internal/platform/sqlite/schema` or existing schema bootstrap files: add idempotent FTS5 schema.
 - `internal/projectregistry/httpapi/httpapi_test.go`, `internal/projectregistry/mcpapi/mcpapi_test.go`, `internal/agentcontrol/mcpapi/mcpapi_test.go`: verify existing REST/MCP tools still return the same bounded shape.
-- `api/openapi/agent-control.v1.yaml`, `api/mcp/agent-control.v1.md`, `README.md`, `docs/agent-context-guide.md`, `.ai/skills/mivialabs-agent-mcp/SKILL.md`: update only if response metadata or guidance changes.
+- `api/openapi/agent-control.v1.yaml`, `api/mcp/agent-control.v1.md`, `README.md`, `docs/agent-context-guide.md`, `.ai/skills/mivia-mcp/SKILL.md`: update only if response metadata or guidance changes.
 
 Expected files to touch in Phase 4:
 
@@ -544,7 +544,7 @@ Recommended defaults:
 
 - `README.md`: current feature map, MCP/REST project APIs, safety boundaries.
 - `docs/architecture/system-architecture.md`: current service shape, ingestion flow, data classification, operational boundaries.
-- `docs/agent-context-guide.md`: current agent usage guidance for Serena plus MiviaLabs MCP.
+- `docs/agent-context-guide.md`: current agent usage guidance for Serena plus Mivia MCP.
 - `docs/configuration/local-projects.md`: local project config, ingestion, scheduler, and worker settings.
 - `api/mcp/agent-control.v1.md`: current MCP project tools.
 - `api/openapi/agent-control.v1.yaml`: current REST project endpoints.

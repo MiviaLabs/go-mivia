@@ -34,7 +34,7 @@ This note records the bootstrap baseline from the active repository plan and `.a
 
 - Phase 2 adds repository metadata, Go module baseline, scripts, ADR-0001, and this research note.
 - Phase 3 selects LadybugDB for simple embedded persistence and plans REST/MCP boundaries.
-- Phase 4 adds the single `agent-server` skeleton with health, readiness, REST, MCP, and controlled LadybugDB setup.
+- Phase 4 adds the single `mivia-server` skeleton with health, readiness, REST, MCP, and controlled LadybugDB setup.
 - Phase 5 adds OpenAPI, MCP capability docs, and idempotent LadybugDB schema bootstrap.
 - Phase 6 adds research package boundaries.
 - Phase 7 adds CI, security, observability notes, and runbooks.

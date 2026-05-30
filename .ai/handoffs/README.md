@@ -16,7 +16,7 @@ Required handoff fields:
 Template:
 
 ```text
-Continue <task or phase> in /home/mac/mivialabs/mivialabs-agents-monorepo.
+Continue <task or phase> in /home/mac/mivialabs/go-mivia.
 
 Read .ai/INDEX.md first, then the relevant rules and task docs.
 

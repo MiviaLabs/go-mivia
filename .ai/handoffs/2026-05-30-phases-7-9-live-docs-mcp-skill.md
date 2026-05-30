@@ -10,16 +10,16 @@ Scope completed:
 - Added fake watcher tests for disabled global live mode, directory watch registration, new directory watching, debounce, create/write/remove/rename events, overflow rescan, queue-full rescan, initial scan, disabled project filtering, and shutdown.
 - Preserved manual ingestion as fallback for `content_graph/live` projects.
 - Updated stable docs, example config, REST OpenAPI, and MCP capability docs for graph storage, manual ingestion, live mode, watcher troubleshooting, and local reset.
-- Added project-local MCP router skill `mivialabs-agent-mcp` and listed it in `.ai/skills/README.md`.
+- Added project-local MCP router skill `mivia-mcp` and listed it in `.ai/skills/README.md`.
 
 Changed files:
 - `.ai/skills/README.md`
-- `.ai/skills/mivialabs-agent-mcp/SKILL.md`
+- `.ai/skills/mivia-mcp/SKILL.md`
 - `README.md`
 - `api/mcp/agent-control.v1.md`
 - `api/openapi/agent-control.v1.yaml`
-- `cmd/agent-server/main.go`
-- `configs/agent-server.example.toml`
+- `cmd/mivia-server/main.go`
+- `configs/mivia-server.example.toml`
 - `docs/README.md`
 - `docs/architecture/system-architecture.md`
 - `docs/configuration/local-projects.md`
@@ -49,8 +49,8 @@ Changed files:
 - `internal/projectregistry/store/sqlite_test.go`
 
 Verification:
-- `go test ./internal/projectingestion ./cmd/agent-server` passed.
-- `go test ./internal/platform/config ./internal/platform/ladybug ./internal/platform/sqlite/schema ./internal/projectregistry ./internal/projectregistry/store ./internal/projectregistry/httpapi ./internal/agentcontrol/mcpapi ./internal/projectingestion/... ./cmd/agent-server` passed.
+- `go test ./internal/projectingestion ./cmd/mivia-server` passed.
+- `go test ./internal/platform/config ./internal/platform/ladybug ./internal/platform/sqlite/schema ./internal/projectregistry ./internal/projectregistry/store ./internal/projectregistry/httpapi ./internal/agentcontrol/mcpapi ./internal/projectingestion/... ./cmd/mivia-server` passed.
 - `go test ./...` passed.
 - `PATH=/home/mac/.local/bin:$PATH make check` passed.
 

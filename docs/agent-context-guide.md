@@ -4,7 +4,7 @@ Status: Current local guide
 Date: 2026-05-31
 Classification: Internal; PII-prohibited
 
-`agent-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, symbol navigation, call graph views, named AST structural search, and governed workspace git/read/edit operations, and keeps source understanding inside the developer machine.
+`mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, symbol navigation, call graph views, named AST structural search, and governed workspace git/read/edit operations, and keeps source understanding inside the developer machine.
 
 ## Who It Helps
 
@@ -20,12 +20,12 @@ Classification: Internal; PII-prohibited
 ```mermaid
 flowchart LR
   Engineer["Engineer"] --> Agent["AI agent"]
-  Agent --> MCP["MiviaLabs MCP first for indexed context and opted-in workspace"]
+  Agent --> MCP["Mivia MCP first for indexed context and opted-in workspace"]
   Agent --> Serena["Serena fallback"]
   Agent --> Shell["Shell"]
   MCP --> Indexed["Indexed files, chunks, symbols, refs, calls, AST"]
   MCP --> Workspace["Governed workspace status/diff/read/edit"]
-  MCP --> Server["agent-server on localhost"]
+  MCP --> Server["mivia-server on localhost"]
   Server --> Project["Approved local project"]
   Server --> Store["Local graph, SQLite, and FTS"]
   Store --> MCP
@@ -37,9 +37,9 @@ flowchart LR
   MCP --> Agent
 ```
 
-MiviaLabs MCP, Serena, and shell are complementary:
+Mivia MCP, Serena, and shell are complementary:
 
-- Use MiviaLabs MCP first for indexed project context: project metadata, ingestion state, file IDs, outlines, headings, chunks, search, symbols, references, calls, symbol source, call graph, named AST structural search, and governed workspace git status/diff/read/edit when opted in.
+- Use Mivia MCP first for indexed project context: project metadata, ingestion state, file IDs, outlines, headings, chunks, search, symbols, references, calls, symbol source, call graph, named AST structural search, and governed workspace git status/diff/read/edit when opted in.
 - Use Serena only when MCP is unavailable, stale, missing the project, or lacks the edit-time semantic operation needed for a precise code change.
 - Use shell for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repositories.
 
@@ -132,11 +132,11 @@ Check project context:
 
 ```sh
 curl -fsS http://127.0.0.1:8080/api/v1/projects
-curl -fsS http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo
-curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/files?page_size=5'
-curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/ingestion-runs/latest'
-curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/files/<file_id>'
-curl -fsS 'http://127.0.0.1:8080/api/v1/projects/mivialabs-agents-monorepo/symbols?page_size=10'
+curl -fsS http://127.0.0.1:8080/api/v1/projects/go-mivia
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/go-mivia/files?page_size=5'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/go-mivia/ingestion-runs/latest'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/go-mivia/files/<file_id>'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/go-mivia/symbols?page_size=10'
 ```
 
 Call MCP over raw HTTP only when no native MCP client is available:

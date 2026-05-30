@@ -29,7 +29,7 @@ make secret-scan
 ```sh
 MIVIA_HTTP_ADDR=127.0.0.1:8080 \
 MIVIA_SQLITE_PATH=:memory: \
-go run ./cmd/agent-server
+go run ./cmd/mivia-server
 ```
 
 Default bind is localhost-only. Do not bind to `0.0.0.0` or a public interface until authn/authz, origin policy, rate limits, and audit logging are approved.
@@ -39,24 +39,24 @@ Default bind is localhost-only. Do not bind to `0.0.0.0` or a public interface u
 Project config is local-only and intended for engineer local computers. Copy the committed example and replace placeholder paths:
 
 ```sh
-cp configs/agent-server.example.toml configs/agent-server.local.toml
+cp configs/mivia-server.example.toml configs/mivia-server.local.toml
 ```
 
 Start with an explicit config path:
 
 ```sh
-MIVIA_CONFIG_PATH=configs/agent-server.local.toml go run ./cmd/agent-server
+MIVIA_CONFIG_PATH=configs/mivia-server.local.toml go run ./cmd/mivia-server
 ```
 
-`MIVIA_CONFIG_PATH` is fatal when it points to a missing or invalid file. If it is unset and `configs/agent-server.local.toml` is absent, the server starts with environment-only defaults and an empty project list.
+`MIVIA_CONFIG_PATH` is fatal when it points to a missing or invalid file. If it is unset and `configs/mivia-server.local.toml` is absent, the server starts with environment-only defaults and an empty project list.
 
 Do not put secrets, tokens, PII, raw prompts, raw source content, provider payloads, or personal data in local config. Local configs are ignored and must not be committed.
 
 For a longer-running WSL process launched from Windows, build a binary first:
 
 ```powershell
-wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored-runtime-dir>/mivialabs-agent-server ./cmd/agent-server
-wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivialabs-agent-server
+wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored-runtime-dir>/mivia-server ./cmd/mivia-server
+wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivia-server
 ```
 
 Keep that terminal open while testing. If you need a detached process, launch `wsl.exe` from Windows process management and redirect logs to a local temp file.
@@ -160,8 +160,8 @@ curl -fsS \
 Register the running server:
 
 ```powershell
-codex mcp add mivialabs-agent-server --url http://127.0.0.1:8080/mcp
-codex mcp get mivialabs-agent-server
+codex mcp add mivia-server --url http://127.0.0.1:8080/mcp
+codex mcp get mivia-server
 ```
 
 After registration, new Codex Desktop sessions can discover these tools:
@@ -281,7 +281,7 @@ Do not commit `lib-ladybug/` or local database files.
 ## Troubleshooting
 
 - `MIVIA_HTTP_ADDR` rejected: use `127.0.0.1` or `localhost`.
-- `MIVIA_CONFIG_PATH` missing or invalid: copy `configs/agent-server.example.toml` to an ignored local config and replace placeholder roots with absolute local Linux or WSL paths.
+- `MIVIA_CONFIG_PATH` missing or invalid: copy `configs/mivia-server.example.toml` to an ignored local config and replace placeholder roots with absolute local Linux or WSL paths.
 - SQLite open failure: check the configured directory is writable or use `MIVIA_SQLITE_PATH=:memory:`.
 - Persistent graph open failure: check the `storage.ladybug_path` directory is writable, local, ignored, and not inside an included project path unless excluded.
 - Live watcher misses events: run manual ingestion and check whether the project is on a network, mounted, or special filesystem.

@@ -17,7 +17,7 @@ Research and deep-research code may store metadata only:
 
 Raw provider payloads, raw fetched content, raw prompts, credentials, tokens, secrets, personal data, and proprietary third-party content must not be stored in LadybugDB, SQLite, fixtures, logs, REST responses, MCP responses, traces, or metrics.
 
-Local project configuration is optional, local-only, and intended only for engineer local computers. Use `MIVIA_CONFIG_PATH` to point at an ignored local copy of `configs/agent-server.example.toml`. Local config must not contain secrets, tokens, PII, raw prompts, raw source content, provider payloads, or personal data.
+Local project configuration is optional, local-only, and intended only for engineer local computers. Use `MIVIA_CONFIG_PATH` to point at an ignored local copy of `configs/mivia-server.example.toml`. Local config must not contain secrets, tokens, PII, raw prompts, raw source content, provider payloads, or personal data.
 
 REST and MCP project APIs return bounded project metadata only. They expose `GET /api/v1/projects`, `GET /api/v1/projects/{id}`, `POST /api/v1/projects/{id}/digest-runs`, `projects.list`, `projects.get`, and `projects.digest` on the localhost server; public exposure and auth models remain out of scope until separately approved.
 
@@ -33,7 +33,7 @@ Within the accepted ADR-0007 boundary:
 - storage is allowed only after path safety, symlink rejection, include/exclude matching, default denylist checks, size limits, binary/NUL rejection, UTF-8 validation, and sensitive-marker gates pass
 - skipped sensitive files may be represented only by non-sensitive reason codes and, where needed, hash-only state that does not reveal skipped content
 - source-content hashes may be stored only for content that is also stored after all gates pass
-- the exception applies only to the localhost `agent-server` on the developer machine
+- the exception applies only to the localhost `mivia-server` on the developer machine
 
 No provider, embedding, vector, crawling, public exposure, auth model change, symlink traversal, skipped sensitive content storage, matched sensitive-marker storage, or PII ingestion is approved by the content graph policy. PII ingestion remains prohibited unless separately approved by Security/DPO with purpose, legal basis, access model, retention, deletion path, audit trail, and data residency posture.
 

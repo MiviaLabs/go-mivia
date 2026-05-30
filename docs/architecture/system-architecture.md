@@ -7,16 +7,16 @@ Owners: Engineering owner TBD; Security/DPO required before PII, public exposure
 
 ## Scope
 
-This document describes the current local-only `agent-server` architecture. It is grounded in `cmd/agent-server`, `internal/agentcontrol`, `internal/projectregistry`, `internal/research`, `internal/platform`, `api/openapi`, `api/mcp`, and the ADR/security docs.
+This document describes the current local-only `mivia-server` architecture. It is grounded in `cmd/mivia-server`, `internal/agentcontrol`, `internal/projectregistry`, `internal/research`, `internal/platform`, `api/openapi`, `api/mcp`, and the ADR/security docs.
 
 Local task plans and research plans are not stable technical documentation. Do not link them here; promote durable decisions to README, ADRs, API contracts, runbooks, security docs, or this architecture doc.
 
 ## Current Shape
 
-- One Go module with one local service entrypoint: `cmd/agent-server`.
+- One Go module with one local service entrypoint: `cmd/mivia-server`.
 - HTTP surfaces: `/healthz`, `/readyz`, REST under `/api/v1`, and MCP Streamable HTTP under `/mcp`.
 - Domain services: `internal/agentcontrol` for tasks and research runs; `internal/research` for redacted research source metadata.
-- Local project services: `internal/projectregistry` loads optional local project config from `configs/agent-server.local.toml` or explicit `MIVIA_CONFIG_PATH`, validates local roots and patterns, exposes bounded project metadata, runs manual metadata-only digest, and routes content graph data to per-project `persistent` or `in_memory` graph storage.
+- Local project services: `internal/projectregistry` loads optional local project config from `configs/mivia-server.local.toml` or explicit `MIVIA_CONFIG_PATH`, validates local roots and patterns, exposes bounded project metadata, runs manual metadata-only digest, and routes content graph data to per-project `persistent` or `in_memory` graph storage.
 - Project ingestion services: `internal/projectingestion` handles eligible local source safety gates, chunking, promoted AST extraction, extractor cache, SQLite FTS5 search indexing, bounded graph writes, SQLite run/file state, bounded REST/MCP query views, fair scheduling, live watcher orchestration, parallel full-scan file workers, search-index repair, startup recovery for interrupted runs, and periodic running-progress persistence.
 - Project workspace services: `internal/projectworkspace` handles governed git status/diff, current eligible file reads with opaque edit tokens, and token-guarded exact byte-span edits for explicitly opted-in workspaces.
 - Stores: Ladybug graph abstraction for graph data; SQLite for local app configuration, ingestion state, extractor cache, and FTS-backed governed search. Project graph storage can be persistent or process-local per project.
@@ -27,7 +27,7 @@ Local task plans and research plans are not stable technical documentation. Do n
 ```mermaid
 flowchart TB
   LocalClient["Local caller or Codex Desktop"]
-  Server["cmd/agent-server"]
+  Server["cmd/mivia-server"]
   Health["healthz and readyz"]
   REST["REST adapter /api/v1"]
   MCP["MCP adapter /mcp"]
@@ -97,7 +97,7 @@ flowchart TB
 ```mermaid
 sequenceDiagram
   participant Client as Local caller
-  participant Server as agent-server mux
+  participant Server as mivia-server mux
   participant Adapter as REST or MCP adapter
   participant Service as Domain service
   participant Guard as Validation and redaction
@@ -120,13 +120,13 @@ sequenceDiagram
 sequenceDiagram
   participant Engineer as Local engineer
   participant Config as MIVIA_CONFIG_PATH or local TOML
-  participant Server as agent-server
+  participant Server as mivia-server
   participant Registry as project registry
   participant Digest as metadata-only digest
   participant Graph as Ladybug graph
   participant Client as REST or MCP client
 
-  Engineer->>Config: Copy configs/agent-server.example.toml and edit local placeholders
+  Engineer->>Config: Copy configs/mivia-server.example.toml and edit local placeholders
   Server->>Config: Load optional local config
   Config->>Registry: Provide validated project entries
   Registry-->>Server: Project metadata registry ready
@@ -143,7 +143,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   participant Client as REST or MCP client
-  participant Server as agent-server
+  participant Server as mivia-server
   participant Registry as project registry
   participant Scheduler as fair scheduler
   participant Workers as full-scan file workers
@@ -174,7 +174,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   participant Client as REST or MCP client
-  participant Server as agent-server
+  participant Server as mivia-server
   participant Workspace as projectworkspace service
   participant Registry as project registry
   participant Git as explicit git argv

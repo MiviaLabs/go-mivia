@@ -282,7 +282,7 @@ Files to edit/create:
 - Edit `internal/projectingestion/parser_go.go` only if needed to wrap existing parser.
 - Edit `internal/projectingestion/parser_markdown.go` only if needed to wrap existing parser.
 - Edit `internal/projectingestion/parser_infra.go` only if needed to wrap existing parser.
-- Edit `cmd/agent-server/main.go` to validate registry during startup when content graph ingestion is enabled.
+- Edit `cmd/mivia-server/main.go` to validate registry during startup when content graph ingestion is enabled.
 
 Tests:
 
@@ -299,7 +299,7 @@ First narrow test:
 Broad verification:
 
 ```sh
-/home/mac/.local/go1.26.3/bin/go test ./internal/projectingestion ./cmd/agent-server
+/home/mac/.local/go1.26.3/bin/go test ./internal/projectingestion ./cmd/mivia-server
 ```
 
 Acceptance:
@@ -352,7 +352,7 @@ First narrow test:
 Broad verification:
 
 ```sh
-/home/mac/.local/go1.26.3/bin/go test ./internal/projectingestion ./cmd/agent-server
+/home/mac/.local/go1.26.3/bin/go test ./internal/projectingestion ./cmd/mivia-server
 ```
 
 Acceptance:
@@ -400,7 +400,7 @@ First narrow test:
 Broad verification:
 
 ```sh
-/home/mac/.local/go1.26.3/bin/go test ./internal/projectingestion ./cmd/agent-server
+/home/mac/.local/go1.26.3/bin/go test ./internal/projectingestion ./cmd/mivia-server
 ```
 
 Acceptance:
@@ -508,7 +508,7 @@ Files to edit/create:
 - Edit `internal/platform/config/config.go`.
 - Edit `internal/platform/config/file.go`.
 - Edit `internal/platform/config/config_test.go`.
-- Edit `cmd/agent-server/main.go`.
+- Edit `cmd/mivia-server/main.go`.
 - Edit REST/MCP handlers only if ingestion submission/status wiring changes.
 
 Tests:
@@ -529,7 +529,7 @@ First narrow test:
 Broad verification:
 
 ```sh
-/home/mac/.local/go1.26.3/bin/go test ./internal/projectingestion ./cmd/agent-server ./internal/projectregistry/mcpapi ./internal/projectregistry/httpapi
+/home/mac/.local/go1.26.3/bin/go test ./internal/projectingestion ./cmd/mivia-server ./internal/projectregistry/mcpapi ./internal/projectregistry/httpapi
 ```
 
 Acceptance:
@@ -553,7 +553,7 @@ Files to edit/create:
 - `docs/agent-context-guide.md`
 - `docs/configuration/local-projects.md`
 - `docs/runbooks/local-dev.md`
-- `.ai/skills/mivialabs-agent-mcp/SKILL.md`
+- `.ai/skills/mivia-mcp/SKILL.md`
 - `docs/architecture/system-architecture.md`
 - Create `docs/architecture/agent-mcp-project-context-ingestion.md` if the system architecture doc becomes too broad.
 - Update implementation report docs only if stale wording would mislead future agents.
@@ -589,7 +589,7 @@ Rollback:
 Run after each implementation phase that touches Go:
 
 ```sh
-/home/mac/.local/go1.26.3/bin/go test ./internal/projectregistry ./internal/projectingestion ./internal/projectregistry/httpapi ./internal/projectregistry/mcpapi ./internal/agentcontrol/mcpapi ./cmd/agent-server
+/home/mac/.local/go1.26.3/bin/go test ./internal/projectregistry ./internal/projectingestion ./internal/projectregistry/httpapi ./internal/projectregistry/mcpapi ./internal/agentcontrol/mcpapi ./cmd/mivia-server
 /home/mac/.local/go1.26.3/bin/go test ./...
 git diff --check
 ```
@@ -608,7 +608,7 @@ If `go` is available on PATH, it may be used; otherwise use `/home/mac/.local/go
 
 ## Human Decisions Needed
 
-- Approve mandatory Tree-sitter native dependencies for local `agent-server`.
+- Approve mandatory Tree-sitter native dependencies for local `mivia-server`.
 - Confirm defaults: `full_scan_batch_size=500`, `global_worker_count=2`, `per_project_worker_limit=1`.
 - Confirm cache location: recommended current SQLite app DB, not a new database file.
 - Confirm promoted parser behavior: recommended per-file AST parse failure becomes skipped `parse_error`.

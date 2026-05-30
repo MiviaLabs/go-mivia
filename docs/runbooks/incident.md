@@ -6,7 +6,7 @@ Classification: Internal; no PII
 
 ## Scope
 
-This runbook applies only to the local bootstrap `agent-server`. There is no approved production deployment, public API exposure, live provider integration, PII processing, or external datastore runtime.
+This runbook applies only to the local bootstrap `mivia-server`. There is no approved production deployment, public API exposure, live provider integration, PII processing, or external datastore runtime.
 
 ## Immediate Actions
 

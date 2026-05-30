@@ -7,7 +7,7 @@ Mode: Free-text plan; no Jira or Confluence used by repository constraint.
 
 ## 1. Intent
 
-MiviaLabs MCP should cover two remaining high-frequency local-agent operations that currently force agents back to shell:
+Mivia MCP should cover two remaining high-frequency local-agent operations that currently force agents back to shell:
 
 1. inspect git working-tree state and diffs for an opted-in local project;
 2. apply exact, bounded file edits after the agent has already narrowed the target through indexed project context.
@@ -30,7 +30,7 @@ Code-grounded facts:
 
 Documentation-grounded constraints:
 
-- `.ai/INDEX.md` routes indexed context to MiviaLabs MCP first and shell only for exact working-tree facts.
+- `.ai/INDEX.md` routes indexed context to Mivia MCP first and shell only for exact working-tree facts.
 - `.ai/rules/10-security-privacy.md` and `docs/security/privacy-baseline.md` prohibit secrets, PII, raw prompts, provider payloads, and sensitive data exposure.
 - `docs/adr/0007-content-graph-ingestion-and-live-updates.md` approves only a narrow local-source exception for explicitly opted-in local projects.
 - `docs/business-overview.md` states the server is not a raw database browser, public service, provider crawler, embedding/vector store, or arbitrary root crawler.
@@ -42,7 +42,7 @@ Skipped sources:
 
 ## 3. Problem Statement
 
-Agents now use MiviaLabs MCP for indexed discovery, search, chunks, symbol source, calls, and AST search. They still need shell for:
+Agents now use Mivia MCP for indexed discovery, search, chunks, symbol source, calls, and AST search. They still need shell for:
 
 - `git status` / `git diff` to understand current uncommitted work;
 - exact disk reads after live edits but before ingestion catches up;
@@ -269,7 +269,7 @@ Affected config files:
 - `internal/platform/config/*_test.go`
 - `internal/projectregistry/model.go`
 - `internal/projectregistry/service.go`
-- `configs/agent-server.example.toml`
+- `configs/mivia-server.example.toml`
 - `docs/configuration/local-projects.md`
 
 ## 9. Implementation Steps
@@ -346,7 +346,7 @@ Required assertions:
 
 ### Phase 4 - Server Wiring
 
-Update `cmd/agent-server/main.go`:
+Update `cmd/mivia-server/main.go`:
 
 - Build `projectworkspace.Service` only when `cfg.Workspace.Enabled` is true.
 - Inject it into REST and MCP adapters.
@@ -367,7 +367,7 @@ Update:
 - `docs/configuration/local-projects.md`
 - `docs/runbooks/local-dev.md`
 - `.ai/INDEX.md`
-- `.ai/skills/mivialabs-agent-mcp/SKILL.md`
+- `.ai/skills/mivia-mcp/SKILL.md`
 
 Docs must state:
 
@@ -476,7 +476,7 @@ The plan intentionally does not add authentication. Therefore this feature must 
 - `internal/projectingestion/service.go` - path ingestion, canonical-root checks, and stale row cleanup.
 - `internal/platform/config/config.go` and `internal/platform/config/file.go` - config defaults, TOML parsing, unknown field rejection.
 - `api/openapi/agent-control.v1.yaml` and `api/mcp/agent-control.v1.md` - public local REST/MCP contracts.
-- `.ai/INDEX.md` and `.ai/skills/mivialabs-agent-mcp/SKILL.md` - agent routing and MCP-first workflow guidance.
+- `.ai/INDEX.md` and `.ai/skills/mivia-mcp/SKILL.md` - agent routing and MCP-first workflow guidance.
 
 ## 17. Validation Pass
 

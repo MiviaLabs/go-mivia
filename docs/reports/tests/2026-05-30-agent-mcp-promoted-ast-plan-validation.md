@@ -12,7 +12,7 @@ The promoted AST/live-rescan plan was validated against current source and harde
 - Current P0/P1/P2 reports under `docs/reports/tests/`.
 - Ingestion source: `internal/projectingestion/service.go`, `parser_javascript.go`, `orchestrator.go`, `sqlite_store.go`, `graph_store.go`, `query.go`, `model.go`.
 - Config/schema source: `internal/platform/config/config.go`, `internal/platform/config/file.go`, `internal/platform/sqlite/schema/schema.go`.
-- Docs to update later: `README.md`, `docs/agent-context-guide.md`, `docs/configuration/local-projects.md`, `docs/runbooks/local-dev.md`, `docs/architecture/system-architecture.md`, `.ai/skills/mivialabs-agent-mcp/SKILL.md`.
+- Docs to update later: `README.md`, `docs/agent-context-guide.md`, `docs/configuration/local-projects.md`, `docs/runbooks/local-dev.md`, `docs/architecture/system-architecture.md`, `.ai/skills/mivia-mcp/SKILL.md`.
 - Dependency feasibility via `go list -m` outside the repo and primary package docs for Tree-sitter Go bindings and grammar packages.
 
 Jira: not checked by repo constraint.

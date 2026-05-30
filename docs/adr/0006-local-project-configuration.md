@@ -5,7 +5,7 @@ Date: 2026-05-30
 
 ## Context
 
-The local `agent-server` previously loaded runtime settings only from environment variables. Future project ingestion needs a typed local configuration surface before any registry, REST/MCP project routes, graph digest, provider, embedding, vector storage, public exposure, auth model, live crawling, or file watcher is added.
+The local `mivia-server` previously loaded runtime settings only from environment variables. Future project ingestion needs a typed local configuration surface before any registry, REST/MCP project routes, graph digest, provider, embedding, vector storage, public exposure, auth model, live crawling, or file watcher is added.
 
 Local config remains internal, localhost-only, and PII-prohibited. Config files must not contain credentials, tokens, raw prompts, raw source content, provider payloads, or personal data.
 
@@ -13,9 +13,9 @@ Local config remains internal, localhost-only, and PII-prohibited. Config files 
 
 Use TOML for the local server config file.
 
-- Default local path: `configs/agent-server.local.toml`.
+- Default local path: `configs/mivia-server.local.toml`.
 - Explicit override: `MIVIA_CONFIG_PATH`.
-- Committed example: [configs/agent-server.example.toml](../../configs/agent-server.example.toml).
+- Committed example: [configs/mivia-server.example.toml](../../configs/mivia-server.example.toml).
 - User guide: [docs/configuration/local-projects.md](../configuration/local-projects.md).
 
 Use `github.com/pelletier/go-toml/v2` as the TOML parser. It is a small, Go-native dependency and supports strict decoding with unknown-field rejection. Do not vendor a parser and do not add a custom partial TOML parser.
@@ -25,7 +25,7 @@ JSON remains the no-new-dependency fallback if the TOML dependency is later reje
 ## Consequences
 
 - `MIVIA_CONFIG_PATH` set to a missing or invalid config is fatal.
-- If `MIVIA_CONFIG_PATH` is unset and `configs/agent-server.local.toml` is absent, the server keeps current environment-only defaults and an empty project list.
+- If `MIVIA_CONFIG_PATH` is unset and `configs/mivia-server.local.toml` is absent, the server keeps current environment-only defaults and an empty project list.
 - Environment variables remain final overrides over file values.
 - The parser rejects unknown config sections and project fields.
 - Durations use Go duration strings such as `10s`.

@@ -2,6 +2,10 @@
 
 This directory is the canonical, vendor-neutral operating surface for this repository.
 
+Repository identity: `github.com/MiviaLabs/go-mivia`.
+Product name: Mivia (`mivia` in command, path, and service names).
+Server binary/service name: `mivia-server`.
+
 Agent entrypoints:
 
 - Read this file first.
@@ -13,9 +17,9 @@ Agent entrypoints:
 
 Context-tool routing:
 
-- Use the local MiviaLabs MCP server first for indexed repo context and opted-in workspace operations: project discovery, ingestion status, file discovery, file metadata, bounded chunks, outlines, text/file/symbol/reference/call search, symbol source, references, callers, callees, call graph, named AST query catalog/search, search-index repair status, governed git status/diff, current eligible file reads, token-guarded exact edits, and planning context exposed by the localhost content graph.
-- Do not use Serena for indexed project discovery, symbol overview/listing, references, call sites, search, bounded source chunks, or planning context when MiviaLabs MCP is available and current.
-- Use Serena only when MiviaLabs MCP is unavailable, stale, missing this project, or lacks the needed semantic operation; state that fallback explicitly.
+- Use the local Mivia MCP server first for indexed repo context and opted-in workspace operations: project discovery, ingestion status, file discovery, file metadata, bounded chunks, outlines, text/file/symbol/reference/call search, symbol source, references, callers, callees, call graph, named AST query catalog/search, search-index repair status, governed git status/diff, current eligible file reads, token-guarded exact edits, and planning context exposed by the localhost content graph.
+- Do not use Serena for indexed project discovery, symbol overview/listing, references, call sites, search, bounded source chunks, or planning context when Mivia MCP is available and current.
+- Use Serena only when Mivia MCP is unavailable, stale, missing this project, or lacks the needed semantic operation; state that fallback explicitly.
 - Use MCP workspace tools first for governed git status/diff, eligible current file reads, and exact edits when the project is opted in. Use shell commands for tests, builds, generated files, logs, process control, arbitrary commands, non-opted-in repos, and files not yet indexed or allowed by MCP.
 - Do not guess between tools: if the question is about indexed code structure, search, source snippets, AST discovery, project graph state, or opted-in workspace status/diff/read/edit, start with MCP; if it is about tests, builds, logs, generated files, process control, arbitrary commands, or non-opted-in repos, use shell.
 - If the MCP server is unavailable, state the gap and fall back to Serena plus shell only for the minimum evidence needed.

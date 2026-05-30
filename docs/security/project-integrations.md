@@ -6,7 +6,7 @@ Classification: Internal; local Atlassian rich-content and PII exception
 
 ## Scope
 
-This policy covers project-scoped Jira Cloud and Confluence Cloud integrations for the localhost `agent-server`.
+This policy covers project-scoped Jira Cloud and Confluence Cloud integrations for the localhost `mivia-server`.
 
 Approved providers:
 

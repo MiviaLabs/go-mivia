@@ -1,15 +1,15 @@
 ---
-name: mivialabs-agent-mcp
-description: Use with the MiviaLabs localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, search, bounded chunks, symbol navigation, call graph, named AST discovery, governed git status/diff, current eligible file reads, or exact token-guarded edits.
+name: mivia-mcp
+description: Use with the Mivia localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, search, bounded chunks, symbol navigation, call graph, named AST discovery, governed git status/diff, current eligible file reads, or exact token-guarded edits.
 ---
 
-# MiviaLabs Agent MCP
+# Mivia Agent MCP
 
-Portable skill. It can be copied into any repository indexed by a running MiviaLabs `agent-server`.
+Portable skill. It can be copied into any repository indexed by a running Mivia `mivia-server`.
 
 ## Mandatory Use Gate
 
-When a MiviaLabs MCP server is available for the target project, agents must use it before broad shell scans, manual file walking, Serena indexed-context discovery, or chat-only assumptions for every capability listed below.
+When a Mivia MCP server is available for the target project, agents must use it before broad shell scans, manual file walking, Serena indexed-context discovery, or chat-only assumptions for every capability listed below.
 
 Mandatory MCP-first surfaces:
 
@@ -22,7 +22,7 @@ Mandatory MCP-first surfaces:
 
 Do not bypass MCP with raw database queries, absolute root inspection, broad shell scans, ad hoc `git status`/`git diff`, or direct file reads/edits when an MCP tool can answer or perform the operation. Use shell only for tests, build output, logs, process control, generated-file verification, arbitrary commands outside the MCP contract, non-opted-in repositories, and files not yet eligible or allowed by MCP.
 
-Do not use Serena for indexed project discovery, symbol overview/listing, references, call sites, search, bounded source chunks, or planning context when MiviaLabs MCP is available and current.
+Do not use Serena for indexed project discovery, symbol overview/listing, references, call sites, search, bounded source chunks, or planning context when Mivia MCP is available and current.
 
 If MCP is unavailable, stale, missing the project, or lacks the needed semantic operation, state that explicitly, then fall back to Serena plus shell for the minimum evidence needed.
 
@@ -40,15 +40,15 @@ Do not assume the current repository is the server repo. Do not assume any speci
 
 | Need | First choice | Avoid |
 | --- | --- | --- |
-| Code symbols, references, call sites, edit targets | MiviaLabs MCP when indexed and current | Serena as first resort in indexed MiviaLabs projects |
-| Indexed project map, ingestion state, file IDs, chunks, symbols | MiviaLabs MCP | Raw DB queries, absolute paths, broad shell scans |
+| Code symbols, references, call sites, edit targets | Mivia MCP when indexed and current | Serena as first resort in indexed Mivia projects |
+| Indexed project map, ingestion state, file IDs, chunks, symbols | Mivia MCP | Raw DB queries, absolute paths, broad shell scans |
 | Routine indexed text, path, symbol, reference, call, named AST discovery, or AST query-catalog discovery | `projects.search.*` | Serena `search_for_pattern`, raw DB queries, broad shell scans |
 | Governed git status/diff for opted-in projects | MCP workspace tools | Broad shell scans as first resort |
 | Current tests/runtime state, builds, logs, generated files, process control, arbitrary commands, non-opted-in repos | Shell or host tooling | MCP as proof of those runtime facts |
 
 If unclear:
 
-1. Indexed code structure -> MiviaLabs MCP.
+1. Indexed code structure -> Mivia MCP.
 2. Indexed project discovery -> MCP.
 3. Governed git status/diff/read/edit for opted-in projects -> MCP workspace tools.
 4. Tests, builds, logs, process control, generated files, arbitrary commands, or non-opted-in repos -> shell.
@@ -101,14 +101,14 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 
 Resources:
 
-- `mivialabs://tasks/{id}`
-- `mivialabs://research-runs/{id}`
-- `mivialabs://research-sources/{id}`
-- `mivialabs://projects/{id}`
-- `mivialabs://projects/{id}/digest-runs/{run_id}`
-- `mivialabs://projects/{id}/files/{file_id}`
-- `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`
-- `mivialabs://projects/{id}/symbols/{symbol_id}`
+- `mivia://tasks/{id}`
+- `mivia://research-runs/{id}`
+- `mivia://research-sources/{id}`
+- `mivia://projects/{id}`
+- `mivia://projects/{id}/digest-runs/{run_id}`
+- `mivia://projects/{id}/files/{file_id}`
+- `mivia://projects/{id}/files/{file_id}/chunks/{chunk_id}`
+- `mivia://projects/{id}/symbols/{symbol_id}`
 
 ## Workspace Boundary
 

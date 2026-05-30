@@ -12,7 +12,7 @@ This repository is being bootstrapped as a generic Go microservices monorepo for
 Use one root Go module:
 
 ```text
-module github.com/MiviaLabs/mivialabs-agents-monorepo
+module github.com/MiviaLabs/go-mivia
 go 1.26
 toolchain go1.26.3
 ```
