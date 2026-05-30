@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -15,6 +16,8 @@ import (
 
 type integrationGraphBackend interface {
 	PutNode(context.Context, ladybug.Node) error
+	GetNode(context.Context, string, string) (ladybug.Node, error)
+	ListNodes(context.Context, string, map[string]string) ([]ladybug.Node, error)
 	DeleteNodes(context.Context, string, map[string]string) error
 	PutRelationship(context.Context, ladybug.Relationship) error
 }
@@ -27,6 +30,63 @@ type RichContentGraphResult struct {
 	ArtifactID    string
 	ChunksWritten int
 	ContentSHA256 string
+}
+
+type RichContentReadOptions struct {
+	MaxChunkBytes int
+}
+
+type RichContentSearchOptions struct {
+	Provider        Provider
+	Query           string
+	MaxResults      int
+	MaxSnippetBytes int
+	CaseSensitive   bool
+}
+
+type RichContentArtifact struct {
+	ID            string
+	ProjectID     string
+	Provider      Provider
+	ItemID        string
+	ItemKey       string
+	ItemType      string
+	FieldCount    int
+	ChunkCount    int
+	ContentSHA256 string
+	UpdatedAt     time.Time
+}
+
+type RichContentChunkView struct {
+	ID            string
+	ArtifactID    string
+	ProjectID     string
+	Provider      Provider
+	ItemID        string
+	ItemKey       string
+	ItemType      string
+	FieldName     string
+	Label         string
+	Index         int
+	ByteStart     int
+	ByteEnd       int
+	Text          string
+	TextTruncated bool
+	UpdatedAt     time.Time
+}
+
+type RichContentReadResult struct {
+	Artifact RichContentArtifact
+	Chunks   []RichContentChunkView
+}
+
+type RichContentSearchResult struct {
+	Artifact         RichContentArtifact
+	Chunk            RichContentChunkView
+	Snippet          string
+	SnippetTruncated bool
+	ByteStart        int
+	ByteEnd          int
 }
 
 func NewRichContentGraphStore(graph integrationGraphBackend) *RichContentGraphStore {
@@ -54,6 +114,118 @@ func (store *RichContentGraphStore) PutRichContentItem(ctx context.Context, item
 		return RichContentGraphResult{}, err
 	}
 	return result, nil
+}
+
+func (store *RichContentGraphStore) GetRichContentItem(ctx context.Context, projectID string, provider Provider, itemID string, options RichContentReadOptions) (RichContentReadResult, error) {
+	if store == nil || store.graph == nil {
+		return RichContentReadResult{}, fmt.Errorf("%w: integration graph store unavailable", ErrInvalidInput)
+	}
+	projectID = strings.TrimSpace(projectID)
+	itemID = strings.TrimSpace(itemID)
+	if projectID == "" || provider == "" || itemID == "" {
+		return RichContentReadResult{}, ErrInvalidInput
+	}
+	artifactID := integrationArtifactID(projectID, provider, itemID)
+	artifactNode, err := store.graph.GetNode(ctx, "IntegrationArtifact", artifactID)
+	if err != nil {
+		if errors.Is(err, ladybug.ErrNodeNotFound) {
+			return RichContentReadResult{}, ErrNotFound
+		}
+		return RichContentReadResult{}, err
+	}
+	artifact, err := artifactFromNode(artifactNode)
+	if err != nil {
+		return RichContentReadResult{}, err
+	}
+	if artifact.ProjectID != projectID || artifact.Provider != provider {
+		return RichContentReadResult{}, ErrNotFound
+	}
+	chunkNodes, err := store.graph.ListNodes(ctx, "IntegrationContentChunk", map[string]string{
+		"project_id":  projectID,
+		"provider":    string(provider),
+		"artifact_id": artifactID,
+	})
+	if err != nil {
+		return RichContentReadResult{}, err
+	}
+	chunks, err := chunksFromNodes(chunkNodes, options.MaxChunkBytes)
+	if err != nil {
+		return RichContentReadResult{}, err
+	}
+	return RichContentReadResult{Artifact: artifact, Chunks: chunks}, nil
+}
+
+func (store *RichContentGraphStore) SearchRichContent(ctx context.Context, projectID string, options RichContentSearchOptions) ([]RichContentSearchResult, error) {
+	if store == nil || store.graph == nil {
+		return nil, fmt.Errorf("%w: integration graph store unavailable", ErrInvalidInput)
+	}
+	projectID = strings.TrimSpace(projectID)
+	query := strings.TrimSpace(options.Query)
+	if projectID == "" || query == "" {
+		return nil, ErrInvalidInput
+	}
+	filter := map[string]string{"project_id": projectID}
+	if options.Provider != "" {
+		filter["provider"] = string(options.Provider)
+	}
+	nodes, err := store.graph.ListNodes(ctx, "IntegrationContentChunk", filter)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		leftIndex := atoiDefault(nodes[i].Properties["chunk_index"])
+		rightIndex := atoiDefault(nodes[j].Properties["chunk_index"])
+		if nodes[i].Properties["artifact_id"] != nodes[j].Properties["artifact_id"] {
+			return nodes[i].Properties["artifact_id"] < nodes[j].Properties["artifact_id"]
+		}
+		if leftIndex != rightIndex {
+			return leftIndex < rightIndex
+		}
+		return nodes[i].ID < nodes[j].ID
+	})
+	limit := boundedSearchLimit(options.MaxResults)
+	snippetBytes := boundedSnippetBytes(options.MaxSnippetBytes)
+	results := make([]RichContentSearchResult, 0)
+	artifactCache := make(map[string]RichContentArtifact)
+	for _, node := range nodes {
+		text := sanitizeRichText(node.Properties["text"])
+		index := richMatchIndex(text, query, options.CaseSensitive)
+		if index < 0 {
+			continue
+		}
+		chunk, err := chunkFromNode(node, snippetBytes)
+		if err != nil {
+			return nil, err
+		}
+		artifact, ok := artifactCache[chunk.ArtifactID]
+		if !ok {
+			artifactNode, err := store.graph.GetNode(ctx, "IntegrationArtifact", chunk.ArtifactID)
+			if errors.Is(err, ladybug.ErrNodeNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			artifact, err = artifactFromNode(artifactNode)
+			if err != nil {
+				return nil, err
+			}
+			artifactCache[chunk.ArtifactID] = artifact
+		}
+		snippet, truncated := richSnippet(text, index, index+len(query), snippetBytes)
+		results = append(results, RichContentSearchResult{
+			Artifact:         artifact,
+			Chunk:            chunk,
+			Snippet:          snippet,
+			SnippetTruncated: truncated,
+			ByteStart:        chunk.ByteStart + index,
+			ByteEnd:          chunk.ByteStart + index + len(query),
+		})
+		if len(results) >= limit {
+			break
+		}
+	}
+	return results, nil
 }
 
 func (store *RichContentGraphStore) putRichContentItem(ctx context.Context, artifactID string, contentSHA string, item RichContentItem, chunks []RichContentChunk) error {
@@ -226,4 +398,162 @@ func firstGraphTime(values ...time.Time) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+func artifactFromNode(node ladybug.Node) (RichContentArtifact, error) {
+	fieldCount, err := strconv.Atoi(node.Properties["field_count"])
+	if err != nil && node.Properties["field_count"] != "" {
+		return RichContentArtifact{}, err
+	}
+	chunkCount, err := strconv.Atoi(node.Properties["chunk_count"])
+	if err != nil && node.Properties["chunk_count"] != "" {
+		return RichContentArtifact{}, err
+	}
+	updatedAt, err := parseIntegrationGraphTime(node.Properties["updated_at"])
+	if err != nil {
+		return RichContentArtifact{}, err
+	}
+	return RichContentArtifact{
+		ID:            node.ID,
+		ProjectID:     node.Properties["project_id"],
+		Provider:      Provider(node.Properties["provider"]),
+		ItemID:        node.Properties["item_id"],
+		ItemKey:       node.Properties["item_key"],
+		ItemType:      node.Properties["item_type"],
+		FieldCount:    fieldCount,
+		ChunkCount:    chunkCount,
+		ContentSHA256: node.Properties["content_sha256"],
+		UpdatedAt:     updatedAt,
+	}, nil
+}
+
+func chunksFromNodes(nodes []ladybug.Node, maxChunkBytes int) ([]RichContentChunkView, error) {
+	sort.Slice(nodes, func(i, j int) bool {
+		leftIndex := atoiDefault(nodes[i].Properties["chunk_index"])
+		rightIndex := atoiDefault(nodes[j].Properties["chunk_index"])
+		if leftIndex != rightIndex {
+			return leftIndex < rightIndex
+		}
+		return nodes[i].ID < nodes[j].ID
+	})
+	chunks := make([]RichContentChunkView, 0, len(nodes))
+	for _, node := range nodes {
+		chunk, err := chunkFromNode(node, maxChunkBytes)
+		if err != nil {
+			return nil, err
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks, nil
+}
+
+func chunkFromNode(node ladybug.Node, maxChunkBytes int) (RichContentChunkView, error) {
+	index, err := strconv.Atoi(node.Properties["chunk_index"])
+	if err != nil {
+		return RichContentChunkView{}, err
+	}
+	byteStart, err := strconv.Atoi(node.Properties["byte_start"])
+	if err != nil {
+		return RichContentChunkView{}, err
+	}
+	byteEnd, err := strconv.Atoi(node.Properties["byte_end"])
+	if err != nil {
+		return RichContentChunkView{}, err
+	}
+	updatedAt, err := parseIntegrationGraphTime(node.Properties["updated_at"])
+	if err != nil {
+		return RichContentChunkView{}, err
+	}
+	text, truncated := truncateRichTextForResponse(sanitizeRichText(node.Properties["text"]), maxChunkBytes)
+	return RichContentChunkView{
+		ID:            node.ID,
+		ArtifactID:    node.Properties["artifact_id"],
+		ProjectID:     node.Properties["project_id"],
+		Provider:      Provider(node.Properties["provider"]),
+		ItemID:        node.Properties["item_id"],
+		ItemKey:       node.Properties["item_key"],
+		ItemType:      node.Properties["item_type"],
+		FieldName:     node.Properties["field_name"],
+		Label:         node.Properties["label"],
+		Index:         index,
+		ByteStart:     byteStart,
+		ByteEnd:       byteEnd,
+		Text:          text,
+		TextTruncated: truncated,
+		UpdatedAt:     updatedAt,
+	}, nil
+}
+
+func boundedSearchLimit(value int) int {
+	if value <= 0 {
+		return 10
+	}
+	if value > 50 {
+		return 50
+	}
+	return value
+}
+
+func boundedSnippetBytes(value int) int {
+	if value <= 0 {
+		return 512
+	}
+	if value > 4096 {
+		return 4096
+	}
+	return value
+}
+
+func richMatchIndex(text string, query string, caseSensitive bool) int {
+	if !caseSensitive {
+		text = strings.ToLower(text)
+		query = strings.ToLower(query)
+	}
+	return strings.Index(text, query)
+}
+
+func richSnippet(text string, start int, end int, maxBytes int) (string, bool) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(text) {
+		end = len(text)
+	}
+	if end < start {
+		end = start
+	}
+	prefixStart := start - maxBytes/2
+	if prefixStart < 0 {
+		prefixStart = 0
+	}
+	suffixEnd := prefixStart + maxBytes
+	if suffixEnd > len(text) {
+		suffixEnd = len(text)
+	}
+	snippet := text[prefixStart:suffixEnd]
+	truncated := prefixStart > 0 || suffixEnd < len(text)
+	snippet, utf8Truncated := truncateRichTextForResponse(snippet, maxBytes)
+	return snippet, truncated || utf8Truncated
+}
+
+func truncateRichTextForResponse(text string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 {
+		maxBytes = defaultRichContentMaxChunkBytes
+	}
+	if len([]byte(text)) <= maxBytes {
+		return text, false
+	}
+	return truncateUTF8Bytes(text, maxBytes), true
+}
+
+func parseIntegrationGraphTime(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339Nano, value)
+}
+
+func atoiDefault(value string) int {
+	parsed, _ := strconv.Atoi(value)
+	return parsed
 }
