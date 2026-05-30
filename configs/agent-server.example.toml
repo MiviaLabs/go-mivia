@@ -1,0 +1,64 @@
+# Copy this file to configs/agent-server.local.toml and replace placeholder paths.
+# Local config files are ignored and must not contain secrets, tokens, PII, raw prompts,
+# raw source content, provider payloads, or personal data.
+
+version = 1
+
+[server]
+http_addr = "127.0.0.1:8080"
+max_request_bytes = 1048576
+request_timeout = "10s"
+read_header_timeout = "5s"
+shutdown_timeout = "10s"
+
+[storage]
+ladybug_path = "data/mivialabs.lbug"
+sqlite_path = "data/mivialabs-config.sqlite"
+
+[[projects]]
+id = "example-service"
+display_name = "Example Service"
+description = "Synthetic local service used to show the project config schema."
+root_path = "/absolute/path/to/project"
+enabled = true
+classification = "internal"
+graph_namespace = "example-service"
+digest_mode = "metadata_only"
+update_policy = "manual"
+include = [
+  "**/*.go",
+  "go.mod",
+  "go.sum",
+  "docs/**",
+]
+exclude = [
+  ".git/**",
+  "data/**",
+  "secrets/**",
+  ".env*",
+  "lib-ladybug/**",
+]
+follow_symlinks = false
+
+[[projects]]
+id = "disabled-example"
+display_name = "Disabled Example"
+description = "Disabled placeholder entry for staging a future local project."
+root_path = "/absolute/path/to/disabled-project"
+enabled = false
+classification = "internal"
+graph_namespace = "disabled-example"
+digest_mode = "metadata_only"
+update_policy = "manual"
+include = [
+  "**/*.go",
+  "README.md",
+]
+exclude = [
+  ".git/**",
+  "data/**",
+  "secrets/**",
+  ".env*",
+  "lib-ladybug/**",
+]
+follow_symlinks = false

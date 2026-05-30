@@ -6,6 +6,7 @@ toolchain go1.26.3
 
 require (
 	github.com/LadybugDB/go-ladybug v0.17.0
+	github.com/pelletier/go-toml/v2 v2.3.1
 	modernc.org/sqlite v1.51.0
 )
 

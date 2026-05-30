@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,5 +37,191 @@ func TestConfigValidate_LocalBind_ReturnsNil(t *testing.T) {
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected local bind to be valid: %v", err)
+	}
+}
+
+func TestLoad_DefaultConfigMissing_UsesEnvOnlyDefaults(t *testing.T) {
+	chdir(t, t.TempDir())
+	clearConfigEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected env-only defaults to load: %v", err)
+	}
+
+	if cfg.ConfigPath != defaultConfigPath {
+		t.Fatalf("expected default config path %q, got %q", defaultConfigPath, cfg.ConfigPath)
+	}
+	if cfg.HTTPAddr != defaultHTTPAddr {
+		t.Fatalf("expected default HTTP addr %q, got %q", defaultHTTPAddr, cfg.HTTPAddr)
+	}
+	if len(cfg.Projects) != 0 {
+		t.Fatalf("expected no projects when default config is absent, got %d", len(cfg.Projects))
+	}
+}
+
+func TestLoad_ExplicitConfigMissing_ReturnsError(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("MIVIA_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.toml"))
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected missing explicit config to fail")
+	}
+	if !strings.Contains(err.Error(), "MIVIA_CONFIG_PATH points to a missing config file") {
+		t.Fatalf("expected non-sensitive missing config error, got %v", err)
+	}
+}
+
+func TestLoad_FileValuesAndEnvOverrides_ReturnsMergedConfig(t *testing.T) {
+	clearConfigEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-server.local.toml")
+	writeFile(t, path, `
+version = 1
+
+[server]
+http_addr = "127.0.0.1:9090"
+max_request_bytes = 2048
+request_timeout = "11s"
+read_header_timeout = "6s"
+shutdown_timeout = "12s"
+
+[storage]
+ladybug_path = "data/from-file.lbug"
+sqlite_path = "data/from-file.sqlite"
+
+[[projects]]
+id = "example"
+display_name = "Example"
+description = "Synthetic project"
+root_path = "/absolute/path/to/project"
+enabled = true
+classification = "internal"
+graph_namespace = "example"
+digest_mode = "metadata_only"
+update_policy = "manual"
+include = ["**/*.go"]
+exclude = [".git/**"]
+follow_symlinks = false
+`)
+
+	t.Setenv("MIVIA_CONFIG_PATH", path)
+	t.Setenv("MIVIA_HTTP_ADDR", "localhost:8081")
+	t.Setenv("MIVIA_LADYBUG_PATH", "data/from-env.lbug")
+	t.Setenv("MIVIA_REQUEST_TIMEOUT", "13s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected merged config to load: %v", err)
+	}
+
+	if cfg.ConfigPath != path {
+		t.Fatalf("expected config path %q, got %q", path, cfg.ConfigPath)
+	}
+	if cfg.HTTPAddr != "localhost:8081" {
+		t.Fatalf("expected env HTTP override, got %q", cfg.HTTPAddr)
+	}
+	if cfg.LadybugPath != "data/from-env.lbug" {
+		t.Fatalf("expected env Ladybug path override, got %q", cfg.LadybugPath)
+	}
+	if cfg.SQLitePath != "data/from-file.sqlite" {
+		t.Fatalf("expected file SQLite path, got %q", cfg.SQLitePath)
+	}
+	if cfg.RequestTimeout != 13*time.Second {
+		t.Fatalf("expected env request timeout override, got %s", cfg.RequestTimeout)
+	}
+	if cfg.ReadHeaderTimeout != 6*time.Second {
+		t.Fatalf("expected file read header timeout, got %s", cfg.ReadHeaderTimeout)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("expected one project, got %d", len(cfg.Projects))
+	}
+	if cfg.Projects[0].ID != "example" || cfg.Projects[0].DigestMode != digestModeMetadataOnly {
+		t.Fatalf("unexpected project config: %+v", cfg.Projects[0])
+	}
+}
+
+func TestLoad_DefaultConfigPresent_LoadsFile(t *testing.T) {
+	clearConfigEnv(t)
+	dir := t.TempDir()
+	chdir(t, dir)
+	writeFile(t, filepath.Join(dir, defaultConfigPath), `
+version = 1
+
+[server]
+http_addr = "localhost:8082"
+
+[storage]
+ladybug_path = "data/default-file.lbug"
+sqlite_path = "data/default-file.sqlite"
+`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected default file to load: %v", err)
+	}
+	if cfg.HTTPAddr != "localhost:8082" {
+		t.Fatalf("expected default file HTTP addr, got %q", cfg.HTTPAddr)
+	}
+	if cfg.SQLitePath != "data/default-file.sqlite" {
+		t.Fatalf("expected default file SQLite path, got %q", cfg.SQLitePath)
+	}
+}
+
+func TestLoad_ExplicitInvalidConfig_ReturnsError(t *testing.T) {
+	clearConfigEnv(t)
+	path := filepath.Join(t.TempDir(), "agent-server.local.toml")
+	writeFile(t, path, "not toml")
+	t.Setenv("MIVIA_CONFIG_PATH", path)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected invalid explicit config to fail")
+	}
+	if !strings.Contains(err.Error(), "MIVIA_CONFIG_PATH config is invalid") {
+		t.Fatalf("expected explicit invalid config error, got %v", err)
+	}
+}
+
+func clearConfigEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"MIVIA_CONFIG_PATH",
+		"MIVIA_HTTP_ADDR",
+		"MIVIA_LADYBUG_PATH",
+		"MIVIA_SQLITE_PATH",
+		"MIVIA_MAX_REQUEST_BYTES",
+		"MIVIA_REQUEST_TIMEOUT",
+		"MIVIA_READ_HEADER_TIMEOUT",
+		"MIVIA_SHUTDOWN_TIMEOUT",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func chdir(t *testing.T, dir string) {
+	t.Helper()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir %s: %v", dir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+}
+
+func writeFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir for %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(strings.TrimLeft(content, "\n")), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }

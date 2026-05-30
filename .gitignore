@@ -6,6 +6,8 @@ secrets/*
 !secrets/
 !secrets/.gitignore
 !secrets/*.example
+configs/*.local.toml
+configs/*.local.json
 
 # Go build and test output
 /bin/
