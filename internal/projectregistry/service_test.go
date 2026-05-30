@@ -281,6 +281,92 @@ func TestRegistry_ReturnsDefensiveCopies(t *testing.T) {
 	}
 }
 
+func TestRegistry_MetadataExposesRedactedIntegrationState(t *testing.T) {
+	root := t.TempDir()
+	project := validConfigProject(root)
+	project.Integrations = config.IntegrationConfig{
+		Jira: &config.JiraIntegration{
+			Enabled:  true,
+			AuthMode: "api_token_basic",
+			CredentialRefs: config.AtlassianCredentialRefs{
+				EmailEnv:    "MIVIA_ATLASSIAN_EMAIL_EXAMPLE",
+				APITokenEnv: "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE",
+			},
+			ProjectKeys: []string{"ABC", "XYZ"},
+			Polling: config.IntegrationPolling{
+				IngestionEnabled: true,
+			},
+		},
+		Confluence: &config.ConfluenceIntegration{
+			Enabled:  true,
+			AuthMode: "api_token_basic",
+			CredentialRefs: config.AtlassianCredentialRefs{
+				EmailFile:    "secrets/email",
+				APITokenFile: "secrets/token",
+			},
+			SpaceKeys: []string{"ENG"},
+		},
+	}
+
+	registry, err := NewRegistry([]config.Project{project}, Options{})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	loaded, ok := registry.Get("example-service")
+	if !ok {
+		t.Fatal("expected project")
+	}
+	metadata := MetadataForProject(loaded)
+	if metadata.Integrations == nil || metadata.Integrations.Jira == nil || metadata.Integrations.Confluence == nil {
+		t.Fatalf("expected integration metadata: %+v", metadata.Integrations)
+	}
+	if metadata.Integrations.Jira.ProjectKeyCount != 2 || metadata.Integrations.Jira.CredentialSource != "env" {
+		t.Fatalf("unexpected Jira metadata: %+v", metadata.Integrations.Jira)
+	}
+	if metadata.Integrations.Confluence.SpaceKeyCount != 1 || metadata.Integrations.Confluence.CredentialSource != "file" {
+		t.Fatalf("unexpected Confluence metadata: %+v", metadata.Integrations.Confluence)
+	}
+}
+
+func TestRegistry_DoesNotExposeIntegrationCredentialReferences(t *testing.T) {
+	root := t.TempDir()
+	project := validConfigProject(root)
+	project.Integrations = config.IntegrationConfig{
+		Jira: &config.JiraIntegration{
+			Enabled:  true,
+			AuthMode: "api_token_basic",
+			CredentialRefs: config.AtlassianCredentialRefs{
+				EmailEnv:     "MIVIA_ATLASSIAN_EMAIL_EXAMPLE",
+				APITokenFile: "secrets/token",
+			},
+			ProjectKeys: []string{"ABC"},
+		},
+	}
+
+	registry, err := NewRegistry([]config.Project{project}, Options{})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	loaded, ok := registry.Get("example-service")
+	if !ok {
+		t.Fatal("expected project")
+	}
+	metadata := MetadataForProject(loaded)
+	if metadata.Integrations == nil || metadata.Integrations.Jira == nil {
+		t.Fatalf("expected Jira integration metadata: %+v", metadata.Integrations)
+	}
+	rendered := strings.Join([]string{
+		metadata.Integrations.Jira.AuthMode,
+		metadata.Integrations.Jira.CredentialSource,
+	}, " ")
+	if strings.Contains(rendered, "MIVIA_ATLASSIAN") || strings.Contains(rendered, "secrets/token") {
+		t.Fatalf("metadata exposed credential references: %q", rendered)
+	}
+	if metadata.Integrations.Jira.CredentialSource != "mixed" {
+		t.Fatalf("expected mixed credential source, got %+v", metadata.Integrations.Jira)
+	}
+}
+
 func validConfigProject(root string) config.Project {
 	return config.Project{
 		ID:                    "example-service",

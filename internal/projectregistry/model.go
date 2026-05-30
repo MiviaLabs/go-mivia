@@ -41,23 +41,39 @@ type Project struct {
 	MaxFileBytes          int64
 	MaxChunkBytes         int
 	SensitiveMarkerPolicy string
+	Integrations          ProjectIntegrationsMetadata
 	ValidationStatus      string
 	ValidationError       string
 }
 
 type ProjectMetadata struct {
-	ID               string `json:"id"`
-	DisplayName      string `json:"display_name"`
-	Description      string `json:"description,omitempty"`
+	ID               string                       `json:"id"`
+	DisplayName      string                       `json:"display_name"`
+	Description      string                       `json:"description,omitempty"`
+	Enabled          bool                         `json:"enabled"`
+	Classification   string                       `json:"classification"`
+	GraphNamespace   string                       `json:"graph_namespace"`
+	GraphStorage     string                       `json:"graph_storage"`
+	DigestMode       string                       `json:"digest_mode"`
+	UpdatePolicy     string                       `json:"update_policy"`
+	WorkspaceMode    string                       `json:"workspace_mode"`
+	ValidationStatus string                       `json:"validation_status"`
+	ValidationError  string                       `json:"validation_error,omitempty"`
+	Integrations     *ProjectIntegrationsMetadata `json:"integrations,omitempty"`
+}
+
+type ProjectIntegrationsMetadata struct {
+	Jira       *ProjectIntegrationProviderMetadata `json:"jira,omitempty"`
+	Confluence *ProjectIntegrationProviderMetadata `json:"confluence,omitempty"`
+}
+
+type ProjectIntegrationProviderMetadata struct {
 	Enabled          bool   `json:"enabled"`
-	Classification   string `json:"classification"`
-	GraphNamespace   string `json:"graph_namespace"`
-	GraphStorage     string `json:"graph_storage"`
-	DigestMode       string `json:"digest_mode"`
-	UpdatePolicy     string `json:"update_policy"`
-	WorkspaceMode    string `json:"workspace_mode"`
-	ValidationStatus string `json:"validation_status"`
-	ValidationError  string `json:"validation_error,omitempty"`
+	AuthMode         string `json:"auth_mode,omitempty"`
+	CredentialSource string `json:"credential_source,omitempty"`
+	ProjectKeyCount  int    `json:"project_key_count,omitempty"`
+	SpaceKeyCount    int    `json:"space_key_count,omitempty"`
+	IngestionEnabled bool   `json:"ingestion_enabled"`
 }
 
 type Registry struct {
@@ -91,7 +107,21 @@ func cloneProjects(projects []Project) []Project {
 func cloneProject(project Project) Project {
 	project.Include = append([]string(nil), project.Include...)
 	project.Exclude = append([]string(nil), project.Exclude...)
+	project.Integrations = cloneProjectIntegrationsMetadata(project.Integrations)
 	return project
+}
+
+func cloneProjectIntegrationsMetadata(metadata ProjectIntegrationsMetadata) ProjectIntegrationsMetadata {
+	cloned := ProjectIntegrationsMetadata{}
+	if metadata.Jira != nil {
+		jira := *metadata.Jira
+		cloned.Jira = &jira
+	}
+	if metadata.Confluence != nil {
+		confluence := *metadata.Confluence
+		cloned.Confluence = &confluence
+	}
+	return cloned
 }
 
 func MetadataForProject(project Project) ProjectMetadata {
@@ -108,7 +138,16 @@ func MetadataForProject(project Project) ProjectMetadata {
 		WorkspaceMode:    project.WorkspaceMode,
 		ValidationStatus: project.ValidationStatus,
 		ValidationError:  project.ValidationError,
+		Integrations:     metadataIntegrations(project.Integrations),
 	}
+}
+
+func metadataIntegrations(integrations ProjectIntegrationsMetadata) *ProjectIntegrationsMetadata {
+	if integrations.Jira == nil && integrations.Confluence == nil {
+		return nil
+	}
+	cloned := cloneProjectIntegrationsMetadata(integrations)
+	return &cloned
 }
 
 func MetadataForProjects(projects []Project) []ProjectMetadata {

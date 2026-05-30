@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -149,8 +148,8 @@ func (svc *Service) GitDiff(ctx context.Context, projectID string, options GitDi
 		if err != nil {
 			return GitDiff{}, err
 		}
-		if !safeText(project, file.RelativePath, []byte(diffText), int64(maxBytes)) {
-			result.Skipped = append(result.Skipped, DiffSkip{RelativePath: file.RelativePath, Reason: string(projectingestion.SkipReasonSensitiveContent)})
+		if !validTextDiff(diffText) {
+			result.Skipped = append(result.Skipped, DiffSkip{RelativePath: file.RelativePath, Reason: string(projectingestion.SkipReasonBinaryContent)})
 			continue
 		}
 		file.Diff = diffText
@@ -492,19 +491,6 @@ func (svc *Service) diffSkipReason(ctx context.Context, project projectregistry.
 	if relativePath == "" || status == "skipped" {
 		return string(projectingestion.SkipReasonDeniedPath)
 	}
-	if status == "D" {
-		return ""
-	}
-	content, _, err := svc.readEligibleFile(project, relativePath)
-	if err != nil {
-		if errors.Is(err, ErrUnsafeContent) {
-			return string(projectingestion.SkipReasonSensitiveContent)
-		}
-		return ""
-	}
-	if !safeText(project, relativePath, content, project.MaxFileBytes) {
-		return string(projectingestion.SkipReasonSensitiveContent)
-	}
 	_ = ctx
 	return ""
 }
@@ -832,6 +818,10 @@ func countDiffLines(diffText string) (int, int) {
 		}
 	}
 	return additions, deletions
+}
+
+func validTextDiff(diffText string) bool {
+	return strings.IndexByte(diffText, 0) < 0 && utf8.ValidString(diffText)
 }
 
 func lineCount(content []byte) int {

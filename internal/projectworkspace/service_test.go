@@ -145,7 +145,79 @@ func TestWorkspaceService_GitStatusAndDiffAreGoverned(t *testing.T) {
 	}
 }
 
+func TestWorkspaceService_GitDiffReturnsCredentialReferenceConfigDiff(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "configs/agent-server.example.toml", "[projects.integrations.jira]\n")
+	runGit(t, root, "init")
+	runGit(t, root, "config", "user.email", "test@example.invalid")
+	runGit(t, root, "config", "user.name", "Test User")
+	runGit(t, root, "add", "configs/agent-server.example.toml")
+	runGit(t, root, "commit", "-m", "initial")
+	writeFixture(t, root, "configs/agent-server.example.toml", `[projects.integrations.jira]
+enabled = true
+site_url = "https://example.atlassian.net"
+email_env = "MIVIA_ATLASSIAN_EMAIL_EXAMPLE_SERVICE"
+api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE_SERVICE"
+project_keys = ["ABC"]
+`)
+
+	svc := NewService(newWorkspaceRegistryWithInclude(t, root, projectregistry.WorkspaceModeReadOnly, []string{"configs/*.toml"}), nil, Options{Enabled: true})
+	diff, err := svc.GitDiff(context.Background(), "example-service", GitDiffOptions{RelativePath: "configs/agent-server.example.toml", MaxDiffBytes: 4096})
+	if err != nil {
+		t.Fatalf("git diff: %v", err)
+	}
+	if len(diff.Skipped) != 0 {
+		t.Fatalf("expected config diff, got skipped files: %#v", diff.Skipped)
+	}
+	if len(diff.Files) != 1 {
+		t.Fatalf("expected one diff file, got %#v", diff)
+	}
+	body := diff.Files[0].Diff
+	if !strings.Contains(body, `api_token_env = "MIVIA_ATLASSIAN_API_TOKEN_EXAMPLE_SERVICE"`) {
+		t.Fatalf("expected credential reference in diff, got: %s", body)
+	}
+	if strings.Contains(body, "[REDACTED_SECRET]") || strings.Contains(body, "[REDACTED_EMAIL]") {
+		t.Fatalf("ordinary credential references should not be redacted: %s", body)
+	}
+}
+
+func TestWorkspaceService_GitDiffReturnsRawEligibleTextDiff(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	runGit(t, root, "init")
+	runGit(t, root, "config", "user.email", "test@example.invalid")
+	runGit(t, root, "config", "user.name", "Test User")
+	runGit(t, root, "add", "main.go")
+	runGit(t, root, "commit", "-m", "initial")
+	writeFixture(t, root, "main.go", `package main
+
+const token = "plain-secret-token"
+const contact = "alice@example.com"
+const auth = "Bearer abcdefghijk"
+const aws = "AKIA1234567890ABCDEF"
+`)
+
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly), nil, Options{Enabled: true})
+	diff, err := svc.GitDiff(context.Background(), "example-service", GitDiffOptions{RelativePath: "main.go", MaxDiffBytes: 4096})
+	if err != nil {
+		t.Fatalf("git diff: %v", err)
+	}
+	if len(diff.Skipped) != 0 || len(diff.Files) != 1 {
+		t.Fatalf("expected raw diff file, got %#v", diff)
+	}
+	body := diff.Files[0].Diff
+	for _, raw := range []string{"plain-secret-token", "alice@example.com", "Bearer abcdefghijk", "AKIA1234567890ABCDEF"} {
+		if !strings.Contains(body, raw) {
+			t.Fatalf("expected raw value %q in diff: %s", raw, body)
+		}
+	}
+}
+
 func newWorkspaceRegistry(t *testing.T, root string, mode string) *projectregistry.Registry {
+	return newWorkspaceRegistryWithInclude(t, root, mode, []string{"**/*.go"})
+}
+
+func newWorkspaceRegistryWithInclude(t *testing.T, root string, mode string, include []string) *projectregistry.Registry {
 	t.Helper()
 	registry, err := projectregistry.NewRegistry([]config.Project{{
 		ID:                    "example-service",
@@ -157,7 +229,7 @@ func newWorkspaceRegistry(t *testing.T, root string, mode string) *projectregist
 		DigestMode:            projectregistry.DigestModeContentGraph,
 		UpdatePolicy:          projectregistry.UpdatePolicyManual,
 		WorkspaceMode:         mode,
-		Include:               []string{"**/*.go"},
+		Include:               include,
 		FollowSymlinks:        false,
 		MaxFileBytes:          4096,
 		MaxChunkBytes:         1024,

@@ -67,6 +67,7 @@ func normalizeProject(configProject config.Project, options Options) (Project, e
 		MaxFileBytes:          configProject.MaxFileBytes,
 		MaxChunkBytes:         configProject.MaxChunkBytes,
 		SensitiveMarkerPolicy: strings.TrimSpace(configProject.SensitiveMarkerPolicy),
+		Integrations:          integrationMetadata(configProject.Integrations),
 	}
 
 	if project.Classification == "" {
@@ -106,6 +107,46 @@ func normalizeProject(configProject config.Project, options Options) (Project, e
 	}
 	project.ValidationStatus = ValidationStatusValid
 	return project, nil
+}
+
+func integrationMetadata(integrations config.IntegrationConfig) ProjectIntegrationsMetadata {
+	metadata := ProjectIntegrationsMetadata{}
+	if integrations.Jira != nil {
+		metadata.Jira = &ProjectIntegrationProviderMetadata{
+			Enabled:          integrations.Jira.Enabled,
+			AuthMode:         strings.TrimSpace(integrations.Jira.AuthMode),
+			CredentialSource: credentialSource(integrations.Jira.CredentialRefs),
+			ProjectKeyCount:  len(integrations.Jira.ProjectKeys),
+			IngestionEnabled: integrations.Jira.Polling.IngestionEnabled,
+		}
+	}
+	if integrations.Confluence != nil {
+		metadata.Confluence = &ProjectIntegrationProviderMetadata{
+			Enabled:          integrations.Confluence.Enabled,
+			AuthMode:         strings.TrimSpace(integrations.Confluence.AuthMode),
+			CredentialSource: credentialSource(integrations.Confluence.CredentialRefs),
+			SpaceKeyCount:    len(integrations.Confluence.SpaceKeys),
+			IngestionEnabled: integrations.Confluence.Polling.IngestionEnabled,
+		}
+	}
+	return metadata
+}
+
+func credentialSource(refs config.AtlassianCredentialRefs) string {
+	emailEnv := strings.TrimSpace(refs.EmailEnv) != ""
+	emailFile := strings.TrimSpace(refs.EmailFile) != ""
+	tokenEnv := strings.TrimSpace(refs.APITokenEnv) != ""
+	tokenFile := strings.TrimSpace(refs.APITokenFile) != ""
+	switch {
+	case emailEnv && tokenEnv && !emailFile && !tokenFile:
+		return "env"
+	case emailFile && tokenFile && !emailEnv && !tokenEnv:
+		return "file"
+	case (emailEnv || emailFile) && (tokenEnv || tokenFile):
+		return "mixed"
+	default:
+		return "none"
+	}
 }
 
 func validateProject(project Project, options Options) error {
