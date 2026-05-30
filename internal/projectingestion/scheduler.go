@@ -195,6 +195,46 @@ func (scheduler *Scheduler) ListSymbols(ctx context.Context, projectID string, f
 	return api.ListSymbols(ctx, projectID, filter, pagination)
 }
 
+func (scheduler *Scheduler) SearchText(ctx context.Context, projectID string, options TextSearchOptions) (TextSearchResultList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return TextSearchResultList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.SearchText(ctx, projectID, options)
+}
+
+func (scheduler *Scheduler) SearchFiles(ctx context.Context, projectID string, options FileSearchOptions) (FileList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return FileList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.SearchFiles(ctx, projectID, options)
+}
+
+func (scheduler *Scheduler) SearchSymbols(ctx context.Context, projectID string, filter SymbolFilter, pagination Pagination) (SymbolList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.SearchSymbols(ctx, projectID, filter, pagination)
+}
+
+func (scheduler *Scheduler) SearchReferences(ctx context.Context, projectID string, options ReferenceSearchOptions) (SymbolReferenceList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolReferenceList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.SearchReferences(ctx, projectID, options)
+}
+
+func (scheduler *Scheduler) SearchCalls(ctx context.Context, projectID string, options ReferenceSearchOptions) (SymbolCallEdgeList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolCallEdgeList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.SearchCalls(ctx, projectID, options)
+}
+
 func (scheduler *Scheduler) GetSymbol(ctx context.Context, projectID string, symbolID string) (SymbolMetadata, error) {
 	api, ok := scheduler.runner.(API)
 	if !ok {

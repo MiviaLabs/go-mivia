@@ -287,7 +287,7 @@ wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored
 wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivialabs-agent-server
 ```
 
-The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, and `projects.file.outline`. Codex Desktop may show underscore-normalized callable names such as `tasks_create` or `projects_digest`; the server accepts both forms.
+The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, and `projects.file.outline`. Codex Desktop may show underscore-normalized callable names such as `tasks_create` or `projects_search_text`; the server accepts both forms.
 
 ## Local Project APIs
 
@@ -305,13 +305,18 @@ Use REST for scripts, smoke tests, and direct local checks. Use MCP when an agen
 | Indexed files | `GET /api/v1/projects/{id}/files?status=eligible&extension=.go` | `projects.files.list` |
 | Bounded chunks | `GET /api/v1/projects/{id}/files/{file_id}/chunks` | `projects.file.chunks` |
 | Symbols | `GET /api/v1/projects/{id}/symbols` | `projects.symbols.list` |
+| Text search | `GET /api/v1/projects/{id}/search/text?query=helper` | `projects.search.text` |
+| File search | `GET /api/v1/projects/{id}/search/files?path_contains=cmd` | `projects.search.files` |
+| Symbol search | `GET /api/v1/projects/{id}/search/symbols?name_contains=Run` | `projects.search.symbols` |
+| Reference search | `GET /api/v1/projects/{id}/search/references?target_name_contains=Run` | `projects.search.references` |
+| Call search | `GET /api/v1/projects/{id}/search/calls?callee_name_contains=Run` | `projects.search.calls` |
 | Symbol source | `GET /api/v1/projects/{id}/symbols/{symbol_id}/source` | `projects.symbol.source` |
 | Symbol references | `GET /api/v1/projects/{id}/symbols/{symbol_id}/references` | `projects.symbol.references` |
 | Symbol callers | `GET /api/v1/projects/{id}/symbols/{symbol_id}/callers` | `projects.symbol.callers` |
 | Symbol callees | `GET /api/v1/projects/{id}/symbols/{symbol_id}/callees` | `projects.symbol.callees` |
 | Symbol call graph | `GET /api/v1/projects/{id}/symbols/{symbol_id}/call-graph` | `projects.symbol.call_graph` |
 
-Manual content graph ingestion is asynchronous. `POST /ingestion-runs` and `projects.ingest` submit work through the fair scheduler and return queued run metadata quickly; clients poll by `run_id` or check latest status before relying on indexed data. Full task, research, project, REST, and MCP method mapping is in the [agent context server guide](docs/agent-context-guide.md).
+Manual content graph ingestion is asynchronous. `POST /ingestion-runs` and `projects.ingest` submit work through the fair scheduler and return queued run metadata quickly; clients poll by `run_id` or check latest status before relying on indexed data. Agents should use the indexed search tools first for routine text, path, symbol, reference, and call discovery; use `rg` when dirty working-tree state matters, Serena for editor-aware symbol navigation and edits, and `ast-grep` only for structural search or rewrite work not covered by indexed search. Full task, research, project, REST, and MCP method mapping is in the [agent context server guide](docs/agent-context-guide.md).
 
 Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/agent-server.local.toml`. The committed schema example is [configs/agent-server.example.toml](configs/agent-server.example.toml).
 

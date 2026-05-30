@@ -370,6 +370,199 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/search/text:
+    get:
+      operationId: searchProjectText
+      summary: Search eligible indexed project text
+      description: Literal-only bounded search over eligible ContentChunk nodes. Snippets are capped. Skipped, denied, sensitive, absent, unindexed files, roots, content hashes, and raw datastore errors are not returned. Results may be stale until ingestion catches up.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: query
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 256}
+        - name: mode
+          in: query
+          schema: {type: string, enum: [literal]}
+        - name: case_sensitive
+          in: query
+          schema: {type: boolean}
+        - name: extension
+          in: query
+          schema: {type: string}
+        - name: path_prefix
+          in: query
+          schema: {type: string}
+        - name: max_snippet_bytes
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 1024}
+        - name: max_matches
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100}
+      responses:
+        '200':
+          description: Project text search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectTextSearchResultList'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{id}/search/files:
+    get:
+      operationId: searchProjectFiles
+      summary: Search eligible indexed project files
+      description: Searches safe project-relative eligible file metadata by path substring. Skipped, denied, sensitive, and absent files are excluded.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: extension
+          in: query
+          schema: {type: string}
+        - name: path_prefix
+          in: query
+          schema: {type: string}
+        - name: path_contains
+          in: query
+          schema: {type: string}
+        - name: case_sensitive
+          in: query
+          schema: {type: boolean}
+      responses:
+        '200':
+          description: Project file search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectFileList'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{id}/search/symbols:
+    get:
+      operationId: searchProjectSymbols
+      summary: Search eligible indexed project symbols
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: kind
+          in: query
+          schema: {type: string}
+        - name: name_prefix
+          in: query
+          schema: {type: string}
+        - name: name_contains
+          in: query
+          schema: {type: string}
+        - name: file_id
+          in: query
+          schema: {type: string}
+        - name: extension
+          in: query
+          schema: {type: string}
+        - name: package
+          in: query
+          schema: {type: string}
+        - name: receiver
+          in: query
+          schema: {type: string}
+        - name: case_sensitive
+          in: query
+          schema: {type: boolean}
+      responses:
+        '200':
+          description: Project symbol search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSymbolList'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{id}/search/references:
+    get:
+      operationId: searchProjectReferences
+      summary: Search eligible indexed project references
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: name_contains
+          in: query
+          schema: {type: string}
+        - name: target_name_contains
+          in: query
+          schema: {type: string}
+        - name: enclosing_contains
+          in: query
+          schema: {type: string}
+        - name: extension
+          in: query
+          schema: {type: string}
+        - name: path_prefix
+          in: query
+          schema: {type: string}
+        - name: resolution_status
+          in: query
+          schema: {type: string}
+        - name: confidence
+          in: query
+          schema: {type: string}
+        - name: case_sensitive
+          in: query
+          schema: {type: boolean}
+      responses:
+        '200':
+          description: Project reference search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSymbolReferenceList'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /projects/{id}/search/calls:
+    get:
+      operationId: searchProjectCalls
+      summary: Search eligible indexed project calls
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: name_contains
+          in: query
+          schema: {type: string}
+        - name: caller_name_contains
+          in: query
+          schema: {type: string}
+        - name: callee_name_contains
+          in: query
+          schema: {type: string}
+        - name: extension
+          in: query
+          schema: {type: string}
+        - name: path_prefix
+          in: query
+          schema: {type: string}
+        - name: resolution_status
+          in: query
+          schema: {type: string}
+        - name: confidence
+          in: query
+          schema: {type: string}
+        - name: case_sensitive
+          in: query
+          schema: {type: boolean}
+      responses:
+        '200':
+          description: Project call search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSymbolCallEdgeList'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /projects/{id}/symbols/{symbol_id}/source:
     get:
       operationId: getProjectSymbolSource
@@ -776,6 +969,8 @@ components:
             $ref: '#/components/schemas/ProjectFile'
         next_page_token:
           type: string
+        index:
+          $ref: '#/components/schemas/ProjectSearchIndex'
     ProjectFile:
       type: object
       additionalProperties: false
@@ -938,6 +1133,51 @@ components:
             $ref: '#/components/schemas/ProjectSymbol'
         next_page_token:
           type: string
+        index:
+          $ref: '#/components/schemas/ProjectSearchIndex'
+    ProjectTextSearchResultList:
+      type: object
+      additionalProperties: false
+      required: [results, max_snippet_bytes]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectTextSearchResult'
+        next_page_token:
+          type: string
+        max_snippet_bytes:
+          type: integer
+          minimum: 1
+        index:
+          $ref: '#/components/schemas/ProjectSearchIndex'
+    ProjectTextSearchResult:
+      type: object
+      additionalProperties: false
+      required: [file, chunk, line_start, line_end, byte_start, byte_end, snippet, snippet_truncated]
+      properties:
+        file:
+          $ref: '#/components/schemas/ProjectFile'
+        chunk:
+          $ref: '#/components/schemas/ProjectChunk'
+        line_start: {type: integer, minimum: 1}
+        line_end: {type: integer, minimum: 1}
+        byte_start: {type: integer, minimum: 0}
+        byte_end: {type: integer, minimum: 0}
+        snippet:
+          type: string
+          description: Capped eligible indexed source snippet only.
+        snippet_truncated:
+          type: boolean
+    ProjectSearchIndex:
+      type: object
+      additionalProperties: false
+      properties:
+        index_status:
+          type: string
+          enum: [completed, running, failed, pending, unknown]
+        ingestion_run_id:
+          type: string
     ProjectSymbol:
       type: object
       additionalProperties: false
@@ -1004,6 +1244,8 @@ components:
             $ref: '#/components/schemas/ProjectSymbolReference'
         next_page_token:
           type: string
+        index:
+          $ref: '#/components/schemas/ProjectSearchIndex'
     ProjectSymbolReference:
       type: object
       additionalProperties: false
@@ -1042,6 +1284,8 @@ components:
             $ref: '#/components/schemas/ProjectSymbolCallEdge'
         next_page_token:
           type: string
+        index:
+          $ref: '#/components/schemas/ProjectSearchIndex'
     ProjectSymbolCallEdge:
       type: object
       additionalProperties: false

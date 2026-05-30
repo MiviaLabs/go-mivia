@@ -216,15 +216,18 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 		return toolResult(chunks), err
 	case "projects.symbols.list", "projects_symbols_list":
 		var input struct {
-			ID         string          `json:"id"`
-			Kind       string          `json:"kind,omitempty"`
-			NamePrefix string          `json:"name_prefix,omitempty"`
-			FileID     string          `json:"file_id,omitempty"`
-			Extension  string          `json:"extension,omitempty"`
-			Package    string          `json:"package,omitempty"`
-			PageSize   int             `json:"page_size,omitempty"`
-			PageToken  string          `json:"page_token,omitempty"`
-			Meta       json.RawMessage `json:"_meta,omitempty"`
+			ID            string          `json:"id"`
+			Kind          string          `json:"kind,omitempty"`
+			NamePrefix    string          `json:"name_prefix,omitempty"`
+			NameContains  string          `json:"name_contains,omitempty"`
+			FileID        string          `json:"file_id,omitempty"`
+			Extension     string          `json:"extension,omitempty"`
+			Package       string          `json:"package,omitempty"`
+			Receiver      string          `json:"receiver,omitempty"`
+			CaseSensitive bool            `json:"case_sensitive,omitempty"`
+			PageSize      int             `json:"page_size,omitempty"`
+			PageToken     string          `json:"page_token,omitempty"`
+			Meta          json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
@@ -233,13 +236,174 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
 		}
 		symbols, err := ingestion.ListSymbols(ctx, strings.TrimSpace(input.ID), projectingestion.SymbolFilter{
-			Kind:       projectingestion.SymbolKind(strings.TrimSpace(input.Kind)),
-			NamePrefix: input.NamePrefix,
-			FileID:     strings.TrimSpace(input.FileID),
-			Extension:  input.Extension,
-			Package:    input.Package,
+			Kind:          projectingestion.SymbolKind(strings.TrimSpace(input.Kind)),
+			NamePrefix:    input.NamePrefix,
+			NameContains:  input.NameContains,
+			FileID:        strings.TrimSpace(input.FileID),
+			Extension:     input.Extension,
+			Package:       input.Package,
+			Receiver:      input.Receiver,
+			CaseSensitive: input.CaseSensitive,
 		}, projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
 		return toolResult(symbols), err
+	case "projects.search.text", "projects_search_text":
+		var input struct {
+			ID              string          `json:"id"`
+			Query           string          `json:"query"`
+			Mode            string          `json:"mode,omitempty"`
+			CaseSensitive   bool            `json:"case_sensitive,omitempty"`
+			Extension       string          `json:"extension,omitempty"`
+			PathPrefix      string          `json:"path_prefix,omitempty"`
+			PageSize        int             `json:"page_size,omitempty"`
+			PageToken       string          `json:"page_token,omitempty"`
+			MaxSnippetBytes int             `json:"max_snippet_bytes,omitempty"`
+			MaxMatches      int             `json:"max_matches,omitempty"`
+			Meta            json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		results, err := ingestion.SearchText(ctx, strings.TrimSpace(input.ID), projectingestion.TextSearchOptions{
+			Query:           input.Query,
+			Mode:            input.Mode,
+			CaseSensitive:   input.CaseSensitive,
+			Extension:       input.Extension,
+			PathPrefix:      input.PathPrefix,
+			PageSize:        input.PageSize,
+			PageToken:       input.PageToken,
+			MaxSnippetBytes: input.MaxSnippetBytes,
+			MaxMatches:      input.MaxMatches,
+		})
+		return toolResult(results), err
+	case "projects.search.files", "projects_search_files":
+		var input struct {
+			ID            string          `json:"id"`
+			Extension     string          `json:"extension,omitempty"`
+			PathPrefix    string          `json:"path_prefix,omitempty"`
+			PathContains  string          `json:"path_contains,omitempty"`
+			CaseSensitive bool            `json:"case_sensitive,omitempty"`
+			PageSize      int             `json:"page_size,omitempty"`
+			PageToken     string          `json:"page_token,omitempty"`
+			Meta          json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		files, err := ingestion.SearchFiles(ctx, strings.TrimSpace(input.ID), projectingestion.FileSearchOptions{
+			Extension:     input.Extension,
+			PathPrefix:    input.PathPrefix,
+			PathContains:  input.PathContains,
+			CaseSensitive: input.CaseSensitive,
+			PageSize:      input.PageSize,
+			PageToken:     input.PageToken,
+		})
+		return toolResult(files), err
+	case "projects.search.symbols", "projects_search_symbols":
+		var input struct {
+			ID            string          `json:"id"`
+			Kind          string          `json:"kind,omitempty"`
+			NamePrefix    string          `json:"name_prefix,omitempty"`
+			NameContains  string          `json:"name_contains,omitempty"`
+			FileID        string          `json:"file_id,omitempty"`
+			Extension     string          `json:"extension,omitempty"`
+			Package       string          `json:"package,omitempty"`
+			Receiver      string          `json:"receiver,omitempty"`
+			CaseSensitive bool            `json:"case_sensitive,omitempty"`
+			PageSize      int             `json:"page_size,omitempty"`
+			PageToken     string          `json:"page_token,omitempty"`
+			Meta          json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		symbols, err := ingestion.SearchSymbols(ctx, strings.TrimSpace(input.ID), projectingestion.SymbolFilter{
+			Kind:          projectingestion.SymbolKind(strings.TrimSpace(input.Kind)),
+			NamePrefix:    input.NamePrefix,
+			NameContains:  input.NameContains,
+			FileID:        strings.TrimSpace(input.FileID),
+			Extension:     input.Extension,
+			Package:       input.Package,
+			Receiver:      input.Receiver,
+			CaseSensitive: input.CaseSensitive,
+		}, projectingestion.Pagination{PageSize: input.PageSize, PageToken: input.PageToken})
+		return toolResult(symbols), err
+	case "projects.search.references", "projects_search_references":
+		var input struct {
+			ID                 string          `json:"id"`
+			NameContains       string          `json:"name_contains,omitempty"`
+			TargetNameContains string          `json:"target_name_contains,omitempty"`
+			EnclosingContains  string          `json:"enclosing_contains,omitempty"`
+			Extension          string          `json:"extension,omitempty"`
+			PathPrefix         string          `json:"path_prefix,omitempty"`
+			ResolutionStatus   string          `json:"resolution_status,omitempty"`
+			Confidence         string          `json:"confidence,omitempty"`
+			CaseSensitive      bool            `json:"case_sensitive,omitempty"`
+			PageSize           int             `json:"page_size,omitempty"`
+			PageToken          string          `json:"page_token,omitempty"`
+			Meta               json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		refs, err := ingestion.SearchReferences(ctx, strings.TrimSpace(input.ID), projectingestion.ReferenceSearchOptions{
+			NameContains:       input.NameContains,
+			TargetNameContains: input.TargetNameContains,
+			EnclosingContains:  input.EnclosingContains,
+			Extension:          input.Extension,
+			PathPrefix:         input.PathPrefix,
+			ResolutionStatus:   input.ResolutionStatus,
+			Confidence:         input.Confidence,
+			CaseSensitive:      input.CaseSensitive,
+			PageSize:           input.PageSize,
+			PageToken:          input.PageToken,
+		})
+		return toolResult(refs), err
+	case "projects.search.calls", "projects_search_calls":
+		var input struct {
+			ID                 string          `json:"id"`
+			NameContains       string          `json:"name_contains,omitempty"`
+			CallerNameContains string          `json:"caller_name_contains,omitempty"`
+			CalleeNameContains string          `json:"callee_name_contains,omitempty"`
+			Extension          string          `json:"extension,omitempty"`
+			PathPrefix         string          `json:"path_prefix,omitempty"`
+			ResolutionStatus   string          `json:"resolution_status,omitempty"`
+			Confidence         string          `json:"confidence,omitempty"`
+			CaseSensitive      bool            `json:"case_sensitive,omitempty"`
+			PageSize           int             `json:"page_size,omitempty"`
+			PageToken          string          `json:"page_token,omitempty"`
+			Meta               json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid ingestion arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		calls, err := ingestion.SearchCalls(ctx, strings.TrimSpace(input.ID), projectingestion.ReferenceSearchOptions{
+			NameContains:       input.NameContains,
+			CallerNameContains: input.CallerNameContains,
+			CalleeNameContains: input.CalleeNameContains,
+			Extension:          input.Extension,
+			PathPrefix:         input.PathPrefix,
+			ResolutionStatus:   input.ResolutionStatus,
+			Confidence:         input.Confidence,
+			CaseSensitive:      input.CaseSensitive,
+			PageSize:           input.PageSize,
+			PageToken:          input.PageToken,
+		})
+		return toolResult(calls), err
 	case "projects.symbol.source", "projects_symbol_source":
 		var input struct {
 			ID             string          `json:"id"`
@@ -497,12 +661,90 @@ func ingestionToolDefinitions() []map[string]any {
 			"title":       "List Project Symbols",
 			"description": "List bounded symbol metadata for an opted-in content graph project.",
 			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
-				"id":          map[string]any{"type": "string", "minLength": 1},
-				"kind":        map[string]any{"type": "string"},
-				"name_prefix": map[string]any{"type": "string"},
-				"file_id":     map[string]any{"type": "string"},
-				"extension":   map[string]any{"type": "string"},
-				"package":     map[string]any{"type": "string"},
+				"id":             map[string]any{"type": "string", "minLength": 1},
+				"kind":           map[string]any{"type": "string"},
+				"name_prefix":    map[string]any{"type": "string"},
+				"name_contains":  map[string]any{"type": "string"},
+				"file_id":        map[string]any{"type": "string"},
+				"extension":      map[string]any{"type": "string"},
+				"package":        map[string]any{"type": "string"},
+				"receiver":       map[string]any{"type": "string"},
+				"case_sensitive": map[string]any{"type": "boolean"},
+			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.search.text",
+			"title":       "Search Indexed Project Text",
+			"description": "Literal-only bounded search over eligible indexed content chunks. Results may be stale until ingestion catches up; snippets are capped and skipped sensitive files are never returned.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":                map[string]any{"type": "string", "minLength": 1},
+				"query":             map[string]any{"type": "string", "minLength": 1, "maxLength": projectingestion.MaxSearchQueryBytes},
+				"mode":              map[string]any{"type": "string", "enum": []string{"literal"}},
+				"case_sensitive":    map[string]any{"type": "boolean"},
+				"extension":         map[string]any{"type": "string"},
+				"path_prefix":       map[string]any{"type": "string"},
+				"max_snippet_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxSnippetBytes},
+				"max_matches":       map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxPageSize},
+			}), []string{"id", "query"}),
+		},
+		{
+			"name":        "projects.search.files",
+			"title":       "Search Indexed Project Files",
+			"description": "Search eligible indexed file metadata by safe project-relative path. Skipped, denied, sensitive, absent, and root paths are not returned.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":             map[string]any{"type": "string", "minLength": 1},
+				"extension":      map[string]any{"type": "string"},
+				"path_prefix":    map[string]any{"type": "string"},
+				"path_contains":  map[string]any{"type": "string"},
+				"case_sensitive": map[string]any{"type": "boolean"},
+			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.search.symbols",
+			"title":       "Search Indexed Project Symbols",
+			"description": "Search eligible indexed symbol metadata by prefix or substring without source text. Results may be stale until ingestion catches up.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":             map[string]any{"type": "string", "minLength": 1},
+				"kind":           map[string]any{"type": "string"},
+				"name_prefix":    map[string]any{"type": "string"},
+				"name_contains":  map[string]any{"type": "string"},
+				"file_id":        map[string]any{"type": "string"},
+				"extension":      map[string]any{"type": "string"},
+				"package":        map[string]any{"type": "string"},
+				"receiver":       map[string]any{"type": "string"},
+				"case_sensitive": map[string]any{"type": "boolean"},
+			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.search.references",
+			"title":       "Search Indexed Project References",
+			"description": "Search eligible indexed reference metadata by name, target, and enclosing symbol. No skipped sensitive source text or root paths are returned.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":                   map[string]any{"type": "string", "minLength": 1},
+				"name_contains":        map[string]any{"type": "string"},
+				"target_name_contains": map[string]any{"type": "string"},
+				"enclosing_contains":   map[string]any{"type": "string"},
+				"extension":            map[string]any{"type": "string"},
+				"path_prefix":          map[string]any{"type": "string"},
+				"resolution_status":    map[string]any{"type": "string"},
+				"confidence":           map[string]any{"type": "string"},
+				"case_sensitive":       map[string]any{"type": "boolean"},
+			}), []string{"id"}),
+		},
+		{
+			"name":        "projects.search.calls",
+			"title":       "Search Indexed Project Calls",
+			"description": "Search eligible indexed call metadata by caller or callee name. No skipped sensitive source text or root paths are returned.",
+			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
+				"id":                   map[string]any{"type": "string", "minLength": 1},
+				"name_contains":        map[string]any{"type": "string"},
+				"caller_name_contains": map[string]any{"type": "string"},
+				"callee_name_contains": map[string]any{"type": "string"},
+				"extension":            map[string]any{"type": "string"},
+				"path_prefix":          map[string]any{"type": "string"},
+				"resolution_status":    map[string]any{"type": "string"},
+				"confidence":           map[string]any{"type": "string"},
+				"case_sensitive":       map[string]any{"type": "boolean"},
 			}), []string{"id"}),
 		},
 		{

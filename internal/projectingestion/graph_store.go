@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/platform/ladybug"
 	"github.com/MiviaLabs/mivialabs-agents-monorepo/internal/projectregistry"
@@ -340,7 +341,7 @@ func (store *GraphStore) ListSymbols(ctx context.Context, project projectregistr
 	if err != nil {
 		return SymbolList{}, err
 	}
-	if filter.NamePrefix != "" || filter.Extension != "" {
+	if filter.NamePrefix != "" || filter.NameContains != "" || filter.Extension != "" || filter.Receiver != "" {
 		nodes, err = store.filterSymbolNodes(ctx, project, nodes, filter)
 		if err != nil {
 			return SymbolList{}, err
@@ -371,7 +372,14 @@ func (store *GraphStore) filterSymbolNodes(ctx context.Context, project projectr
 	out := make([]ladybug.Node, 0, len(nodes))
 	fileExtension := make(map[string]string)
 	for _, node := range nodes {
-		if filter.NamePrefix != "" && !strings.HasPrefix(node.Properties["name"], filter.NamePrefix) {
+		name := node.Properties["name"]
+		if filter.NamePrefix != "" && !strings.HasPrefix(name, filter.NamePrefix) {
+			continue
+		}
+		if filter.NameContains != "" && !containsWithCaseOption(name, filter.NameContains, filter.CaseSensitive) {
+			continue
+		}
+		if filter.Receiver != "" && node.Properties["receiver"] != filter.Receiver {
 			continue
 		}
 		if filter.Extension != "" {
@@ -395,6 +403,132 @@ func (store *GraphStore) filterSymbolNodes(ctx context.Context, project projectr
 		out = append(out, node)
 	}
 	return out, nil
+}
+
+func (store *GraphStore) SearchText(ctx context.Context, project projectregistry.Project, options TextSearchOptions) (TextSearchResultList, error) {
+	nodes, err := store.graph.ListNodes(ctx, "ContentChunk", map[string]string{"project_id": project.ID})
+	if err != nil {
+		return TextSearchResultList{}, err
+	}
+	fileCache := map[string]FileMetadata{}
+	results := make([]TextSearchResult, 0)
+	for _, node := range nodes {
+		file, ok, err := store.searchFile(ctx, project, node.Properties["repo_file_id"], options.Extension, options.PathPrefix, fileCache)
+		if err != nil {
+			return TextSearchResultList{}, err
+		}
+		if !ok {
+			continue
+		}
+		chunk, err := chunkMetadataWithoutText(node)
+		if err != nil {
+			return TextSearchResultList{}, err
+		}
+		text := node.Properties["text"]
+		indexes := literalMatchIndexes(text, options.Query, options.CaseSensitive)
+		for _, index := range indexes {
+			end := index + len(options.Query)
+			lineStart := chunk.StartLine + strings.Count(text[:index], "\n")
+			lineEnd := lineStart + strings.Count(text[index:end], "\n")
+			snippet, truncated := boundedSnippet(text, index, end, options.MaxSnippetBytes)
+			results = append(results, TextSearchResult{
+				File:             file,
+				Chunk:            chunk,
+				LineStart:        lineStart,
+				LineEnd:          lineEnd,
+				ByteStart:        chunk.ByteStart + index,
+				ByteEnd:          chunk.ByteStart + end,
+				Snippet:          snippet,
+				SnippetTruncated: truncated,
+			})
+		}
+	}
+	sort.Slice(results, func(i, j int) bool {
+		left := results[i]
+		right := results[j]
+		if left.File.RelativePath != right.File.RelativePath {
+			return left.File.RelativePath < right.File.RelativePath
+		}
+		if left.Chunk.Index != right.Chunk.Index {
+			return left.Chunk.Index < right.Chunk.Index
+		}
+		if left.ByteStart != right.ByteStart {
+			return left.ByteStart < right.ByteStart
+		}
+		return left.Chunk.ID < right.Chunk.ID
+	})
+	if options.MaxMatches > 0 && len(results) > options.MaxMatches {
+		results = results[:options.MaxMatches]
+	}
+	window, nextToken, err := paginate(results, Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
+	if err != nil {
+		return TextSearchResultList{}, err
+	}
+	return TextSearchResultList{Results: window, NextPageToken: nextToken, MaxSnippetBytes: options.MaxSnippetBytes}, nil
+}
+
+func (store *GraphStore) SearchReferences(ctx context.Context, project projectregistry.Project, options ReferenceSearchOptions) (SymbolReferenceList, error) {
+	nodes, err := store.graph.ListNodes(ctx, "CodeReference", map[string]string{"project_id": project.ID})
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
+	fileCache := map[string]FileMetadata{}
+	filtered := make([]ladybug.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if !referenceNodeMatches(node, options) {
+			continue
+		}
+		if _, ok, err := store.searchFile(ctx, project, node.Properties["repo_file_id"], options.Extension, options.PathPrefix, fileCache); err != nil {
+			return SymbolReferenceList{}, err
+		} else if !ok {
+			continue
+		}
+		filtered = append(filtered, node)
+	}
+	sortReferenceSearchNodes(filtered, fileCache)
+	window, nextToken, err := paginate(filtered, Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
+	refs := make([]SymbolReferenceMetadata, 0, len(window))
+	for _, node := range window {
+		ref, err := referenceMetadataFromNode(node)
+		if err != nil {
+			return SymbolReferenceList{}, err
+		}
+		refs = append(refs, ref)
+	}
+	return SymbolReferenceList{References: refs, NextPageToken: nextToken}, nil
+}
+
+func (store *GraphStore) SearchCalls(ctx context.Context, project projectregistry.Project, options ReferenceSearchOptions) (SymbolCallEdgeList, error) {
+	nodes, err := store.graph.ListNodes(ctx, "CodeCall", map[string]string{"project_id": project.ID})
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	fileCache := map[string]FileMetadata{}
+	filtered := make([]ladybug.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if !callNodeMatches(node, options) {
+			continue
+		}
+		if _, ok, err := store.searchFile(ctx, project, node.Properties["repo_file_id"], options.Extension, options.PathPrefix, fileCache); err != nil {
+			return SymbolCallEdgeList{}, err
+		} else if !ok {
+			continue
+		}
+		filtered = append(filtered, node)
+	}
+	sortCallSearchNodes(filtered, fileCache)
+	window, nextToken, err := paginate(filtered, Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	edges := make([]SymbolCallEdge, 0, len(window))
+	for _, node := range window {
+		edges = append(edges, callEdgeFromNode(node))
+	}
+	return SymbolCallEdgeList{Edges: edges, NextPageToken: nextToken}, nil
 }
 
 func (store *GraphStore) ListHeadings(ctx context.Context, project projectregistry.Project, fileID string, pagination Pagination) (HeadingList, error) {
@@ -1206,6 +1340,30 @@ func callEdgeFromRelationship(relationship ladybug.Relationship) SymbolCallEdge 
 	}
 }
 
+func callEdgeFromNode(node ladybug.Node) SymbolCallEdge {
+	props := node.Properties
+	return SymbolCallEdge{
+		ID:               node.ID,
+		CallID:           node.ID,
+		FileID:           props["repo_file_id"],
+		ProjectID:        props["project_id"],
+		CallerSymbolID:   props["caller_symbol_id"],
+		CalleeSymbolID:   props["callee_symbol_id"],
+		CallerName:       props["caller_name"],
+		CalleeName:       props["callee_name"],
+		Receiver:         props["receiver"],
+		ImportPath:       props["import_path"],
+		StartLine:        atoiDefault(props["start_line"]),
+		EndLine:          atoiDefault(props["end_line"]),
+		StartByte:        atoiDefault(props["start_byte"]),
+		EndByte:          atoiDefault(props["end_byte"]),
+		StartColumn:      atoiDefault(props["start_column"]),
+		EndColumn:        atoiDefault(props["end_column"]),
+		ResolutionStatus: props["resolution_status"],
+		Confidence:       props["confidence"],
+	}
+}
+
 func relationshipKeyID(relationship ladybug.Relationship) string {
 	if callID := relationship.Properties["call_id"]; callID != "" {
 		return callID
@@ -1238,6 +1396,177 @@ func sortCallRelationships(relationships []ladybug.Relationship) {
 func atoiDefault(value string) int {
 	parsed, _ := strconv.Atoi(value)
 	return parsed
+}
+
+func (store *GraphStore) searchFile(ctx context.Context, project projectregistry.Project, fileID string, extension string, pathPrefix string, cache map[string]FileMetadata) (FileMetadata, bool, error) {
+	if fileID == "" {
+		return FileMetadata{}, false, nil
+	}
+	file, ok := cache[fileID]
+	if !ok {
+		var err error
+		file, err = store.GetFile(ctx, project, fileID)
+		if errors.Is(err, ErrIngestionNotFound) {
+			return FileMetadata{}, false, nil
+		}
+		if err != nil {
+			return FileMetadata{}, false, err
+		}
+		cache[fileID] = file
+	}
+	if file.Status != string(FileStatusEligible) || !file.Present || !file.RelativePathOK {
+		return FileMetadata{}, false, nil
+	}
+	if extension != "" && strings.ToLower(file.Extension) != extension {
+		return FileMetadata{}, false, nil
+	}
+	if pathPrefix != "" && !strings.HasPrefix(file.RelativePath, pathPrefix) {
+		return FileMetadata{}, false, nil
+	}
+	return file, true, nil
+}
+
+func chunkMetadataWithoutText(node ladybug.Node) (ChunkMetadata, error) {
+	chunk, err := chunkMetadataFromNode(node, 1)
+	if err != nil {
+		return ChunkMetadata{}, err
+	}
+	chunk.Text = ""
+	chunk.TextTruncated = false
+	return chunk, nil
+}
+
+func literalMatchIndexes(text string, query string, caseSensitive bool) []int {
+	if query == "" {
+		return nil
+	}
+	haystack := text
+	needle := query
+	if !caseSensitive {
+		haystack = strings.ToLower(text)
+		needle = strings.ToLower(query)
+	}
+	indexes := []int{}
+	offset := 0
+	for {
+		found := strings.Index(haystack[offset:], needle)
+		if found < 0 {
+			break
+		}
+		index := offset + found
+		indexes = append(indexes, index)
+		offset = index + len(needle)
+	}
+	return indexes
+}
+
+func boundedSnippet(text string, start int, end int, maxBytes int) (string, bool) {
+	if maxBytes <= 0 {
+		return "", len(text) > 0
+	}
+	if end < start {
+		end = start
+	}
+	matchLen := end - start
+	if matchLen >= maxBytes {
+		snippet, _ := truncateUTF8Bytes(text[start:end], maxBytes)
+		return snippet, true
+	}
+	context := (maxBytes - matchLen) / 2
+	snippetStart := start - context
+	if snippetStart < 0 {
+		snippetStart = 0
+	}
+	snippetEnd := snippetStart + maxBytes
+	if snippetEnd < end {
+		snippetEnd = end
+	}
+	if snippetEnd > len(text) {
+		snippetEnd = len(text)
+		if snippetEnd-maxBytes > 0 {
+			snippetStart = snippetEnd - maxBytes
+		}
+	}
+	for snippetStart > 0 && !utf8.RuneStart(text[snippetStart]) {
+		snippetStart--
+	}
+	for snippetEnd < len(text) && !utf8.RuneStart(text[snippetEnd]) {
+		snippetEnd++
+	}
+	snippet, truncated := truncateUTF8Bytes(text[snippetStart:snippetEnd], maxBytes)
+	return snippet, truncated || snippetStart > 0 || snippetEnd < len(text)
+}
+
+func referenceNodeMatches(node ladybug.Node, options ReferenceSearchOptions) bool {
+	props := node.Properties
+	if options.NameContains != "" && !containsWithCaseOption(props["name"], options.NameContains, options.CaseSensitive) {
+		return false
+	}
+	if options.TargetNameContains != "" && !containsWithCaseOption(props["target_name"], options.TargetNameContains, options.CaseSensitive) {
+		return false
+	}
+	if options.EnclosingContains != "" && !containsWithCaseOption(props["enclosing_symbol_name"], options.EnclosingContains, options.CaseSensitive) {
+		return false
+	}
+	if options.ResolutionStatus != "" && props["resolution_status"] != options.ResolutionStatus {
+		return false
+	}
+	if options.Confidence != "" && props["confidence"] != options.Confidence {
+		return false
+	}
+	return true
+}
+
+func callNodeMatches(node ladybug.Node, options ReferenceSearchOptions) bool {
+	props := node.Properties
+	if options.NameContains != "" && !containsWithCaseOption(props["callee_name"], options.NameContains, options.CaseSensitive) && !containsWithCaseOption(props["caller_name"], options.NameContains, options.CaseSensitive) {
+		return false
+	}
+	if options.CallerNameContains != "" && !containsWithCaseOption(props["caller_name"], options.CallerNameContains, options.CaseSensitive) {
+		return false
+	}
+	if options.CalleeNameContains != "" && !containsWithCaseOption(props["callee_name"], options.CalleeNameContains, options.CaseSensitive) {
+		return false
+	}
+	if options.ResolutionStatus != "" && props["resolution_status"] != options.ResolutionStatus {
+		return false
+	}
+	if options.Confidence != "" && props["confidence"] != options.Confidence {
+		return false
+	}
+	return true
+}
+
+func sortReferenceSearchNodes(nodes []ladybug.Node, files map[string]FileMetadata) {
+	sort.Slice(nodes, func(i, j int) bool {
+		leftFile := files[nodes[i].Properties["repo_file_id"]].RelativePath
+		rightFile := files[nodes[j].Properties["repo_file_id"]].RelativePath
+		if leftFile != rightFile {
+			return leftFile < rightFile
+		}
+		leftLine := atoiDefault(nodes[i].Properties["start_line"])
+		rightLine := atoiDefault(nodes[j].Properties["start_line"])
+		if leftLine != rightLine {
+			return leftLine < rightLine
+		}
+		return nodes[i].ID < nodes[j].ID
+	})
+}
+
+func sortCallSearchNodes(nodes []ladybug.Node, files map[string]FileMetadata) {
+	sort.Slice(nodes, func(i, j int) bool {
+		leftFile := files[nodes[i].Properties["repo_file_id"]].RelativePath
+		rightFile := files[nodes[j].Properties["repo_file_id"]].RelativePath
+		if leftFile != rightFile {
+			return leftFile < rightFile
+		}
+		leftLine := atoiDefault(nodes[i].Properties["start_line"])
+		rightLine := atoiDefault(nodes[j].Properties["start_line"])
+		if leftLine != rightLine {
+			return leftLine < rightLine
+		}
+		return nodes[i].ID < nodes[j].ID
+	})
 }
 
 func minInt(left int, right int) int {

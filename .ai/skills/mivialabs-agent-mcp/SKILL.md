@@ -38,6 +38,7 @@ Do not assume the current repository is the server repo. Do not assume any speci
 | --- | --- | --- |
 | Code symbols, references, call sites, edit targets | Serena or host semantic tool | MCP chunks as a substitute for semantic navigation |
 | Indexed project map, ingestion state, file IDs, chunks, symbols | MiviaLabs MCP | Raw DB queries, absolute paths, broad shell scans |
+| Routine indexed text, path, symbol, reference, or call discovery | `projects.search.*` | Serena `search_for_pattern`, raw DB queries, broad shell scans |
 | Current git/disk/runtime state, tests, builds, logs, unindexed edits | Shell or host tooling | MCP as proof of current working-tree state |
 
 If unclear:
@@ -53,13 +54,14 @@ Use the smallest sequence that answers the task:
 1. Confirm the MCP endpoint is localhost or loopback.
 2. Call `tools/list`.
 3. Call `projects.list` or `projects.get` to confirm `enabled`, `digest_mode`, `update_policy`, and `graph_storage`.
-4. Call `projects.files.list`, `projects.symbols.list`, or `projects.headings.list` with small `page_size` to confirm indexed content exists and narrow to stable opaque IDs.
-5. Call `projects.ingestion_status_latest` before relying on indexed data. If the latest run is missing, failed, stale for the task, or older than current disk changes, call `projects.ingest`.
-6. Treat `projects.ingest` as asynchronous. It returns quickly with queued run metadata and a `run_id`; poll `projects.ingestion_status` with that `run_id` until `completed` or `failed`.
-7. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
-8. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph` for common indexed navigation. Use `projects.symbol.source` only when bounded eligible source text for one symbol is needed. Set `include_chunk_text=true` with a small `max_chunk_bytes` when eligible file source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
-9. Switch to semantic tools for symbol bodies, references, and edit planning.
-10. Switch to shell for tests, diffs, logs, generated files, and anything changed after the last ingestion.
+4. Call `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, or `projects.search.calls` for routine indexed discovery before broad text scans.
+5. Call `projects.files.list`, `projects.symbols.list`, or `projects.headings.list` with small `page_size` to confirm indexed content exists and narrow to stable opaque IDs.
+6. Call `projects.ingestion_status_latest` before relying on indexed data. If the latest run is missing, failed, stale for the task, or older than current disk changes, call `projects.ingest`.
+7. Treat `projects.ingest` as asynchronous. It returns quickly with queued run metadata and a `run_id`; poll `projects.ingestion_status` with that `run_id` until `completed` or `failed`.
+8. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
+9. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `name_contains`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph` for common indexed navigation. Use `projects.symbol.source` only when bounded eligible source text for one symbol is needed. Set `include_chunk_text=true` with a small `max_chunk_bytes` when eligible file source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
+10. Switch to semantic tools for symbol bodies, references, and edit planning.
+11. Switch to shell for tests, diffs, logs, generated files, and anything changed after the last ingestion.
 
 If MCP is down, the project is not listed, or indexed content is stale for the task, say so and fall back to semantic tools plus shell. Do not invent MCP facts.
 
@@ -73,7 +75,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Research metadata only | `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get` |
 | Project registry | `projects.list`, `projects.get` |
 | Metadata digest | `projects.digest` |
-| Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline` |
+| Content graph | `projects.ingest`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline` |
 
 ## Indexed Metadata Contract
 

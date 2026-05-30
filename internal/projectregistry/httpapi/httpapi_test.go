@@ -338,6 +338,54 @@ func TestProjectIngestionRoutes_ListFilesFiltersByExtension(t *testing.T) {
 	}
 }
 
+func TestProjectIngestionRoutes_SearchEndpointsAreBoundedAndSafe(t *testing.T) {
+	mux, projectID, root := newIngestionMuxWithFiles(t, map[string]string{
+		"cmd/main.go": `package main
+
+func helperAlpha() {}
+
+func Run() {
+	helperAlpha()
+}
+`,
+		"secrets/token.go": "package main\nvar access_token = placeholder\n",
+	}, []string{"**/*"})
+
+	created := httptest.NewRecorder()
+	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/ingestion-runs", nil))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", created.Code, created.Body.String())
+	}
+	var run projectingestion.RunMetadata
+	if err := json.Unmarshal(created.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	waitIngestionRun(t, mux, projectID, run.ID)
+
+	cases := []string{
+		"/api/v1/projects/" + projectID + "/search/text?query=helper&page_size=1&max_snippet_bytes=20",
+		"/api/v1/projects/" + projectID + "/search/files?path_contains=main",
+		"/api/v1/projects/" + projectID + "/search/symbols?name_contains=Alpha",
+		"/api/v1/projects/" + projectID + "/search/references?target_name_contains=Alpha",
+		"/api/v1/projects/" + projectID + "/search/calls?caller_name_contains=Run&callee_name_contains=Alpha",
+	}
+	for _, path := range cases {
+		res := httptest.NewRecorder()
+		mux.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusOK {
+			t.Fatalf("expected 200 for %s, got %d: %s", path, res.Code, res.Body.String())
+		}
+		assertDoesNotLeak(t, res.Body.String(), root, "access_token", "placeholder", "content_sha256", "secrets/token.go")
+	}
+
+	secret := httptest.NewRecorder()
+	mux.ServeHTTP(secret, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/search/text?query=access_token", nil))
+	if secret.Code != http.StatusOK || !strings.Contains(secret.Body.String(), `"results":[]`) {
+		t.Fatalf("expected empty safe secret search, got %d: %s", secret.Code, secret.Body.String())
+	}
+	assertDoesNotLeak(t, secret.Body.String(), root, "access_token", "placeholder", "content_sha256", "secrets/token.go")
+}
+
 func newMux(t *testing.T) (*http.ServeMux, string) {
 	t.Helper()
 	registry, digest := newRegistryDigest(t)

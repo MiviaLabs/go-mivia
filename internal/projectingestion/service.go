@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,11 @@ type API interface {
 	ListChunks(context.Context, string, string, Pagination, int) (ChunkList, error)
 	GetChunk(context.Context, string, string, string, int) (ChunkMetadata, error)
 	ListSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
+	SearchText(context.Context, string, TextSearchOptions) (TextSearchResultList, error)
+	SearchFiles(context.Context, string, FileSearchOptions) (FileList, error)
+	SearchSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
+	SearchReferences(context.Context, string, ReferenceSearchOptions) (SymbolReferenceList, error)
+	SearchCalls(context.Context, string, ReferenceSearchOptions) (SymbolCallEdgeList, error)
 	GetSymbol(context.Context, string, string) (SymbolMetadata, error)
 	GetSymbolSource(context.Context, string, string, SymbolSourceOptions) (SymbolSource, error)
 	ListSymbolReferences(context.Context, string, string, Pagination) (SymbolReferenceList, error)
@@ -711,6 +717,116 @@ func (svc *Service) ListSymbols(ctx context.Context, projectID string, filter Sy
 	return svc.graph.ListSymbols(ctx, project, normalized, pagination)
 }
 
+func (svc *Service) SearchText(ctx context.Context, projectID string, options TextSearchOptions) (TextSearchResultList, error) {
+	normalized, err := NormalizeTextSearchOptions(options)
+	if err != nil {
+		return TextSearchResultList{}, err
+	}
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return TextSearchResultList{}, err
+	}
+	results, err := svc.graph.SearchText(ctx, project, normalized)
+	if err != nil {
+		return TextSearchResultList{}, err
+	}
+	index := svc.searchIndexMetadata(ctx, project.ID)
+	results.Index = &index
+	return results, nil
+}
+
+func (svc *Service) SearchFiles(ctx context.Context, projectID string, options FileSearchOptions) (FileList, error) {
+	normalized, err := NormalizeFileSearchOptions(options)
+	if err != nil {
+		return FileList{}, err
+	}
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return FileList{}, err
+	}
+	present := true
+	states, err := svc.state.ListFileStates(ctx, project.ID, FileStateFilter{
+		Status:     FileStatusEligible,
+		Extension:  normalized.Extension,
+		PathPrefix: normalized.PathPrefix,
+		Present:    &present,
+	})
+	if err != nil {
+		return FileList{}, err
+	}
+	files := make([]FileMetadata, 0, len(states))
+	for _, state := range states {
+		if !state.RelativePathSafe {
+			continue
+		}
+		if normalized.PathContains != "" && !containsWithCaseOption(state.RelativePath, normalized.PathContains, normalized.CaseSensitive) {
+			continue
+		}
+		files = append(files, MetadataForFileState(project, state))
+	}
+	sortFileMetadata(files)
+	window, nextToken, err := paginate(files, Pagination{PageSize: normalized.PageSize, PageToken: normalized.PageToken})
+	if err != nil {
+		return FileList{}, err
+	}
+	index := svc.searchIndexMetadata(ctx, project.ID)
+	return FileList{Files: window, NextPageToken: nextToken, Index: &index}, nil
+}
+
+func (svc *Service) SearchSymbols(ctx context.Context, projectID string, filter SymbolFilter, pagination Pagination) (SymbolList, error) {
+	normalized, err := NormalizeSymbolFilter(filter)
+	if err != nil {
+		return SymbolList{}, err
+	}
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolList{}, err
+	}
+	symbols, err := svc.graph.ListSymbols(ctx, project, normalized, pagination)
+	if err != nil {
+		return SymbolList{}, err
+	}
+	index := svc.searchIndexMetadata(ctx, project.ID)
+	symbols.Index = &index
+	return symbols, nil
+}
+
+func (svc *Service) SearchReferences(ctx context.Context, projectID string, options ReferenceSearchOptions) (SymbolReferenceList, error) {
+	normalized, err := NormalizeReferenceSearchOptions(options)
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
+	refs, err := svc.graph.SearchReferences(ctx, project, normalized)
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
+	index := svc.searchIndexMetadata(ctx, project.ID)
+	refs.Index = &index
+	return refs, nil
+}
+
+func (svc *Service) SearchCalls(ctx context.Context, projectID string, options ReferenceSearchOptions) (SymbolCallEdgeList, error) {
+	normalized, err := NormalizeReferenceSearchOptions(options)
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	calls, err := svc.graph.SearchCalls(ctx, project, normalized)
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
+	index := svc.searchIndexMetadata(ctx, project.ID)
+	calls.Index = &index
+	return calls, nil
+}
+
 func (svc *Service) ListHeadings(ctx context.Context, projectID string, fileID string, pagination Pagination) (HeadingList, error) {
 	project, err := svc.projectForQuery(projectID)
 	if err != nil {
@@ -744,8 +860,10 @@ func (svc *Service) GetFileOutline(ctx context.Context, projectID string, fileID
 
 func NormalizeSymbolFilter(filter SymbolFilter) (SymbolFilter, error) {
 	filter.NamePrefix = strings.TrimSpace(filter.NamePrefix)
+	filter.NameContains = strings.TrimSpace(filter.NameContains)
 	filter.FileID = strings.TrimSpace(filter.FileID)
 	filter.Package = strings.TrimSpace(filter.Package)
+	filter.Receiver = strings.TrimSpace(filter.Receiver)
 	if filter.Extension != "" {
 		extension, err := NormalizeFileExtension(filter.Extension)
 		if err != nil {
@@ -759,13 +877,153 @@ func NormalizeSymbolFilter(filter SymbolFilter) (SymbolFilter, error) {
 	if filter.NamePrefix != "" && strings.Contains(filter.NamePrefix, "\x00") {
 		return SymbolFilter{}, ErrInvalidInput
 	}
+	if filter.NameContains != "" && strings.Contains(filter.NameContains, "\x00") {
+		return SymbolFilter{}, ErrInvalidInput
+	}
 	if filter.FileID != "" && !validOpaqueID(filter.FileID) {
 		return SymbolFilter{}, ErrInvalidInput
 	}
 	if filter.Package != "" && strings.ContainsAny(filter.Package, "\x00/\\") {
 		return SymbolFilter{}, ErrInvalidInput
 	}
+	if filter.Receiver != "" && strings.ContainsAny(filter.Receiver, "\x00/\\") {
+		return SymbolFilter{}, ErrInvalidInput
+	}
 	return filter, nil
+}
+
+func NormalizeTextSearchOptions(options TextSearchOptions) (TextSearchOptions, error) {
+	options.Query = strings.TrimSpace(options.Query)
+	options.Mode = strings.TrimSpace(options.Mode)
+	if options.Mode == "" {
+		options.Mode = "literal"
+	}
+	if options.Mode != "literal" || options.Query == "" || strings.Contains(options.Query, "\x00") || len(options.Query) > MaxSearchQueryBytes {
+		return TextSearchOptions{}, ErrInvalidInput
+	}
+	if options.Extension != "" {
+		extension, err := NormalizeFileExtension(options.Extension)
+		if err != nil {
+			return TextSearchOptions{}, err
+		}
+		options.Extension = extension
+	}
+	if options.PathPrefix != "" {
+		prefix, err := NormalizePathPrefix(options.PathPrefix)
+		if err != nil {
+			return TextSearchOptions{}, err
+		}
+		options.PathPrefix = prefix
+	}
+	if options.MaxSnippetBytes < 0 || options.MaxMatches < 0 {
+		return TextSearchOptions{}, ErrInvalidInput
+	}
+	if options.MaxSnippetBytes == 0 {
+		options.MaxSnippetBytes = DefaultMaxSnippetBytes
+	}
+	if options.MaxSnippetBytes > MaxSnippetBytes {
+		options.MaxSnippetBytes = MaxSnippetBytes
+	}
+	if options.MaxMatches > MaxPageSize {
+		options.MaxMatches = MaxPageSize
+	}
+	if _, _, err := paginationWindow(Pagination{PageSize: options.PageSize, PageToken: options.PageToken}); err != nil {
+		return TextSearchOptions{}, err
+	}
+	return options, nil
+}
+
+func NormalizeFileSearchOptions(options FileSearchOptions) (FileSearchOptions, error) {
+	options.PathContains = strings.TrimSpace(strings.ReplaceAll(options.PathContains, "\\", "/"))
+	if strings.Contains(options.PathContains, "\x00") || strings.HasPrefix(options.PathContains, "/") || strings.Contains(options.PathContains, "..") {
+		return FileSearchOptions{}, ErrInvalidInput
+	}
+	if options.Extension != "" {
+		extension, err := NormalizeFileExtension(options.Extension)
+		if err != nil {
+			return FileSearchOptions{}, err
+		}
+		options.Extension = extension
+	}
+	if options.PathPrefix != "" {
+		prefix, err := NormalizePathPrefix(options.PathPrefix)
+		if err != nil {
+			return FileSearchOptions{}, err
+		}
+		options.PathPrefix = prefix
+	}
+	if _, _, err := paginationWindow(Pagination{PageSize: options.PageSize, PageToken: options.PageToken}); err != nil {
+		return FileSearchOptions{}, err
+	}
+	return options, nil
+}
+
+func NormalizeReferenceSearchOptions(options ReferenceSearchOptions) (ReferenceSearchOptions, error) {
+	options.NameContains = strings.TrimSpace(options.NameContains)
+	options.TargetNameContains = strings.TrimSpace(options.TargetNameContains)
+	options.CallerNameContains = strings.TrimSpace(options.CallerNameContains)
+	options.CalleeNameContains = strings.TrimSpace(options.CalleeNameContains)
+	options.EnclosingContains = strings.TrimSpace(options.EnclosingContains)
+	options.ResolutionStatus = strings.TrimSpace(options.ResolutionStatus)
+	options.Confidence = strings.TrimSpace(options.Confidence)
+	for _, value := range []string{
+		options.NameContains,
+		options.TargetNameContains,
+		options.CallerNameContains,
+		options.CalleeNameContains,
+		options.EnclosingContains,
+		options.ResolutionStatus,
+		options.Confidence,
+	} {
+		if strings.Contains(value, "\x00") {
+			return ReferenceSearchOptions{}, ErrInvalidInput
+		}
+	}
+	if options.Extension != "" {
+		extension, err := NormalizeFileExtension(options.Extension)
+		if err != nil {
+			return ReferenceSearchOptions{}, err
+		}
+		options.Extension = extension
+	}
+	if options.PathPrefix != "" {
+		prefix, err := NormalizePathPrefix(options.PathPrefix)
+		if err != nil {
+			return ReferenceSearchOptions{}, err
+		}
+		options.PathPrefix = prefix
+	}
+	if _, _, err := paginationWindow(Pagination{PageSize: options.PageSize, PageToken: options.PageToken}); err != nil {
+		return ReferenceSearchOptions{}, err
+	}
+	return options, nil
+}
+
+func (svc *Service) searchIndexMetadata(ctx context.Context, projectID string) SearchIndexMetadata {
+	runs, err := svc.state.ListLatestRuns(ctx, projectID, 1)
+	if err != nil || len(runs) == 0 {
+		return SearchIndexMetadata{IndexStatus: "unknown"}
+	}
+	return SearchIndexMetadata{IndexStatus: string(runs[0].Status), IngestionRunID: runs[0].ID}
+}
+
+func containsWithCaseOption(value string, query string, caseSensitive bool) bool {
+	if query == "" {
+		return true
+	}
+	if caseSensitive {
+		return strings.Contains(value, query)
+	}
+	return strings.Contains(strings.ToLower(value), strings.ToLower(query))
+}
+
+func sortFileMetadata(files []FileMetadata) {
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].RelativePath == files[j].RelativePath {
+			return files[i].ID < files[j].ID
+		}
+		return files[i].RelativePath < files[j].RelativePath
+	})
 }
 
 func validSymbolKind(kind SymbolKind) bool {

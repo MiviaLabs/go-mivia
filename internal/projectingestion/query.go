@@ -12,12 +12,15 @@ import (
 )
 
 const (
-	DefaultPageSize       = 50
-	MaxPageSize           = 100
-	DefaultMaxChunkBytes  = 8192
-	DefaultMaxSourceBytes = 8192
-	MaxCallGraphDepth     = 5
-	MaxCallGraphNodes     = 100
+	DefaultPageSize        = 50
+	MaxPageSize            = 100
+	DefaultMaxChunkBytes   = 8192
+	DefaultMaxSourceBytes  = 8192
+	DefaultMaxSnippetBytes = 240
+	MaxSnippetBytes        = 1024
+	MaxSearchQueryBytes    = 256
+	MaxCallGraphDepth      = 5
+	MaxCallGraphNodes      = 100
 )
 
 type Pagination struct {
@@ -26,11 +29,55 @@ type Pagination struct {
 }
 
 type SymbolFilter struct {
-	Kind       SymbolKind
-	NamePrefix string
-	FileID     string
-	Extension  string
-	Package    string
+	Kind          SymbolKind
+	NamePrefix    string
+	NameContains  string
+	FileID        string
+	Extension     string
+	Package       string
+	Receiver      string
+	CaseSensitive bool
+}
+
+type TextSearchOptions struct {
+	Query           string
+	Mode            string
+	CaseSensitive   bool
+	Extension       string
+	PathPrefix      string
+	PageSize        int
+	PageToken       string
+	MaxSnippetBytes int
+	MaxMatches      int
+}
+
+type FileSearchOptions struct {
+	Extension     string
+	PathPrefix    string
+	PathContains  string
+	CaseSensitive bool
+	PageSize      int
+	PageToken     string
+}
+
+type ReferenceSearchOptions struct {
+	NameContains       string
+	TargetNameContains string
+	CallerNameContains string
+	CalleeNameContains string
+	EnclosingContains  string
+	Extension          string
+	PathPrefix         string
+	ResolutionStatus   string
+	Confidence         string
+	CaseSensitive      bool
+	PageSize           int
+	PageToken          string
+}
+
+type SearchIndexMetadata struct {
+	IndexStatus    string `json:"index_status"`
+	IngestionRunID string `json:"ingestion_run_id,omitempty"`
 }
 
 type FileOutlineOptions struct {
@@ -81,8 +128,9 @@ type FileMetadata struct {
 }
 
 type FileList struct {
-	Files         []FileMetadata `json:"files"`
-	NextPageToken string         `json:"next_page_token,omitempty"`
+	Files         []FileMetadata       `json:"files"`
+	NextPageToken string               `json:"next_page_token,omitempty"`
+	Index         *SearchIndexMetadata `json:"index,omitempty"`
 }
 
 type ChunkMetadata struct {
@@ -121,8 +169,27 @@ type SymbolMetadata struct {
 }
 
 type SymbolList struct {
-	Symbols       []SymbolMetadata `json:"symbols"`
-	NextPageToken string           `json:"next_page_token,omitempty"`
+	Symbols       []SymbolMetadata     `json:"symbols"`
+	NextPageToken string               `json:"next_page_token,omitempty"`
+	Index         *SearchIndexMetadata `json:"index,omitempty"`
+}
+
+type TextSearchResult struct {
+	File             FileMetadata  `json:"file"`
+	Chunk            ChunkMetadata `json:"chunk"`
+	LineStart        int           `json:"line_start"`
+	LineEnd          int           `json:"line_end"`
+	ByteStart        int           `json:"byte_start"`
+	ByteEnd          int           `json:"byte_end"`
+	Snippet          string        `json:"snippet"`
+	SnippetTruncated bool          `json:"snippet_truncated"`
+}
+
+type TextSearchResultList struct {
+	Results         []TextSearchResult   `json:"results"`
+	NextPageToken   string               `json:"next_page_token,omitempty"`
+	MaxSnippetBytes int                  `json:"max_snippet_bytes"`
+	Index           *SearchIndexMetadata `json:"index,omitempty"`
 }
 
 type SymbolSource struct {
@@ -159,6 +226,7 @@ type SymbolReferenceList struct {
 	Symbol        SymbolMetadata            `json:"symbol"`
 	References    []SymbolReferenceMetadata `json:"references"`
 	NextPageToken string                    `json:"next_page_token,omitempty"`
+	Index         *SearchIndexMetadata      `json:"index,omitempty"`
 }
 
 type SymbolCallEdge struct {
@@ -183,9 +251,10 @@ type SymbolCallEdge struct {
 }
 
 type SymbolCallEdgeList struct {
-	Symbol        SymbolMetadata   `json:"symbol"`
-	Edges         []SymbolCallEdge `json:"edges"`
-	NextPageToken string           `json:"next_page_token,omitempty"`
+	Symbol        SymbolMetadata       `json:"symbol"`
+	Edges         []SymbolCallEdge     `json:"edges"`
+	NextPageToken string               `json:"next_page_token,omitempty"`
+	Index         *SearchIndexMetadata `json:"index,omitempty"`
 }
 
 type SymbolCallGraph struct {

@@ -244,6 +244,82 @@ func Run() {
 	}
 }
 
+func TestSearchQueriesReturnBoundedEligibleIndexedResults(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), `package main
+
+func helperAlpha() {}
+func helperBeta() {}
+
+func Run() {
+	helperAlpha()
+	helperBeta()
+}
+`)
+	writeFile(t, filepath.Join(root, "secrets", "token.go"), "package main\nvar access_token = placeholder\n")
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+
+	text, err := svc.SearchText(ctx, "example-service", TextSearchOptions{
+		Query:           "helper",
+		Extension:       ".go",
+		PageSize:        1,
+		MaxSnippetBytes: 18,
+	})
+	if err != nil {
+		t.Fatalf("search text: %v", err)
+	}
+	if len(text.Results) != 1 || text.NextPageToken == "" || len(text.Results[0].Snippet) > 18 || text.Results[0].Chunk.Text != "" || !text.Results[0].SnippetTruncated {
+		t.Fatalf("expected capped paginated text result without chunk text, got %#v", text)
+	}
+	assertNoSearchLeak(t, root, text)
+
+	files, err := svc.SearchFiles(ctx, "example-service", FileSearchOptions{PathContains: "main", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search files: %v", err)
+	}
+	if len(files.Files) != 1 || files.Files[0].RelativePath != "cmd/main.go" {
+		t.Fatalf("expected only eligible main file, got %#v", files)
+	}
+
+	symbols, err := svc.SearchSymbols(ctx, "example-service", SymbolFilter{NameContains: "Beta"}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search symbols: %v", err)
+	}
+	if len(symbols.Symbols) != 1 || symbols.Symbols[0].Name != "helperBeta" {
+		t.Fatalf("expected helperBeta symbol, got %#v", symbols)
+	}
+
+	refs, err := svc.SearchReferences(ctx, "example-service", ReferenceSearchOptions{TargetNameContains: "Alpha", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search references: %v", err)
+	}
+	if len(refs.References) != 1 || refs.References[0].TargetName != "helperAlpha" || refs.References[0].ResolutionStatus != "resolved" {
+		t.Fatalf("expected resolved helperAlpha reference, got %#v", refs)
+	}
+
+	calls, err := svc.SearchCalls(ctx, "example-service", ReferenceSearchOptions{CallerNameContains: "Run", CalleeNameContains: "Beta", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search calls: %v", err)
+	}
+	if len(calls.Edges) != 1 || calls.Edges[0].CallerName != "Run" || calls.Edges[0].CalleeName != "helperBeta" {
+		t.Fatalf("expected Run -> helperBeta call, got %#v", calls)
+	}
+
+	secretText, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "access_token", PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("search secret text: %v", err)
+	}
+	if len(secretText.Results) != 0 {
+		t.Fatalf("expected skipped sensitive content to be excluded, got %#v", secretText)
+	}
+	assertNoSearchLeak(t, root, secretText, "access_token", "placeholder", "content_sha256", "secrets/token.go")
+}
+
 func TestSymbolSemanticEdgesDeletedWhenFileSkipped(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -1235,6 +1311,17 @@ func assertNoPropertyContains(t *testing.T, properties map[string]string, forbid
 	for key, value := range properties {
 		if strings.Contains(value, forbidden) {
 			t.Fatalf("property %q leaked forbidden value %q in %#v", key, forbidden, properties)
+		}
+	}
+}
+
+func assertNoSearchLeak(t *testing.T, root string, value any, extraForbidden ...string) {
+	t.Helper()
+	encoded := fmt.Sprintf("%#v", value)
+	forbidden := append([]string{root, "content_sha256"}, extraForbidden...)
+	for _, item := range forbidden {
+		if item != "" && strings.Contains(encoded, item) {
+			t.Fatalf("search result leaked %q: %#v", item, value)
 		}
 	}
 }

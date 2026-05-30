@@ -150,6 +150,9 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
 		t.Fatalf("expected ingestion tools, got %s", list.Body.String())
 	}
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.text"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.calls"`)) {
+		t.Fatalf("expected project search tools, got %s", list.Body.String())
+	}
 
 	templates := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"resources/templates/list"}`)
 	if !bytes.Contains(templates.Body.Bytes(), []byte(`mivialabs://projects/{id}/files/{file_id}`)) {
@@ -235,6 +238,27 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	graph := postMCP(t, handler, `{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"projects.symbol.call_graph","arguments":{"id":"example-service","symbol_id":"`+runID+`","direction":"callees","max_depth":1,"max_nodes":10}}}`)
 	if bytes.Contains(graph.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(graph.Body.Bytes(), []byte(helperID)) {
 		t.Fatalf("expected call graph success, got %s", graph.Body.String())
+	}
+
+	searchText := postMCP(t, handler, `{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"projects_search_text","arguments":{"id":"example-service","query":"helper","max_snippet_bytes":12}}}`)
+	if bytes.Contains(searchText.Body.Bytes(), []byte(`"error"`)) || bytes.Contains(searchText.Body.Bytes(), []byte(root)) || bytes.Contains(searchText.Body.Bytes(), []byte("content_sha256")) {
+		t.Fatalf("expected safe text search success, got %s", searchText.Body.String())
+	}
+	searchFiles := postMCP(t, handler, `{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"projects_search_files","arguments":{"id":"example-service","path_contains":"main"}}}`)
+	if bytes.Contains(searchFiles.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(searchFiles.Body.Bytes(), []byte(`"relative_path":"cmd/main.go"`)) {
+		t.Fatalf("expected file search success, got %s", searchFiles.Body.String())
+	}
+	searchSymbols := postMCP(t, handler, `{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"projects_search_symbols","arguments":{"id":"example-service","name_contains":"Run"}}}`)
+	if bytes.Contains(searchSymbols.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(searchSymbols.Body.Bytes(), []byte(`"name":"Run"`)) {
+		t.Fatalf("expected symbol search success, got %s", searchSymbols.Body.String())
+	}
+	searchRefs := postMCP(t, handler, `{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"projects_search_references","arguments":{"id":"example-service","target_name_contains":"helper"}}}`)
+	if bytes.Contains(searchRefs.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(searchRefs.Body.Bytes(), []byte(`"target_name":"helper"`)) {
+		t.Fatalf("expected reference search success, got %s", searchRefs.Body.String())
+	}
+	searchCalls := postMCP(t, handler, `{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"projects_search_calls","arguments":{"id":"example-service","caller_name_contains":"Run","callee_name_contains":"helper"}}}`)
+	if bytes.Contains(searchCalls.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(searchCalls.Body.Bytes(), []byte(`"callee_name":"helper"`)) {
+		t.Fatalf("expected call search success, got %s", searchCalls.Body.String())
 	}
 
 	read := postMCP(t, handler, `{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"mivialabs://projects/example-service/files/`+fileID+`"}}`)

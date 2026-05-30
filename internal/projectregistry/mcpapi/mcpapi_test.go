@@ -329,6 +329,65 @@ func TestCallToolWithIngestion_P2DiscoveryTools(t *testing.T) {
 	}
 }
 
+func TestCallToolWithIngestion_SearchToolsSupportDottedAndUnderscoreNames(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+	if _, err := ingestion.IngestProject(context.Background(), "example-service", projectingestion.TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+
+	textResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects.search.text", json.RawMessage(`{"id":"example-service","query":"helper","page_size":1,"max_snippet_bytes":12}`))
+	if err != nil {
+		t.Fatalf("call text search tool: %v", err)
+	}
+	text := textResult["structuredContent"].(projectingestion.TextSearchResultList)
+	if len(text.Results) != 1 || len(text.Results[0].Snippet) > 12 || text.Results[0].Chunk.Text != "" {
+		t.Fatalf("unexpected text search result: %#v", text)
+	}
+
+	filesResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_search_files", json.RawMessage(`{"id":"example-service","path_contains":"main"}`))
+	if err != nil {
+		t.Fatalf("call files search tool: %v", err)
+	}
+	files := filesResult["structuredContent"].(projectingestion.FileList)
+	if len(files.Files) != 1 || files.Files[0].RelativePath != "cmd/main.go" {
+		t.Fatalf("unexpected file search result: %#v", files)
+	}
+
+	symbolsResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_search_symbols", json.RawMessage(`{"id":"example-service","name_contains":"elp","page_size":10}`))
+	if err != nil {
+		t.Fatalf("call symbols search tool: %v", err)
+	}
+	symbols := symbolsResult["structuredContent"].(projectingestion.SymbolList)
+	if len(symbols.Symbols) != 1 || symbols.Symbols[0].Name != "helper" {
+		t.Fatalf("unexpected symbol search result: %#v", symbols)
+	}
+
+	refsResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_search_references", json.RawMessage(`{"id":"example-service","target_name_contains":"helper","page_size":10}`))
+	if err != nil {
+		t.Fatalf("call references search tool: %v", err)
+	}
+	refs := refsResult["structuredContent"].(projectingestion.SymbolReferenceList)
+	if len(refs.References) != 1 || refs.References[0].TargetName != "helper" {
+		t.Fatalf("unexpected reference search result: %#v", refs)
+	}
+
+	callsResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_search_calls", json.RawMessage(`{"id":"example-service","caller_name_contains":"main","callee_name_contains":"helper","page_size":10}`))
+	if err != nil {
+		t.Fatalf("call calls search tool: %v", err)
+	}
+	calls := callsResult["structuredContent"].(projectingestion.SymbolCallEdgeList)
+	if len(calls.Edges) != 1 || calls.Edges[0].CallerName != "main" || calls.Edges[0].CalleeName != "helper" {
+		t.Fatalf("unexpected call search result: %#v", calls)
+	}
+
+	body := marshalResult(t, map[string]any{"text": textResult, "files": filesResult, "symbols": symbolsResult, "refs": refsResult, "calls": callsResult})
+	for _, forbidden := range []string{"root_path", "content_sha256", "access_token", "provider_payload", "raw_prompt"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("search tool response leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
 func newServices(t *testing.T) (*projectregistry.Registry, *projectregistry.DigestService) {
 	t.Helper()
 	root := t.TempDir()

@@ -29,6 +29,11 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}/chunks", listChunksHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files/{file_id}/outline", getFileOutlineHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols", listSymbolsHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/search/text", searchTextHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/search/files", searchFilesHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/search/symbols", searchSymbolsHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/search/references", searchReferencesHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/search/calls", searchCallsHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/source", getSymbolSourceHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/references", listSymbolReferencesHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/symbols/{symbol_id}/callers", listSymbolCallersHandler(ingestion))
@@ -150,6 +155,71 @@ func listSymbolsHandler(ingestion projectingestion.API) http.Handler {
 		}
 		symbols, err := ingestion.ListSymbols(r.Context(), strings.TrimSpace(r.PathValue("id")), filter, pagination)
 		writeIngestionResult(w, symbols, err, http.StatusOK)
+	})
+}
+
+func searchTextHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		options, err := textSearchOptions(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		results, err := ingestion.SearchText(r.Context(), strings.TrimSpace(r.PathValue("id")), options)
+		writeIngestionResult(w, results, err, http.StatusOK)
+	})
+}
+
+func searchFilesHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		options, err := fileSearchOptions(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		files, err := ingestion.SearchFiles(r.Context(), strings.TrimSpace(r.PathValue("id")), options)
+		writeIngestionResult(w, files, err, http.StatusOK)
+	})
+}
+
+func searchSymbolsHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pagination, err := paginationFromRequest(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		filter, err := symbolFilter(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		symbols, err := ingestion.SearchSymbols(r.Context(), strings.TrimSpace(r.PathValue("id")), filter, pagination)
+		writeIngestionResult(w, symbols, err, http.StatusOK)
+	})
+}
+
+func searchReferencesHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		options, err := referenceSearchOptions(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		refs, err := ingestion.SearchReferences(r.Context(), strings.TrimSpace(r.PathValue("id")), options)
+		writeIngestionResult(w, refs, err, http.StatusOK)
+	})
+}
+
+func searchCallsHandler(ingestion projectingestion.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		options, err := referenceSearchOptions(r)
+		if err != nil {
+			writeIngestionResult(w, nil, err, http.StatusOK)
+			return
+		}
+		calls, err := ingestion.SearchCalls(r.Context(), strings.TrimSpace(r.PathValue("id")), options)
+		writeIngestionResult(w, calls, err, http.StatusOK)
 	})
 }
 
@@ -340,12 +410,93 @@ func fileFilter(r *http.Request) (projectingestion.FileStateFilter, error) {
 }
 
 func symbolFilter(r *http.Request) (projectingestion.SymbolFilter, error) {
+	caseSensitive, err := optionalBoolQuery(r, "case_sensitive")
+	if err != nil {
+		return projectingestion.SymbolFilter{}, err
+	}
 	return projectingestion.NormalizeSymbolFilter(projectingestion.SymbolFilter{
-		Kind:       projectingestion.SymbolKind(strings.TrimSpace(r.URL.Query().Get("kind"))),
-		NamePrefix: r.URL.Query().Get("name_prefix"),
-		FileID:     strings.TrimSpace(r.URL.Query().Get("file_id")),
-		Extension:  r.URL.Query().Get("extension"),
-		Package:    r.URL.Query().Get("package"),
+		Kind:          projectingestion.SymbolKind(strings.TrimSpace(r.URL.Query().Get("kind"))),
+		NamePrefix:    r.URL.Query().Get("name_prefix"),
+		NameContains:  r.URL.Query().Get("name_contains"),
+		FileID:        strings.TrimSpace(r.URL.Query().Get("file_id")),
+		Extension:     r.URL.Query().Get("extension"),
+		Package:       r.URL.Query().Get("package"),
+		Receiver:      r.URL.Query().Get("receiver"),
+		CaseSensitive: caseSensitive,
+	})
+}
+
+func textSearchOptions(r *http.Request) (projectingestion.TextSearchOptions, error) {
+	pageSize, err := positiveIntQuery(r, "page_size")
+	if err != nil {
+		return projectingestion.TextSearchOptions{}, err
+	}
+	maxSnippetBytes, err := positiveIntQuery(r, "max_snippet_bytes")
+	if err != nil {
+		return projectingestion.TextSearchOptions{}, err
+	}
+	maxMatches, err := positiveIntQuery(r, "max_matches")
+	if err != nil {
+		return projectingestion.TextSearchOptions{}, err
+	}
+	caseSensitive, err := optionalBoolQuery(r, "case_sensitive")
+	if err != nil {
+		return projectingestion.TextSearchOptions{}, err
+	}
+	return projectingestion.NormalizeTextSearchOptions(projectingestion.TextSearchOptions{
+		Query:           r.URL.Query().Get("query"),
+		Mode:            r.URL.Query().Get("mode"),
+		CaseSensitive:   caseSensitive,
+		Extension:       r.URL.Query().Get("extension"),
+		PathPrefix:      r.URL.Query().Get("path_prefix"),
+		PageSize:        pageSize,
+		PageToken:       r.URL.Query().Get("page_token"),
+		MaxSnippetBytes: maxSnippetBytes,
+		MaxMatches:      maxMatches,
+	})
+}
+
+func fileSearchOptions(r *http.Request) (projectingestion.FileSearchOptions, error) {
+	pageSize, err := positiveIntQuery(r, "page_size")
+	if err != nil {
+		return projectingestion.FileSearchOptions{}, err
+	}
+	caseSensitive, err := optionalBoolQuery(r, "case_sensitive")
+	if err != nil {
+		return projectingestion.FileSearchOptions{}, err
+	}
+	return projectingestion.NormalizeFileSearchOptions(projectingestion.FileSearchOptions{
+		Extension:     r.URL.Query().Get("extension"),
+		PathPrefix:    r.URL.Query().Get("path_prefix"),
+		PathContains:  r.URL.Query().Get("path_contains"),
+		CaseSensitive: caseSensitive,
+		PageSize:      pageSize,
+		PageToken:     r.URL.Query().Get("page_token"),
+	})
+}
+
+func referenceSearchOptions(r *http.Request) (projectingestion.ReferenceSearchOptions, error) {
+	pageSize, err := positiveIntQuery(r, "page_size")
+	if err != nil {
+		return projectingestion.ReferenceSearchOptions{}, err
+	}
+	caseSensitive, err := optionalBoolQuery(r, "case_sensitive")
+	if err != nil {
+		return projectingestion.ReferenceSearchOptions{}, err
+	}
+	return projectingestion.NormalizeReferenceSearchOptions(projectingestion.ReferenceSearchOptions{
+		NameContains:       r.URL.Query().Get("name_contains"),
+		TargetNameContains: r.URL.Query().Get("target_name_contains"),
+		CallerNameContains: r.URL.Query().Get("caller_name_contains"),
+		CalleeNameContains: r.URL.Query().Get("callee_name_contains"),
+		EnclosingContains:  r.URL.Query().Get("enclosing_contains"),
+		Extension:          r.URL.Query().Get("extension"),
+		PathPrefix:         r.URL.Query().Get("path_prefix"),
+		ResolutionStatus:   r.URL.Query().Get("resolution_status"),
+		Confidence:         r.URL.Query().Get("confidence"),
+		CaseSensitive:      caseSensitive,
+		PageSize:           pageSize,
+		PageToken:          r.URL.Query().Get("page_token"),
 	})
 }
 
@@ -391,6 +542,18 @@ func positiveIntQuery(r *http.Request, name string) (int, error) {
 	value, err := strconv.Atoi(raw)
 	if err != nil || value <= 0 {
 		return 0, projectregistry.ErrInvalidInput
+	}
+	return value, nil
+}
+
+func optionalBoolQuery(r *http.Request, name string) (bool, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, projectregistry.ErrInvalidInput
 	}
 	return value, nil
 }

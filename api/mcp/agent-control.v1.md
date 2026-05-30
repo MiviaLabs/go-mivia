@@ -303,7 +303,37 @@ Input schema:
 }
 ```
 
-Output: bounded symbol metadata for an opted-in content graph project.
+Output: bounded symbol metadata for an opted-in content graph project. Supports `name_prefix`, `name_contains`, `extension`, `package`, `receiver`, and `case_sensitive`.
+
+### `projects.search.text`
+
+Input schema: `id`, required `query`, optional `mode` (`literal` only), `case_sensitive`, `extension`, `path_prefix`, `page_size`, `page_token`, `max_snippet_bytes`, and `max_matches`.
+
+Output: deterministic paginated matches from eligible indexed `ContentChunk` nodes only. Each result includes safe file metadata, chunk location metadata with no full chunk text, match span, and a capped snippet. Results may be stale until ingestion catches up. Skipped, denied, sensitive, absent, and unindexed files are excluded.
+
+### `projects.search.files`
+
+Input schema: `id`, optional `extension`, `path_prefix`, `path_contains`, `case_sensitive`, `page_size`, and `page_token`.
+
+Output: eligible indexed file metadata only. Absolute roots, skipped sensitive paths, content hashes, absent files, and denied files are not returned.
+
+### `projects.search.symbols`
+
+Input schema: `id`, optional `kind`, `name_prefix`, `name_contains`, `file_id`, `extension`, `package`, `receiver`, `case_sensitive`, `page_size`, and `page_token`.
+
+Output: bounded symbol metadata from eligible indexed files. Use this before broad text pattern searches when symbol names are enough.
+
+### `projects.search.references`
+
+Input schema: `id`, optional `name_contains`, `target_name_contains`, `enclosing_contains`, `extension`, `path_prefix`, `resolution_status`, `confidence`, `case_sensitive`, `page_size`, and `page_token`.
+
+Output: bounded indexed reference metadata. No source text, roots, content hashes, skipped sensitive content, raw parser errors, or raw datastore details are returned.
+
+### `projects.search.calls`
+
+Input schema: `id`, optional `name_contains`, `caller_name_contains`, `callee_name_contains`, `extension`, `path_prefix`, `resolution_status`, `confidence`, `case_sensitive`, `page_size`, and `page_token`.
+
+Output: bounded indexed call metadata, including unresolved call nodes where available. No source text, roots, content hashes, skipped sensitive content, raw parser errors, or raw datastore details are returned.
 
 ### `projects.symbol.source`
 
