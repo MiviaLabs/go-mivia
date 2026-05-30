@@ -97,6 +97,7 @@ Files:
 - `.editorconfig`
 - `.gitattributes`
 - `go.mod`
+- `doc.go`
 - `Makefile`
 - `scripts/check.sh`
 - `scripts/test.sh`
@@ -111,12 +112,14 @@ Verifier:
 
 Verification performed:
 
-- `go version` failed because WSL reported `/bin/bash: line 1: go: command not found`.
-- Phase 2 files were created only; Go-dependent verification remains blocked until Go 1.26.x is installed.
+- `go version`
+- `go mod tidy`
+- `go test ./...`
+- `make check`
 
 Residual risk:
 
-- `go mod tidy`, `go test ./...`, and `make check` were not run because the required `go` binary is missing in WSL.
+- Go is installed user-local under `/home/mac/.local/opt/go1.26.3`; commands run through WSL login shells resolve `/home/mac/.local/bin/go`.
 
 Prompt:
 
