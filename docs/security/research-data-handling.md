@@ -37,6 +37,10 @@ Within the accepted ADR-0007 boundary:
 
 No provider, embedding, vector, crawling, public exposure, auth model change, symlink traversal, skipped sensitive content storage, matched sensitive-marker storage, or PII ingestion is approved. PII ingestion remains prohibited unless separately approved by Security/DPO with purpose, legal basis, access model, retention, deletion path, audit trail, and data residency posture.
 
+REST and MCP content graph surfaces are localhost-only and bounded. They expose manual ingestion control, run status, file metadata, chunk metadata, and symbol metadata for opted-in projects. Responses use stable opaque IDs and must not expose absolute roots, datastore paths, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, provider payloads, or raw database query results.
+
+Project graph storage may be configured per project as `persistent` or `in_memory`. Persistent graph data must stay in ignored local datastore files. Live watcher state is local-only, disabled by default, and allowed only when both global live updates and the project `content_graph/live` settings are enabled.
+
 ## Provider Policy
 
 - Only fixture providers are implemented during bootstrap.

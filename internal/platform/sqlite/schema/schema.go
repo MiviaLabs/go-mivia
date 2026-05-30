@@ -116,6 +116,10 @@ var configuredProjectColumns = []columnDefinition{
 		Name:       "sensitive_marker_policy",
 		Definition: "sensitive_marker_policy TEXT NOT NULL DEFAULT 'skip_file'",
 	},
+	{
+		Name:       "graph_storage",
+		Definition: "graph_storage TEXT NOT NULL DEFAULT 'persistent'",
+	},
 }
 
 type columnDefinition struct {

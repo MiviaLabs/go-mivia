@@ -61,6 +61,7 @@ type Project struct {
 	Enabled               bool
 	Classification        string
 	GraphNamespace        string
+	GraphStorage          string
 	DigestMode            string
 	UpdatePolicy          string
 	Include               []string

@@ -429,7 +429,7 @@ components:
     Project:
       type: object
       additionalProperties: false
-      required: [id, display_name, enabled, classification, graph_namespace, digest_mode, update_policy, validation_status]
+      required: [id, display_name, enabled, classification, graph_namespace, graph_storage, digest_mode, update_policy, validation_status]
       properties:
         id:
           type: string
@@ -443,6 +443,9 @@ components:
           type: string
         graph_namespace:
           type: string
+        graph_storage:
+          type: string
+          enum: [persistent, in_memory]
         digest_mode:
           type: string
           enum: [metadata_only, content_graph]

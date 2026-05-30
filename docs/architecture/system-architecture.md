@@ -16,8 +16,9 @@ Local task plans and research plans are not stable technical documentation. Do n
 - One Go module with one local service entrypoint: `cmd/agent-server`.
 - HTTP surfaces: `/healthz`, `/readyz`, REST under `/api/v1`, and MCP Streamable HTTP under `/mcp`.
 - Domain services: `internal/agentcontrol` for tasks and research runs; `internal/research` for redacted research source metadata.
-- Local project services: `internal/projectregistry` loads optional local project config from `configs/agent-server.local.toml` or explicit `MIVIA_CONFIG_PATH`, validates local roots and patterns, exposes bounded project metadata, and runs manual metadata-only digest.
-- Stores: Ladybug graph abstraction for graph data; SQLite for local app configuration. Normal builds use the in-memory Ladybug graph unless native tags are enabled.
+- Local project services: `internal/projectregistry` loads optional local project config from `configs/agent-server.local.toml` or explicit `MIVIA_CONFIG_PATH`, validates local roots and patterns, exposes bounded project metadata, runs manual metadata-only digest, and routes content graph data to per-project `persistent` or `in_memory` graph storage.
+- Project ingestion services: `internal/projectingestion` handles eligible local source safety gates, chunking, parsing, graph writes, SQLite run/file state, bounded REST/MCP query views, and live watcher orchestration.
+- Stores: Ladybug graph abstraction for graph data; SQLite for local app configuration and ingestion state. Project graph storage can be persistent or process-local per project.
 - Boundary: localhost-only by default; no approved production deployment, public API exposure, auth model, live provider, external crawling, embedding provider, vector dimension, or PII processing.
 
 ## Component And Data Flow
@@ -32,6 +33,8 @@ flowchart TB
   AgentService["internal/agentcontrol service"]
   ProjectRegistry["internal/projectregistry registry"]
   ProjectDigest["metadata-only project digest"]
+  ProjectIngestion["content graph ingestion"]
+  Watcher["live watcher orchestrator"]
   ResearchService["internal/research service"]
   Redaction["research redaction boundary"]
   Ladybug["Ladybug graph abstraction"]
@@ -50,6 +53,10 @@ flowchart TB
   MCP --> ProjectRegistry
   ProjectRegistry --> ProjectDigest
   ProjectDigest --> Ladybug
+  ProjectRegistry --> ProjectIngestion
+  Watcher --> ProjectIngestion
+  ProjectIngestion --> Ladybug
+  ProjectIngestion --> SQLite
   ConfigFile --> ProjectRegistry
   REST --> ResearchService
   MCP --> ResearchService
@@ -111,6 +118,30 @@ sequenceDiagram
   Server-->>Client: Redacted metadata response
 ```
 
+## Content Graph And Live Update Sequence
+
+```mermaid
+sequenceDiagram
+  participant Client as REST or MCP client
+  participant Server as agent-server
+  participant Registry as project registry
+  participant Ingestion as project ingestion service
+  participant Watcher as live watcher
+  participant Graph as project graph store
+  participant SQLite as SQLite ingestion state
+
+  Client->>Server: Manual ingest, file list, chunk list, or symbol list
+  Server->>Registry: Resolve enabled content_graph project
+  Registry-->>Server: Project with graph_storage setting
+  Server->>Ingestion: Run manual ingestion or bounded query
+  Watcher->>Ingestion: Live path event or overflow rescan when enabled
+  Ingestion->>Ingestion: Apply path, symlink, include/exclude, size, binary, UTF-8, and sensitive-marker gates
+  Ingestion->>Graph: Store eligible file versions, chunks, symbols, headings, and run metadata
+  Ingestion->>SQLite: Store run and file state summaries
+  Ingestion-->>Server: Bounded metadata response with stable opaque IDs
+  Server-->>Client: JSON without roots, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, or provider payloads
+```
+
 ## Documentation Update Sequence
 
 ```mermaid
@@ -134,8 +165,9 @@ sequenceDiagram
 - PII ingestion is prohibited until Security/DPO approval covers purpose, legal basis, access model, retention, deletion path, and audit trail.
 - REST, MCP, stores, logs, fixtures, docs, traces, and metrics must not contain raw prompts, raw fetched content, provider payloads, credentials, tokens, secrets, or personal data.
 - Research source handling stores redacted metadata only; live provider execution and broad crawling remain out of scope.
-- Local project configuration is for engineer local computers only. SQLite may store configured local root paths as ignored local app-configuration state, but REST/MCP project metadata responses omit root paths, include/exclude patterns, raw source content, and raw database query surfaces.
+- Local project configuration is for engineer local computers only. SQLite may store configured local root paths as ignored local app-configuration state, but REST/MCP project metadata responses omit root paths, include/exclude patterns, datastore paths, and raw database query surfaces.
 - Project digest stores metadata only: relative path, extension/language hint, size, mtime, and `metadata_sha256` derived from those metadata fields. It must not store raw source content or file-content hashes.
+- Content graph ingestion is approved only for explicitly opted-in `content_graph` projects. It may store eligible local source chunks after all gates pass. Skipped sensitive content, matched sensitive-marker text, secrets, PII, raw prompts, provider payloads, and absolute roots must not be stored or returned.
 
 ## Operational Boundaries
 

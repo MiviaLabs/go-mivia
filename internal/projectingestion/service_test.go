@@ -184,6 +184,21 @@ func TestIngestPath_DeletedFileCreatesTombstone(t *testing.T) {
 	}
 }
 
+func TestIngestProject_ManualFallbackWorksForLiveProject(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc Run() {}\n")
+
+	svc, _, _ := newTestServiceWithUpdatePolicy(t, root, projectregistry.UpdatePolicyLive)
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("manual ingest fallback: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.FilesIngested != 1 {
+		t.Fatalf("unexpected manual fallback run: %#v", run)
+	}
+}
+
 func TestIngestPath_RejectsPathEscape(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -195,6 +210,11 @@ func TestIngestPath_RejectsPathEscape(t *testing.T) {
 
 func newTestService(t *testing.T, root string) (*Service, *ladybug.MemoryGraph, *SQLiteStore) {
 	t.Helper()
+	return newTestServiceWithUpdatePolicy(t, root, projectregistry.UpdatePolicyManual)
+}
+
+func newTestServiceWithUpdatePolicy(t *testing.T, root string, updatePolicy string) (*Service, *ladybug.MemoryGraph, *SQLiteStore) {
+	t.Helper()
 	registry, err := projectregistry.NewRegistry([]config.Project{{
 		ID:                    "example-service",
 		DisplayName:           "Example Service",
@@ -203,7 +223,7 @@ func newTestService(t *testing.T, root string) (*Service, *ladybug.MemoryGraph, 
 		Classification:        projectregistry.ClassificationInternal,
 		GraphNamespace:        "example_ns",
 		DigestMode:            projectregistry.DigestModeContentGraph,
-		UpdatePolicy:          projectregistry.UpdatePolicyManual,
+		UpdatePolicy:          updatePolicy,
 		Include:               []string{"**/*.go", "**/*.md", "**/*.txt"},
 		FollowSymlinks:        false,
 		MaxFileBytes:          4096,
@@ -211,6 +231,7 @@ func newTestService(t *testing.T, root string) (*Service, *ladybug.MemoryGraph, 
 		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
 	}}, projectregistry.Options{
 		ContentGraphEnabled:          true,
+		LiveUpdatesEnabled:           updatePolicy == projectregistry.UpdatePolicyLive,
 		ContentGraphApprovalAccepted: true,
 	})
 	if err != nil {

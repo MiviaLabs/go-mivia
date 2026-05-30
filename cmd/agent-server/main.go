@@ -75,10 +75,28 @@ func run() error {
 	if err := projectstore.NewSQLiteStore(sqliteDB.SQLDB()).SaveProjects(ctx, projectRegistry.List()); err != nil {
 		return err
 	}
+	projectPersistentGraph, err := ladybug.OpenPersistentGraph(cfg.LadybugPath)
+	if err != nil {
+		return err
+	}
+	projectGraph := projectregistry.NewProjectGraphRouter(projectRegistry, ladybug.NewMemoryGraph(), projectPersistentGraph)
+	if err := projectGraph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
+		return err
+	}
 	agentStore := store.NewLadybugStore(graph)
 	researchService := research.NewService(researchstore.NewLadybugMetadataStore(graph))
-	projectDigestService := projectregistry.NewDigestService(projectRegistry, graph)
-	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(graph), projectingestion.NewSQLiteStore(sqliteDB.SQLDB()))
+	projectDigestService := projectregistry.NewDigestService(projectRegistry, projectGraph)
+	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(projectGraph), projectingestion.NewSQLiteStore(sqliteDB.SQLDB()))
+	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionService, projectingestion.OrchestratorOptions{
+		LiveUpdatesEnabled: cfg.Ingestion.LiveUpdatesEnabled,
+		DebounceInterval:   cfg.Ingestion.DebounceInterval,
+		QueueDepth:         cfg.Ingestion.QueueDepth,
+		WorkerCount:        cfg.Ingestion.WorkerCount,
+		InitialScanOnStart: cfg.Ingestion.InitialScanOnStart,
+	})
+	if err := projectIngestionOrchestrator.Start(ctx); err != nil {
+		return err
+	}
 	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
 	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
 		return err
@@ -138,8 +156,14 @@ func run() error {
 	case <-signalCtx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
+		if err := projectIngestionOrchestrator.Stop(shutdownCtx); err != nil {
+			return err
+		}
 		return server.Shutdown(shutdownCtx)
 	case err := <-errCh:
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		_ = projectIngestionOrchestrator.Stop(shutdownCtx)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}

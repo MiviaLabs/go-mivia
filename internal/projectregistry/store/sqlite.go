@@ -29,6 +29,10 @@ func (store *SQLiteStore) SaveProjects(ctx context.Context, projects []projectre
 	defer tx.Rollback()
 
 	for _, project := range projects {
+		graphStorage := project.GraphStorage
+		if graphStorage == "" {
+			graphStorage = projectregistry.GraphStoragePersistent
+		}
 		includePatterns, err := json.Marshal(project.Include)
 		if err != nil {
 			return err
@@ -45,6 +49,7 @@ func (store *SQLiteStore) SaveProjects(ctx context.Context, projects []projectre
 			root_path,
 			enabled,
 			classification,
+			graph_storage,
 			digest_mode,
 			update_policy,
 			include_patterns,
@@ -56,7 +61,7 @@ func (store *SQLiteStore) SaveProjects(ctx context.Context, projects []projectre
 			validation_status,
 			validation_error,
 			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			graph_namespace = excluded.graph_namespace,
 			display_name = excluded.display_name,
@@ -64,6 +69,7 @@ func (store *SQLiteStore) SaveProjects(ctx context.Context, projects []projectre
 			root_path = excluded.root_path,
 			enabled = excluded.enabled,
 			classification = excluded.classification,
+			graph_storage = excluded.graph_storage,
 			digest_mode = excluded.digest_mode,
 			update_policy = excluded.update_policy,
 			include_patterns = excluded.include_patterns,
@@ -82,6 +88,7 @@ func (store *SQLiteStore) SaveProjects(ctx context.Context, projects []projectre
 			project.RootPath,
 			boolToInt(project.Enabled),
 			project.Classification,
+			graphStorage,
 			project.DigestMode,
 			project.UpdatePolicy,
 			string(includePatterns),
@@ -111,6 +118,7 @@ func (store *SQLiteStore) GetProject(ctx context.Context, id string) (projectreg
 		root_path,
 		enabled,
 		classification,
+		graph_storage,
 		digest_mode,
 		update_policy,
 		include_patterns,
@@ -139,6 +147,7 @@ func (store *SQLiteStore) ListProjects(ctx context.Context) ([]projectregistry.P
 		root_path,
 		enabled,
 		classification,
+		graph_storage,
 		digest_mode,
 		update_policy,
 		include_patterns,
@@ -187,6 +196,7 @@ func scanProject(scanner projectScanner) (projectregistry.Project, error) {
 		&project.RootPath,
 		&enabled,
 		&project.Classification,
+		&project.GraphStorage,
 		&project.DigestMode,
 		&project.UpdatePolicy,
 		&includePatterns,
@@ -209,6 +219,9 @@ func scanProject(scanner projectScanner) (projectregistry.Project, error) {
 	}
 	project.Enabled = enabled == 1
 	project.FollowSymlinks = followSymlinks == 1
+	if project.GraphStorage == "" {
+		project.GraphStorage = projectregistry.GraphStoragePersistent
+	}
 	return project, nil
 }
 

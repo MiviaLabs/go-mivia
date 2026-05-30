@@ -12,8 +12,8 @@ This index points only to stable repository documentation. Local task plans and 
 - [ADRs](adr/): approved and proposed architecture decisions.
 - [REST OpenAPI contract](../api/openapi/agent-control.v1.yaml): localhost REST contract under `/api/v1`.
 - [MCP capability contract](../api/mcp/agent-control.v1.md): Streamable HTTP MCP contract under `/mcp`.
-- [Local project configuration](configuration/local-projects.md): `MIVIA_CONFIG_PATH`, example config, local project metadata APIs, and manual metadata-only digest boundary.
-- [Local development runbook](runbooks/local-dev.md): local verification, server startup, REST smoke, and MCP smoke.
+- [Local project configuration](configuration/local-projects.md): `MIVIA_CONFIG_PATH`, example config, graph storage selection, local project metadata APIs, manual digest, content graph ingestion, and live update boundaries.
+- [Local development runbook](runbooks/local-dev.md): local verification, server startup, REST smoke, MCP smoke, manual ingestion, live mode, watcher troubleshooting, and local reset.
 - [Incident runbook](runbooks/incident.md): bootstrap incident response notes.
 - [Privacy baseline](security/privacy-baseline.md): current PII prohibition and approval gates.
 - [Research data handling](security/research-data-handling.md): allowed metadata, redaction boundary, and provider restrictions.

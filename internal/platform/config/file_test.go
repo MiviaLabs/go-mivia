@@ -79,6 +79,7 @@ display_name = "Example"
 root_path = "/absolute/path/to/project"
 digest_mode = "content_graph"
 update_policy = "live"
+graph_storage = "in_memory"
 max_file_bytes = 1024
 max_chunk_bytes = 512
 sensitive_marker_policy = "skip_file"
@@ -95,6 +96,9 @@ sensitive_marker_policy = "skip_file"
 	project := merged.Projects[0]
 	if project.DigestMode != digestModeContentGraph || project.UpdatePolicy != updatePolicyLive {
 		t.Fatalf("unexpected project modes: %+v", project)
+	}
+	if project.GraphStorage != graphStorageInMemory {
+		t.Fatalf("unexpected graph storage: %+v", project)
 	}
 	if project.MaxFileBytes != 1024 || project.MaxChunkBytes != 512 {
 		t.Fatalf("unexpected project caps: %+v", project)
@@ -138,6 +142,26 @@ update_policy = "watch"
 	}
 	if !strings.Contains(err.Error(), "update_policy") {
 		t.Fatalf("expected update_policy error, got %v", err)
+	}
+}
+
+func TestLoadFileConfig_RejectsUnsupportedGraphStorage(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+graph_storage = "remote"
+`)
+
+	_, err := loadFileConfig(path)
+	if err == nil {
+		t.Fatal("expected unsupported graph storage to fail")
+	}
+	if !strings.Contains(err.Error(), "graph_storage") {
+		t.Fatalf("expected graph_storage error, got %v", err)
 	}
 }
 

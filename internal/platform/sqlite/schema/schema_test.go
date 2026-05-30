@@ -82,6 +82,7 @@ func TestBootstrap_ConfiguredProjectIngestionColumnsExist(t *testing.T) {
 	assertColumn(t, db.SQLDB(), "configured_projects", "max_file_bytes")
 	assertColumn(t, db.SQLDB(), "configured_projects", "max_chunk_bytes")
 	assertColumn(t, db.SQLDB(), "configured_projects", "sensitive_marker_policy")
+	assertColumn(t, db.SQLDB(), "configured_projects", "graph_storage")
 }
 
 func TestBootstrap_UpgradesLegacyConfiguredProjectsWithIngestionColumns(t *testing.T) {
@@ -118,6 +119,7 @@ func TestBootstrap_UpgradesLegacyConfiguredProjectsWithIngestionColumns(t *testi
 	assertColumn(t, db.SQLDB(), "configured_projects", "max_file_bytes")
 	assertColumn(t, db.SQLDB(), "configured_projects", "max_chunk_bytes")
 	assertColumn(t, db.SQLDB(), "configured_projects", "sensitive_marker_policy")
+	assertColumn(t, db.SQLDB(), "configured_projects", "graph_storage")
 }
 
 func TestBootstrap_ProjectFileIngestionStateRejectsUnsafePathLeak(t *testing.T) {

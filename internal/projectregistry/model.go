@@ -7,6 +7,8 @@ const (
 	DigestModeContentGraph        = "content_graph"
 	UpdatePolicyManual            = "manual"
 	UpdatePolicyLive              = "live"
+	GraphStoragePersistent        = "persistent"
+	GraphStorageInMemory          = "in_memory"
 	ClassificationInternal        = "internal"
 	SensitiveMarkerPolicySkipFile = "skip_file"
 	ValidationStatusValid         = "valid"
@@ -26,6 +28,7 @@ type Project struct {
 	Enabled               bool
 	Classification        string
 	GraphNamespace        string
+	GraphStorage          string
 	DigestMode            string
 	UpdatePolicy          string
 	Include               []string
@@ -45,6 +48,7 @@ type ProjectMetadata struct {
 	Enabled          bool   `json:"enabled"`
 	Classification   string `json:"classification"`
 	GraphNamespace   string `json:"graph_namespace"`
+	GraphStorage     string `json:"graph_storage"`
 	DigestMode       string `json:"digest_mode"`
 	UpdatePolicy     string `json:"update_policy"`
 	ValidationStatus string `json:"validation_status"`
@@ -93,6 +97,7 @@ func MetadataForProject(project Project) ProjectMetadata {
 		Enabled:          project.Enabled,
 		Classification:   project.Classification,
 		GraphNamespace:   project.GraphNamespace,
+		GraphStorage:     project.GraphStorage,
 		DigestMode:       project.DigestMode,
 		UpdatePolicy:     project.UpdatePolicy,
 		ValidationStatus: project.ValidationStatus,

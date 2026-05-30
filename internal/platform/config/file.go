@@ -14,6 +14,8 @@ const (
 	digestModeContentGraph = "content_graph"
 	updatePolicyManual     = "manual"
 	updatePolicyLive       = "live"
+	graphStoragePersistent = "persistent"
+	graphStorageInMemory   = "in_memory"
 )
 
 type fileConfig struct {
@@ -57,6 +59,7 @@ type fileProjectConfig struct {
 	Enabled               bool     `toml:"enabled"`
 	Classification        string   `toml:"classification"`
 	GraphNamespace        string   `toml:"graph_namespace"`
+	GraphStorage          string   `toml:"graph_storage"`
 	DigestMode            string   `toml:"digest_mode"`
 	UpdatePolicy          string   `toml:"update_policy"`
 	Include               []string `toml:"include"`
@@ -104,6 +107,11 @@ func (cfg fileConfig) validate() error {
 		case "", updatePolicyManual, updatePolicyLive:
 		default:
 			return fmt.Errorf("projects[%d].update_policy must be %q or %q", i, updatePolicyManual, updatePolicyLive)
+		}
+		switch project.GraphStorage {
+		case "", graphStoragePersistent, graphStorageInMemory:
+		default:
+			return fmt.Errorf("projects[%d].graph_storage must be %q or %q", i, graphStoragePersistent, graphStorageInMemory)
 		}
 		if project.MaxFileBytes != nil && *project.MaxFileBytes <= 0 {
 			return fmt.Errorf("projects[%d].max_file_bytes must be positive", i)
@@ -224,6 +232,10 @@ func (project fileProjectConfig) toProject() Project {
 	if updatePolicy == "" {
 		updatePolicy = updatePolicyManual
 	}
+	graphStorage := project.GraphStorage
+	if graphStorage == "" {
+		graphStorage = graphStoragePersistent
+	}
 
 	cfgProject := Project{
 		ID:             project.ID,
@@ -233,6 +245,7 @@ func (project fileProjectConfig) toProject() Project {
 		Enabled:        project.Enabled,
 		Classification: project.Classification,
 		GraphNamespace: project.GraphNamespace,
+		GraphStorage:   graphStorage,
 		DigestMode:     digestMode,
 		UpdatePolicy:   updatePolicy,
 		Include:        append([]string(nil), project.Include...),

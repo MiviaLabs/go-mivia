@@ -301,6 +301,7 @@ Codex Desktop exposes the tools through generated callable names. In this enviro
 - Raw prompts, skipped sensitive source content, fetched provider payloads, secrets, tokens, credentials, and PII are prohibited in requests, responses, fixtures, logs, and stores.
 - Research-run create accepts only a redacted `goal_summary`; live provider execution and broad crawling are out of scope.
 - Project responses omit local root paths by default.
+- Project responses include `graph_storage` as `persistent` or `in_memory`; they do not expose datastore paths.
 - Project digest is manual and metadata-only; it does not store or return raw source content or file-content hashes.
 - Content graph ingestion and query tools are localhost-only, manually triggered, bounded by pagination and chunk-byte caps, and use stable opaque IDs instead of absolute roots.
 - Ingestion query responses must not return skipped sensitive content, matched sensitive-marker text, secrets, PII, raw prompts, provider payloads, raw database query results, or absolute roots.

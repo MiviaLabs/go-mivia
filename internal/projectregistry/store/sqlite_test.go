@@ -29,6 +29,7 @@ func TestSQLiteStore_SaveAndGetProject(t *testing.T) {
 	}
 	if fetched.ID != project.ID ||
 		fetched.GraphNamespace != project.GraphNamespace ||
+		fetched.GraphStorage != project.GraphStorage ||
 		fetched.RootPath != project.RootPath ||
 		fetched.ValidationStatus != projectregistry.ValidationStatusValid {
 		t.Fatalf("unexpected fetched project: %#v", fetched)

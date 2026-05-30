@@ -80,6 +80,22 @@ curl -fsS -X POST http://127.0.0.1:8080/api/v1/projects/example-service/digest-r
 
 Digest runs are metadata-only. They store relative path, extension/language hint, file size, mtime, and metadata fingerprints; they do not store raw source content or file-content hashes.
 
+Manual content graph ingestion, after enabling `ingestion.content_graph_enabled = true` and setting the project to `digest_mode = "content_graph"`:
+
+```sh
+curl -fsS -X POST http://127.0.0.1:8080/api/v1/projects/example-service/ingestion-runs
+curl -fsS http://127.0.0.1:8080/api/v1/projects/example-service/files
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/symbols?page_size=25'
+```
+
+Chunk reads require stable opaque IDs from the file list response:
+
+```sh
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/files/<file_id>/chunks?page_size=10&max_chunk_bytes=4096'
+```
+
+Content graph responses are bounded and must not include absolute roots, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, provider payloads, or raw database query results.
+
 ## MCP Smoke
 
 ```sh
@@ -144,8 +160,34 @@ After registration, new Codex Desktop sessions can discover these tools:
 - `projects.list`
 - `projects.get`
 - `projects.digest`
+- `projects.ingest`
+- `projects.ingestion_status`
+- `projects.files.list`
+- `projects.file.chunks`
+- `projects.symbols.list`
 
-Codex may expose underscore-normalized callable names such as `tasks_create` or `projects_digest`; the server accepts both dotted MCP tool names and underscore aliases.
+Codex may expose underscore-normalized callable names such as `tasks_create`, `projects_digest`, or `projects_ingest`; the server accepts both dotted MCP tool names and underscore aliases.
+
+## Live Project Updates
+
+Live updates are disabled unless both gates are enabled:
+
+```toml
+[ingestion]
+content_graph_enabled = true
+live_updates_enabled = true
+debounce_interval = "2s"
+queue_depth = 128
+worker_count = 2
+initial_scan_on_start = false
+
+[[projects]]
+digest_mode = "content_graph"
+update_policy = "live"
+graph_storage = "persistent"
+```
+
+The watcher uses `github.com/fsnotify/fsnotify` and watches directories, not individual files. It registers each eligible directory because filesystem notifications are not recursive. Overflow or full queues trigger a project rescan. Manual ingestion remains available as fallback.
 
 Verified local smoke:
 
@@ -173,6 +215,13 @@ Do not commit `lib-ladybug/` or local database files.
 - `MIVIA_HTTP_ADDR` rejected: use `127.0.0.1` or `localhost`.
 - `MIVIA_CONFIG_PATH` missing or invalid: copy `configs/agent-server.example.toml` to an ignored local config and replace placeholder roots with absolute local Linux or WSL paths.
 - SQLite open failure: check the configured directory is writable or use `MIVIA_SQLITE_PATH=:memory:`.
+- Persistent graph open failure: check the `storage.ladybug_path` directory is writable, local, ignored, and not inside an included project path unless excluded.
+- Live watcher misses events: run manual ingestion and check whether the project is on a network, mounted, or special filesystem.
+- Live watcher reports `no space left on device` or `too many open files`: reduce included directories or increase OS watch limits.
 - MCP 406: include both `application/json` and `text/event-stream` in `Accept`.
 - MCP 403: use a localhost or loopback `Origin`.
 - Codex MCP tool returns `-32602 invalid tool arguments`: confirm the server binary includes support for `_meta`, JSON-string arguments, and underscore tool aliases.
+
+## Local Reset
+
+Stop the server, then delete ignored local datastore files under the configured `data/` directory. This resets SQLite app configuration and persistent project graph data. Keep local config files and datastore files uncommitted.

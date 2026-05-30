@@ -57,6 +57,7 @@ func normalizeProject(configProject config.Project, options Options) (Project, e
 		Enabled:               configProject.Enabled,
 		Classification:        strings.TrimSpace(configProject.Classification),
 		GraphNamespace:        strings.TrimSpace(configProject.GraphNamespace),
+		GraphStorage:          strings.TrimSpace(configProject.GraphStorage),
 		DigestMode:            strings.TrimSpace(configProject.DigestMode),
 		UpdatePolicy:          strings.TrimSpace(configProject.UpdatePolicy),
 		Include:               append([]string(nil), configProject.Include...),
@@ -72,6 +73,9 @@ func normalizeProject(configProject config.Project, options Options) (Project, e
 	}
 	if project.GraphNamespace == "" {
 		project.GraphNamespace = project.ID
+	}
+	if project.GraphStorage == "" {
+		project.GraphStorage = GraphStoragePersistent
 	}
 	if project.DigestMode == "" {
 		project.DigestMode = DigestModeMetadataOnly
@@ -121,6 +125,11 @@ func validateProject(project Project, options Options) error {
 	}
 	if !projectIDPattern.MatchString(project.GraphNamespace) {
 		return fmt.Errorf("graph_namespace must match %s", projectIDPattern.String())
+	}
+	switch project.GraphStorage {
+	case GraphStoragePersistent, GraphStorageInMemory:
+	default:
+		return fmt.Errorf("graph_storage must be %q or %q", GraphStoragePersistent, GraphStorageInMemory)
 	}
 	switch project.DigestMode {
 	case DigestModeMetadataOnly:

@@ -105,6 +105,7 @@ root_path = "/absolute/path/to/project"
 enabled = true
 classification = "internal"
 graph_namespace = "example"
+graph_storage = "in_memory"
 digest_mode = "metadata_only"
 update_policy = "manual"
 include = ["**/*.go"]
@@ -158,6 +159,9 @@ sensitive_marker_policy = "skip_file"
 	}
 	if cfg.Projects[0].ID != "example" || cfg.Projects[0].DigestMode != digestModeMetadataOnly {
 		t.Fatalf("unexpected project config: %+v", cfg.Projects[0])
+	}
+	if cfg.Projects[0].GraphStorage != graphStorageInMemory {
+		t.Fatalf("expected project graph storage override, got %q", cfg.Projects[0].GraphStorage)
 	}
 	if cfg.Projects[0].MaxChunkBytes != 4096 {
 		t.Fatalf("expected project max chunk bytes, got %d", cfg.Projects[0].MaxChunkBytes)

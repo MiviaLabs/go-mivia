@@ -103,6 +103,13 @@ func TestNewRegistry_InvalidProjectFields_ReturnError(t *testing.T) {
 			message: "display_name",
 		},
 		{
+			name: "unsupported graph storage",
+			mutate: func(project *config.Project) {
+				project.GraphStorage = "remote"
+			},
+			message: "graph_storage",
+		},
+		{
 			name: "unsupported digest mode",
 			mutate: func(project *config.Project) {
 				project.DigestMode = "embedding"
@@ -211,6 +218,9 @@ func TestNewRegistry_ContentGraphAndLiveAllowedOnlyWhenExplicitlyGated(t *testin
 	}
 	if loaded.DigestMode != DigestModeContentGraph || loaded.UpdatePolicy != UpdatePolicyLive {
 		t.Fatalf("unexpected loaded project modes: %+v", loaded)
+	}
+	if loaded.GraphStorage != GraphStoragePersistent {
+		t.Fatalf("expected persistent graph storage default, got %+v", loaded)
 	}
 	if loaded.MaxFileBytes != 1024 || loaded.MaxChunkBytes != 512 {
 		t.Fatalf("unexpected loaded project caps: %+v", loaded)

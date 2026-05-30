@@ -52,7 +52,8 @@ func NewService(registry *projectregistry.Registry, graph *GraphStore, state sta
 }
 
 func (svc *Service) IngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {
-	project, err := svc.projectForIngestion(projectID)
+	trigger = normalizeTrigger(trigger)
+	project, err := svc.projectForIngestion(projectID, trigger)
 	if err != nil {
 		return Run{}, err
 	}
@@ -141,7 +142,8 @@ func (svc *Service) IngestProject(ctx context.Context, projectID string, trigger
 }
 
 func (svc *Service) IngestPath(ctx context.Context, projectID string, relativePath string, trigger Trigger) (Run, error) {
-	project, err := svc.projectForIngestion(projectID)
+	trigger = normalizeTrigger(trigger)
+	project, err := svc.projectForIngestion(projectID, trigger)
 	if err != nil {
 		return Run{}, err
 	}
@@ -314,7 +316,7 @@ func (svc *Service) GetSymbol(ctx context.Context, projectID string, symbolID st
 	return svc.graph.GetSymbol(ctx, project, symbolID)
 }
 
-func (svc *Service) projectForIngestion(projectID string) (projectregistry.Project, error) {
+func (svc *Service) projectForIngestion(projectID string, trigger Trigger) (projectregistry.Project, error) {
 	if svc == nil || svc.registry == nil || svc.graph == nil || svc.state == nil {
 		return projectregistry.Project{}, fmt.Errorf("%w: service dependencies are required", ErrUnsupportedIngest)
 	}
@@ -328,8 +330,14 @@ func (svc *Service) projectForIngestion(projectID string) (projectregistry.Proje
 	if project.DigestMode != projectregistry.DigestModeContentGraph {
 		return projectregistry.Project{}, fmt.Errorf("%w: digest_mode must be %q", ErrUnsupportedIngest, projectregistry.DigestModeContentGraph)
 	}
-	if project.UpdatePolicy != projectregistry.UpdatePolicyManual {
-		return projectregistry.Project{}, fmt.Errorf("%w: update_policy must be %q for manual ingestion", ErrUnsupportedIngest, projectregistry.UpdatePolicyManual)
+	switch trigger {
+	case TriggerManual:
+	case TriggerLive:
+		if project.UpdatePolicy != projectregistry.UpdatePolicyLive {
+			return projectregistry.Project{}, fmt.Errorf("%w: update_policy must be %q for live ingestion", ErrUnsupportedIngest, projectregistry.UpdatePolicyLive)
+		}
+	default:
+		return projectregistry.Project{}, ErrInvalidInput
 	}
 	root := project.CanonicalRootPath
 	if root == "" {
@@ -365,9 +373,7 @@ func (svc *Service) projectForQuery(projectID string) (projectregistry.Project, 
 }
 
 func (svc *Service) startRun(project projectregistry.Project, trigger Trigger) Run {
-	if trigger == "" {
-		trigger = TriggerManual
-	}
+	trigger = normalizeTrigger(trigger)
 	startedAt := svc.now().UTC()
 	return Run{
 		ID:        svc.newID(project, startedAt),
@@ -377,6 +383,13 @@ func (svc *Service) startRun(project projectregistry.Project, trigger Trigger) R
 		Status:    RunStatusRunning,
 		StartedAt: startedAt,
 	}
+}
+
+func normalizeTrigger(trigger Trigger) Trigger {
+	if trigger == "" {
+		return TriggerManual
+	}
+	return trigger
 }
 
 func (svc *Service) ingestExistingFile(ctx context.Context, project projectregistry.Project, relative string, fullPath string, info fs.FileInfo, run Run) (FileState, []Chunk, []Symbol, []Heading, error) {
