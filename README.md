@@ -10,6 +10,96 @@ The platform is local-first and localhost-only by default. It stores local metad
 
 Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only.
 
+## Business View
+
+`agent-server` is a local control and context service for engineers and AI agents. It gives agents a safe, structured way to understand a developer's local projects, remember approved local metadata, run bounded project ingestion, and expose that context through REST and MCP without sending source code to external providers.
+
+```mermaid
+flowchart LR
+  Engineer["Engineer"]
+  Agent["AI agent or Codex Desktop"]
+  Server["agent-server on localhost"]
+  Projects["Local projects"]
+  Graph["Local graph context"]
+  SQLite["Local run and config state"]
+
+  Engineer --> Agent
+  Agent --> Server
+  Server --> Projects
+  Server --> Graph
+  Server --> SQLite
+  Server --> Agent
+
+  Graph --> Value["Faster, safer codebase understanding"]
+  SQLite --> Value
+  Value --> Engineer
+```
+
+What this enables:
+
+- Engineers can opt local projects into metadata-only digest or content graph ingestion.
+- Agents can ask for bounded project files, chunks, symbols, and ingestion status through MCP instead of guessing from stale chat context.
+- Local state can persist per project when `graph_storage = "persistent"`, or stay process-local with `graph_storage = "in_memory"`.
+- The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, provider calls, embeddings, vectors, skipped sensitive content, secrets, raw prompts, provider payloads, and PII.
+
+## Agent Reliability Model
+
+`agent-server` and Serena solve different parts of reliable agent work:
+
+- Serena helps the agent inspect and edit code precisely using semantic code navigation, symbols, and references.
+- `agent-server` gives the agent a governed local API for project registry, ingestion state, graph-backed project context, and MCP-compatible workflows.
+- Together, they reduce blind file scanning, stale assumptions, and unsafe over-broad context collection.
+
+```mermaid
+flowchart TB
+  Agent["AI agent"]
+  Serena["Serena semantic tools"]
+  MCP["agent-server MCP"]
+  Source["Source files"]
+  Symbols["Symbols and references"]
+  Registry["Project registry"]
+  Ingestion["Content graph ingestion"]
+  Store["Local graph and SQLite state"]
+  Guardrails["Safety gates and policy boundaries"]
+
+  Agent --> Serena
+  Serena --> Source
+  Serena --> Symbols
+
+  Agent --> MCP
+  MCP --> Registry
+  MCP --> Ingestion
+  Ingestion --> Guardrails
+  Guardrails --> Store
+  Store --> MCP
+
+  Symbols --> Decision["Grounded implementation decisions"]
+  Store --> Decision
+  Decision --> Agent
+```
+
+High-level flow:
+
+```mermaid
+sequenceDiagram
+  participant Engineer
+  participant Agent
+  participant Serena
+  participant Server as agent-server
+  participant Project as Local project
+  participant Store as Local graph and SQLite
+
+  Engineer->>Agent: Ask for implementation or review
+  Agent->>Serena: Inspect symbols, references, and affected code
+  Agent->>Server: Query project metadata, ingestion state, chunks, and symbols
+  Server->>Project: Read only eligible local files after safety gates
+  Server->>Store: Persist approved local metadata and graph context
+  Store-->>Server: Return bounded context
+  Serena-->>Agent: Return precise code structure
+  Server-->>Agent: Return governed project context
+  Agent-->>Engineer: Make a smaller, verified change with clearer evidence
+```
+
 ## Baseline
 
 - Module: `github.com/MiviaLabs/mivialabs-agents-monorepo`
