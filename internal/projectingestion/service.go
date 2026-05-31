@@ -31,7 +31,10 @@ var (
 	ErrPathNotProjectLocal = errors.New("path must be project-relative")
 )
 
-const fullScanProgressFlushFiles = 25
+const (
+	fullScanProgressFlushFiles          = 25
+	fullScanPreparedBatchMaxWriteWeight = 5000
+)
 
 type stateStore interface {
 	SaveRun(context.Context, Run) error
@@ -789,6 +792,7 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 	go func() {
 		defer close(resultsDone)
 		batch := make([]fullScanFileResult, 0, svc.fullScanBatchSize)
+		batchWeight := 0
 		flushBatch := func(force bool) error {
 			if len(batch) == 0 {
 				return nil
@@ -797,13 +801,14 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 			if flushSize <= 0 {
 				flushSize = fullScanProgressFlushFiles
 			}
-			if !force && len(batch) < flushSize {
+			if !force && len(batch) < flushSize && batchWeight < fullScanPreparedBatchMaxWriteWeight {
 				return nil
 			}
 			if err := svc.saveFullScanPreparedBatch(ctx, project, progress.currentRun(), batch); err != nil {
 				return err
 			}
 			batch = batch[:0]
+			batchWeight = 0
 			return progress.flush(ctx, svc, project, true)
 		}
 		for result := range results {
@@ -816,7 +821,20 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 				cancel()
 				continue
 			}
+			resultWeight := result.fullScanWriteWeight()
+			if len(batch) > 0 && batchWeight+resultWeight > fullScanPreparedBatchMaxWriteWeight {
+				if err := flushBatch(true); err != nil {
+					resultMu.Lock()
+					if resultErr == nil {
+						resultErr = err
+					}
+					resultMu.Unlock()
+					cancel()
+					continue
+				}
+			}
 			batch = append(batch, result)
+			batchWeight += resultWeight
 			if result.state.RelativePathHash != "" {
 				progress.record(result.state, true, result.chunkCount, result.symbolCount, result.unchanged)
 				if err := progress.flush(ctx, svc, project, false); err != nil {
@@ -1023,6 +1041,20 @@ type fullScanFileResult struct {
 	symbolCount     int
 	unchanged       bool
 	err             error
+}
+
+func (result fullScanFileResult) fullScanWriteWeight() int {
+	weight := 1
+	if result.unchanged || result.state.Status != FileStatusEligible {
+		return weight
+	}
+	weight += max(result.chunkCount, len(result.chunks))
+	weight += max(result.symbolCount, len(result.symbols))
+	weight += len(result.references)
+	weight += len(result.calls)
+	weight += len(result.implementations)
+	weight += len(result.headings)
+	return weight
 }
 
 type fullScanProgress struct {

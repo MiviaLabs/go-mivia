@@ -30,11 +30,13 @@ flowchart TB
   Scheduler["Fair ingestion scheduler"]
   Live["Live watcher and rescan queue"]
   Workers["Parallel full-scan file workers"]
+  Flush["Weighted prepared-file flush windows"]
   Safety["Safety gates: path, symlink, include/exclude, size, binary, UTF-8, sensitive markers"]
   Extractors["Extractors: Go AST, Tree-sitter JS/TS/TSX/C#/Python/Dart, Markdown, infra/config"]
-  Graph["Ladybug graph: files, chunks, symbols, references, calls, headings"]
+  Router["Project graph router"]
+  Graph["Per-project Ladybug graph: files, chunks, symbols, references, calls, headings"]
   SQLite["SQLite: config, run state, file state, extractor cache"]
-  FTS["SQLite FTS5: eligible indexed search rows"]
+  FTS["Per-project SQLite FTS5: eligible indexed search rows"]
   AST["Named AST search catalog"]
   Queries["Bounded query APIs: files, chunks, outlines, FTS search, symbol source, refs, callers, callees, call graph, AST search"]
   Workspace["Workspace APIs: governed git status/diff, current file read, token-guarded exact edit"]
@@ -64,9 +66,11 @@ flowchart TB
   Scheduler --> Workers
   Workers --> Safety
   Safety --> Extractors
-  Extractors --> Graph
+  Extractors --> Flush
+  Flush --> Router
+  Router --> Graph
   Extractors --> SQLite
-  Extractors --> FTS
+  Flush --> FTS
   Extractors --> AST
   Graph --> Queries
   SQLite --> Queries
@@ -101,9 +105,9 @@ flowchart TB
 | Reliability checks | Context health, changed-path impact analysis, and deterministic stale-claim checking | Metadata-only; no verifier recommendation, eval runner, LLM judgment, raw diff echoing, broad crawling, or `.ai/tasks/*` stable-doc links |
 | Context packs | Bounded package of search snippets, indexed file metadata, symbol metadata, and optional impact analysis | No new storage, provider calls, roots, raw diffs, or full chunk text |
 | Ingestion scheduler | Async manual ingestion, live watcher rescan, configurable global/per-project limits, live path priority | Global limits cap full-scan file workers; operators can cap workers per project when fairness matters |
-| Full-scan ingestion | Parallel bounded file workers, periodic running counters, stale cleanup after workers drain | Source is stored only for eligible chunks after safety gates |
+| Full-scan ingestion | Parallel bounded file workers, weighted prepared-file storage flushes, periodic running counters, stale cleanup after workers drain | Source is stored only for eligible chunks after safety gates; heavy graph/search write units flush before the file-count cap |
 | Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph, named AST structural search, AST query catalog discovery | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
-| Search index | SQLite FTS5 rows for eligible chunks, files, symbols, references, and calls; async rebuild repair through ingestion scheduler | Raw FTS syntax and raw SQLite errors are never exposed |
+| Search index | Per-project SQLite FTS5 rows for eligible chunks, files, symbols, references, and calls; async rebuild repair through ingestion scheduler | Raw FTS syntax and raw SQLite errors are never exposed |
 | Query APIs | Files, chunks, outlines, text/file/symbol/reference/call search, AST query catalog, named AST search, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned; raw FTS and raw Tree-sitter syntax are not exposed |
 | Workspace APIs | Governed git status/diff, current eligible file read, token-guarded exact byte-span edits | Disabled by default; requires global workspace gate plus per-project `workspace_mode`; no arbitrary shell, raw patch, or git commit/push/reset/checkout tools |
 | Project integrations | Jira/Confluence configured provider status, manual/scheduled polling, local rich-content graph search/read | Atlassian Cloud only; polling-only; env/file credential refs; explicit project/space allowlists; rich content stays in ignored local stores |
@@ -187,6 +191,7 @@ What this enables:
 - Agents can use MCP/REST for governed git status/diff and exact current-file edits on opted-in workspaces; shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
 - Local graph/search state persists per project when `graph_storage = "persistent"` using `<ladybug_path parent>/projects/<project-id>/mivialabs.lbug` and `<ladybug_path parent>/projects/<project-id>/mivialabs-search.sqlite`, or stays process-local/shared fallback with `graph_storage = "in_memory"`.
+- v0.1.4 keeps `full_scan_batch_size` as a hard file-count cap and also flushes earlier by graph/search write weight so heavy files do not create multi-minute per-project storage writes.
 - The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, AI provider calls, embeddings, vectors, arbitrary shell, raw patches, git commit/push/reset/checkout tools, skipped sensitive content, secrets, raw prompts, and raw provider payload blobs. Approved Jira/Confluence rich content and possible PII are limited to ignored local stores and bounded local MCP responses.
 
 ## Agent Reliability Model
@@ -212,7 +217,7 @@ flowchart TB
   Registry["Project registry and ingestion status"]
   Ingestion["Live and manual content graph ingestion"]
   Polling["Polling-only integration ingestion"]
-  Store["Local graph, SQLite state, and FTS index"]
+  Store["Project-scoped graph/search stores plus SQLite state"]
   Guardrails["Safety gates and policy boundaries"]
 
   Agent --> MCP
@@ -277,7 +282,7 @@ sequenceDiagram
 - Module strategy: one root `go.mod`; add `go.work` only if independent module release boundaries become real.
 - Server: `cmd/mivia-server`
 - Local project config: optional, local-only TOML loaded from `configs/mivia-server.local.toml` or explicit `MIVIA_CONFIG_PATH`; committed example is `configs/mivia-server.example.toml`.
-- Persistence: LadybugDB graph abstraction for graph data; SQLite via `modernc.org/sqlite` for local app configuration and FTS search. Project graph/search storage is selectable per project with `graph_storage = "persistent"` or `graph_storage = "in_memory"`; persistent project stores derive from `storage.ladybug_path` as `<parent>/projects/<project-id>/mivialabs.lbug` and `<parent>/projects/<project-id>/mivialabs-search.sqlite`.
+- Persistence: LadybugDB graph abstraction for graph data; SQLite via `modernc.org/sqlite` for local app configuration and FTS search. Project graph/search storage is selectable per project with `graph_storage = "persistent"` or `graph_storage = "in_memory"`; persistent project stores derive from `storage.ladybug_path` as `<parent>/projects/<project-id>/mivialabs.lbug` and `<parent>/projects/<project-id>/mivialabs-search.sqlite`. Ingestion writes are routed to the target project backend and flushed in bounded prepared-file windows by file count and write weight.
 - Interfaces: REST under `/api/v1`; MCP Streamable HTTP under `/mcp`.
 
 ## Layout
@@ -378,7 +383,7 @@ MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug
 MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite
 ```
 
-Persistent project graph/search files live under `/var/lib/mivia/projects/<project-id>/`; agent and research metadata remain separate from project graph storage.
+Persistent project graph/search files live under `/var/lib/mivia/projects/<project-id>/`; agent and research metadata remain separate from project graph storage. v0.1.4 bounds heavy per-project graph/search flushes during ingestion; tune `full_scan_batch_size` in the mounted TOML as the hard file-count cap if a local disk still needs smaller write units.
 
 Override `MIVIA_HOST_BIND`, `MIVIA_HOST_PORT`, and feature flags from the host environment when needed. Compose loads `configs/mivia-server.compose.toml`, which mirrors the local global runtime defaults without project roots, project names, Jira/Confluence URLs, or credential refs. It enables content graph ingestion, live updates, diagnostics, runtime metrics, and the global workspace gate by default. Per-project `workspace_mode` still controls whether a configured project exposes workspace tools. Mount ignored local configs or secrets only in an ignored `.docker-compose.local.yml` override when needed.
 
@@ -455,7 +460,7 @@ Manual content graph ingestion and search index repair are asynchronous. `POST /
 
 Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/mivia-server.local.toml`. The committed schema example is [configs/mivia-server.example.toml](configs/mivia-server.example.toml).
 
-Project digest is manual and metadata-only. Content graph ingestion is opt-in with `digest_mode = "content_graph"` and uses the same local path, denylist, binary, UTF-8, size, and sensitive-marker gates before storing eligible source chunks. Promoted AST extraction uses Go stdlib AST for Go, Tree-sitter for JS/TS/TSX/JSX/C#/Python/Dart, Markdown headings, and lightweight infrastructure metadata. Dart extraction includes generated `.g.dart`, `.freezed.dart`, `.mocks.dart`, and similar files by default unless project include/exclude config filters them. Flutter widget recognition is exposed through symbol/reference/call metadata for widget classes, state classes, build methods, `setState`, `Navigator`, route calls, and widget constructor call candidates. TS/JS/TSX/JSX, C#, Python, and Dart have no regex fallback after startup validation.
+Project digest is manual and metadata-only. Content graph ingestion is opt-in with `digest_mode = "content_graph"` and uses the same local path, denylist, binary, UTF-8, size, and sensitive-marker gates before storing eligible source chunks. Full-scan storage flushes are bounded by the configured file-count cap and by internal graph/search write weight. Promoted AST extraction uses Go stdlib AST for Go, Tree-sitter for JS/TS/TSX/JSX/C#/Python/Dart, Markdown headings, and lightweight infrastructure metadata. Dart extraction includes generated `.g.dart`, `.freezed.dart`, `.mocks.dart`, and similar files by default unless project include/exclude config filters them. Flutter widget recognition is exposed through symbol/reference/call metadata for widget classes, state classes, build methods, `setState`, `Navigator`, route calls, and widget constructor call candidates. TS/JS/TSX/JSX, C#, Python, and Dart have no regex fallback after startup validation.
 
 ### Dart And Flutter
 

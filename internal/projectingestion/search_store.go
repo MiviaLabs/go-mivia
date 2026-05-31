@@ -119,6 +119,38 @@ func (store *SQLiteStore) ApplySearchFileBatch(ctx context.Context, project proj
 	if len(results) == 0 {
 		return nil
 	}
+	return forEachFullScanResultBatchByWeight(results, fullScanPreparedBatchMaxWriteWeight, func(batch []fullScanFileResult) error {
+		return store.applySearchFileBatchTx(ctx, project, batch)
+	})
+}
+
+func forEachFullScanResultBatchByWeight(results []fullScanFileResult, maxWeight int, fn func([]fullScanFileResult) error) error {
+	if len(results) == 0 {
+		return nil
+	}
+	if maxWeight <= 0 {
+		maxWeight = fullScanPreparedBatchMaxWriteWeight
+	}
+	batchStart := 0
+	batchWeight := 0
+	for index, result := range results {
+		weight := result.fullScanWriteWeight()
+		if index > batchStart && batchWeight+weight > maxWeight {
+			if err := fn(results[batchStart:index]); err != nil {
+				return err
+			}
+			batchStart = index
+			batchWeight = 0
+		}
+		batchWeight += weight
+	}
+	return fn(results[batchStart:])
+}
+
+func (store *SQLiteStore) applySearchFileBatchTx(ctx context.Context, project projectregistry.Project, results []fullScanFileResult) error {
+	if len(results) == 0 {
+		return nil
+	}
 	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return sanitizeSearchError(err)
