@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
@@ -50,6 +51,16 @@ type ImpactAnalyzer struct {
 	ingestion impactGraphAPI
 }
 
+const (
+	defaultImpactProbeTimeout = 250 * time.Millisecond
+	maxImpactGraphPaths       = 32
+	maxImpactGraphSymbols     = 64
+	impactGraphPageSize       = projectingestion.MaxPageSize
+	maxImpactProbes           = 64
+)
+
+var impactProbeSlots = make(chan struct{}, maxImpactProbes)
+
 func NewImpactAnalyzer(workspace projectworkspace.API) *ImpactAnalyzer {
 	return &ImpactAnalyzer{workspace: workspace}
 }
@@ -70,6 +81,10 @@ type impactGraphAPI interface {
 	SearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error)
 }
 
+type impactGraphContextHealthAPI interface {
+	ContextSearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error)
+}
+
 func (analyzer *ImpactAnalyzer) Analyze(ctx context.Context, request ImpactAnalysisRequest) (ImpactAnalysis, error) {
 	projectID := strings.TrimSpace(request.ProjectID)
 	paths := cleanPathList(request.ChangedPaths)
@@ -79,9 +94,11 @@ func (analyzer *ImpactAnalyzer) Analyze(ctx context.Context, request ImpactAnaly
 	}
 	result := ImpactAnalysis{ProjectID: projectID, DiffScope: scope}
 	if analyzer.workspace != nil && (len(paths) == 0 || strings.TrimSpace(request.DiffScope) != "") {
-		diff, err := analyzer.workspace.GitDiff(ctx, projectID, projectworkspace.GitDiffOptions{
-			Scope:        scope,
-			MaxDiffBytes: effectiveImpactDiffBytes(request.MaxDiffBytes),
+		diff, err := impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectworkspace.GitDiff, error) {
+			return analyzer.workspace.GitDiff(probeCtx, projectID, projectworkspace.GitDiffOptions{
+				Scope:        scope,
+				MaxDiffBytes: effectiveImpactDiffBytes(request.MaxDiffBytes),
+			})
 		})
 		if err == nil {
 			result.WorkspaceDiffUsed = true
@@ -95,7 +112,15 @@ func (analyzer *ImpactAnalyzer) Analyze(ctx context.Context, request ImpactAnaly
 				}
 			}
 		} else {
-			result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "workspace_diff_unavailable")
+			if errors.Is(err, context.Canceled) {
+				return ImpactAnalysis{}, err
+			}
+			reason := impactTimeoutReason(err, "workspace_diff_unavailable", "workspace_diff_timeout")
+			if impactTimedOut(err) {
+				result.Partial = true
+				result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+			}
+			result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 		}
 	}
 	if len(paths) == 0 {
@@ -103,7 +128,12 @@ func (analyzer *ImpactAnalyzer) Analyze(ctx context.Context, request ImpactAnaly
 	}
 	result.ChangedPaths = paths
 	if analyzer.ingestion != nil {
-		result = analyzer.addGraphImpact(ctx, result, projectID, paths)
+		graphCtx, cancelGraph := context.WithTimeout(ctx, defaultImpactProbeTimeout)
+		result = analyzer.addGraphImpact(graphCtx, result, projectID, paths)
+		cancelGraph()
+		if err := ctx.Err(); err != nil {
+			return ImpactAnalysis{}, err
+		}
 	}
 	for _, path := range paths {
 		result = addPathImpact(result, path, len(result.SourceAnchors) == 0)
@@ -118,36 +148,56 @@ func (analyzer *ImpactAnalyzer) Analyze(ctx context.Context, request ImpactAnaly
 }
 
 func (analyzer *ImpactAnalyzer) addGraphImpact(ctx context.Context, result ImpactAnalysis, projectID string, paths []string) ImpactAnalysis {
-	if health, err := analyzer.ingestion.SearchIndexHealth(ctx, projectID); err == nil && health.Degraded {
+	if health, err := analyzer.searchIndexHealth(ctx, projectID); err == nil && health.Degraded {
 		result.Partial = true
 		result.PartialReason = firstNonEmpty(result.PartialReason, health.Reason, "index_degraded")
 		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "index_degraded_"+safeCategory(health.Reason, "unknown"))
 	} else if err != nil {
 		result.Partial = true
-		result.PartialReason = firstNonEmpty(result.PartialReason, "index_health_unknown")
-		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "index_health_unknown")
+		reason := impactTimeoutReason(err, "index_health_unknown", "index_health_timeout")
+		result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 	}
-	if run, err := analyzer.ingestion.LatestRunMetadata(ctx, projectID); err == nil && run.Status != "completed" {
+	if ctx.Err() != nil {
+		return markImpactTimeout(result)
+	}
+	if run, err := impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.RunMetadata, error) {
+		return analyzer.ingestion.LatestRunMetadata(probeCtx, projectID)
+	}); err == nil && run.Status != "completed" {
 		result.Partial = true
 		result.PartialReason = "index_not_completed"
 		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "index_not_completed")
 	} else if err != nil && !errors.Is(err, projectingestion.ErrRunNotFound) {
 		result.Partial = true
-		result.PartialReason = "index_health_unknown"
-		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "index_health_unknown")
+		reason := impactTimeoutReason(err, "index_health_unknown", "index_run_metadata_timeout")
+		result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 	}
 	if len(paths) == 0 {
 		return result
 	}
-	for _, changedPath := range paths {
-		files, err := analyzer.ingestion.ListFiles(ctx, projectID, projectingestion.FileStateFilter{
-			Status:     projectingestion.FileStatusEligible,
-			PathPrefix: changedPath,
-		}, projectingestion.Pagination{PageSize: projectingestion.MaxPageSize})
+	if ctx.Err() != nil {
+		return markImpactTimeout(result)
+	}
+	graphPaths := paths
+	if len(graphPaths) > maxImpactGraphPaths {
+		graphPaths = graphPaths[:maxImpactGraphPaths]
+		result.Partial = true
+		result.PartialReason = firstNonEmpty(result.PartialReason, "graph_path_limit_reached")
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_path_limit_reached")
+	}
+	for _, changedPath := range graphPaths {
+		files, err := impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.FileList, error) {
+			return analyzer.ingestion.ListFiles(probeCtx, projectID, projectingestion.FileStateFilter{
+				Status:     projectingestion.FileStatusEligible,
+				PathPrefix: changedPath,
+			}, projectingestion.Pagination{PageSize: impactGraphPageSize})
+		})
 		if err != nil {
 			result.Partial = true
-			result.PartialReason = firstNonEmpty(result.PartialReason, "graph_file_lookup_failed")
-			result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_file_lookup_failed")
+			reason := impactTimeoutReason(err, "graph_file_lookup_failed", "graph_file_lookup_timeout")
+			result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+			result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 			continue
 		}
 		found := false
@@ -162,23 +212,47 @@ func (analyzer *ImpactAnalyzer) addGraphImpact(ctx context.Context, result Impac
 		if !found {
 			result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "changed_path_not_indexed")
 		}
+		if ctx.Err() != nil {
+			return markImpactTimeout(result)
+		}
 	}
 	return result
 }
 
+func (analyzer *ImpactAnalyzer) searchIndexHealth(ctx context.Context, projectID string) (projectingestion.SearchIndexHealth, error) {
+	if healthProvider, ok := analyzer.ingestion.(impactGraphContextHealthAPI); ok {
+		return impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.SearchIndexHealth, error) {
+			return healthProvider.ContextSearchIndexHealth(probeCtx, projectID)
+		})
+	}
+	return impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.SearchIndexHealth, error) {
+		return analyzer.ingestion.SearchIndexHealth(probeCtx, projectID)
+	})
+}
+
 func (analyzer *ImpactAnalyzer) addFileSymbolImpact(ctx context.Context, result ImpactAnalysis, projectID string, file projectingestion.FileMetadata) ImpactAnalysis {
-	symbols, err := analyzer.ingestion.ListSymbols(ctx, projectID, projectingestion.SymbolFilter{FileID: file.ID}, projectingestion.Pagination{PageSize: projectingestion.MaxPageSize})
+	symbols, err := impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.SymbolList, error) {
+		return analyzer.ingestion.ListSymbols(probeCtx, projectID, projectingestion.SymbolFilter{FileID: file.ID}, projectingestion.Pagination{PageSize: impactGraphPageSize})
+	})
 	if err != nil {
 		result.Partial = true
-		result.PartialReason = firstNonEmpty(result.PartialReason, "graph_symbol_lookup_failed")
-		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_symbol_lookup_failed")
+		reason := impactTimeoutReason(err, "graph_symbol_lookup_failed", "graph_symbol_lookup_timeout")
+		result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 		return result
 	}
 	if len(symbols.Symbols) == 0 {
 		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "changed_file_defines_no_symbols")
 		return result
 	}
-	for _, symbol := range symbols.Symbols {
+	graphSymbols := symbols.Symbols
+	if len(graphSymbols) > maxImpactGraphSymbols {
+		graphSymbols = graphSymbols[:maxImpactGraphSymbols]
+		result.Partial = true
+		result.PartialReason = firstNonEmpty(result.PartialReason, "graph_symbol_limit_reached")
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_symbol_limit_reached")
+	}
+	for _, symbol := range graphSymbols {
 		result.SourceAnchors = appendAnchor(result.SourceAnchors, file.RelativePath, "defines_symbol:"+symbol.Name)
 		result = analyzer.addSymbolReferences(ctx, result, projectID, symbol)
 		result = analyzer.addSymbolCallers(ctx, result, projectID, symbol)
@@ -186,16 +260,22 @@ func (analyzer *ImpactAnalyzer) addFileSymbolImpact(ctx context.Context, result 
 			result = analyzer.addSymbolImplementers(ctx, result, projectID, symbol)
 			result = analyzer.addNameReferences(ctx, result, projectID, symbol)
 		}
+		if ctx.Err() != nil {
+			return markImpactTimeout(result)
+		}
 	}
 	return result
 }
 
 func (analyzer *ImpactAnalyzer) addSymbolImplementers(ctx context.Context, result ImpactAnalysis, projectID string, symbol projectingestion.SymbolMetadata) ImpactAnalysis {
-	implementers, err := analyzer.ingestion.ListSymbolImplementers(ctx, projectID, symbol.ID, projectingestion.Pagination{PageSize: projectingestion.MaxPageSize})
+	implementers, err := impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.SymbolImplementationList, error) {
+		return analyzer.ingestion.ListSymbolImplementers(probeCtx, projectID, symbol.ID, projectingestion.Pagination{PageSize: impactGraphPageSize})
+	})
 	if err != nil {
 		result.Partial = true
-		result.PartialReason = firstNonEmpty(result.PartialReason, "graph_implementer_lookup_failed")
-		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_implementer_lookup_failed")
+		reason := impactTimeoutReason(err, "graph_implementer_lookup_failed", "graph_implementer_lookup_timeout")
+		result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 		return result
 	}
 	for _, implementation := range implementers.Implementations {
@@ -205,11 +285,14 @@ func (analyzer *ImpactAnalyzer) addSymbolImplementers(ctx context.Context, resul
 }
 
 func (analyzer *ImpactAnalyzer) addSymbolReferences(ctx context.Context, result ImpactAnalysis, projectID string, symbol projectingestion.SymbolMetadata) ImpactAnalysis {
-	refs, err := analyzer.ingestion.ListSymbolReferences(ctx, projectID, symbol.ID, projectingestion.Pagination{PageSize: projectingestion.MaxPageSize})
+	refs, err := impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.SymbolReferenceList, error) {
+		return analyzer.ingestion.ListSymbolReferences(probeCtx, projectID, symbol.ID, projectingestion.Pagination{PageSize: impactGraphPageSize})
+	})
 	if err != nil {
 		result.Partial = true
-		result.PartialReason = firstNonEmpty(result.PartialReason, "graph_reference_lookup_failed")
-		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_reference_lookup_failed")
+		reason := impactTimeoutReason(err, "graph_reference_lookup_failed", "graph_reference_lookup_timeout")
+		result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 		return result
 	}
 	for _, ref := range refs.References {
@@ -219,11 +302,14 @@ func (analyzer *ImpactAnalyzer) addSymbolReferences(ctx context.Context, result 
 }
 
 func (analyzer *ImpactAnalyzer) addNameReferences(ctx context.Context, result ImpactAnalysis, projectID string, symbol projectingestion.SymbolMetadata) ImpactAnalysis {
-	refs, err := analyzer.ingestion.SearchReferences(ctx, projectID, projectingestion.ReferenceSearchOptions{TargetNameContains: symbol.Name, PageSize: projectingestion.MaxPageSize})
+	refs, err := impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.SymbolReferenceList, error) {
+		return analyzer.ingestion.SearchReferences(probeCtx, projectID, projectingestion.ReferenceSearchOptions{TargetNameContains: symbol.Name, PageSize: impactGraphPageSize})
+	})
 	if err != nil {
 		result.Partial = true
-		result.PartialReason = firstNonEmpty(result.PartialReason, "graph_name_reference_lookup_failed")
-		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_name_reference_lookup_failed")
+		reason := impactTimeoutReason(err, "graph_name_reference_lookup_failed", "graph_name_reference_lookup_timeout")
+		result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 		return result
 	}
 	for _, ref := range refs.References {
@@ -233,11 +319,14 @@ func (analyzer *ImpactAnalyzer) addNameReferences(ctx context.Context, result Im
 }
 
 func (analyzer *ImpactAnalyzer) addSymbolCallers(ctx context.Context, result ImpactAnalysis, projectID string, symbol projectingestion.SymbolMetadata) ImpactAnalysis {
-	callers, err := analyzer.ingestion.ListSymbolCallers(ctx, projectID, symbol.ID, projectingestion.Pagination{PageSize: projectingestion.MaxPageSize})
+	callers, err := impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.SymbolCallEdgeList, error) {
+		return analyzer.ingestion.ListSymbolCallers(probeCtx, projectID, symbol.ID, projectingestion.Pagination{PageSize: impactGraphPageSize})
+	})
 	if err != nil {
 		result.Partial = true
-		result.PartialReason = firstNonEmpty(result.PartialReason, "graph_caller_lookup_failed")
-		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_caller_lookup_failed")
+		reason := impactTimeoutReason(err, "graph_caller_lookup_failed", "graph_caller_lookup_timeout")
+		result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 		return result
 	}
 	for _, edge := range callers.Edges {
@@ -250,11 +339,14 @@ func (analyzer *ImpactAnalyzer) addAffectedFile(ctx context.Context, result Impa
 	if strings.TrimSpace(fileID) == "" {
 		return result
 	}
-	file, err := analyzer.ingestion.GetFile(ctx, projectID, fileID)
+	file, err := impactProbe(ctx, defaultImpactProbeTimeout, func(probeCtx context.Context) (projectingestion.FileMetadata, error) {
+		return analyzer.ingestion.GetFile(probeCtx, projectID, fileID)
+	})
 	if err != nil {
 		result.Partial = true
-		result.PartialReason = firstNonEmpty(result.PartialReason, "graph_affected_file_lookup_failed")
-		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_affected_file_lookup_failed")
+		reason := impactTimeoutReason(err, "graph_affected_file_lookup_failed", "graph_affected_file_lookup_timeout")
+		result.PartialReason = firstNonEmpty(result.PartialReason, reason)
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, reason)
 		return result
 	}
 	if file.RelativePath != "" {
@@ -264,6 +356,68 @@ func (analyzer *ImpactAnalyzer) addAffectedFile(ctx context.Context, result Impa
 	}
 	result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_affected_file_unresolved")
 	return result
+}
+
+func impactProbe[T any](parent context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {
+	if err := parent.Err(); err != nil {
+		var zero T
+		return zero, err
+	}
+	if timeout <= 0 {
+		return fn(parent)
+	}
+	probeCtx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	select {
+	case impactProbeSlots <- struct{}{}:
+	default:
+		var zero T
+		return zero, context.DeadlineExceeded
+	}
+
+	type probeResult struct {
+		value T
+		err   error
+	}
+	done := make(chan probeResult, 1)
+	go func() {
+		defer func() { <-impactProbeSlots }()
+		value, err := fn(probeCtx)
+		done <- probeResult{value: value, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		return result.value, result.err
+	case <-probeCtx.Done():
+		if err := parent.Err(); err != nil {
+			var zero T
+			return zero, err
+		}
+		var zero T
+		return zero, probeCtx.Err()
+	}
+}
+
+func markImpactTimeout(result ImpactAnalysis) ImpactAnalysis {
+	result.Partial = true
+	result.PartialReason = firstNonEmpty(result.PartialReason, "graph_impact_timeout")
+	result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_impact_timeout")
+	return result
+}
+
+func impactTimeoutReason(err error, fallback string, timeoutReason string) string {
+	if impactTimedOut(err) {
+		return timeoutReason
+	}
+	return fallback
+}
+
+func impactTimedOut(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return false
 }
 
 func effectiveImpactDiffBytes(value int) int {

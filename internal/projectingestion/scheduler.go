@@ -293,6 +293,16 @@ func (scheduler *Scheduler) SearchIndexHealth(ctx context.Context, projectID str
 	return api.SearchIndexHealth(ctx, projectID)
 }
 
+func (scheduler *Scheduler) ContextSearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
+	api, ok := scheduler.runner.(interface {
+		ContextSearchIndexHealth(context.Context, string) (SearchIndexHealth, error)
+	})
+	if !ok {
+		return SearchIndexHealth{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ContextSearchIndexHealth(ctx, projectID)
+}
+
 func (scheduler *Scheduler) SearchSymbols(ctx context.Context, projectID string, filter SymbolFilter, pagination Pagination) (SymbolList, error) {
 	api, ok := scheduler.runner.(API)
 	if !ok {

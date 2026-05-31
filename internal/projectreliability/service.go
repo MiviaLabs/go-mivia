@@ -12,11 +12,13 @@ import (
 )
 
 const (
-	defaultStaleAfter   = 24 * time.Hour
-	defaultProbeTimeout = 250 * time.Millisecond
+	defaultStaleAfter      = 24 * time.Hour
+	defaultProbeTimeout    = 250 * time.Millisecond
+	maxContextHealthProbes = 32
 )
 
 var ErrRunNotFound = errors.New("context health run not found")
+var contextHealthProbeSlots = make(chan struct{}, maxContextHealthProbes)
 
 const (
 	runStatusPending   = "pending"
@@ -55,6 +57,11 @@ type Service struct {
 	staleAfter   time.Duration
 	probeTimeout time.Duration
 	now          func() time.Time
+}
+
+type latestRunResult struct {
+	run RunSummary
+	ok  bool
 }
 
 func NewService(projects ProjectProvider, contextProvider ContextProvider, workspace WorkspaceGitProvider, options Options) *Service {
@@ -124,9 +131,12 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 	}
 
 	var probeIssue string
-	probeCtx, cancelProbe := svc.probeContext(ctx)
-	latest, hasLatest, err := svc.latestRun(probeCtx, project.ID)
-	cancelProbe()
+	latestResult, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (latestRunResult, error) {
+		latest, hasLatest, err := svc.latestRun(probeCtx, project.ID)
+		return latestRunResult{run: latest, ok: hasLatest}, err
+	})
+	latest := latestResult.run
+	hasLatest := latestResult.ok
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "latest_run_unknown")
 	} else if hasLatest {
@@ -134,9 +144,9 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		health.ReasonCounts = copyPositiveCounts(latest.ReasonCounts)
 	}
 
-	probeCtx, cancelProbe = svc.probeContext(ctx)
-	activeRuns, err := svc.context.ActiveRuns(probeCtx, project.ID)
-	cancelProbe()
+	activeRuns, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) ([]RunSummary, error) {
+		return svc.context.ActiveRuns(probeCtx, project.ID)
+	})
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "active_runs_unknown")
 	}
@@ -144,28 +154,28 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		health.ActiveRunID = activeRuns[0].ID
 	}
 
-	probeCtx, cancelProbe = svc.probeContext(ctx)
-	health.EligibleFileCount, err = svc.context.EligibleFileCount(probeCtx, project.ID)
-	cancelProbe()
+	health.EligibleFileCount, err = contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (int, error) {
+		return svc.context.EligibleFileCount(probeCtx, project.ID)
+	})
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "eligible_file_count_unknown")
 	}
-	probeCtx, cancelProbe = svc.probeContext(ctx)
-	health.IndexedSymbolCount, err = svc.context.IndexedSymbolCount(probeCtx, project.ID)
-	cancelProbe()
+	health.IndexedSymbolCount, err = contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (int, error) {
+		return svc.context.IndexedSymbolCount(probeCtx, project.ID)
+	})
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "indexed_symbol_count_unknown")
 	}
-	probeCtx, cancelProbe = svc.probeContext(ctx)
-	health.IndexedChunkCount, err = svc.context.IndexedChunkCount(probeCtx, project.ID)
-	cancelProbe()
+	health.IndexedChunkCount, err = contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (int, error) {
+		return svc.context.IndexedChunkCount(probeCtx, project.ID)
+	})
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "indexed_chunk_count_unknown")
 	}
 
-	probeCtx, cancelProbe = svc.probeContext(ctx)
-	searchIndex, err := svc.context.SearchIndexHealth(probeCtx, project.ID)
-	cancelProbe()
+	searchIndex, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (SearchIndexHealth, error) {
+		return svc.context.SearchIndexHealth(probeCtx, project.ID)
+	})
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "search_index_unknown")
 		searchIndex = SearchIndexHealth{Status: "unknown", Degraded: true, Reason: "search_index_unknown"}
@@ -177,9 +187,9 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 	}
 
 	if svc.workspace != nil {
-		probeCtx, cancelProbe = svc.probeContext(ctx)
-		health.WorkspaceGitAvailable, _ = svc.workspace.GitAvailable(probeCtx, project.ID)
-		cancelProbe()
+		health.WorkspaceGitAvailable, _ = contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (bool, error) {
+			return svc.workspace.GitAvailable(probeCtx, project.ID)
+		})
 	}
 
 	health.Status, health.StatusReason = classifyHealth(project, latest, hasLatest, activeRuns, health, checkedAt, svc.staleAfter)
@@ -190,11 +200,45 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 	return health, nil
 }
 
-func (svc *Service) probeContext(parent context.Context) (context.Context, context.CancelFunc) {
-	if svc.probeTimeout <= 0 {
-		return parent, func() {}
+func contextHealthProbe[T any](parent context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {
+	if err := parent.Err(); err != nil {
+		var zero T
+		return zero, err
 	}
-	return context.WithTimeout(parent, svc.probeTimeout)
+	if timeout <= 0 {
+		return fn(parent)
+	}
+	probeCtx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	select {
+	case contextHealthProbeSlots <- struct{}{}:
+	default:
+		var zero T
+		return zero, context.DeadlineExceeded
+	}
+
+	type probeResult struct {
+		value T
+		err   error
+	}
+	done := make(chan probeResult, 1)
+	go func() {
+		defer func() { <-contextHealthProbeSlots }()
+		value, err := fn(probeCtx)
+		done <- probeResult{value: value, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		return result.value, result.err
+	case <-probeCtx.Done():
+		if err := parent.Err(); err != nil {
+			var zero T
+			return zero, err
+		}
+		var zero T
+		return zero, probeCtx.Err()
+	}
 }
 
 func (svc *Service) latestRun(ctx context.Context, projectID string) (RunSummary, bool, error) {

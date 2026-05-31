@@ -3,6 +3,7 @@ package projectreliability
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
@@ -120,11 +121,76 @@ func TestImpactAnalyzer_UsesSearchIndexHealthWithoutSearchSymbolProbe(t *testing
 		t.Fatalf("expected degraded index health, got %#v", result)
 	}
 	assertContains(t, result.ResidualUnknowns, "index_degraded_search_index_drift")
+	if graph.contextIndexHealthCalls != 1 {
+		t.Fatalf("expected lightweight context search index health call, got %d", graph.contextIndexHealthCalls)
+	}
+	if graph.searchIndexHealthCalls != 0 {
+		t.Fatalf("did not expect full search index health call, got %d", graph.searchIndexHealthCalls)
+	}
+}
+
+func TestImpactAnalyzer_TimesOutWorkspaceDiffThatIgnoresContext(t *testing.T) {
+	block := make(chan struct{})
+	workspace := fakeWorkspace{blockGitDiff: block}
+
+	started := time.Now()
+	result, err := NewImpactAnalyzer(workspace).Analyze(context.Background(), ImpactAnalysisRequest{ProjectID: "example-service"})
+	close(block)
+	if err != nil {
+		t.Fatalf("analyze impact: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("expected bounded workspace diff, elapsed %s", elapsed)
+	}
+	if !result.Partial || result.PartialReason != "workspace_diff_timeout" {
+		t.Fatalf("expected workspace timeout partial, got %#v", result)
+	}
+	assertContains(t, result.ResidualUnknowns, "workspace_diff_timeout")
+}
+
+func TestImpactAnalyzer_PropagatesCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := NewImpactAnalyzer(fakeWorkspace{}).Analyze(ctx, ImpactAnalysisRequest{ProjectID: "example-service"})
+	if err == nil {
+		t.Fatal("expected canceled context error")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestImpactAnalyzer_TimesOutGraphLookupThatIgnoresContext(t *testing.T) {
+	block := make(chan struct{})
+	graph := &fakeImpactGraph{
+		files:          map[string]projectingestion.FileMetadata{},
+		symbolsByFile:  map[string][]projectingestion.SymbolMetadata{},
+		blockListFiles: block,
+	}
+
+	started := time.Now()
+	result, err := NewImpactAnalyzerWithGraph(nil, graph).Analyze(context.Background(), ImpactAnalysisRequest{
+		ProjectID:    "example-service",
+		ChangedPaths: []string{"internal/projectreliability/impact.go"},
+	})
+	close(block)
+	if err != nil {
+		t.Fatalf("analyze impact: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("expected bounded graph lookup, elapsed %s", elapsed)
+	}
+	if !result.Partial || result.PartialReason != "graph_file_lookup_timeout" {
+		t.Fatalf("expected graph timeout partial, got %#v", result)
+	}
+	assertContains(t, result.ResidualUnknowns, "graph_file_lookup_timeout")
 }
 
 type fakeWorkspace struct {
-	diff projectworkspace.GitDiff
-	err  error
+	diff         projectworkspace.GitDiff
+	err          error
+	blockGitDiff <-chan struct{}
 }
 
 type fakeImpactGraph struct {
@@ -135,9 +201,16 @@ type fakeImpactGraph struct {
 	callersBySym      map[string][]projectingestion.SymbolCallEdge
 	implementersBySym map[string][]projectingestion.SymbolImplementation
 	indexHealth       projectingestion.SearchIndexHealth
+	blockListFiles    <-chan struct{}
+
+	contextIndexHealthCalls int
+	searchIndexHealthCalls  int
 }
 
 func (graph *fakeImpactGraph) ListFiles(_ context.Context, _ string, filter projectingestion.FileStateFilter, _ projectingestion.Pagination) (projectingestion.FileList, error) {
+	if graph.blockListFiles != nil {
+		<-graph.blockListFiles
+	}
 	out := projectingestion.FileList{}
 	for _, file := range graph.files {
 		if filter.PathPrefix != "" && file.RelativePath != filter.PathPrefix {
@@ -181,6 +254,12 @@ func (graph *fakeImpactGraph) LatestRunMetadata(context.Context, string) (projec
 }
 
 func (graph *fakeImpactGraph) SearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error) {
+	graph.searchIndexHealthCalls++
+	return graph.indexHealth, nil
+}
+
+func (graph *fakeImpactGraph) ContextSearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error) {
+	graph.contextIndexHealthCalls++
 	return graph.indexHealth, nil
 }
 
@@ -189,6 +268,9 @@ func (workspace fakeWorkspace) GitStatus(context.Context, string, projectworkspa
 }
 
 func (workspace fakeWorkspace) GitDiff(context.Context, string, projectworkspace.GitDiffOptions) (projectworkspace.GitDiff, error) {
+	if workspace.blockGitDiff != nil {
+		<-workspace.blockGitDiff
+	}
 	return workspace.diff, workspace.err
 }
 

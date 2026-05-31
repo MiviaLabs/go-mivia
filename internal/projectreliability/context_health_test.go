@@ -317,6 +317,34 @@ func TestContextHealth_BoundsSlowProvider(t *testing.T) {
 	}
 }
 
+func TestContextHealth_BoundsProviderThatIgnoresContext(t *testing.T) {
+	block := make(chan struct{})
+	svc := NewService(
+		ProjectProviderFunc(func(context.Context, string) (projectregistry.Project, error) {
+			return testProject(), nil
+		}),
+		blockingContextProvider{blockLatest: block},
+		nil,
+		Options{
+			Now:          func() time.Time { return testNow },
+			ProbeTimeout: 10 * time.Millisecond,
+		},
+	)
+
+	start := time.Now()
+	health, err := svc.ContextHealth(context.Background(), "example")
+	close(block)
+	if err != nil {
+		t.Fatalf("context health should degrade instead of timing out: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("context health was not bounded: %s", elapsed)
+	}
+	if health.Status != ContextHealthDegraded || health.StatusReason != "latest_run_unknown" {
+		t.Fatalf("expected degraded timeout, got %#v", health)
+	}
+}
+
 type slowContextProvider struct{}
 
 func (slowContextProvider) LatestRun(ctx context.Context, _ string) (RunSummary, error) {
@@ -341,5 +369,34 @@ func (slowContextProvider) IndexedChunkCount(context.Context, string) (int, erro
 }
 
 func (slowContextProvider) SearchIndexHealth(context.Context, string) (SearchIndexHealth, error) {
+	return SearchIndexHealth{Status: "unknown"}, nil
+}
+
+type blockingContextProvider struct {
+	blockLatest <-chan struct{}
+}
+
+func (provider blockingContextProvider) LatestRun(context.Context, string) (RunSummary, error) {
+	<-provider.blockLatest
+	return RunSummary{}, ErrRunNotFound
+}
+
+func (blockingContextProvider) ActiveRuns(context.Context, string) ([]RunSummary, error) {
+	return nil, nil
+}
+
+func (blockingContextProvider) EligibleFileCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (blockingContextProvider) IndexedSymbolCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (blockingContextProvider) IndexedChunkCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (blockingContextProvider) SearchIndexHealth(context.Context, string) (SearchIndexHealth, error) {
 	return SearchIndexHealth{Status: "unknown"}, nil
 }
