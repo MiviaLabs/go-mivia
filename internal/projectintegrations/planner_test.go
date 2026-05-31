@@ -41,6 +41,27 @@ func TestPlanJiraQuery_HonorsAllowlistAndBoundsPageSize(t *testing.T) {
 	assertStringsEqual(t, plan.Fields, []string{"summary", "status"})
 }
 
+func TestPlanJiraQuery_ZeroMaxResultsMeansUnlimited(t *testing.T) {
+	plan, err := PlanJiraQuery(JiraPlanInput{
+		ProjectID: "example-service",
+		Config: config.JiraIntegration{
+			Enabled:     true,
+			MaxResults:  0,
+			ProjectKeys: []string{"ABC"},
+			Polling: config.IntegrationPolling{
+				InitialPageSize: 100,
+			},
+		},
+		Kind: SyncKindInitialFull,
+	})
+	if err != nil {
+		t.Fatalf("plan jira query: %v", err)
+	}
+	if plan.PageSize != 100 || plan.MaxResults != 0 {
+		t.Fatalf("expected unlimited max with configured page size, got page=%d max=%d", plan.PageSize, plan.MaxResults)
+	}
+}
+
 func TestPlanJiraQuery_UsesConfigDefaultsAndAppliesOverlap(t *testing.T) {
 	cfg := loadIntegrationProject(t).Integrations.Jira
 	if cfg == nil {
@@ -149,6 +170,27 @@ func TestPlanConfluenceQuery_HonorsAllowlistAndConfiguredFlags(t *testing.T) {
 	assertStringContains(t, plan.CQL, `space in ("ENG", "Ops")`, `type=page`, `lastmodified >= "2026-05-31 11:58"`, `(status=current)`)
 	if plan.BodyRepresentation != "atlas_doc_format" || !plan.IncludeBody || plan.IncludeComments || plan.IncludeLabels || plan.IncludeProperties {
 		t.Fatalf("unexpected content flags: %#v", plan)
+	}
+}
+
+func TestPlanConfluenceQuery_ZeroMaxResultsMeansUnlimited(t *testing.T) {
+	plan, err := PlanConfluenceQuery(ConfluencePlanInput{
+		ProjectID: "example-service",
+		Config: config.ConfluenceIntegration{
+			Enabled:    true,
+			MaxResults: 0,
+			SpaceKeys:  []string{"ENG"},
+			Polling: config.IntegrationPolling{
+				InitialPageSize: 50,
+			},
+		},
+		Kind: SyncKindInitialFull,
+	})
+	if err != nil {
+		t.Fatalf("plan confluence query: %v", err)
+	}
+	if plan.PageSize != 50 || plan.MaxResults != 0 {
+		t.Fatalf("expected unlimited max with configured page size, got page=%d max=%d", plan.PageSize, plan.MaxResults)
 	}
 }
 

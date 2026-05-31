@@ -12,7 +12,6 @@ import (
 const (
 	defaultPlannerIncrementalInterval = time.Minute
 	defaultPlannerPageSize            = 100
-	defaultPlannerMaxResults          = 100
 )
 
 var defaultJiraFields = []string{"summary", "status", "updated", "issuetype", "project"}
@@ -81,7 +80,7 @@ func PlanJiraQuery(input JiraPlanInput) (JiraQueryPlan, error) {
 	fields := jiraFields(cfg)
 	since := sinceForKind(kind, input.State, cfg.Polling.OverlapWindow)
 	jql := buildJiraJQL(keys, since, cfg.JQLExtraFilter)
-	maxResults := positiveOrDefault(cfg.MaxResults, defaultPlannerMaxResults)
+	maxResults := cfg.MaxResults
 	pageSize := boundedPageSize(pageSizeForKind(kind, cfg.Polling), maxResults)
 	return JiraQueryPlan{
 		ProjectID:           strings.TrimSpace(input.ProjectID),
@@ -115,7 +114,7 @@ func PlanConfluenceQuery(input ConfluencePlanInput) (ConfluenceQueryPlan, error)
 	}
 	since := sinceForKind(kind, input.State, cfg.Polling.OverlapWindow)
 	cql := buildConfluenceCQL(keys, since, cfg.CQLExtraFilter)
-	maxResults := positiveOrDefault(cfg.MaxResults, defaultPlannerMaxResults)
+	maxResults := cfg.MaxResults
 	pageSize := boundedPageSize(pageSizeForKind(kind, cfg.Polling), maxResults)
 	return ConfluenceQueryPlan{
 		ProjectID:           strings.TrimSpace(input.ProjectID),
