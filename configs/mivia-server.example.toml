@@ -19,8 +19,10 @@ ladybug_path = "data/mivialabs.lbug"
 sqlite_path = "data/mivialabs-config.sqlite"
 
 [sqlite]
-# WAL is enabled for local file-backed SQLite by default. Set false to roll back
-# on unsupported filesystems. The process disables WAL for sqlite_path = ":memory:".
+# WAL is enabled for local file-backed SQLite by default. The server opens a
+# bounded connection pool and serializes writes so status/search reads remain
+# responsive during startup full scans. Set false only for unsupported filesystems.
+# The process disables WAL and uses one connection for sqlite_path = ":memory:".
 wal_enabled = true
 busy_timeout = "5s"
 synchronous = "NORMAL"
@@ -71,6 +73,10 @@ enabled = false
 
 [[projects]]
 id = "example-service"
+# Optional safe lookup IDs accepted anywhere a project id is accepted. Use this
+# for repo/module identities that agents naturally pass, especially when the
+# runtime cannot read go.mod from a mounted project root.
+aliases = ["github.com/example/example-service"]
 display_name = "Example Service"
 description = "Synthetic local service used to show the project config schema."
 root_path = "/absolute/path/to/project"
@@ -118,6 +124,7 @@ sensitive_marker_policy = "skip_file"
 # empty_poll_sleep = "10m"
 # max_idle_sleep = "30m"
 # overlap_window = "2m"
+# read_timeout = "30s"
 # initial_page_size = 100
 # incremental_page_size = 100
 # max_results = 0 # unlimited total ingestion; positive values explicitly cap a run
@@ -139,6 +146,7 @@ sensitive_marker_policy = "skip_file"
 # empty_poll_sleep = "10m"
 # max_idle_sleep = "30m"
 # overlap_window = "2m"
+# read_timeout = "30s"
 # initial_page_size = 50
 # incremental_page_size = 50
 # max_results = 0 # unlimited total ingestion; positive values explicitly cap a run

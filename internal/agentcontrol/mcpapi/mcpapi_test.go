@@ -713,6 +713,50 @@ func TestProjectWorkspaceMCPToolsListWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestProjectWorkspaceMCPGitUnavailableIsExplicit(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("write project file: %v", err)
+	}
+	registry, err := projectregistry.NewRegistry([]config.Project{{
+		ID:                    "example-service",
+		DisplayName:           "Example Service",
+		RootPath:              root,
+		Enabled:               true,
+		Classification:        projectregistry.ClassificationInternal,
+		GraphNamespace:        "example-service",
+		DigestMode:            projectregistry.DigestModeContentGraph,
+		UpdatePolicy:          projectregistry.UpdatePolicyManual,
+		WorkspaceMode:         projectregistry.WorkspaceModeReadOnly,
+		Include:               []string{"**/*.go"},
+		FollowSymlinks:        false,
+		MaxFileBytes:          4096,
+		MaxChunkBytes:         1024,
+		SensitiveMarkerPolicy: projectregistry.SensitiveMarkerPolicySkipFile,
+	}}, projectregistry.Options{
+		ContentGraphEnabled:          true,
+		ContentGraphApprovalAccepted: true,
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(t.Context(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	digest := projectregistry.NewDigestService(registry, graph)
+	workspace := projectworkspace.NewService(registry, nil, projectworkspace.Options{Enabled: true})
+	workspace.SetGitRunner(failingGitRunner{})
+	handler := mcpapi.NewHandlerWithResearchProjectsIngestionAndWorkspace(svc, nil, registry, digest, nil, workspace, slog.Default())
+
+	res := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.workspace.git_status","arguments":{"id":"example-service"}}}`)
+	if !bytes.Contains(res.Body.Bytes(), []byte(`"code":-32603`)) || !bytes.Contains(res.Body.Bytes(), []byte("git is not available")) {
+		t.Fatalf("expected explicit git unavailable response, got %s", res.Body.String())
+	}
+}
+
 func waitMCPIngestionRun(t *testing.T, handler http.Handler, runID string) {
 	t.Helper()
 	deadline := time.After(time.Second)
@@ -756,4 +800,10 @@ type fakeDiagnosticsSnapshotter struct {
 
 func (fake fakeDiagnosticsSnapshotter) IngestionDiagnostics() projectingestion.DiagnosticsSnapshot {
 	return fake.snapshot
+}
+
+type failingGitRunner struct{}
+
+func (failingGitRunner) Run(context.Context, string, int, ...string) ([]byte, bool, error) {
+	return nil, false, projectworkspace.ErrGitUnavailable
 }

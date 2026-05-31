@@ -145,6 +145,26 @@ func TestWorkspaceService_GitStatusAndDiffAreGoverned(t *testing.T) {
 	}
 }
 
+func TestWorkspaceService_GitStatusRunsAgainstConfiguredRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly), nil, Options{Enabled: true})
+	runner := &recordingGitRunner{}
+	svc.SetGitRunner(runner)
+
+	_, err := svc.GitStatus(context.Background(), "example-service", GitStatusOptions{})
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+
+	if runner.root != filepath.Clean(root) {
+		t.Fatalf("expected canonical root %q, got %q", filepath.Clean(root), runner.root)
+	}
+	if len(runner.args) < 4 || runner.args[0] != "status" || runner.args[1] != "--porcelain=v2" {
+		t.Fatalf("unexpected git args: %#v", runner.args)
+	}
+}
+
 func TestWorkspaceService_GitDiffReturnsCredentialReferenceConfigDiff(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "configs/mivia-server.example.toml", "[projects.integrations.jira]\n")
@@ -247,6 +267,17 @@ func newWorkspaceRegistryWithInclude(t *testing.T, root string, mode string, inc
 type fakeWorkspaceIngestion struct {
 	runID string
 	path  string
+}
+
+type recordingGitRunner struct {
+	root string
+	args []string
+}
+
+func (runner *recordingGitRunner) Run(_ context.Context, root string, _ int, args ...string) ([]byte, bool, error) {
+	runner.root = root
+	runner.args = append([]string(nil), args...)
+	return []byte("# branch.head main\x00# branch.oid 1234567890abcdef\x00"), false, nil
 }
 
 func (fake *fakeWorkspaceIngestion) GetFile(context.Context, string, string) (projectingestion.FileMetadata, error) {

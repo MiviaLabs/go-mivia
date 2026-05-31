@@ -44,6 +44,7 @@ version = 1
 
 [[projects]]
 id = "example"
+aliases = ["github.com/MiviaLabs/go-mivia"]
 display_name = "Example"
 root_path = "/absolute/path/to/project"
 unexpected = true
@@ -144,6 +145,9 @@ sensitive_marker_policy = "skip_file"
 	}
 	if project.GraphStorage != graphStorageInMemory {
 		t.Fatalf("unexpected graph storage: %+v", project)
+	}
+	if len(project.Aliases) != 1 || project.Aliases[0] != "github.com/MiviaLabs/go-mivia" {
+		t.Fatalf("unexpected aliases: %+v", project.Aliases)
 	}
 	if !merged.Workspace.Enabled || project.WorkspaceMode != "edit" {
 		t.Fatalf("unexpected workspace config: %+v", merged)

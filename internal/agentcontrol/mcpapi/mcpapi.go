@@ -358,10 +358,13 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
+	if errors.Is(err, projectworkspace.ErrGitUnavailable) {
+		writeJSONRPCError(w, id, -32603, "git is not available in the mivia-server runtime")
+		return
+	}
 	if errors.Is(err, projectworkspace.ErrInvalidInput) ||
 		errors.Is(err, projectworkspace.ErrWorkspaceDisabled) ||
 		errors.Is(err, projectworkspace.ErrWorkspaceReadOnly) ||
-		errors.Is(err, projectworkspace.ErrGitUnavailable) ||
 		errors.Is(err, projectworkspace.ErrUnsafeContent) ||
 		errors.Is(err, projectworkspace.ErrEditTokenInvalid) ||
 		errors.Is(err, projectworkspace.ErrEditConflict) ||

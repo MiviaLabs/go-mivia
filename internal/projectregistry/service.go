@@ -38,19 +38,88 @@ func NewRegistry(configProjects []config.Project, options Options) (*Registry, e
 			return nil, fmt.Errorf("project[%d].graph_namespace %q is duplicated", i, project.GraphNamespace)
 		}
 		seenNamespaces[project.GraphNamespace] = struct{}{}
+		project.Aliases = projectLookupAliases(project)
 		projects = append(projects, project)
 	}
 
 	byID := make(map[string]Project, len(projects))
 	for _, project := range projects {
-		byID[project.ID] = cloneProject(project)
+		registerProjectLookup(byID, project.ID, project)
+		for _, alias := range project.Aliases {
+			registerProjectLookup(byID, alias, project)
+		}
 	}
 	return &Registry{projects: cloneProjects(projects), byID: byID}, nil
+}
+
+func registerProjectLookup(byID map[string]Project, id string, project Project) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	if _, exists := byID[id]; !exists {
+		byID[id] = cloneProject(project)
+	}
+	lowerID := strings.ToLower(id)
+	if _, exists := byID[lowerID]; !exists {
+		byID[lowerID] = cloneProject(project)
+	}
+}
+
+func projectLookupAliases(project Project) []string {
+	aliases := append([]string(nil), project.Aliases...)
+	if project.Enabled && project.CanonicalRootPath != "" {
+		if modulePath := goModulePath(filepath.Join(project.CanonicalRootPath, "go.mod")); modulePath != "" {
+			aliases = append(aliases, modulePath)
+		}
+	}
+	return normalizeProjectAliases(aliases)
+}
+
+func normalizeProjectAliases(aliases []string) []string {
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" || strings.ContainsRune(alias, '\x00') {
+			continue
+		}
+		key := strings.ToLower(alias)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, alias)
+	}
+	return normalized
+}
+
+func goModulePath(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		if !strings.HasPrefix(line, "module ") {
+			continue
+		}
+		modulePath := strings.TrimSpace(strings.TrimPrefix(line, "module "))
+		if strings.ContainsRune(modulePath, '\x00') {
+			return ""
+		}
+		return modulePath
+	}
+	return ""
 }
 
 func normalizeProject(configProject config.Project, options Options) (Project, error) {
 	project := Project{
 		ID:                    strings.TrimSpace(configProject.ID),
+		Aliases:               append([]string(nil), configProject.Aliases...),
 		DisplayName:           strings.TrimSpace(configProject.DisplayName),
 		Description:           strings.TrimSpace(configProject.Description),
 		RootPath:              configProject.RootPath,

@@ -138,7 +138,7 @@ Input schema:
 }
 ```
 
-Output: configured local project metadata without root paths, include/exclude patterns, raw source content, or file-content hashes.
+Output: configured local project metadata without root paths, include/exclude patterns, raw source content, or file-content hashes. Metadata may include safe configured aliases and auto-discovered aliases such as a Go module path; callers may pass either `id` or an alias to project-scoped tools.
 
 ### `projects.get`
 
@@ -155,7 +155,7 @@ Input schema:
 }
 ```
 
-Output: one configured local project metadata object without local root path exposure.
+Output: one configured local project metadata object without local root path exposure. The `id` field is the canonical configured project ID; `aliases` are accepted alternate IDs for agent convenience. Configure aliases explicitly when the runtime may not be able to read `go.mod` from a mounted project root.
 
 ### `projects.digest`
 
@@ -179,8 +179,8 @@ Output: metadata-only digest run counts and status. Pass either `id` or `project
 
 Workspace tools are available only when `[workspace].enabled = true` and the target project has `workspace_mode = "read_only"` or `"edit"` with `digest_mode = "content_graph"`. They never expose roots, datastore paths, raw command lines, raw stderr, content hashes, skipped sensitive content, secrets, PII, raw prompts, provider payloads, raw parser/SQLite/FTS errors, or stack traces.
 
-- `projects.workspace.git_status` / `projects_workspace_git_status`: parsed git status with `id`, optional `include_untracked`, `path_prefix`, `page_size`, and `page_token`.
-- `projects.workspace.git_diff` / `projects_workspace_git_diff`: capped safe diff with `id`, optional `scope` (`working_tree`, `staged`, `head`), one optional file selector, `path_prefix`, `context_lines`, `max_diff_bytes`, and `page_token`.
+- `projects.workspace.git_status` / `projects_workspace_git_status`: parsed git status with `id`, optional `include_untracked`, `path_prefix`, `page_size`, and `page_token`. If Git is unavailable in the runtime, the tool fails explicitly with `git is not available in the mivia-server runtime`.
+- `projects.workspace.git_diff` / `projects_workspace_git_diff`: capped safe diff with `id`, optional `scope` (`working_tree`, `staged`, `head`), one optional file selector, `path_prefix`, `context_lines`, `max_diff_bytes`, and `page_token`. If Git is unavailable in the runtime, the tool fails explicitly with `git is not available in the mivia-server runtime`.
 - `projects.workspace.file_read` / `projects_workspace_file_read`: current eligible file text by `file_id` or `relative_path`, capped by `max_bytes`, with an opaque edit token.
 - `projects.workspace.file_edit` / `projects_workspace_file_edit`: `workspace_mode = "edit"` only; applies ordered exact byte-span edits with `edit_token`, `old_text`, and `new_text`. Successful non-dry-run edits queue path ingestion.
 
@@ -626,6 +626,7 @@ Codex Desktop exposes the tools through generated callable names. In this enviro
 - Approved local Jira/Confluence rich content, including possible PII, is allowed only under [Project Integrations Security Policy](../../docs/security/project-integrations.md), in ignored local stores, through bounded local MCP search/read responses.
 - Research-run create accepts only a redacted `goal_summary`; live provider execution and broad crawling are out of scope.
 - Project responses omit local root paths by default.
+- Project responses may include safe aliases such as Go module paths; aliases are lookup IDs, not roots.
 - Project responses include `graph_storage` as `persistent` or `in_memory`; they do not expose datastore paths.
 - Project digest is manual and metadata-only; it does not store or return raw source content or file-content hashes.
 - Content graph ingestion and query tools are localhost-only, manually triggered, bounded by pagination and chunk-byte caps, and use stable opaque IDs instead of absolute roots.

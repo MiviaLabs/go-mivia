@@ -8,6 +8,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,11 +25,22 @@ type FileStateFilter struct {
 }
 
 type SQLiteStore struct {
-	db *sql.DB
+	db      *sql.DB
+	writeMu sync.Mutex
 }
 
 func NewSQLiteStore(db *sql.DB) *SQLiteStore {
 	return &SQLiteStore{db: db}
+}
+
+func (store *SQLiteStore) beginWriteTx(ctx context.Context) (*sql.Tx, func(), error) {
+	store.writeMu.Lock()
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		store.writeMu.Unlock()
+		return nil, nil, err
+	}
+	return tx, store.writeMu.Unlock, nil
 }
 
 type ExtractorCacheEntry struct {
@@ -46,10 +58,11 @@ type ExtractorCacheEntry struct {
 }
 
 func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO project_ingestion_runs (
 		run_id,
@@ -265,6 +278,8 @@ func (store *SQLiteStore) ListActiveRuns(ctx context.Context, projectID string) 
 }
 
 func (store *SQLiteStore) FailActiveRuns(ctx context.Context, projectID string, errorCategory string, finishedAt time.Time) (int, error) {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
 	result, err := store.db.ExecContext(ctx, `UPDATE project_ingestion_runs
 	SET status = ?,
 		error_category = ?,
@@ -324,6 +339,8 @@ func (store *SQLiteStore) loadRunReasonCounts(ctx context.Context, projectID str
 }
 
 func (store *SQLiteStore) SaveFileState(ctx context.Context, state FileState) error {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
 	return saveFileState(ctx, store.db, state)
 }
 
@@ -331,10 +348,11 @@ func (store *SQLiteStore) SaveFileStatesBatch(ctx context.Context, states []File
 	if len(states) == 0 {
 		return nil
 	}
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	defer tx.Rollback()
 	for _, state := range states {
 		if err := saveFileState(ctx, tx, state); err != nil {
@@ -466,6 +484,8 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 	if updatedAt.IsZero() {
 		updatedAt = createdAt
 	}
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
 	_, err = store.db.ExecContext(ctx, `INSERT INTO project_extractor_cache (
 		project_id,
 		relative_path_hash,
@@ -501,6 +521,8 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 }
 
 func (store *SQLiteStore) DeleteExtractorCacheForFile(ctx context.Context, projectID string, relativePathHash string) error {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
 	_, err := store.db.ExecContext(ctx, `DELETE FROM project_extractor_cache WHERE project_id = ? AND relative_path_hash = ?`, projectID, relativePathHash)
 	return err
 }

@@ -187,6 +187,8 @@ paths:
                 $ref: '#/components/schemas/WorkspaceGitStatus'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /projects/{id}/workspace/git/diff:
     get:
       operationId: getProjectWorkspaceGitDiff
@@ -234,6 +236,8 @@ paths:
                 $ref: '#/components/schemas/WorkspaceGitDiff'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /projects/{id}/workspace/files/read:
     get:
       operationId: readProjectWorkspaceFile
@@ -941,6 +945,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailable:
+      description: Runtime dependency unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
   schemas:
     CreateTaskRequest:
       type: object
@@ -1062,6 +1072,11 @@ components:
       properties:
         id:
           type: string
+        aliases:
+          type: array
+          items:
+            type: string
+          description: Safe alternate lookup IDs such as Go module paths. Aliases are not local root paths.
         display_name:
           type: string
         description:

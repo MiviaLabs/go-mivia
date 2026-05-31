@@ -98,29 +98,32 @@ func (store *SQLiteStore) UpsertSearchFilesBatch(ctx context.Context, project pr
 	if len(files) == 0 {
 		return nil
 	}
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return sanitizeSearchError(err)
 	}
-	defer tx.Rollback()
 	for _, file := range files {
 		if err := upsertSearchFileTx(ctx, tx, project, file.State, file.Chunks, file.Symbols, file.References, file.Calls); err != nil {
 			_ = tx.Rollback()
+			unlock()
 			_ = store.MarkSearchIndexDegraded(ctx, project.ID, "search_index_write_failed")
 			return sanitizeSearchError(err)
 		}
 	}
-	return sanitizeSearchError(tx.Commit())
+	err = tx.Commit()
+	unlock()
+	return sanitizeSearchError(err)
 }
 
 func (store *SQLiteStore) ApplySearchFileBatch(ctx context.Context, project projectregistry.Project, results []fullScanFileResult) error {
 	if len(results) == 0 {
 		return nil
 	}
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return sanitizeSearchError(err)
 	}
+	defer unlock()
 	defer tx.Rollback()
 	for _, result := range results {
 		switch {
@@ -285,19 +288,21 @@ func (store *SQLiteStore) UpdateSearchFileMetadataBatch(ctx context.Context, pro
 	if len(states) == 0 {
 		return nil
 	}
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return sanitizeSearchError(err)
 	}
-	defer tx.Rollback()
 	for _, state := range states {
 		if err := updateSearchFileMetadataTx(ctx, tx, project, state); err != nil {
 			_ = tx.Rollback()
+			unlock()
 			_ = store.MarkSearchIndexDegraded(ctx, project.ID, "search_index_write_failed")
 			return sanitizeSearchError(err)
 		}
 	}
-	return sanitizeSearchError(tx.Commit())
+	err = tx.Commit()
+	unlock()
+	return sanitizeSearchError(err)
 }
 
 func updateSearchFileMetadataTx(ctx context.Context, tx *sql.Tx, project projectregistry.Project, state FileState) error {
@@ -340,10 +345,11 @@ func updateSearchFileMetadataTx(ctx context.Context, tx *sql.Tx, project project
 }
 
 func (store *SQLiteStore) DeleteSearchFile(ctx context.Context, projectID string, fileID string) error {
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	defer tx.Rollback()
 	if err := deleteSearchFileTx(ctx, tx, projectID, fileID); err != nil {
 		return err
@@ -352,10 +358,11 @@ func (store *SQLiteStore) DeleteSearchFile(ctx context.Context, projectID string
 }
 
 func (store *SQLiteStore) DeleteSearchProject(ctx context.Context, projectID string) error {
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	defer tx.Rollback()
 	for _, table := range searchFTSTables() {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE project_id = ?", projectID); err != nil {
@@ -369,10 +376,11 @@ func (store *SQLiteStore) DeleteSearchProject(ctx context.Context, projectID str
 }
 
 func (store *SQLiteStore) ReconcileSearchIndex(ctx context.Context, project projectregistry.Project) ([]FileState, error) {
-	tx, err := store.db.BeginTx(ctx, nil)
+	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer unlock()
 	defer tx.Rollback()
 
 	states, err := searchRepairEligibleStates(ctx, tx, project)
@@ -425,6 +433,8 @@ func (store *SQLiteStore) ReconcileSearchIndex(ctx context.Context, project proj
 
 func (store *SQLiteStore) MarkSearchIndexDegraded(ctx context.Context, projectID string, reason string) error {
 	reason = safeSearchIndexReason(reason)
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
 	_, err := store.db.ExecContext(ctx, `INSERT INTO project_search_index_state (
 		project_id, status, degraded_reason, updated_at
 	) VALUES (?, 'degraded', ?, CURRENT_TIMESTAMP)
@@ -436,6 +446,8 @@ func (store *SQLiteStore) MarkSearchIndexDegraded(ctx context.Context, projectID
 }
 
 func (store *SQLiteStore) ClearSearchIndexDegraded(ctx context.Context, projectID string) error {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
 	_, err := store.db.ExecContext(ctx, `INSERT INTO project_search_index_state (
 		project_id, status, degraded_reason, updated_at
 	) VALUES (?, 'ready', '', CURRENT_TIMESTAMP)
@@ -799,6 +811,10 @@ func (store *SQLiteStore) SearchText(ctx context.Context, project projectregistr
 }
 
 func (store *SQLiteStore) SearchFiles(ctx context.Context, project projectregistry.Project, options FileSearchOptions) (FileList, error) {
+	pageSize, offset, err := paginationWindow(Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
+	if err != nil {
+		return FileList{}, err
+	}
 	where := []string{"project_id = ?"}
 	args := []any{project.ID}
 	if options.Extension != "" {
@@ -813,14 +829,17 @@ func (store *SQLiteStore) SearchFiles(ctx context.Context, project projectregist
 		where = append(where, "project_search_files_fts MATCH ?")
 		args = append(args, match)
 	}
+	args = append(args, pageSize+1, offset)
 	rows, err := store.db.QueryContext(ctx, `SELECT file_id, relative_path, extension, size_bytes, modified_at
 		FROM project_search_files_fts
-		WHERE `+strings.Join(where, " AND "), args...)
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY relative_path ASC
+		LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return FileList{}, sanitizeSearchError(err)
 	}
 	defer rows.Close()
-	files := make([]FileMetadata, 0)
+	files := make([]FileMetadata, 0, pageSize+1)
 	for rows.Next() {
 		var fileID, relativePath, extension, sizeRaw, modifiedRaw string
 		if err := rows.Scan(&fileID, &relativePath, &extension, &sizeRaw, &modifiedRaw); err != nil {
@@ -849,12 +868,12 @@ func (store *SQLiteStore) SearchFiles(ctx context.Context, project projectregist
 	if err := rows.Err(); err != nil {
 		return FileList{}, sanitizeSearchError(err)
 	}
-	sortFileMetadata(files)
-	window, nextToken, err := paginate(files, Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
-	if err != nil {
-		return FileList{}, err
+	nextToken := ""
+	if len(files) > pageSize {
+		nextToken = strconv.Itoa(offset + pageSize)
+		files = files[:pageSize]
 	}
-	return FileList{Files: window, NextPageToken: nextToken}, nil
+	return FileList{Files: files, NextPageToken: nextToken}, nil
 }
 
 func (store *SQLiteStore) SearchSymbols(ctx context.Context, project projectregistry.Project, filter SymbolFilter, pagination Pagination) (SymbolList, error) {

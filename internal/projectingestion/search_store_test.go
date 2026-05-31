@@ -81,6 +81,33 @@ func TestSQLiteStore_UpdateSearchFileMetadataBatch(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_SearchFilesPaginatesInStorage(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	for _, relativePath := range []string{"cmd/a.go", "cmd/b.go", "cmd/c.go"} {
+		if err := store.UpsertSearchFile(ctx, project, testSearchFileState("project-1", relativePath, "sha256:"+relativePath), nil, nil, nil, nil); err != nil {
+			t.Fatalf("upsert %s: %v", relativePath, err)
+		}
+	}
+
+	first, err := store.SearchFiles(ctx, project, FileSearchOptions{PathPrefix: "cmd/", PageSize: 2})
+	if err != nil {
+		t.Fatalf("search first page: %v", err)
+	}
+	if len(first.Files) != 2 || first.Files[0].RelativePath != "cmd/a.go" || first.Files[1].RelativePath != "cmd/b.go" || first.NextPageToken == "" {
+		t.Fatalf("unexpected first page: %#v", first)
+	}
+
+	second, err := store.SearchFiles(ctx, project, FileSearchOptions{PathPrefix: "cmd/", PageSize: 2, PageToken: first.NextPageToken})
+	if err != nil {
+		t.Fatalf("search second page: %v", err)
+	}
+	if len(second.Files) != 1 || second.Files[0].RelativePath != "cmd/c.go" || second.NextPageToken != "" {
+		t.Fatalf("unexpected second page: %#v", second)
+	}
+}
+
 func TestSQLiteStore_BatchWriteFailureMarksSearchIndexDegraded(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)

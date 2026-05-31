@@ -85,6 +85,9 @@ func TestOpen_FileBackedDefaultsToWAL(t *testing.T) {
 	if busyTimeout != 5000 {
 		t.Fatalf("expected 5000ms busy timeout, got %d", busyTimeout)
 	}
+	if maxOpen := db.SQLDB().Stats().MaxOpenConnections; maxOpen <= 1 {
+		t.Fatalf("expected file-backed sqlite to allow concurrent pooled reads, max open conns=%d", maxOpen)
+	}
 	if err := db.Checkpoint(context.Background()); err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}
@@ -103,6 +106,9 @@ func TestOpen_InMemoryDisablesWAL(t *testing.T) {
 	}
 	if journalMode == "wal" {
 		t.Fatalf("expected in-memory sqlite not to use wal")
+	}
+	if maxOpen := db.SQLDB().Stats().MaxOpenConnections; maxOpen != 1 {
+		t.Fatalf("expected in-memory sqlite to use one connection, max open conns=%d", maxOpen)
 	}
 }
 

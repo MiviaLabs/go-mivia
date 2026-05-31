@@ -24,6 +24,7 @@ var (
 
 type Project struct {
 	ID                    string
+	Aliases               []string
 	DisplayName           string
 	Description           string
 	RootPath              string
@@ -48,6 +49,7 @@ type Project struct {
 
 type ProjectMetadata struct {
 	ID               string                       `json:"id"`
+	Aliases          []string                     `json:"aliases,omitempty"`
 	DisplayName      string                       `json:"display_name"`
 	Description      string                       `json:"description,omitempty"`
 	Enabled          bool                         `json:"enabled"`
@@ -107,6 +109,7 @@ func cloneProjects(projects []Project) []Project {
 func cloneProject(project Project) Project {
 	project.Include = append([]string(nil), project.Include...)
 	project.Exclude = append([]string(nil), project.Exclude...)
+	project.Aliases = append([]string(nil), project.Aliases...)
 	project.Integrations = cloneProjectIntegrationsMetadata(project.Integrations)
 	return project
 }
@@ -127,6 +130,7 @@ func cloneProjectIntegrationsMetadata(metadata ProjectIntegrationsMetadata) Proj
 func MetadataForProject(project Project) ProjectMetadata {
 	return ProjectMetadata{
 		ID:               project.ID,
+		Aliases:          append([]string(nil), project.Aliases...),
 		DisplayName:      project.DisplayName,
 		Description:      project.Description,
 		Enabled:          project.Enabled,

@@ -116,6 +116,7 @@ type fileIngestionConfig struct {
 
 type fileProjectConfig struct {
 	ID                    string                         `toml:"id"`
+	Aliases               []string                       `toml:"aliases"`
 	DisplayName           string                         `toml:"display_name"`
 	Description           string                         `toml:"description"`
 	RootPath              string                         `toml:"root_path"`
@@ -632,6 +633,7 @@ func (project fileProjectConfig) toProject() Project {
 
 	cfgProject := Project{
 		ID:             project.ID,
+		Aliases:        append([]string(nil), project.Aliases...),
 		DisplayName:    project.DisplayName,
 		Description:    project.Description,
 		RootPath:       project.RootPath,

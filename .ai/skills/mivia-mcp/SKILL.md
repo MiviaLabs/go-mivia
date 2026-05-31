@@ -32,7 +32,7 @@ If MCP is unavailable, stale, missing the project, or lacks the needed semantic 
 Know or discover:
 
 - MCP endpoint, default `http://127.0.0.1:8080/mcp`.
-- Project ID, from the user or `projects.list`.
+- Project ID, from the user or `projects.list`. Project-scoped tools also accept safe aliases returned by `projects.list` / `projects.get`, including configured repo/module aliases and auto-discovered Go module paths.
 - Host repository rules, tests, and privacy/security boundaries.
 
 Do not assume the current repository is the server repo. Do not assume any specific language or directory layout.
@@ -63,7 +63,7 @@ Use the smallest sequence that answers the task. Do not call every tool by defau
 
 1. Confirm the MCP endpoint is localhost or loopback.
 2. Call `tools/list`.
-3. Call `projects.list` to discover visible project IDs. Call `projects.get` for one chosen project to confirm `enabled`, `digest_mode`, `update_policy`, `workspace_mode`, `graph_storage`, and `validation_status`.
+3. Call `projects.list` to discover visible project IDs and aliases. If the user supplies a repo identity such as a Go module path, try it as a project ID/alias, then call `projects.get` and use the returned canonical `id` for follow-up calls. If the expected alias is missing, report that the server config should set the project's `aliases` list. Confirm `enabled`, `digest_mode`, `update_policy`, `workspace_mode`, `graph_storage`, and `validation_status`.
 4. Call `projects.ingestion_status_latest` before relying on indexed code/content if the answer depends on freshness. If the latest run is missing, failed, stale for the task, or older than current disk changes, call `projects.ingest`.
 5. Call `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, or `projects.search.ast` for routine indexed discovery before broad text scans.
 6. Call `projects.files.list`, `projects.symbols.list`, or `projects.headings.list` with small `page_size` to confirm indexed content exists and narrow to stable opaque IDs.
@@ -74,7 +74,7 @@ Use the smallest sequence that answers the task. Do not call every tool by defau
 10. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
 11. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph` for common indexed navigation. Use `projects.symbol.source` only when bounded eligible source text for one symbol is needed. Set `include_chunk_text=true` with a small `max_chunk_bytes` when eligible file source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
 12. For configured Jira/Confluence context, call `projects.integrations.list` first. Use `projects.integrations.status` for provider config/sync state, `projects.integrations.counts` for total locally ingested items by provider, `projects.integrations.poll` to queue a manual provider run, and `projects.integrations.poll_status` with the returned `run_id` to watch that run. Use `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get` only for already-ingested local graph content. Search/read/count tools do not call Atlassian or resolve credentials.
-13. For opted-in workspaces, use `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, and `projects.workspace.file_edit` before shell for status, diff, eligible current file reads, and exact edits. `file_edit` requires the opaque token from a current file read and queues path ingestion after successful non-dry-run edits.
+13. For opted-in workspaces, use `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, and `projects.workspace.file_edit` before shell for status, diff, eligible current file reads, and exact edits. `file_edit` requires the opaque token from a current file read and queues path ingestion after successful non-dry-run edits. If workspace git tools report `git is not available in the mivia-server runtime`, state that MCP git status/diff is unavailable and fall back to shell for exact git facts.
 14. Switch to Serena or another semantic tool only if MCP cannot answer the required symbol body, reference, call, or edit-planning question.
 15. Switch to shell for tests, builds, logs, generated files, process control, arbitrary commands, and non-opted-in repos. For edited indexed files, rely on live ingestion as the normal freshness path and poll latest ingestion status when search results look unexpected.
 
@@ -99,8 +99,8 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 
 - `tasks.create` / `tasks.get`: local agent task metadata only. Do not use for project implementation plans unless the repository asks for MCP task records.
 - `research_runs.create` / `research_runs.get` and `research_sources.create` / `research_sources.get`: redacted research metadata only. They do not fetch providers and must not contain raw source content, prompts, secrets, or personal data.
-- `projects.list`: first project-discovery call. Returns configured project metadata without root paths.
-- `projects.get`: use before project-specific work to confirm the selected project is enabled and validate content/workspace modes.
+- `projects.list`: first project-discovery call. Returns configured project metadata without root paths, including safe lookup aliases when available.
+- `projects.get`: use before project-specific work to confirm the selected project is enabled and validate content/workspace modes. The returned `id` is canonical; use it for follow-up calls even when you started from an alias.
 - `projects.digest`: metadata-only digest for projects that support digest mode. Content-graph projects may reject this as unsupported; use ingestion/search tools instead.
 - `projects.ingest`: queue bounded content-graph ingestion. Always poll with `projects.ingestion_status`.
 - `projects.search_index.rebuild`: repair degraded local search index only when asked or when degradation blocks the task. Always poll with `projects.ingestion_status`.
@@ -124,8 +124,8 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 - `projects.symbol.callees`: direct callees for one symbol ID.
 - `projects.symbol.call_graph`: bounded traversal around one symbol ID; set depth/limits conservatively.
 - `projects.headings.list`: Markdown/document heading metadata. Use for docs discovery before broad text reads.
-- `projects.workspace.git_status`: governed git status for opted-in workspaces. Prefer before shell `git status` when available.
-- `projects.workspace.git_diff`: governed capped diff for opted-in workspaces. Prefer before shell `git diff` when available.
+- `projects.workspace.git_status`: governed git status for opted-in workspaces. Prefer before shell `git status` when available. If it reports Git unavailable, fall back to shell and report the MCP gap.
+- `projects.workspace.git_diff`: governed capped diff for opted-in workspaces. Prefer before shell `git diff` when available. If it reports Git unavailable, fall back to shell and report the MCP gap.
 - `projects.workspace.file_read`: current eligible file content plus edit token. Required before `projects.workspace.file_edit`.
 - `projects.workspace.file_edit`: exact token-guarded edit only. Do not use for broad rewrites, generated files, or arbitrary patches.
 - `projects.diagnostics.ingestion`: redacted scheduler/watcher/runtime/storage diagnostics. Use when ingestion/search behavior is suspect; switch to logs only if runtime proof is required.

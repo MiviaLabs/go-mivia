@@ -81,6 +81,63 @@ func TestNewRegistry_DuplicateGraphNamespaces_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestRegistryGet_AcceptsGoModulePathAlias(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module github.com/MiviaLabs/go-mivia\n"), 0o600); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	project := validConfigProject(root)
+	project.ID = "mivialabs-agents-monorepo"
+	project.GraphNamespace = "mivialabs-agents-monorepo"
+
+	registry, err := NewRegistry([]config.Project{project}, Options{})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+
+	loaded, ok := registry.Get("github.com/MiviaLabs/go-mivia")
+	if !ok {
+		t.Fatal("expected project lookup by Go module path alias")
+	}
+	if loaded.ID != "mivialabs-agents-monorepo" {
+		t.Fatalf("expected canonical project ID, got %q", loaded.ID)
+	}
+	if len(loaded.Aliases) != 1 || loaded.Aliases[0] != "github.com/MiviaLabs/go-mivia" {
+		t.Fatalf("expected module alias metadata, got %#v", loaded.Aliases)
+	}
+
+	loaded, ok = registry.Get("github.com/mivialabs/go-mivia")
+	if !ok {
+		t.Fatal("expected case-insensitive project lookup by Go module path alias")
+	}
+	if loaded.ID != "mivialabs-agents-monorepo" {
+		t.Fatalf("expected canonical project ID for lowercase alias, got %q", loaded.ID)
+	}
+}
+
+func TestRegistryGet_AcceptsConfiguredAlias(t *testing.T) {
+	project := validConfigProject(t.TempDir())
+	project.ID = "mivialabs-agents-monorepo"
+	project.GraphNamespace = "mivialabs-agents-monorepo"
+	project.Aliases = []string{"github.com/MiviaLabs/go-mivia", " github.com/MiviaLabs/go-mivia "}
+
+	registry, err := NewRegistry([]config.Project{project}, Options{})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+
+	loaded, ok := registry.Get("github.com/mivialabs/go-mivia")
+	if !ok {
+		t.Fatal("expected project lookup by configured alias")
+	}
+	if loaded.ID != "mivialabs-agents-monorepo" {
+		t.Fatalf("expected canonical project ID, got %q", loaded.ID)
+	}
+	if len(loaded.Aliases) != 1 || loaded.Aliases[0] != "github.com/MiviaLabs/go-mivia" {
+		t.Fatalf("expected deduplicated alias metadata, got %#v", loaded.Aliases)
+	}
+}
+
 func TestNewRegistry_InvalidProjectFields_ReturnError(t *testing.T) {
 	root := t.TempDir()
 	tests := []struct {

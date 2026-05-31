@@ -187,6 +187,7 @@ func (scheduler *Scheduler) SubmitProviderPoll(ctx context.Context, projectID st
 				slog.String("kind", string(run.Kind)),
 				slog.String("run_id", run.ID),
 				slog.String("error_category", string(schedulerErrorCategory(err))),
+				slog.String("error", redactedSchedulerError(run.Provider, err).Error()),
 				slog.Duration("elapsed", time.Since(startedAt)),
 			)
 			return
@@ -261,6 +262,7 @@ func (scheduler *Scheduler) runScheduledPoll(ctx context.Context, schedule Provi
 			slog.String("provider", string(schedule.Provider)),
 			slog.String("kind", string(kind)),
 			slog.String("error_category", string(schedulerErrorCategory(err))),
+			slog.String("error", err.Error()),
 			slog.Duration("elapsed", time.Since(startedAt)),
 		)
 		return PollRunResult{}, err
@@ -352,17 +354,36 @@ func providerSchedule(projectID string, provider Provider, polling config.Integr
 
 func nextSchedulerDelay(schedule ProviderSchedule, result PollRunResult, err error) time.Duration {
 	delay := defaultDuration(schedule.IncrementalInterval, time.Minute)
-	if err != nil || !result.Run.EmptyPoll {
+	if err != nil {
+		return idleSchedulerDelay(schedule, delay)
+	}
+	if !result.Run.EmptyPoll {
 		return delay
 	}
+	return clampSchedulerDelay(schedule, delayForIdleResult(schedule, result, delay))
+}
+
+func delayForIdleResult(schedule ProviderSchedule, result PollRunResult, fallback time.Duration) time.Duration {
 	idle := result.Run.IdleSleep
 	if idle <= 0 {
 		idle = schedule.EmptyPollSleep
 	}
+	return defaultDuration(idle, fallback)
+}
+
+func idleSchedulerDelay(schedule ProviderSchedule, fallback time.Duration) time.Duration {
+	idle := schedule.EmptyPollSleep
+	if idle <= 0 {
+		idle = fallback
+	}
+	return clampSchedulerDelay(schedule, idle)
+}
+
+func clampSchedulerDelay(schedule ProviderSchedule, idle time.Duration) time.Duration {
 	if schedule.MaxIdleSleep > 0 && idle > schedule.MaxIdleSleep {
 		idle = schedule.MaxIdleSleep
 	}
-	return defaultDuration(idle, delay)
+	return defaultDuration(idle, defaultDuration(schedule.IncrementalInterval, time.Minute))
 }
 
 func sleepContext(ctx context.Context, duration time.Duration) error {

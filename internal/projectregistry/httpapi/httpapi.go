@@ -500,10 +500,13 @@ func writeWorkspaceResult(w http.ResponseWriter, body any, err error, successSta
 		httpserver.WriteError(w, http.StatusNotFound, "not_found", "project workspace resource not found")
 		return
 	}
+	if errors.Is(err, projectworkspace.ErrGitUnavailable) {
+		httpserver.WriteError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not available in the mivia-server runtime")
+		return
+	}
 	if errors.Is(err, projectworkspace.ErrInvalidInput) ||
 		errors.Is(err, projectworkspace.ErrWorkspaceDisabled) ||
 		errors.Is(err, projectworkspace.ErrWorkspaceReadOnly) ||
-		errors.Is(err, projectworkspace.ErrGitUnavailable) ||
 		errors.Is(err, projectworkspace.ErrUnsafeContent) ||
 		errors.Is(err, projectworkspace.ErrEditTokenInvalid) ||
 		errors.Is(err, projectworkspace.ErrEditConflict) ||

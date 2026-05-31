@@ -294,12 +294,33 @@ func TestProjectWorkspaceRoutes_ReadAndEdit(t *testing.T) {
 	}
 }
 
+func TestProjectWorkspaceRoutes_GitUnavailableIsExplicit(t *testing.T) {
+	registry, digest := newRegistryDigest(t)
+	workspace := &fakeWorkspaceAPI{err: projectworkspace.ErrGitUnavailable}
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutesWithWorkspace(mux, registry, digest, nil, workspace)
+
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/workspace/git/status", nil))
+
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "git_unavailable") || !strings.Contains(res.Body.String(), "git is not available") {
+		t.Fatalf("expected explicit git unavailable error, got %s", res.Body.String())
+	}
+}
+
 type fakeWorkspaceAPI struct {
 	file projectworkspace.WorkspaceFile
 	edit projectworkspace.EditResult
+	err  error
 }
 
 func (fake *fakeWorkspaceAPI) GitStatus(context.Context, string, projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {
+	if fake.err != nil {
+		return projectworkspace.GitStatus{}, fake.err
+	}
 	return projectworkspace.GitStatus{ProjectID: "example-service"}, nil
 }
 

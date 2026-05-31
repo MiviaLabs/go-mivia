@@ -30,7 +30,7 @@ const (
 	defaultIntegrationEmptyPollSleep  = 10 * time.Minute
 	defaultIntegrationMaxIdleSleep    = 30 * time.Minute
 	defaultIntegrationOverlapWindow   = 2 * time.Minute
-	defaultIntegrationReadTimeout     = 10 * time.Second
+	defaultIntegrationReadTimeout     = 30 * time.Second
 	defaultIntegrationPageSize        = 100
 	defaultConfluencePageSize         = 50
 	defaultIntegrationMaxResults      = 0
@@ -103,6 +103,7 @@ type Ingestion struct {
 
 type Project struct {
 	ID                    string
+	Aliases               []string
 	DisplayName           string
 	Description           string
 	RootPath              string

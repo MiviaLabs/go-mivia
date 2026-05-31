@@ -120,6 +120,35 @@ func TestScheduler_NoOpIncrementalUsesReturnedIdleSleep(t *testing.T) {
 	}
 }
 
+func TestScheduler_FailedIncrementalUsesIdleBackoff(t *testing.T) {
+	project := testIntegrationProject()
+	project.Integrations.Jira.Polling.IngestionEnabled = true
+	project.Integrations.Jira.Polling.EmptyPollSleep = 5 * time.Minute
+	project.Integrations.Jira.Polling.MaxIdleSleep = 12 * time.Minute
+	project.Integrations.Confluence = nil
+	sleepCalls := make(chan time.Duration, 3)
+	runner := &schedulerFakeRunner{
+		started: make(chan schedulerPollCall, 1),
+		err:     RequestError("jira", "search"),
+	}
+	scheduler := newTestSchedulerWithSleep(t, []config.Project{project}, runner, sleepOnceThenBlock(sleepCalls))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	t.Cleanup(func() { _ = scheduler.Stop(context.Background()) })
+
+	if delay := receiveDuration(t, sleepCalls); delay != time.Minute {
+		t.Fatalf("expected first incremental interval, got %s", delay)
+	}
+	_ = receiveSchedulerCall(t, runner.started)
+	if delay := receiveDuration(t, sleepCalls); delay != 5*time.Minute {
+		t.Fatalf("expected failed poll backoff to empty_poll_sleep, got %s", delay)
+	}
+}
+
 func TestScheduler_RunProviderPollSingleFlightPreventsOverlap(t *testing.T) {
 	runner := &schedulerFakeRunner{
 		started: make(chan schedulerPollCall, 1),

@@ -522,7 +522,11 @@ func (execGitRunner) Run(ctx context.Context, root string, maxBytes int, args ..
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxDiffBytes
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, false, ErrGitUnavailable
+	}
+	commandArgs := append([]string{"-c", "safe.directory=" + root}, args...)
+	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	cmd.Dir = root
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

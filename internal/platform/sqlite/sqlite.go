@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,11 +46,17 @@ func OpenWithOptions(path string, options Options) (*DB, error) {
 			return nil, fmt.Errorf("create sqlite directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	dsn := openDSN(path, options)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	db.SetMaxOpenConns(1)
+	if path == ":memory:" {
+		db.SetMaxOpenConns(1)
+	} else {
+		db.SetMaxOpenConns(8)
+		db.SetMaxIdleConns(8)
+	}
 	if err := applyPragmas(context.Background(), db, path, options); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -109,4 +116,27 @@ func applyPragmas(ctx context.Context, db *sql.DB, path string, options Options)
 		}
 	}
 	return nil
+}
+
+func openDSN(path string, options Options) string {
+	if path == ":memory:" {
+		return path
+	}
+	values := url.Values{}
+	if options.BusyTimeout > 0 {
+		ms := options.BusyTimeout.Milliseconds()
+		if ms <= 0 {
+			ms = 1
+		}
+		values.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", ms))
+	}
+	synchronous := strings.ToUpper(strings.TrimSpace(options.Synchronous))
+	if synchronous == "" {
+		synchronous = "NORMAL"
+	}
+	values.Add("_pragma", "synchronous("+synchronous+")")
+	if options.WALEnabled {
+		values.Add("_pragma", "journal_mode(WAL)")
+	}
+	return "file:" + path + "?" + values.Encode()
 }
