@@ -241,7 +241,7 @@ func (scheduler *Scheduler) Diagnostics() SchedulerDiagnostics {
 
 func (scheduler *Scheduler) runLoop(ctx context.Context, schedule ProviderSchedule) {
 	if schedule.InitialFullSync == "on_start" {
-		_, _ = scheduler.runScheduledPoll(ctx, schedule, SyncKindInitialFull)
+		_, _ = scheduler.runScheduledPoll(ctx, schedule, "")
 	}
 	delay := schedule.IncrementalInterval
 	for {

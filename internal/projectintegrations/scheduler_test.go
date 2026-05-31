@@ -62,7 +62,7 @@ func TestScheduler_StartRunsIncrementalPollForManualInitialSync(t *testing.T) {
 	}
 }
 
-func TestScheduler_InitialFullSyncOnStartRunsInitialFullPoll(t *testing.T) {
+func TestScheduler_InitialFullSyncOnStartUsesAutoKind(t *testing.T) {
 	project := testIntegrationProject()
 	project.Integrations.Jira.Polling.IngestionEnabled = true
 	project.Integrations.Jira.Polling.InitialFullSync = "on_start"
@@ -78,8 +78,8 @@ func TestScheduler_InitialFullSyncOnStartRunsInitialFullPoll(t *testing.T) {
 	t.Cleanup(func() { _ = scheduler.Stop(context.Background()) })
 
 	call := receiveSchedulerCall(t, runner.started)
-	if call.kind != SyncKindInitialFull {
-		t.Fatalf("expected initial full poll, got %#v", call)
+	if call.kind != "" {
+		t.Fatalf("expected auto poll kind, got %#v", call)
 	}
 }
 
