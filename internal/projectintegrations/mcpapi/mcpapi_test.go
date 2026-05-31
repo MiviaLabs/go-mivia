@@ -118,6 +118,28 @@ func TestCallToolStatusIncludesActiveRunMetadata(t *testing.T) {
 	assertOmits(t, body, append(forbiddenIntegrationStrings(), "raw-provider-cursor-token", "sha256:")...)
 }
 
+func TestCallToolCountsLocalIntegrationItems(t *testing.T) {
+	store := &fakeStore{
+		itemCounts: map[projectintegrations.Provider]int{
+			projectintegrations.ProviderJira:       2251,
+			projectintegrations.ProviderConfluence: 573,
+		},
+	}
+	service := newIntegrationService(t, store)
+
+	result, err := mcpapi.CallTool(context.Background(), service, "projects.integrations.counts", json.RawMessage(`{"id":"project-1"}`))
+	if err != nil {
+		t.Fatalf("integration counts: %v", err)
+	}
+	body := mustJSON(t, result)
+	for _, expected := range []string{`"ProjectID":"project-1"`, `"Provider":"jira"`, `"Count":2251`, `"Provider":"confluence"`, `"Count":573`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in counts response: %s", expected, body)
+		}
+	}
+	assertOmits(t, body, forbiddenIntegrationStrings()...)
+}
+
 func TestCallToolPollQueuesAsyncRunAndReturnsRedactedRunMetadata(t *testing.T) {
 	runner := &fakePollRunner{
 		result: projectintegrations.PollRunResult{
@@ -458,10 +480,11 @@ func (reader *fakeRichContentReader) GetRichContentItem(_ context.Context, proje
 }
 
 type fakeStore struct {
-	sources   []projectintegrations.SourceMetadata
-	state     projectintegrations.SyncState
-	run       projectintegrations.SyncRun
-	activeRun projectintegrations.SyncRun
+	sources    []projectintegrations.SourceMetadata
+	state      projectintegrations.SyncState
+	run        projectintegrations.SyncRun
+	activeRun  projectintegrations.SyncRun
+	itemCounts map[projectintegrations.Provider]int
 }
 
 func (store *fakeStore) UpsertSource(context.Context, projectintegrations.SourceMetadataInput) (projectintegrations.SourceMetadata, error) {
@@ -491,4 +514,8 @@ func (store *fakeStore) GetActiveSyncRun(context.Context, string, projectintegra
 		return projectintegrations.SyncRun{}, projectintegrations.ErrNotFound
 	}
 	return store.activeRun, nil
+}
+
+func (store *fakeStore) CountItems(_ context.Context, _ string, provider projectintegrations.Provider) (int, error) {
+	return store.itemCounts[provider], nil
 }

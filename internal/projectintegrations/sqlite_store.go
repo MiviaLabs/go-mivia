@@ -446,6 +446,17 @@ func (store *SQLiteStore) ListItems(ctx context.Context, projectID string, provi
 	return items, nil
 }
 
+func (store *SQLiteStore) CountItems(ctx context.Context, projectID string, provider Provider) (int, error) {
+	var count int
+	err := store.db.QueryRowContext(ctx, `SELECT COUNT(*)
+	FROM project_integration_items
+	WHERE project_id = ? AND provider = ?`, projectID, string(provider)).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func sourceFromInput(input SourceMetadataInput) (SourceMetadata, error) {
 	if !validProvider(input.Provider) || strings.TrimSpace(input.ProjectID) == "" {
 		return SourceMetadata{}, ErrInvalidInput

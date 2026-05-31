@@ -14,10 +14,10 @@ When a Mivia MCP server is available for the target project, agents must use it 
 Mandatory MCP-first surfaces:
 
 - Project discovery, enabled state, digest mode, update policy, workspace mode, and graph storage.
-- Ingestion run state, live/manual freshness, skipped reason counts, and rescan status.
+- Ingestion run state, live/manual freshness, skipped reason counts, search-index degradation, repair status, and redacted ingestion diagnostics.
 - Indexed file discovery, opaque file IDs, file metadata, outlines, headings, symbols, references, call sites, and bounded chunks.
 - Governed workspace git status/diff, current eligible file reads, and token-guarded exact edits when `[workspace].enabled = true` and the project is opted in.
-- Configured Jira/Confluence integration provider listing/status, async manual poll submission/status, and local integration graph search/read.
+- Configured Jira/Confluence integration provider listing/status/counts, async manual poll submission/status, and local integration graph search/read.
 - Any task asking what the indexed project graph knows or whether local content graph ingestion is current.
 - Planning and review context that can be answered from indexed files, symbols, references, calls, headings, or chunks.
 
@@ -59,29 +59,30 @@ If unclear:
 
 ## Safe Sequence
 
-Use the smallest sequence that answers the task:
+Use the smallest sequence that answers the task. Do not call every tool by default; call the smallest MCP set that proves the answer.
 
 1. Confirm the MCP endpoint is localhost or loopback.
 2. Call `tools/list`.
-3. Call `projects.list` or `projects.get` to confirm `enabled`, `digest_mode`, `update_policy`, and `graph_storage`.
-4. Call `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, or `projects.search.ast` for routine indexed discovery before broad text scans.
-5. Call `projects.files.list`, `projects.symbols.list`, or `projects.headings.list` with small `page_size` to confirm indexed content exists and narrow to stable opaque IDs.
-6. Call `projects.ingestion_status_latest` before relying on indexed data. If the latest run is missing, failed, stale for the task, or older than current disk changes, call `projects.ingest`.
+3. Call `projects.list` to discover visible project IDs. Call `projects.get` for one chosen project to confirm `enabled`, `digest_mode`, `update_policy`, `workspace_mode`, `graph_storage`, and `validation_status`.
+4. Call `projects.ingestion_status_latest` before relying on indexed code/content if the answer depends on freshness. If the latest run is missing, failed, stale for the task, or older than current disk changes, call `projects.ingest`.
+5. Call `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, or `projects.search.ast` for routine indexed discovery before broad text scans.
+6. Call `projects.files.list`, `projects.symbols.list`, or `projects.headings.list` with small `page_size` to confirm indexed content exists and narrow to stable opaque IDs.
 7. Treat `projects.ingest` as asynchronous. It returns quickly with queued run metadata and a `run_id`; poll `projects.ingestion_status` with that `run_id` until `completed` or `failed`.
    - A `pending` or `running` run from before the current server process is an interrupted local queue entry, not active work. Current server builds fail interrupted runs on startup with `error_category=server_restarted`; restart onto a current build before trusting a long-pending zero-file run.
 8. If search metadata reports `degraded: true`, call `projects.search_index.rebuild` only when the user or task explicitly asks to repair the local search index. Treat the rebuild as asynchronous: it returns queued run metadata and a `run_id`; poll `projects.ingestion_status` with that `run_id` until `completed` or `failed` before relying on search again.
-9. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
-10. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph` for common indexed navigation. Use `projects.symbol.source` only when bounded eligible source text for one symbol is needed. Set `include_chunk_text=true` with a small `max_chunk_bytes` when eligible file source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
-11. For configured Jira/Confluence context, call `projects.integrations.list` or `projects.integrations.status` first. Use `projects.integrations.poll` to queue a manual provider run and then poll `projects.integrations.poll_status` with the returned `run_id`; `projects.integrations.poll` is asynchronous. Use `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get` only for already-ingested local graph content. Search/read tools do not call Atlassian or resolve credentials.
-12. Switch to Serena or another semantic tool only if MCP cannot answer the required symbol body, reference, call, or edit-planning question.
+9. Call `projects.diagnostics.ingestion` when ingestion, watcher, scheduler, or search-index behavior looks inconsistent. It is diagnostics-only and redacted; do not use it as a substitute for tests or logs.
+10. Call `projects.files.get` when you need one file's bounded metadata by opaque `file_id`.
+11. Call `projects.file.outline` first when file structure is enough. Use `kind`, `name_prefix`, `symbol_page_size`, and `symbol_page_token` to keep large symbol maps bounded. Use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph` for common indexed navigation. Use `projects.symbol.source` only when bounded eligible source text for one symbol is needed. Set `include_chunk_text=true` with a small `max_chunk_bytes` when eligible file source context is needed directly in the outline. Call `projects.file.chunks` when separate chunk paging is needed.
+12. For configured Jira/Confluence context, call `projects.integrations.list` first. Use `projects.integrations.status` for provider config/sync state, `projects.integrations.counts` for total locally ingested items by provider, `projects.integrations.poll` to queue a manual provider run, and `projects.integrations.poll_status` with the returned `run_id` to watch that run. Use `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get` only for already-ingested local graph content. Search/read/count tools do not call Atlassian or resolve credentials.
 13. For opted-in workspaces, use `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, and `projects.workspace.file_edit` before shell for status, diff, eligible current file reads, and exact edits. `file_edit` requires the opaque token from a current file read and queues path ingestion after successful non-dry-run edits.
-14. Switch to shell for tests, builds, logs, generated files, process control, arbitrary commands, and non-opted-in repos. For edited indexed files, rely on live ingestion as the normal freshness path and poll latest ingestion status when search results look unexpected.
+14. Switch to Serena or another semantic tool only if MCP cannot answer the required symbol body, reference, call, or edit-planning question.
+15. Switch to shell for tests, builds, logs, generated files, process control, arbitrary commands, and non-opted-in repos. For edited indexed files, rely on live ingestion as the normal freshness path and poll latest ingestion status when search results look unexpected.
 
 If MCP is down, the project is not listed, or live ingestion cannot provide current indexed context, say so and fall back to Serena or another semantic tool plus shell. Do not invent MCP facts.
 
 ## Tools
 
-Use dotted names when available. Codex-style underscore aliases are accepted by the server.
+Use dotted names when available. Codex-style underscore aliases are accepted by the server for tool calls. If a tool is absent from `tools/list`, treat it as unavailable in that running server build even if this skill documents it.
 
 | Purpose | Tools |
 | --- | --- |
@@ -91,7 +92,51 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Metadata digest | `projects.digest` |
 | Content graph | `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline` |
 | Governed workspace | `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit` plus underscore aliases |
-| Project integrations | `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get` |
+| Diagnostics | `projects.diagnostics.ingestion` |
+| Project integrations | `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.counts`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get` |
+
+### Tool Use Notes
+
+- `tasks.create` / `tasks.get`: local agent task metadata only. Do not use for project implementation plans unless the repository asks for MCP task records.
+- `research_runs.create` / `research_runs.get` and `research_sources.create` / `research_sources.get`: redacted research metadata only. They do not fetch providers and must not contain raw source content, prompts, secrets, or personal data.
+- `projects.list`: first project-discovery call. Returns configured project metadata without root paths.
+- `projects.get`: use before project-specific work to confirm the selected project is enabled and validate content/workspace modes.
+- `projects.digest`: metadata-only digest for projects that support digest mode. Content-graph projects may reject this as unsupported; use ingestion/search tools instead.
+- `projects.ingest`: queue bounded content-graph ingestion. Always poll with `projects.ingestion_status`.
+- `projects.search_index.rebuild`: repair degraded local search index only when asked or when degradation blocks the task. Always poll with `projects.ingestion_status`.
+- `projects.ingestion_status`: read one ingestion/rebuild run by `run_id`.
+- `projects.ingestion_status_latest`: freshness check before relying on indexed data.
+- `projects.files.list`: discover eligible indexed files with filters such as path/status/extension and a small `page_size`.
+- `projects.files.get`: fetch one file metadata record by opaque `file_id`.
+- `projects.file.chunks`: page bounded chunk text for one eligible file. Keep `max_chunk_bytes` small.
+- `projects.file.outline`: preferred first read for one file's structure; use it before chunk text when symbols/headings are enough.
+- `projects.symbols.list`: list bounded symbol metadata; filter by `kind`, `package`, `name_prefix`, `name_contains`, `receiver`, `file_id`, and page tokens.
+- `projects.search.text`: literal indexed text search. Use for known strings, error names, config keys, or prose.
+- `projects.search.files`: indexed file metadata search by safe project-relative path. Use before file list when you know part of a path.
+- `projects.search.symbols`: symbol search by prefix/substr. Use before references/call graph when you need stable symbol IDs.
+- `projects.search.references`: indexed reference metadata search by name/target/enclosing symbol.
+- `projects.search.calls`: indexed call edge search by caller/callee names.
+- `projects.search.ast.queries`: list available named AST query IDs and safe coverage before AST search.
+- `projects.search.ast`: run only named AST queries from the catalog; never send raw Tree-sitter query text.
+- `projects.symbol.source`: bounded source for one eligible symbol. Use only after selecting a stable symbol ID.
+- `projects.symbol.references`: references resolving to one symbol ID.
+- `projects.symbol.callers`: direct callers for one symbol ID.
+- `projects.symbol.callees`: direct callees for one symbol ID.
+- `projects.symbol.call_graph`: bounded traversal around one symbol ID; set depth/limits conservatively.
+- `projects.headings.list`: Markdown/document heading metadata. Use for docs discovery before broad text reads.
+- `projects.workspace.git_status`: governed git status for opted-in workspaces. Prefer before shell `git status` when available.
+- `projects.workspace.git_diff`: governed capped diff for opted-in workspaces. Prefer before shell `git diff` when available.
+- `projects.workspace.file_read`: current eligible file content plus edit token. Required before `projects.workspace.file_edit`.
+- `projects.workspace.file_edit`: exact token-guarded edit only. Do not use for broad rewrites, generated files, or arbitrary patches.
+- `projects.diagnostics.ingestion`: redacted scheduler/watcher/runtime/storage diagnostics. Use when ingestion/search behavior is suspect; switch to logs only if runtime proof is required.
+- `projects.integrations.list`: discover configured Jira/Confluence providers and redacted config metadata for one project.
+- `projects.integrations.status`: provider sync state, last/active run metadata, polling config, and cursor presence only.
+- `projects.integrations.counts`: total locally ingested item counts by configured provider, currently Jira issues and Confluence pages/items. Counts are local-store counts, not live provider totals.
+- `projects.integrations.poll`: queue manual local integration polling. This may call Atlassian Cloud in the background using configured credentials; response remains redacted.
+- `projects.integrations.poll_status`: fetch one local poll run by `run_id`.
+- `projects.integrations.search`: search already-ingested local Jira/Confluence chunks only.
+- `projects.jira.issue.get`: read one locally ingested Jira issue by key or ID with bounded chunks.
+- `projects.confluence.page.get`: read one locally ingested Confluence page by page ID with bounded chunks.
 
 ## Indexed Metadata Contract
 
@@ -115,6 +160,8 @@ Resources:
 - `mivialabs://projects/{id}/files/{file_id}/chunks/{chunk_id}`
 - `mivialabs://projects/{id}/files/{file_id}/outline`
 - `mivialabs://projects/{id}/symbols/{symbol_id}`
+
+Read resources only when a resource URI is already known and a template exactly matches the target. Prefer tools for discovery, pagination, status, search, counts, and writes.
 
 ## Workspace Boundary
 
@@ -160,6 +207,13 @@ Stop and report the blocked condition if the workflow requires any of those.
 ## Project Integration Boundary
 
 Project integration tools cover configured Jira Cloud and Confluence Cloud providers only. They are local, polling-backed, and configured per project. Status responses are redacted and must omit raw site URLs, raw allowlists, env var names, file paths, credentials, auth headers, local roots, raw provider payloads, and raw cursor values.
+
+Counts:
+
+- `projects.integrations.counts` accepts `id` only.
+- It returns local item counts for configured providers only.
+- A zero count means no local items currently match that project/provider in the local integration store; it does not prove the remote provider has zero items.
+- Counts are read-only and do not call Jira, Confluence, or credential providers.
 
 Polling:
 

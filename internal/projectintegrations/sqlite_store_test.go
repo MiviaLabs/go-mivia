@@ -180,6 +180,34 @@ func TestSQLiteStore_UpsertItemStoresApprovedRawIDsAndHashesWithoutRichContent(t
 	assertTableOmits(t, db, "project_integration_items", "page body", "comment text", "MIVIA_ATLASSIAN", "/home/mac/secret", "api-token")
 }
 
+func TestSQLiteStore_CountItemsByProjectAndProvider(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t)
+	inputs := []ItemMetadataInput{
+		{ProjectID: "project-1", Provider: ProviderJira, ItemID: "10001", ItemKey: "ACME-1", ItemType: "issue", FirstSeenAt: testTime(), LastSeenAt: testTime()},
+		{ProjectID: "project-1", Provider: ProviderJira, ItemID: "10002", ItemKey: "ACME-2", ItemType: "issue", FirstSeenAt: testTime(), LastSeenAt: testTime()},
+		{ProjectID: "project-1", Provider: ProviderConfluence, ItemID: "20001", ItemType: "page", FirstSeenAt: testTime(), LastSeenAt: testTime()},
+		{ProjectID: "project-2", Provider: ProviderJira, ItemID: "30001", ItemKey: "OTHER-1", ItemType: "issue", FirstSeenAt: testTime(), LastSeenAt: testTime()},
+	}
+	for _, input := range inputs {
+		if _, err := store.UpsertItem(ctx, input); err != nil {
+			t.Fatalf("upsert item %#v: %v", input, err)
+		}
+	}
+
+	jiraCount, err := store.CountItems(ctx, "project-1", ProviderJira)
+	if err != nil {
+		t.Fatalf("count jira: %v", err)
+	}
+	confluenceCount, err := store.CountItems(ctx, "project-1", ProviderConfluence)
+	if err != nil {
+		t.Fatalf("count confluence: %v", err)
+	}
+	if jiraCount != 2 || confluenceCount != 1 {
+		t.Fatalf("unexpected counts: jira=%d confluence=%d", jiraCount, confluenceCount)
+	}
+}
+
 func TestSQLiteStore_UpsertItemReportsUnchangedContent(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newTestSQLiteStore(t)

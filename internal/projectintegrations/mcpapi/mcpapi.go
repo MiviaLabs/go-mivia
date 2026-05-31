@@ -32,6 +32,14 @@ func ToolDefinitions() []map[string]any {
 			}, []string{"id", "provider"}),
 		},
 		{
+			"name":        "projects.integrations.counts",
+			"title":       "Get Project Integration Item Counts",
+			"description": "Count locally ingested Jira issues and Confluence pages/items for one configured project. Does not call remote providers or expose content.",
+			"inputSchema": objectSchema(map[string]any{
+				"id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id"}),
+		},
+		{
 			"name":        "projects.integrations.poll",
 			"title":       "Run Project Integration Poll",
 			"description": "Queue one manual provider poll and return redacted pending run metadata only.",
@@ -121,6 +129,19 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			return nil, err
 		}
 		return toolResult(status), nil
+	case "projects.integrations.counts", "projects_integrations_counts":
+		var input struct {
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid integration arguments", projectintegrations.ErrInvalidInput)
+		}
+		counts, err := service.Counts(ctx, strings.TrimSpace(input.ID))
+		if err != nil {
+			return nil, err
+		}
+		return toolResult(counts), nil
 	case "projects.integrations.poll", "projects_integrations_poll":
 		var input struct {
 			ID       string          `json:"id"`

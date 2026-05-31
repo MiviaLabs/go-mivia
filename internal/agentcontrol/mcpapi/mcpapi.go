@@ -258,6 +258,7 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		return projectmcpapi.CallToolWithWorkspaceAndDiagnostics(r.Context(), handler.projects, handler.projectDigest, handler.projectIngest, handler.projectWork, handler.diagnostics, params.Name, params.Arguments)
 	case "projects.integrations.list", "projects_integrations_list",
 		"projects.integrations.status", "projects_integrations_status",
+		"projects.integrations.counts", "projects_integrations_counts",
 		"projects.integrations.poll", "projects_integrations_poll",
 		"projects.integrations.poll_status", "projects_integrations_poll_status",
 		"projects.integrations.search", "projects_integrations_search",

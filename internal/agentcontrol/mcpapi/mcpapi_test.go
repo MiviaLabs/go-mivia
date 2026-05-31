@@ -187,6 +187,7 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.list"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.status"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.counts"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.poll"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.poll_status"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.integrations.search"`)) ||
@@ -217,6 +218,14 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 	}
 	if !bytes.Contains(status.Body.Bytes(), []byte(`"CursorHashPresent":true`)) || !bytes.Contains(status.Body.Bytes(), []byte(`"Status":"no_op"`)) {
 		t.Fatalf("expected sync state and run status, got %s", status.Body.String())
+	}
+
+	counts := postMCP(t, handler, `{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"projects.integrations.counts","arguments":{"id":"project-1"}}}`)
+	if bytes.Contains(counts.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected counts success, got %s", counts.Body.String())
+	}
+	if !bytes.Contains(counts.Body.Bytes(), []byte(`"Provider":"jira"`)) || !bytes.Contains(counts.Body.Bytes(), []byte(`"Provider":"confluence"`)) || !bytes.Contains(counts.Body.Bytes(), []byte(`"Count":0`)) {
+		t.Fatalf("expected redacted counts response, got %s", counts.Body.String())
 	}
 
 	poll := postMCP(t, handler, `{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"projects.integrations.poll","arguments":{"id":"project-1","provider":"jira","kind":"incremental"}}}`)
@@ -253,6 +262,7 @@ func TestProjectIntegrationMCPToolsListAndStatusAreRedacted(t *testing.T) {
 	} {
 		if bytes.Contains(status.Body.Bytes(), []byte(forbidden)) ||
 			bytes.Contains(providers.Body.Bytes(), []byte(forbidden)) ||
+			bytes.Contains(counts.Body.Bytes(), []byte(forbidden)) ||
 			bytes.Contains(poll.Body.Bytes(), []byte(forbidden)) ||
 			bytes.Contains(pollStatus.Body.Bytes(), []byte(forbidden)) {
 			t.Fatalf("integration MCP response leaked %q: providers=%s status=%s poll=%s poll_status=%s", forbidden, providers.Body.String(), status.Body.String(), poll.Body.String(), pollStatus.Body.String())

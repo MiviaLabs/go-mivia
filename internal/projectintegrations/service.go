@@ -17,6 +17,10 @@ type Store interface {
 	GetSyncRun(context.Context, string, Provider, string) (SyncRun, error)
 }
 
+type ItemCountStore interface {
+	CountItems(context.Context, string, Provider) (int, error)
+}
+
 type ActiveSyncRunStore interface {
 	GetActiveSyncRun(context.Context, string, Provider) (SyncRun, error)
 }
@@ -126,6 +130,17 @@ type ProviderPollAccepted struct {
 	Provider  Provider
 	Accepted  bool
 	Run       SyncRunStatusView
+}
+
+type ProviderItemCount struct {
+	ProjectID string
+	Provider  Provider
+	Count     int
+}
+
+type ProjectIntegrationCounts struct {
+	ProjectID string
+	Counts    []ProviderItemCount
 }
 
 type LocalSearchInput struct {
@@ -343,6 +358,38 @@ func (service *Service) PollRunStatus(ctx context.Context, projectID string, pro
 		return ProviderPollStatus{}, err
 	}
 	return status, nil
+}
+
+func (service *Service) Counts(ctx context.Context, projectID string) (ProjectIntegrationCounts, error) {
+	if service == nil {
+		return ProjectIntegrationCounts{}, fmt.Errorf("%w: service is nil", ErrInvalidInput)
+	}
+	if service.store == nil {
+		return ProjectIntegrationCounts{}, fmt.Errorf("%w: integration store unavailable", ErrNotFound)
+	}
+	countStore, ok := service.store.(ItemCountStore)
+	if !ok {
+		return ProjectIntegrationCounts{}, fmt.Errorf("%w: integration count store unavailable", ErrNotFound)
+	}
+	project, err := service.project(projectID)
+	if err != nil {
+		return ProjectIntegrationCounts{}, err
+	}
+	var counts []ProviderItemCount
+	for _, provider := range []Provider{ProviderJira, ProviderConfluence} {
+		if _, err := providerStatusConfig(project, provider); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return ProjectIntegrationCounts{}, err
+		}
+		count, err := countStore.CountItems(ctx, project.ID, provider)
+		if err != nil {
+			return ProjectIntegrationCounts{}, err
+		}
+		counts = append(counts, ProviderItemCount{ProjectID: project.ID, Provider: provider, Count: count})
+	}
+	return ProjectIntegrationCounts{ProjectID: project.ID, Counts: counts}, nil
 }
 
 func (service *Service) SearchLocalContent(ctx context.Context, input LocalSearchInput) ([]RichContentSearchResult, error) {
