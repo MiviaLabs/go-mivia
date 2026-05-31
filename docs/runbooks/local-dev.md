@@ -9,6 +9,7 @@ Classification: Internal; no PII
 - Go `1.26.3`
 - `make`
 - `curl`
+- Optional Docker path: Docker Desktop for Windows with WSL 2 integration enabled for the Ubuntu distro
 - Optional: `gitleaks`
 - Optional gated native path: LadybugDB native libraries through `scripts/ladybug-libs.sh`
 
@@ -42,6 +43,20 @@ Use Docker Compose when Docker is available but Go is not installed on the host:
 docker compose up
 ```
 
+Use the modern plugin command `docker compose`, not the legacy `docker-compose` binary. If WSL prints `docker-compose: command not found` or says to activate WSL integration:
+
+1. Install and start Docker Desktop for Windows.
+2. Docker Desktop -> Settings -> General -> enable `Use the WSL 2 based engine`.
+3. Docker Desktop -> Settings -> Resources -> WSL Integration -> enable integration for `Ubuntu`.
+4. In WSL, verify:
+
+```sh
+docker version
+docker compose version
+```
+
+Official setup reference: [Docker Desktop WSL 2 backend](https://docs.docker.com/desktop/features/wsl/).
+
 The default Compose file builds from this checkout. After the first public image is published, the Compose file includes a commented pull example:
 
 ```yaml
@@ -55,10 +70,11 @@ Defaults:
 - Host bind: `MIVIA_HOST_BIND=127.0.0.1`
 - Host port: `MIVIA_HOST_PORT=8080`
 - Content graph ingestion: `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true`
-- Live updates: `MIVIA_INGESTION_LIVE_UPDATES_ENABLED=false`
+- Live updates: `MIVIA_INGESTION_LIVE_UPDATES_ENABLED=true`
 - Global workspace gate: `MIVIA_WORKSPACE_ENABLED=true`
 - Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`
 - Container storage: named Compose volume `mivia-data`
+- Config file: `configs/mivia-server.compose.toml`
 
 Change the published host address or port from the host environment:
 
@@ -68,7 +84,15 @@ MIVIA_HOST_BIND=127.0.0.1 MIVIA_HOST_PORT=18080 docker compose up
 
 `MIVIA_HOST_BIND=0.0.0.0` publishes beyond loopback. Use it only for approved local-only network exposure; the server has no production authn/authz posture. The container still runs `mivia-server` on internal loopback and forwards container port `8080` for Docker publishing.
 
-The default Compose file mounts `./configs` read-only. Mount `./secrets` only in a local override when an approved ignored config references credential files.
+The default Compose file mounts only `configs/mivia-server.compose.toml`. It does not mount ignored local config or secret files, so project roots, project names, Jira/Confluence URLs, and credential refs are not loaded accidentally.
+
+For this checkout, an ignored `.docker-compose.local.yml` may be used to mount an ignored local config, credential file, and the project roots referenced by that config:
+
+```sh
+docker compose -f docker-compose.yml -f .docker-compose.local.yml up
+```
+
+Use the commented local override template at the bottom of `docker-compose.yml`, copy it into `.docker-compose.local.yml`, and replace only placeholder paths.
 
 Workspace access still requires a configured project with `workspace_mode = "read_only"` or `"edit"`. Leave project `workspace_mode = "disabled"` for projects that must not expose governed git status/diff/read/edit tools.
 

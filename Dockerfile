@@ -9,7 +9,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mivia-server ./cmd/mivia-server
+    CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-server ./cmd/mivia-server
 
 FROM debian:bookworm-20260518-slim AS runtime
 

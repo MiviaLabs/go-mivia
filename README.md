@@ -344,7 +344,13 @@ MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug
 MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite
 ```
 
-Override `MIVIA_HOST_BIND`, `MIVIA_HOST_PORT`, `MIVIA_LADYBUG_PATH`, `MIVIA_SQLITE_PATH`, and feature flags from the host environment when needed. Compose enables content graph ingestion and the global workspace gate by default with `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true` and `MIVIA_WORKSPACE_ENABLED=true`; live updates remain disabled unless explicitly enabled. Per-project `workspace_mode` still controls whether a configured project exposes workspace tools. The default Compose file mounts `./configs` read-only at `/app/configs`. Mount `./secrets` only in a local override when an approved local config references credential files; keep real local config and secret files ignored.
+Override `MIVIA_HOST_BIND`, `MIVIA_HOST_PORT`, and feature flags from the host environment when needed. Compose loads `configs/mivia-server.compose.toml`, which mirrors the local global runtime defaults without project roots, project names, Jira/Confluence URLs, or credential refs. It enables content graph ingestion, live updates, diagnostics, runtime metrics, and the global workspace gate by default. Per-project `workspace_mode` still controls whether a configured project exposes workspace tools. Mount ignored local configs or secrets only in an ignored `.docker-compose.local.yml` override when needed.
+
+To run with an ignored local config and local credential file:
+
+```sh
+docker compose -f docker-compose.yml -f .docker-compose.local.yml up
+```
 
 ## Codex Desktop MCP
 

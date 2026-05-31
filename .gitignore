@@ -10,6 +10,7 @@ configs/*.local.toml
 configs/*.local.json
 local-atlassian-credentials.json
 *.credentials.local.json
+.docker-compose.local.yml
 
 # Go build and test output
 /bin/

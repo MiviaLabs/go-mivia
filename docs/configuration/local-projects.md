@@ -69,7 +69,17 @@ Docker Compose also reads host-side publishing overrides that are not server con
 
 Keep `MIVIA_HOST_BIND=127.0.0.1` unless an approved local-only exposure requires a different host bind. The Compose image keeps `mivia-server` bound to container loopback and forwards container port `8080` for Docker publishing.
 
-Compose enables content graph ingestion and the global workspace gate by default with `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true` and `MIVIA_WORKSPACE_ENABLED=true`. Live updates remain disabled by default. Workspace tools still require each project to opt in with `workspace_mode = "read_only"` or `"edit"`.
+Compose loads [configs/mivia-server.compose.toml](../../configs/mivia-server.compose.toml). That file mirrors the local global runtime defaults without project roots, project names, Jira/Confluence URLs, or credential refs. It enables content graph ingestion, live updates, diagnostics, runtime metrics, and the global workspace gate by default. Workspace tools still require each project to opt in with `workspace_mode = "read_only"` or `"edit"`.
+
+Use ignored `.docker-compose.local.yml` only when the container must load ignored local project config or credential files:
+
+```sh
+docker compose -f docker-compose.yml -f .docker-compose.local.yml up
+```
+
+Keep `.docker-compose.local.yml`, `configs/*.local.toml`, and real files under `secrets/` uncommitted.
+
+The commented local override template at the bottom of `docker-compose.yml` shows the required mounts with placeholder paths only.
 
 The default Compose path builds locally. For the future public release, `docker-compose.yml` carries a commented image example using a container registry tag:
 

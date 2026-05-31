@@ -1,0 +1,55 @@
+# Compose-safe runtime config.
+# Mirrors the local server runtime defaults without project roots, project names,
+# Jira/Confluence URLs, credential refs, secrets, tokens, PII, raw prompts, raw
+# source content, provider payloads, or personal data.
+
+version = 1
+
+[server]
+http_addr = "127.0.0.1:8080"
+cpu_count = "auto"
+max_request_bytes = 1048576
+request_timeout = "10s"
+read_header_timeout = "5s"
+shutdown_timeout = "10s"
+
+[storage]
+ladybug_path = "/var/lib/mivia/mivialabs.lbug"
+sqlite_path = "/var/lib/mivia/mivialabs-config.sqlite"
+
+[sqlite]
+wal_enabled = true
+busy_timeout = "5s"
+synchronous = "NORMAL"
+checkpoint_after_ingestion = true
+
+[debug]
+enabled = true
+pprof_enabled = false
+expvar_enabled = false
+runtime_metrics_enabled = true
+
+[logging]
+file_enabled = false
+
+[ingestion]
+content_graph_enabled = true
+live_updates_enabled = true
+ast_extraction_enabled = true
+extractor_cache_enabled = true
+debounce_interval = "2s"
+max_file_bytes = 0
+max_chunk_bytes = 16384
+queue_depth = 128
+worker_count = "auto"
+global_worker_count = "auto"
+per_project_worker_limit = "auto"
+live_path_priority = true
+full_scan_batch_size = 500
+max_watched_directory_count = 0
+task_warn_after = "30s"
+initial_scan_on_start = true
+sensitive_marker_policy = "skip_file"
+
+[workspace]
+enabled = true
