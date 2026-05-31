@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -14,6 +15,8 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
+
+const workspaceGitStatusTimeout = 2 * time.Second
 
 func RegisterRoutes(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService) {
 	RegisterRoutesWithIngestion(mux, registry, digest, nil)
@@ -458,7 +461,9 @@ func workspaceGitStatusHandler(workspace projectworkspace.API) http.Handler {
 			writeWorkspaceResult(w, nil, err, http.StatusOK)
 			return
 		}
-		status, err := workspace.GitStatus(r.Context(), strings.TrimSpace(r.PathValue("id")), projectworkspace.GitStatusOptions{
+		statusCtx, cancelStatus := context.WithTimeout(r.Context(), workspaceGitStatusTimeout)
+		defer cancelStatus()
+		status, err := workspace.GitStatus(statusCtx, strings.TrimSpace(r.PathValue("id")), projectworkspace.GitStatusOptions{
 			IncludeUntracked: includeUntracked,
 			PathPrefix:       r.URL.Query().Get("path_prefix"),
 			PageSize:         pageSize,
@@ -588,6 +593,10 @@ func writeWorkspaceResult(w http.ResponseWriter, body any, err error, successSta
 	}
 	if errors.Is(err, projectworkspace.ErrGitUnavailable) {
 		httpserver.WriteError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not available in the mivia-server runtime")
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		httpserver.WriteError(w, http.StatusGatewayTimeout, "workspace_timeout", "project workspace request timed out")
 		return
 	}
 	if errors.Is(err, projectworkspace.ErrInvalidInput) ||

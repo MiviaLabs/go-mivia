@@ -65,7 +65,11 @@ func Recover(logger *slog.Logger) Middleware {
 
 func Timeout(timeout time.Duration) Middleware {
 	return func(next http.Handler) http.Handler {
-		return http.TimeoutHandler(next, timeout, `{"error":{"code":"timeout","message":"request timed out"}}`)
+		timeoutHandler := http.TimeoutHandler(next, timeout, `{"error":{"code":"timeout","message":"request timed out"}}`)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			timeoutHandler.ServeHTTP(w, r)
+		})
 	}
 }
 

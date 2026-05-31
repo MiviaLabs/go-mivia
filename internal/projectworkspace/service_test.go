@@ -55,6 +55,19 @@ func TestWorkspaceService_ReadEditAndQueueIngestion(t *testing.T) {
 	}
 }
 
+func TestWorkspaceService_GitStatusPreservesContextTimeout(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "cmd/main.go", "package main\n")
+	registry := newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly)
+	svc := NewService(registry, nil, Options{Enabled: true})
+	svc.SetGitRunner(contextErrorGitRunner{err: context.DeadlineExceeded})
+
+	_, err := svc.GitStatus(context.Background(), "example-service", GitStatusOptions{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline, got %v", err)
+	}
+}
+
 func TestWorkspaceService_RejectsReadOnlyAndStaleToken(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package main\n")
@@ -267,6 +280,14 @@ func newWorkspaceRegistryWithInclude(t *testing.T, root string, mode string, inc
 type fakeWorkspaceIngestion struct {
 	runID string
 	path  string
+}
+
+type contextErrorGitRunner struct {
+	err error
+}
+
+func (runner contextErrorGitRunner) Run(context.Context, string, int, ...string) ([]byte, bool, error) {
+	return nil, false, runner.err
 }
 
 type recordingGitRunner struct {

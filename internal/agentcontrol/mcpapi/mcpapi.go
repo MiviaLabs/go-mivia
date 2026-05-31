@@ -2,6 +2,7 @@ package mcpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -421,6 +422,10 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 	}
 	if errors.Is(err, projectworkspace.ErrGitUnavailable) {
 		writeJSONRPCError(w, id, -32603, "git is not available in the mivia-server runtime")
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		writeJSONRPCError(w, id, -32603, "tool timed out")
 		return
 	}
 	if errors.Is(err, projectworkspace.ErrInvalidInput) ||

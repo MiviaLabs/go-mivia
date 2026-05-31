@@ -18,6 +18,8 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
+const workspaceGitStatusTimeout = 2 * time.Second
+
 func ToolDefinitions() []map[string]any {
 	return ToolDefinitionsWithIngestion(false)
 }
@@ -749,7 +751,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if input.IncludeUntracked != nil {
 			includeUntracked = *input.IncludeUntracked
 		}
-		status, err := workspace.GitStatus(ctx, strings.TrimSpace(input.ID), projectworkspace.GitStatusOptions{
+		statusCtx, cancelStatus := context.WithTimeout(ctx, workspaceGitStatusTimeout)
+		defer cancelStatus()
+		status, err := workspace.GitStatus(statusCtx, strings.TrimSpace(input.ID), projectworkspace.GitStatusOptions{
 			IncludeUntracked: includeUntracked,
 			PathPrefix:       input.PathPrefix,
 			PageSize:         input.PageSize,
