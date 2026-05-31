@@ -18,6 +18,10 @@ func NewPoller(client Client) Poller {
 }
 
 func (poller Poller) PollJira(ctx context.Context, credentials projectintegrations.Credentials, plan projectintegrations.JiraQueryPlan) (projectintegrations.PollResult, error) {
+	return poller.PollJiraWithProgress(ctx, credentials, plan, nil)
+}
+
+func (poller Poller) PollJiraWithProgress(ctx context.Context, credentials projectintegrations.Credentials, plan projectintegrations.JiraQueryPlan, progress projectintegrations.PollProgressFunc) (projectintegrations.PollResult, error) {
 	if plan.Provider != projectintegrations.ProviderJira || strings.TrimSpace(plan.JQL) == "" {
 		return projectintegrations.PollResult{}, projectintegrations.ErrInvalidInput
 	}
@@ -46,6 +50,11 @@ func (poller Poller) PollJira(ctx context.Context, credentials projectintegratio
 				return projectintegrations.PollResult{}, projectintegrations.DecodeError(provider, "extract_issue_metadata")
 			}
 			items = append(items, item)
+			if progress != nil {
+				if err := progress(ctx, projectintegrations.PollProgress{ItemsSeen: len(items)}); err != nil {
+					return projectintegrations.PollResult{}, err
+				}
+			}
 			if shouldExtractRichContent(plan) {
 				payload, err := richContentFromIssue(plan, raw)
 				if err != nil {

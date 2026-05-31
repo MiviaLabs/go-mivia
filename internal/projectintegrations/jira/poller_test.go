@@ -128,6 +128,37 @@ func TestPoller_PollJiraEmitsRichContentOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestPoller_PollJiraReportsProgressWhileProcessingPages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		_, _ = w.Write([]byte(`{"issues":[
+			{"id":"10001","key":"ACME-1","fields":{"updated":"2026-05-31T10:00:00.000+0000","status":{"name":"Open"},"issuetype":{"name":"Task"}}},
+			{"id":"10002","key":"ACME-2","fields":{"updated":"2026-05-31T10:01:00.000+0000","status":{"name":"Done"},"issuetype":{"name":"Bug"}}}
+		]}`))
+	}))
+	defer server.Close()
+
+	var progress []int
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollJiraWithProgress(context.Background(), testCredentials(), projectintegrations.JiraQueryPlan{
+		ProjectID:  "project-1",
+		Provider:   projectintegrations.ProviderJira,
+		Kind:       projectintegrations.SyncKindInitialFull,
+		JQL:        "project in (ACME)",
+		PageSize:   2,
+		MaxResults: 2,
+	}, func(_ context.Context, update projectintegrations.PollProgress) error {
+		progress = append(progress, update.ItemsSeen)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("poll jira: %v", err)
+	}
+	if len(result.Items) != 2 || len(progress) != 2 || progress[0] != 1 || progress[1] != 2 {
+		t.Fatalf("expected per-item progress, result=%#v progress=%#v", result.Items, progress)
+	}
+}
+
 func TestPoller_PollJiraMalformedIssueReturnsRedactedDecodeError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertBasicAuth(t, r)

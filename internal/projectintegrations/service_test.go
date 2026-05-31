@@ -321,6 +321,62 @@ func TestService_StatusIncludesSyncStateAndLastRunWithoutRawCursor(t *testing.T)
 	assertOmits(t, mustJSON(t, status), "raw-provider-cursor-token", "sha256:")
 }
 
+func TestService_StatusPrefersActiveRunOverLastCompletedState(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t)
+	service := newTestService(t, store, testIntegrationProject())
+	completed := SyncRun{
+		ID:            "run-completed",
+		ProjectID:     "project-1",
+		Provider:      ProviderJira,
+		Kind:          SyncKindIncremental,
+		Status:        SyncRunStatusCompleted,
+		ItemsSeen:     10,
+		ItemsUpserted: 10,
+		StartedAt:     testTime().Add(-2 * time.Hour),
+		FinishedAt:    testTime().Add(-time.Hour),
+	}
+	if err := store.CreateSyncRun(ctx, completed); err != nil {
+		t.Fatalf("create completed run: %v", err)
+	}
+	if _, err := store.UpdateSyncState(ctx, SyncStateInput{
+		ProjectID:           "project-1",
+		Provider:            ProviderJira,
+		LastRunID:           completed.ID,
+		LastSuccessfulRunID: completed.ID,
+		LastSuccessAt:       completed.FinishedAt,
+		Cursor:              "raw-provider-cursor-token",
+		UpdatedAt:           completed.FinishedAt,
+	}); err != nil {
+		t.Fatalf("update sync state: %v", err)
+	}
+	active := SyncRun{
+		ID:            "run-active",
+		ProjectID:     "project-1",
+		Provider:      ProviderJira,
+		Kind:          SyncKindInitialFull,
+		Status:        SyncRunStatusRunning,
+		ItemsSeen:     3,
+		ItemsUpserted: 3,
+		StartedAt:     testTime(),
+	}
+	if err := store.CreateSyncRun(ctx, active); err != nil {
+		t.Fatalf("create active run: %v", err)
+	}
+
+	status, err := service.Status(ctx, "project-1", ProviderJira)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.LastRun == nil || status.LastRun.ID != active.ID || status.LastRun.Status != SyncRunStatusRunning || status.LastRun.ItemsSeen != 3 {
+		t.Fatalf("expected active run status, got %#v", status.LastRun)
+	}
+	if status.SyncState == nil || status.SyncState.LastRunID != completed.ID || !status.SyncState.CursorHashPresent {
+		t.Fatalf("expected prior completed sync state to remain visible, got %#v", status.SyncState)
+	}
+	assertOmits(t, mustJSON(t, status), "raw-provider-cursor-token", "sha256:", "tenant.atlassian.net", "ACME", "/home/mac")
+}
+
 func TestService_MissingProjectAndProviderErrorsAreStableAndRedacted(t *testing.T) {
 	service := newTestService(t, nil, testIntegrationProject())
 

@@ -33,6 +33,14 @@ type ConfluencePoller interface {
 	PollConfluence(context.Context, Credentials, ConfluenceQueryPlan) (PollResult, error)
 }
 
+type JiraProgressPoller interface {
+	PollJiraWithProgress(context.Context, Credentials, JiraQueryPlan, PollProgressFunc) (PollResult, error)
+}
+
+type ConfluenceProgressPoller interface {
+	PollConfluenceWithProgress(context.Context, Credentials, ConfluenceQueryPlan, PollProgressFunc) (PollResult, error)
+}
+
 type Planner struct {
 	Jira       func(JiraPlanInput) (JiraQueryPlan, error)
 	Confluence func(ConfluencePlanInput) (ConfluenceQueryPlan, error)
@@ -69,6 +77,12 @@ type PollItem struct {
 	Status    string
 	UpdatedAt time.Time
 }
+
+type PollProgress struct {
+	ItemsSeen int
+}
+
+type PollProgressFunc func(context.Context, PollProgress) error
 
 type PollResult struct {
 	Items       []PollItem
@@ -197,7 +211,14 @@ func (runner *Runner) ExecutePreparedProviderPoll(ctx context.Context, run SyncR
 	if err := runner.store.UpdateSyncRun(ctx, run); err != nil {
 		return PollRunResult{}, err
 	}
-	result, pollErr := runner.pollProvider(ctx, project, run.Provider, run.Kind, state)
+	progress := func(ctx context.Context, progress PollProgress) error {
+		if progress.ItemsSeen <= run.ItemsSeen {
+			return nil
+		}
+		run.ItemsSeen = progress.ItemsSeen
+		return runner.store.UpdateSyncRun(ctx, run)
+	}
+	result, pollErr := runner.pollProvider(ctx, project, run.Provider, run.Kind, state, progress)
 	finishedAt := runner.now().UTC()
 	if pollErr != nil {
 		run.Status = SyncRunStatusFailed
@@ -207,7 +228,7 @@ func (runner *Runner) ExecutePreparedProviderPoll(ctx context.Context, run SyncR
 		return PollRunResult{Run: run}, redactedPollError(run.Provider, run.ErrorCategory)
 	}
 	run.ItemsSeen = len(result.Items)
-	upserted, err := runner.upsertItems(ctx, run, result.Items, finishedAt)
+	upserted, err := runner.upsertItems(ctx, &run, result.Items, finishedAt)
 	if err != nil {
 		run.Status = SyncRunStatusFailed
 		run.ErrorCategory = string(ErrorCategoryRequestFailed)
@@ -274,7 +295,7 @@ func (runner *Runner) putRichContent(ctx context.Context, payloads []RichContent
 	return nil
 }
 
-func (runner *Runner) pollProvider(ctx context.Context, project config.Project, provider Provider, kind SyncKind, state SyncState) (PollResult, error) {
+func (runner *Runner) pollProvider(ctx context.Context, project config.Project, provider Provider, kind SyncKind, state SyncState, progress PollProgressFunc) (PollResult, error) {
 	switch provider {
 	case ProviderJira:
 		if project.Integrations.Jira == nil || runner.jiraClient == nil {
@@ -291,6 +312,9 @@ func (runner *Runner) pollProvider(ctx context.Context, project config.Project, 
 		credentials, err := runner.credentialResolver.ResolveAtlassian(cfg.CredentialRefs)
 		if err != nil {
 			return PollResult{}, err
+		}
+		if progressClient, ok := runner.jiraClient.(JiraProgressPoller); ok {
+			return progressClient.PollJiraWithProgress(ctx, credentials, plan, progress)
 		}
 		return runner.jiraClient.PollJira(ctx, credentials, plan)
 	case ProviderConfluence:
@@ -309,13 +333,16 @@ func (runner *Runner) pollProvider(ctx context.Context, project config.Project, 
 		if err != nil {
 			return PollResult{}, err
 		}
+		if progressClient, ok := runner.confluenceClient.(ConfluenceProgressPoller); ok {
+			return progressClient.PollConfluenceWithProgress(ctx, credentials, plan, progress)
+		}
 		return runner.confluenceClient.PollConfluence(ctx, credentials, plan)
 	default:
 		return PollResult{}, ErrInvalidInput
 	}
 }
 
-func (runner *Runner) upsertItems(ctx context.Context, run SyncRun, items []PollItem, seenAt time.Time) (int, error) {
+func (runner *Runner) upsertItems(ctx context.Context, run *SyncRun, items []PollItem, seenAt time.Time) (int, error) {
 	upserted := 0
 	for _, item := range items {
 		if _, err := runner.store.UpsertItem(ctx, ItemMetadataInput{
@@ -333,6 +360,11 @@ func (runner *Runner) upsertItems(ctx context.Context, run SyncRun, items []Poll
 			return upserted, err
 		}
 		upserted++
+		run.ItemsSeen = upserted
+		run.ItemsUpserted = upserted
+		if err := runner.store.UpdateSyncRun(ctx, *run); err != nil {
+			return upserted, err
+		}
 	}
 	return upserted, nil
 }

@@ -178,6 +178,37 @@ func TestPoller_PollConfluenceFetchesPageDetailsForConfiguredRichContent(t *test
 	}
 }
 
+func TestPoller_PollConfluenceReportsProgressWhileProcessingPages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		_, _ = w.Write([]byte(`{"results":[
+			{"content":{"id":"20001","type":"page","status":"current","version":{"when":"2026-05-31T10:00:00Z"}}},
+			{"content":{"id":"20002","type":"page","status":"archived","version":{"when":"2026-05-31T10:01:00Z"}}}
+		]}`))
+	}))
+	defer server.Close()
+
+	var progress []int
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollConfluenceWithProgress(context.Background(), testCredentials(), projectintegrations.ConfluenceQueryPlan{
+		ProjectID:  "project-1",
+		Provider:   projectintegrations.ProviderConfluence,
+		Kind:       projectintegrations.SyncKindInitialFull,
+		CQL:        `space in ("ENG") and type=page`,
+		PageSize:   2,
+		MaxResults: 2,
+	}, func(_ context.Context, update projectintegrations.PollProgress) error {
+		progress = append(progress, update.ItemsSeen)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("poll confluence: %v", err)
+	}
+	if len(result.Items) != 2 || len(progress) != 2 || progress[0] != 1 || progress[1] != 2 {
+		t.Fatalf("expected per-item progress, result=%#v progress=%#v", result.Items, progress)
+	}
+}
+
 func TestPoller_PollConfluenceMalformedResultReturnsRedactedDecodeError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertBasicAuth(t, r)

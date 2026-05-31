@@ -17,6 +17,10 @@ type Store interface {
 	GetSyncRun(context.Context, string, Provider, string) (SyncRun, error)
 }
 
+type ActiveSyncRunStore interface {
+	GetActiveSyncRun(context.Context, string, Provider) (SyncRun, error)
+}
+
 type PollRunner interface {
 	RunProviderPoll(context.Context, string, Provider, SyncKind) (PollRunResult, error)
 }
@@ -407,6 +411,15 @@ func (status *ProviderStatus) addStoredMetadata(ctx context.Context, store Store
 			break
 		}
 	}
+	if activeStore, ok := store.(ActiveSyncRunStore); ok {
+		run, err := activeStore.GetActiveSyncRun(ctx, status.ProjectID, status.Provider)
+		if err == nil {
+			runStatus := syncRunStatusView(run)
+			status.LastRun = &runStatus
+		} else if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+	}
 	state, err := store.GetSyncState(ctx, status.ProjectID, status.Provider)
 	if err != nil {
 		if err == ErrNotFound {
@@ -417,6 +430,9 @@ func (status *ProviderStatus) addStoredMetadata(ctx context.Context, store Store
 	stateStatus := syncStateStatus(state)
 	status.SyncState = &stateStatus
 	if state.LastRunID == "" {
+		return nil
+	}
+	if status.LastRun != nil {
 		return nil
 	}
 	run, err := store.GetSyncRun(ctx, status.ProjectID, status.Provider, state.LastRunID)

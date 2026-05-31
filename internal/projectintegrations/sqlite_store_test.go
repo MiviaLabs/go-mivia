@@ -79,6 +79,32 @@ func TestSQLiteStore_SyncRunLifecycle(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_GetActiveSyncRunReturnsNewestPendingOrRunning(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t)
+	runs := []SyncRun{
+		{ID: "run-completed", ProjectID: "project-1", Provider: ProviderJira, Kind: SyncKindIncremental, Status: SyncRunStatusCompleted, StartedAt: testTime()},
+		{ID: "run-pending", ProjectID: "project-1", Provider: ProviderJira, Kind: SyncKindInitialFull, Status: SyncRunStatusPending, StartedAt: testTime().Add(time.Minute)},
+		{ID: "run-running", ProjectID: "project-1", Provider: ProviderJira, Kind: SyncKindInitialFull, Status: SyncRunStatusRunning, ItemsSeen: 2, ItemsUpserted: 2, StartedAt: testTime().Add(2 * time.Minute)},
+	}
+	for _, run := range runs {
+		if err := store.CreateSyncRun(ctx, run); err != nil {
+			t.Fatalf("create run %s: %v", run.ID, err)
+		}
+	}
+
+	active, err := store.GetActiveSyncRun(ctx, "project-1", ProviderJira)
+	if err != nil {
+		t.Fatalf("get active run: %v", err)
+	}
+	if active.ID != "run-running" || active.ItemsSeen != 2 || active.Status != SyncRunStatusRunning {
+		t.Fatalf("unexpected active run: %#v", active)
+	}
+	if _, err := store.GetActiveSyncRun(ctx, "project-1", ProviderConfluence); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected missing active run, got %v", err)
+	}
+}
+
 func TestSQLiteStore_UpdateSyncStatePersistsApprovedRawCursorAndHash(t *testing.T) {
 	ctx := context.Background()
 	store, db := newTestSQLiteStore(t)

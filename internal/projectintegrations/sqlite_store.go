@@ -219,6 +219,31 @@ func (store *SQLiteStore) GetSyncRun(ctx context.Context, projectID string, prov
 	return run, err
 }
 
+func (store *SQLiteStore) GetActiveSyncRun(ctx context.Context, projectID string, provider Provider) (SyncRun, error) {
+	row := store.db.QueryRowContext(ctx, `SELECT
+		run_id,
+		project_id,
+		provider,
+		sync_kind,
+		status,
+		items_seen,
+		items_upserted,
+		empty_poll,
+		idle_sleep_ms,
+		error_category,
+		started_at,
+		finished_at
+	FROM project_integration_sync_runs
+	WHERE project_id = ? AND provider = ? AND status IN (?, ?)
+	ORDER BY started_at DESC, run_id DESC
+	LIMIT 1`, projectID, string(provider), string(SyncRunStatusRunning), string(SyncRunStatusPending))
+	run, err := scanRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SyncRun{}, ErrNotFound
+	}
+	return run, err
+}
+
 func (store *SQLiteStore) UpdateSyncState(ctx context.Context, input SyncStateInput) (SyncState, error) {
 	state, err := stateFromInput(input)
 	if err != nil {

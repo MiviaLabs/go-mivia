@@ -75,6 +75,49 @@ func TestCallToolStatusIncludesSyncMetadataWithoutRawCursor(t *testing.T) {
 	assertOmits(t, body, append(forbiddenIntegrationStrings(), "raw-provider-cursor-token", "sha256:")...)
 }
 
+func TestCallToolStatusIncludesActiveRunMetadata(t *testing.T) {
+	store := &fakeStore{
+		state: projectintegrations.SyncState{
+			ProjectID:           "project-1",
+			Provider:            projectintegrations.ProviderJira,
+			LastRunID:           "run-completed",
+			LastSuccessfulRunID: "run-completed",
+			CursorHash:          "sha256:raw-provider-cursor-token",
+			UpdatedAt:           testTime().Add(-time.Hour),
+		},
+		run: projectintegrations.SyncRun{
+			ID:        "run-completed",
+			ProjectID: "project-1",
+			Provider:  projectintegrations.ProviderJira,
+			Kind:      projectintegrations.SyncKindIncremental,
+			Status:    projectintegrations.SyncRunStatusCompleted,
+		},
+		activeRun: projectintegrations.SyncRun{
+			ID:            "run-active",
+			ProjectID:     "project-1",
+			Provider:      projectintegrations.ProviderJira,
+			Kind:          projectintegrations.SyncKindInitialFull,
+			Status:        projectintegrations.SyncRunStatusRunning,
+			ItemsSeen:     4,
+			ItemsUpserted: 4,
+			StartedAt:     testTime(),
+		},
+	}
+	service := newIntegrationService(t, store)
+
+	result, err := mcpapi.CallTool(context.Background(), service, "projects.integrations.status", json.RawMessage(`{"id":"project-1","provider":"jira"}`))
+	if err != nil {
+		t.Fatalf("integration status: %v", err)
+	}
+	body := mustJSON(t, result)
+	for _, expected := range []string{`"ID":"run-active"`, `"Kind":"initial_full"`, `"Status":"running"`, `"ItemsSeen":4`, `"LastRunID":"run-completed"`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in status response: %s", expected, body)
+		}
+	}
+	assertOmits(t, body, append(forbiddenIntegrationStrings(), "raw-provider-cursor-token", "sha256:")...)
+}
+
 func TestCallToolPollQueuesAsyncRunAndReturnsRedactedRunMetadata(t *testing.T) {
 	runner := &fakePollRunner{
 		result: projectintegrations.PollRunResult{
@@ -415,9 +458,10 @@ func (reader *fakeRichContentReader) GetRichContentItem(_ context.Context, proje
 }
 
 type fakeStore struct {
-	sources []projectintegrations.SourceMetadata
-	state   projectintegrations.SyncState
-	run     projectintegrations.SyncRun
+	sources   []projectintegrations.SourceMetadata
+	state     projectintegrations.SyncState
+	run       projectintegrations.SyncRun
+	activeRun projectintegrations.SyncRun
 }
 
 func (store *fakeStore) UpsertSource(context.Context, projectintegrations.SourceMetadataInput) (projectintegrations.SourceMetadata, error) {
@@ -440,4 +484,11 @@ func (store *fakeStore) GetSyncRun(context.Context, string, projectintegrations.
 		return projectintegrations.SyncRun{}, projectintegrations.ErrNotFound
 	}
 	return store.run, nil
+}
+
+func (store *fakeStore) GetActiveSyncRun(context.Context, string, projectintegrations.Provider) (projectintegrations.SyncRun, error) {
+	if store.activeRun.ID == "" {
+		return projectintegrations.SyncRun{}, projectintegrations.ErrNotFound
+	}
+	return store.activeRun, nil
 }

@@ -46,7 +46,10 @@ func TestRunner_RunProviderPollCompletesAndStoresApprovedProviderIdentifiers(t *
 	if len(recorder.created) != 1 || recorder.created[0].Status != SyncRunStatusPending {
 		t.Fatalf("expected pending create, got %#v", recorder.created)
 	}
-	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusCompleted)
+	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusCompleted)
+	if recorder.updated[1].ItemsSeen != 1 || recorder.updated[2].ItemsSeen != 2 {
+		t.Fatalf("expected incremental running progress, got %#v", recorder.updated)
+	}
 	if jira.plan.ProjectID != "project-1" || jira.plan.Kind != SyncKindInitialFull || jira.plan.PageSize != 50 || jira.plan.MaxResults != 100 {
 		t.Fatalf("planner output was not consumed: %#v", jira.plan)
 	}
@@ -141,7 +144,7 @@ func TestRunner_RunProviderPollRichContentGraphErrorsAreRedactedAndDoNotAdvanceS
 		t.Fatalf("sync state should not advance after graph failure, got %v", stateErr)
 	}
 	assertNoSensitiveText(t, err.Error(), "FORBIDDEN_REMOTE_BODY_MARKER", "ACME-1", testAPIValue)
-	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusFailed)
+	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusFailed)
 }
 
 func TestRunner_RunProviderPollNoOpIncrementalPersistsIdleSleep(t *testing.T) {
@@ -174,6 +177,35 @@ func TestRunner_RunProviderPollNoOpIncrementalPersistsIdleSleep(t *testing.T) {
 		t.Fatalf("unexpected no-op state: %#v", result.State)
 	}
 	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusNoOp)
+}
+
+func TestRunner_RunProviderPollUpdatesRunningProgressWhilePersistingItems(t *testing.T) {
+	ctx := context.Background()
+	recorder, _ := newRecordingSQLiteStore(t)
+	runner := newTestRunner(t, recorder, runnerTestProject(), RunnerOptions{
+		JiraClient: &fakeJiraPoller{result: PollResult{Items: []PollItem{
+			{ID: "10001", Key: "ACME-1", Type: "Task", Status: "Open", UpdatedAt: testTime()},
+			{ID: "10002", Key: "ACME-2", Type: "Task", Status: "Open", UpdatedAt: testTime()},
+			{ID: "10003", Key: "ACME-3", Type: "Task", Status: "Open", UpdatedAt: testTime()},
+		}}},
+		Now:      newStepClock(testTime()).Now,
+		NewRunID: fixedRunID("run-progress"),
+	})
+
+	result, err := runner.RunProviderPoll(ctx, "project-1", ProviderJira, SyncKindInitialFull)
+	if err != nil {
+		t.Fatalf("run poll: %v", err)
+	}
+	if result.Run.ItemsSeen != 3 || result.Run.ItemsUpserted != 3 {
+		t.Fatalf("unexpected final progress: %#v", result.Run)
+	}
+	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusCompleted)
+	for i, run := range recorder.updated[1:4] {
+		expected := i + 1
+		if run.ItemsSeen != expected || run.ItemsUpserted != expected || run.Status != SyncRunStatusRunning {
+			t.Fatalf("update %d: expected running progress %d, got %#v", i+1, expected, run)
+		}
+	}
 }
 
 func TestRunner_RunProviderPollClampsEmptyPollIdleSleep(t *testing.T) {

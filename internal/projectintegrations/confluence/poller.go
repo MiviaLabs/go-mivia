@@ -18,6 +18,10 @@ func NewPoller(client Client) Poller {
 }
 
 func (poller Poller) PollConfluence(ctx context.Context, credentials projectintegrations.Credentials, plan projectintegrations.ConfluenceQueryPlan) (projectintegrations.PollResult, error) {
+	return poller.PollConfluenceWithProgress(ctx, credentials, plan, nil)
+}
+
+func (poller Poller) PollConfluenceWithProgress(ctx context.Context, credentials projectintegrations.Credentials, plan projectintegrations.ConfluenceQueryPlan, progress projectintegrations.PollProgressFunc) (projectintegrations.PollResult, error) {
 	if plan.Provider != projectintegrations.ProviderConfluence || strings.TrimSpace(plan.CQL) == "" {
 		return projectintegrations.PollResult{}, projectintegrations.ErrInvalidInput
 	}
@@ -46,6 +50,11 @@ func (poller Poller) PollConfluence(ctx context.Context, credentials projectinte
 				return projectintegrations.PollResult{}, projectintegrations.DecodeError(provider, "extract_page_metadata")
 			}
 			items = append(items, item)
+			if progress != nil {
+				if err := progress(ctx, projectintegrations.PollProgress{ItemsSeen: len(items)}); err != nil {
+					return projectintegrations.PollResult{}, err
+				}
+			}
 			if shouldExtractRichContent(plan) {
 				payload, err := poller.richContentForPage(ctx, credentials, plan, item.ID)
 				if err != nil {
