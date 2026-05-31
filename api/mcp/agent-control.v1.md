@@ -299,12 +299,13 @@ Input schema:
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "key": { "type": "string", "minLength": 1 },
-    "max_chunk_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 }
+    "max_chunk_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 },
+    "max_chunks": { "type": "integer", "minimum": 1, "maximum": 200 }
   }
 }
 ```
 
-Output: one locally ingested Jira issue artifact and bounded chunks by issue key or ID. The tool reads local graph state only.
+Output: one locally ingested Jira issue artifact and bounded chunks by issue key or ID. Chunk text is capped by `max_chunk_bytes`; returned chunk count defaults to 50 and is capped by `max_chunks`. The tool reads local graph state only.
 
 ### `projects.confluence.page.get`
 
@@ -318,12 +319,13 @@ Input schema:
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "page_id": { "type": "string", "minLength": 1 },
-    "max_chunk_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 }
+    "max_chunk_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 },
+    "max_chunks": { "type": "integer", "minimum": 1, "maximum": 200 }
   }
 }
 ```
 
-Output: one locally ingested Confluence page artifact and bounded chunks by page ID. The tool reads local graph state only.
+Output: one locally ingested Confluence page artifact and bounded chunks by page ID. Chunk text is capped by `max_chunk_bytes`; returned chunk count defaults to 50 and is capped by `max_chunks`. The tool reads local graph state only.
 
 ### `projects.ingest`
 

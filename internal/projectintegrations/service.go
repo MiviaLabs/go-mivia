@@ -142,6 +142,7 @@ type LocalReadInput struct {
 	Provider      Provider
 	ItemIDOrKey   string
 	MaxChunkBytes int
+	MaxChunks     int
 }
 
 func NewService(projects []config.Project, store Store) (*Service, error) {
@@ -389,7 +390,10 @@ func (service *Service) ReadLocalContent(ctx context.Context, input LocalReadInp
 	if _, err := providerStatusConfig(project, input.Provider); err != nil {
 		return RichContentReadResult{}, err
 	}
-	return service.richContent.GetRichContentItem(ctx, project.ID, input.Provider, input.ItemIDOrKey, RichContentReadOptions{MaxChunkBytes: input.MaxChunkBytes})
+	return service.richContent.GetRichContentItem(ctx, project.ID, input.Provider, input.ItemIDOrKey, RichContentReadOptions{
+		MaxChunkBytes: input.MaxChunkBytes,
+		MaxChunks:     input.MaxChunks,
+	})
 }
 
 func (service *Service) project(projectID string) (config.Project, error) {

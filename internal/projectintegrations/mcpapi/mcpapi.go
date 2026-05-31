@@ -72,6 +72,7 @@ func ToolDefinitions() []map[string]any {
 				"id":              map[string]any{"type": "string", "minLength": 1},
 				"key":             map[string]any{"type": "string", "minLength": 1},
 				"max_chunk_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 16384},
+				"max_chunks":      map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
 			}, []string{"id", "key"}),
 		},
 		{
@@ -82,6 +83,7 @@ func ToolDefinitions() []map[string]any {
 				"id":              map[string]any{"type": "string", "minLength": 1},
 				"page_id":         map[string]any{"type": "string", "minLength": 1},
 				"max_chunk_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 16384},
+				"max_chunks":      map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
 			}, []string{"id", "page_id"}),
 		},
 	}
@@ -179,6 +181,7 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			ID            string          `json:"id"`
 			Key           string          `json:"key"`
 			MaxChunkBytes int             `json:"max_chunk_bytes,omitempty"`
+			MaxChunks     int             `json:"max_chunks,omitempty"`
 			Meta          json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -189,6 +192,7 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			Provider:      projectintegrations.ProviderJira,
 			ItemIDOrKey:   strings.TrimSpace(input.Key),
 			MaxChunkBytes: input.MaxChunkBytes,
+			MaxChunks:     input.MaxChunks,
 		})
 		if err != nil {
 			return nil, err
@@ -199,6 +203,7 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			ID            string          `json:"id"`
 			PageID        string          `json:"page_id"`
 			MaxChunkBytes int             `json:"max_chunk_bytes,omitempty"`
+			MaxChunks     int             `json:"max_chunks,omitempty"`
 			Meta          json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -209,6 +214,7 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			Provider:      projectintegrations.ProviderConfluence,
 			ItemIDOrKey:   strings.TrimSpace(input.PageID),
 			MaxChunkBytes: input.MaxChunkBytes,
+			MaxChunks:     input.MaxChunks,
 		})
 		if err != nil {
 			return nil, err

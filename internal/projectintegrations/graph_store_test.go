@@ -239,6 +239,49 @@ func TestRichContentGraphStore_GetRichContentItemReturnsBoundedChunks(t *testing
 	}
 }
 
+func TestRichContentGraphStore_GetRichContentItemCapsReturnedChunkCount(t *testing.T) {
+	ctx := context.Background()
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(ctx, schema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	store := NewRichContentGraphStore(graph)
+	item := RichContentItem{
+		ProjectID: "example-service",
+		Provider:  ProviderConfluence,
+		ItemID:    "20001",
+		ItemType:  "page",
+		Fields: []RichContentField{
+			{Name: "body", Text: strings.Repeat("a", 60)},
+		},
+	}
+	chunks, err := ChunkRichContentItem(item, RichContentOptions{MaxChunkBytes: 1})
+	if err != nil {
+		t.Fatalf("chunk content: %v", err)
+	}
+	if len(chunks) != 60 {
+		t.Fatalf("expected fixture to create 60 chunks, got %d", len(chunks))
+	}
+	if _, err := store.PutRichContentItem(ctx, item, chunks); err != nil {
+		t.Fatalf("put content: %v", err)
+	}
+
+	defaultRead, err := store.GetRichContentItem(ctx, "example-service", ProviderConfluence, "20001", RichContentReadOptions{})
+	if err != nil {
+		t.Fatalf("get default-capped content: %v", err)
+	}
+	if len(defaultRead.Chunks) != 50 || !defaultRead.ChunksTruncated {
+		t.Fatalf("expected default chunk cap with truncation flag, got len=%d truncated=%t", len(defaultRead.Chunks), defaultRead.ChunksTruncated)
+	}
+	twoChunks, err := store.GetRichContentItem(ctx, "example-service", ProviderConfluence, "20001", RichContentReadOptions{MaxChunks: 2})
+	if err != nil {
+		t.Fatalf("get explicit-capped content: %v", err)
+	}
+	if len(twoChunks.Chunks) != 2 || !twoChunks.ChunksTruncated {
+		t.Fatalf("expected explicit chunk cap with truncation flag, got len=%d truncated=%t", len(twoChunks.Chunks), twoChunks.ChunksTruncated)
+	}
+}
+
 func TestRichContentGraphStore_SearchRichContentFindsProviderScopedMatches(t *testing.T) {
 	ctx := context.Background()
 	graph := ladybug.NewMemoryGraph()

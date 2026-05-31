@@ -653,6 +653,13 @@ func caseneedle() {}
 	if len(paged.Results) != 1 || paged.NextPageToken == "" || len(paged.Results[0].Snippet) > 12 {
 		t.Fatalf("expected capped first page, got %#v", paged)
 	}
+	maxed, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "Needle", PageSize: MaxPageSize, MaxMatches: 1})
+	if err != nil {
+		t.Fatalf("search max matches text: %v", err)
+	}
+	if len(maxed.Results) != 1 || maxed.NextPageToken != "" {
+		t.Fatalf("expected max matches to cap pagination window, got %#v", maxed)
+	}
 	caseSensitive, err := svc.SearchSymbols(ctx, "example-service", SymbolFilter{NameContains: "Case", CaseSensitive: true}, Pagination{PageSize: MaxPageSize})
 	if err != nil {
 		t.Fatalf("case-sensitive symbol search: %v", err)

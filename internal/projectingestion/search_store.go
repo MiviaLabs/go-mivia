@@ -699,6 +699,18 @@ func searchFTSTables() []string {
 }
 
 func (store *SQLiteStore) SearchText(ctx context.Context, project projectregistry.Project, options TextSearchOptions) (TextSearchResultList, error) {
+	pageSize, offset, err := paginationWindow(Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
+	if err != nil {
+		return TextSearchResultList{}, err
+	}
+	resultLimit := offset + pageSize + 1
+	if options.MaxMatches > 0 && options.MaxMatches < resultLimit {
+		resultLimit = options.MaxMatches
+	}
+	if resultLimit <= offset {
+		return TextSearchResultList{Results: []TextSearchResult{}, MaxSnippetBytes: options.MaxSnippetBytes}, nil
+	}
+
 	where := []string{"project_id = ?"}
 	args := []any{project.ID}
 	if options.Extension != "" {
@@ -716,7 +728,8 @@ func (store *SQLiteStore) SearchText(ctx context.Context, project projectregistr
 	rows, err := store.db.QueryContext(ctx, `SELECT
 		file_id, chunk_id, relative_path, extension, size_bytes, modified_at, chunk_index, start_line, end_line, byte_start, byte_end, text
 		FROM project_search_chunks_fts
-		WHERE `+strings.Join(where, " AND "), args...)
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY relative_path ASC, CAST(chunk_index AS INTEGER) ASC, chunk_id ASC`, args...)
 	if err != nil {
 		return TextSearchResultList{}, sanitizeSearchError(err)
 	}
@@ -747,6 +760,12 @@ func (store *SQLiteStore) SearchText(ctx context.Context, project projectregistr
 				Snippet:          snippet,
 				SnippetTruncated: truncated,
 			})
+			if len(results) >= resultLimit {
+				break
+			}
+		}
+		if len(results) >= resultLimit {
+			break
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -766,14 +785,17 @@ func (store *SQLiteStore) SearchText(ctx context.Context, project projectregistr
 		}
 		return left.Chunk.ID < right.Chunk.ID
 	})
-	if options.MaxMatches > 0 && len(results) > options.MaxMatches {
-		results = results[:options.MaxMatches]
+	nextToken := ""
+	if len(results) > offset+pageSize {
+		nextToken = strconv.Itoa(offset + pageSize)
+		results = results[:offset+pageSize]
 	}
-	window, nextToken, err := paginate(results, Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
-	if err != nil {
-		return TextSearchResultList{}, err
+	if offset >= len(results) {
+		results = []TextSearchResult{}
+	} else {
+		results = results[offset:]
 	}
-	return TextSearchResultList{Results: window, NextPageToken: nextToken, MaxSnippetBytes: options.MaxSnippetBytes}, nil
+	return TextSearchResultList{Results: results, NextPageToken: nextToken, MaxSnippetBytes: options.MaxSnippetBytes}, nil
 }
 
 func (store *SQLiteStore) SearchFiles(ctx context.Context, project projectregistry.Project, options FileSearchOptions) (FileList, error) {
