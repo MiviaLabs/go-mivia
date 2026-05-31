@@ -79,6 +79,9 @@ func TestImpactAnalyzer_UsesGraphEdgesForExternalProject(t *testing.T) {
 		nameRefs: map[string][]projectingestion.SymbolReferenceMetadata{
 			"PointWalletRepository": {{ID: "ref-impl", FileID: "implementer", ProjectID: "mass-monorepo", TargetName: "PointWalletRepository", Kind: "implements"}},
 		},
+		implementersBySym: map[string][]projectingestion.SymbolImplementation{
+			"sym-interface": {{ID: "impl-edge", FileID: "implementer", ProjectID: "mass-monorepo", Kind: "implements", ImplementerName: "DrizzlePointWalletRepository", ImplementedName: "PointWalletRepository"}},
+		},
 	}
 	result, err := NewImpactAnalyzerWithGraph(nil, graph).Analyze(context.Background(), ImpactAnalysisRequest{
 		ProjectID:    "mass-monorepo",
@@ -87,10 +90,10 @@ func TestImpactAnalyzer_UsesGraphEdgesForExternalProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyze impact: %v", err)
 	}
-	assertAnchor(t, result, "apps/domain-loyalty/src/infrastructure/database/repositories/drizzle-point-wallet.repository.ts", "graph_name_reference")
+	assertAnchor(t, result, "apps/domain-loyalty/src/infrastructure/database/repositories/drizzle-point-wallet.repository.ts", "graph_implementer")
 	assertAnchor(t, result, "apps/domain-loyalty/src/point-wallet.module.ts", "graph_reference")
 	assertDomain(t, result, "graph_affected_files")
-	assertContains(t, result.ResidualUnknowns, "implementer_edges_not_distinct")
+	assertNotContains(t, result.ResidualUnknowns, "implementer_edges_not_distinct")
 	for _, domain := range result.AffectedDomains {
 		if domain.Name == "unknown" {
 			t.Fatalf("did not expect bare unknown domain when graph produced anchors: %#v", result.AffectedDomains)
@@ -104,11 +107,12 @@ type fakeWorkspace struct {
 }
 
 type fakeImpactGraph struct {
-	files         map[string]projectingestion.FileMetadata
-	symbolsByFile map[string][]projectingestion.SymbolMetadata
-	refsBySymbol  map[string][]projectingestion.SymbolReferenceMetadata
-	nameRefs      map[string][]projectingestion.SymbolReferenceMetadata
-	callersBySym  map[string][]projectingestion.SymbolCallEdge
+	files             map[string]projectingestion.FileMetadata
+	symbolsByFile     map[string][]projectingestion.SymbolMetadata
+	refsBySymbol      map[string][]projectingestion.SymbolReferenceMetadata
+	nameRefs          map[string][]projectingestion.SymbolReferenceMetadata
+	callersBySym      map[string][]projectingestion.SymbolCallEdge
+	implementersBySym map[string][]projectingestion.SymbolImplementation
 }
 
 func (graph *fakeImpactGraph) ListFiles(_ context.Context, _ string, filter projectingestion.FileStateFilter, _ projectingestion.Pagination) (projectingestion.FileList, error) {
@@ -150,6 +154,10 @@ func (graph *fakeImpactGraph) ListSymbolCallers(_ context.Context, _ string, sym
 	return projectingestion.SymbolCallEdgeList{Edges: append([]projectingestion.SymbolCallEdge(nil), graph.callersBySym[symbolID]...)}, nil
 }
 
+func (graph *fakeImpactGraph) ListSymbolImplementers(_ context.Context, _ string, symbolID string, _ projectingestion.Pagination) (projectingestion.SymbolImplementationList, error) {
+	return projectingestion.SymbolImplementationList{Implementations: append([]projectingestion.SymbolImplementation(nil), graph.implementersBySym[symbolID]...)}, nil
+}
+
 func (graph *fakeImpactGraph) LatestRunMetadata(context.Context, string) (projectingestion.RunMetadata, error) {
 	return projectingestion.RunMetadata{Status: string(projectingestion.RunStatusCompleted)}, nil
 }
@@ -188,6 +196,15 @@ func assertContains(t *testing.T, values []string, want string) {
 		}
 	}
 	t.Fatalf("expected %q in %#v", want, values)
+}
+
+func assertNotContains(t *testing.T, values []string, unwanted string) {
+	t.Helper()
+	for _, value := range values {
+		if value == unwanted {
+			t.Fatalf("did not expect %q in %#v", unwanted, values)
+		}
+	}
 }
 
 func assertAnchor(t *testing.T, result ImpactAnalysis, path string, kind string) {

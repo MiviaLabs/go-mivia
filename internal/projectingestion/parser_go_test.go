@@ -130,3 +130,12 @@ func hasReference(references []Reference, enclosing string, target string) bool 
 	}
 	return false
 }
+
+func hasImplementation(implementations []Implementation, implementer string, implemented string, kind string) bool {
+	for _, implementation := range implementations {
+		if implementation.ImplementerName == implementer && implementation.ImplementedName == implemented && implementation.Kind == kind {
+			return true
+		}
+	}
+	return false
+}

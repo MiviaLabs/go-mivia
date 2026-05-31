@@ -53,6 +53,7 @@ type ExtractorCacheEntry struct {
 	Headings         []Heading
 	References       []Reference
 	Calls            []Call
+	Implementations  []Implementation
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -441,6 +442,7 @@ func (store *SQLiteStore) GetExtractorCache(ctx context.Context, projectID strin
 		headings_json,
 		references_json,
 		calls_json,
+		implementations_json,
 		created_at,
 		updated_at
 	FROM project_extractor_cache
@@ -482,6 +484,10 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 	if err != nil {
 		return err
 	}
+	implementationsJSON, err := json.Marshal(entry.Implementations)
+	if err != nil {
+		return err
+	}
 	createdAt := entry.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = entry.UpdatedAt
@@ -505,14 +511,16 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 		headings_json,
 		references_json,
 		calls_json,
+		implementations_json,
 		created_at,
 		updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(project_id, relative_path_hash, content_sha256, extractor_name, extractor_version) DO UPDATE SET
 		symbols_json = excluded.symbols_json,
 		headings_json = excluded.headings_json,
 		references_json = excluded.references_json,
 		calls_json = excluded.calls_json,
+		implementations_json = excluded.implementations_json,
 		updated_at = excluded.updated_at`,
 		entry.ProjectID,
 		entry.RelativePathHash,
@@ -523,6 +531,7 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 		string(headingsJSON),
 		string(referencesJSON),
 		string(callsJSON),
+		string(implementationsJSON),
 		formatTime(createdAt),
 		formatTime(updatedAt),
 	)
@@ -769,6 +778,7 @@ func scanExtractorCacheEntry(scanner runScanner) (ExtractorCacheEntry, error) {
 	var headingsJSON string
 	var referencesJSON string
 	var callsJSON string
+	var implementationsJSON string
 	var createdAt string
 	var updatedAt string
 	err := scanner.Scan(
@@ -781,6 +791,7 @@ func scanExtractorCacheEntry(scanner runScanner) (ExtractorCacheEntry, error) {
 		&headingsJSON,
 		&referencesJSON,
 		&callsJSON,
+		&implementationsJSON,
 		&createdAt,
 		&updatedAt,
 	)
@@ -797,6 +808,9 @@ func scanExtractorCacheEntry(scanner runScanner) (ExtractorCacheEntry, error) {
 		return ExtractorCacheEntry{}, err
 	}
 	if err := json.Unmarshal([]byte(callsJSON), &entry.Calls); err != nil {
+		return ExtractorCacheEntry{}, err
+	}
+	if err := json.Unmarshal([]byte(implementationsJSON), &entry.Implementations); err != nil {
 		return ExtractorCacheEntry{}, err
 	}
 	var parseErr error

@@ -360,6 +360,14 @@ func (scheduler *Scheduler) ListSymbolCallees(ctx context.Context, projectID str
 	return api.ListSymbolCallees(ctx, projectID, symbolID, pagination)
 }
 
+func (scheduler *Scheduler) ListSymbolImplementers(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolImplementationList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolImplementationList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListSymbolImplementers(ctx, projectID, symbolID, pagination)
+}
+
 func (scheduler *Scheduler) GetSymbolCallGraph(ctx context.Context, projectID string, symbolID string, options CallGraphOptions) (SymbolCallGraph, error) {
 	api, ok := scheduler.runner.(API)
 	if !ok {

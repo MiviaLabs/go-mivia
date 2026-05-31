@@ -139,6 +139,21 @@ export class BookingService {
 	assertSymbol(t, result.Symbols, SymbolKindMethod, "build", "", "", 9, 11)
 }
 
+func TestTreeSitterTypeScriptExtractsImplementations(t *testing.T) {
+	result := parseWithExtractor(t, newTreeSitterTypeScriptExtractor(), "src/app.ts", []byte(`
+export interface WalletRepo {}
+export class DrizzleWalletRepo implements WalletRepo {}
+export class CachedWalletRepo extends DrizzleWalletRepo {}
+`))
+
+	if !hasImplementation(result.Implementations, "DrizzleWalletRepo", "WalletRepo", "implements") {
+		t.Fatalf("expected DrizzleWalletRepo implements WalletRepo, got %#v", result.Implementations)
+	}
+	if !hasImplementation(result.Implementations, "CachedWalletRepo", "DrizzleWalletRepo", "extends") {
+		t.Fatalf("expected CachedWalletRepo extends DrizzleWalletRepo, got %#v", result.Implementations)
+	}
+}
+
 func TestTreeSitterPythonExtractsSymbols(t *testing.T) {
 	result := parseWithExtractor(t, newTreeSitterPythonExtractor(), "src/app.py", []byte(`
 import os

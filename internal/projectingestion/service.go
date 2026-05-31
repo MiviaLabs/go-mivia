@@ -83,6 +83,7 @@ type API interface {
 	ListSymbolReferences(context.Context, string, string, Pagination) (SymbolReferenceList, error)
 	ListSymbolCallers(context.Context, string, string, Pagination) (SymbolCallEdgeList, error)
 	ListSymbolCallees(context.Context, string, string, Pagination) (SymbolCallEdgeList, error)
+	ListSymbolImplementers(context.Context, string, string, Pagination) (SymbolImplementationList, error)
 	GetSymbolCallGraph(context.Context, string, string, CallGraphOptions) (SymbolCallGraph, error)
 	ListHeadings(context.Context, string, string, Pagination) (HeadingList, error)
 	GetFileOutline(context.Context, string, string, FileOutlineOptions) (FileOutline, error)
@@ -900,16 +901,17 @@ type fullScanFileJob struct {
 }
 
 type fullScanFileResult struct {
-	state       FileState
-	chunks      []Chunk
-	symbols     []Symbol
-	references  []Reference
-	calls       []Call
-	headings    []Heading
-	chunkCount  int
-	symbolCount int
-	unchanged   bool
-	err         error
+	state           FileState
+	chunks          []Chunk
+	symbols         []Symbol
+	references      []Reference
+	calls           []Call
+	implementations []Implementation
+	headings        []Heading
+	chunkCount      int
+	symbolCount     int
+	unchanged       bool
+	err             error
 }
 
 type fullScanProgress struct {
@@ -1803,6 +1805,17 @@ func (svc *Service) ListSymbolCallees(ctx context.Context, projectID string, sym
 	return svc.graph.ListSymbolCallees(ctx, project, strings.TrimSpace(symbolID), pagination)
 }
 
+func (svc *Service) ListSymbolImplementers(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolImplementationList, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolImplementationList{}, err
+	}
+	if svc.graph == nil {
+		return SymbolImplementationList{}, ErrIngestionNotFound
+	}
+	return svc.graph.ListSymbolImplementers(ctx, project, strings.TrimSpace(symbolID), pagination)
+}
+
 func (svc *Service) GetSymbolCallGraph(ctx context.Context, projectID string, symbolID string, options CallGraphOptions) (SymbolCallGraph, error) {
 	project, err := svc.projectForQuery(projectID)
 	if err != nil {
@@ -1996,14 +2009,15 @@ func (svc *Service) prepareExistingFile(ctx context.Context, project projectregi
 		return fullScanFileResult{state: state}
 	}
 	return fullScanFileResult{
-		state:       state,
-		chunks:      chunkSet.Chunks,
-		symbols:     result.Symbols,
-		references:  result.References,
-		calls:       result.Calls,
-		headings:    result.Headings,
-		chunkCount:  len(chunkSet.Chunks),
-		symbolCount: len(result.Symbols),
+		state:           state,
+		chunks:          chunkSet.Chunks,
+		symbols:         result.Symbols,
+		references:      result.References,
+		calls:           result.Calls,
+		implementations: result.Implementations,
+		headings:        result.Headings,
+		chunkCount:      len(chunkSet.Chunks),
+		symbolCount:     len(result.Symbols),
 	}
 }
 
@@ -2117,7 +2131,7 @@ func (svc *Service) saveEligiblePreparedFile(ctx context.Context, project projec
 	}
 	svc.recordStage("storage.state_write", stateStartedAt, nil)
 	graphStartedAt := time.Now()
-	if err := svc.graph.PutEligibleFile(ctx, project, run, result.state, result.chunks, result.symbols, result.references, result.calls, result.headings); err != nil {
+	if err := svc.graph.PutEligibleFile(ctx, project, run, result.state, result.chunks, result.symbols, result.references, result.calls, result.implementations, result.headings); err != nil {
 		svc.recordStage("storage.graph_write", graphStartedAt, err)
 		return err
 	}
@@ -2220,6 +2234,7 @@ func (svc *Service) extractEligible(ctx context.Context, project projectregistry
 				Headings:         entry.Headings,
 				References:       entry.References,
 				Calls:            entry.Calls,
+				Implementations:  entry.Implementations,
 			}, nil
 		}
 		if err != nil && !errors.Is(err, ErrExtractorCacheMiss) {
@@ -2243,6 +2258,7 @@ func (svc *Service) extractEligible(ctx context.Context, project projectregistry
 			Headings:         result.Headings,
 			References:       result.References,
 			Calls:            result.Calls,
+			Implementations:  result.Implementations,
 			CreatedAt:        eventAt,
 			UpdatedAt:        eventAt,
 		}); err != nil {

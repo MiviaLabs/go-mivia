@@ -121,6 +121,7 @@ var statements = []string{
 		headings_json TEXT NOT NULL DEFAULT '[]',
 		references_json TEXT NOT NULL DEFAULT '[]',
 		calls_json TEXT NOT NULL DEFAULT '[]',
+		implementations_json TEXT NOT NULL DEFAULT '[]',
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY(project_id, relative_path_hash, content_sha256, extractor_name, extractor_version),
@@ -387,6 +388,10 @@ var extractorCacheColumns = []columnDefinition{
 	{
 		Name:       "calls_json",
 		Definition: "calls_json TEXT NOT NULL DEFAULT '[]'",
+	},
+	{
+		Name:       "implementations_json",
+		Definition: "implementations_json TEXT NOT NULL DEFAULT '[]'",
 	},
 }
 

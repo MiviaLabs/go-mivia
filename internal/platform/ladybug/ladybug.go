@@ -264,7 +264,7 @@ func relationshipKey(relationshipType string, from NodeRef, to NodeRef) string {
 }
 
 func derivedFileNodeLabels() []string {
-	return []string{"CodeReference", "CodeCall", "CodeSymbol", "DocumentHeading", "ContentChunk", "FileVersion"}
+	return []string{"CodeReference", "CodeCall", "CodeImplementation", "CodeSymbol", "DocumentHeading", "ContentChunk", "FileVersion"}
 }
 
 func (graph *MemoryGraph) fileNodeCandidatesLocked(label string, repoFileID string) map[string]struct{} {

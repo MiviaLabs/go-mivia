@@ -66,7 +66,7 @@ func newTreeSitterJavaScriptExtractor() Extractor {
 func newTreeSitterCSharpExtractor() Extractor {
 	return treeSitterExtractor{
 		name:       string(ExtractorTreeSitterCSharp),
-		version:    extractorVersionOne,
+		version:    extractorVersionTwo,
 		extensions: extensionSet(".cs"),
 		query:      csharpQuery,
 		languageFunc: func() *tree_sitter.Language {
@@ -102,7 +102,7 @@ func newTreeSitterDartExtractor() Extractor {
 func newTreeSitterTypeScriptExtractor() Extractor {
 	return treeSitterExtractor{
 		name:       string(ExtractorTreeSitterTypeScript),
-		version:    extractorVersionOne,
+		version:    extractorVersionTwo,
 		extensions: extensionSet(".ts", ".mts", ".cts"),
 		query:      typescriptQuery,
 		languageFunc: func() *tree_sitter.Language {
@@ -114,7 +114,7 @@ func newTreeSitterTypeScriptExtractor() Extractor {
 func newTreeSitterTSXExtractor() Extractor {
 	return treeSitterExtractor{
 		name:       string(ExtractorTreeSitterTSX),
-		version:    extractorVersionOne,
+		version:    extractorVersionTwo,
 		extensions: extensionSet(".tsx", ".jsx"),
 		query:      tsxQuery,
 		languageFunc: func() *tree_sitter.Language {
@@ -194,9 +194,11 @@ func (extractor treeSitterExtractor) Parse(ctx context.Context, relative string,
 	var symbols []Symbol
 	var references []Reference
 	var calls []Call
+	var implementations []Implementation
 	if extractor.name == string(ExtractorTreeSitterCSharp) {
 		symbols = extractCSharpSymbols(root, content)
 		references, calls = extractCSharpOccurrences(root, content)
+		implementations = extractCSharpImplementations(root, content)
 	} else if extractor.name == string(ExtractorTreeSitterPython) {
 		symbols = extractPythonSymbols(root, content)
 		references, calls = extractPythonOccurrences(root, content)
@@ -206,8 +208,9 @@ func (extractor treeSitterExtractor) Parse(ctx context.Context, relative string,
 	} else {
 		symbols = extractJavaScriptFamilySymbols(root, content)
 		references, calls = extractJavaScriptFamilyOccurrences(root, content)
+		implementations = extractJavaScriptFamilyImplementations(root, content)
 	}
-	return ExtractorResult{Symbols: dedupeSymbols(symbols), References: dedupeReferences(references), Calls: dedupeCalls(calls)}, nil
+	return ExtractorResult{Symbols: dedupeSymbols(symbols), References: dedupeReferences(references), Calls: dedupeCalls(calls), Implementations: dedupeImplementations(implementations)}, nil
 }
 
 func runTreeSitterQuery(language *tree_sitter.Language, querySource string, root *tree_sitter.Node, content []byte) error {
@@ -274,6 +277,13 @@ func extractJavaScriptFamilySymbols(root *tree_sitter.Node, content []byte) []Sy
 	return symbols
 }
 
+func extractJavaScriptFamilyImplementations(root *tree_sitter.Node, content []byte) []Implementation {
+	return extractClassImplementations(root, content, map[string]string{
+		"extends_clause":    "extends",
+		"implements_clause": "implements",
+	})
+}
+
 func namedSymbolFromNode(node *tree_sitter.Node, content []byte, kind SymbolKind) (Symbol, bool) {
 	name := nameTextFromNode(node, content)
 	if name == "" {
@@ -332,6 +342,12 @@ func extractCSharpSymbols(root *tree_sitter.Node, content []byte) []Symbol {
 	}
 	visit(root)
 	return symbols
+}
+
+func extractCSharpImplementations(root *tree_sitter.Node, content []byte) []Implementation {
+	return extractClassImplementations(root, content, map[string]string{
+		"base_list": "implements",
+	})
 }
 
 func csharpImportSymbolFromNode(node *tree_sitter.Node, content []byte) (Symbol, bool) {
@@ -542,6 +558,168 @@ func nameTextFromNode(node *tree_sitter.Node, content []byte) string {
 		}
 	}
 	return ""
+}
+
+func extractClassImplementations(root *tree_sitter.Node, content []byte, relationByKind map[string]string) []Implementation {
+	if root == nil {
+		return nil
+	}
+	var implementations []Implementation
+	var visit func(node *tree_sitter.Node)
+	visit = func(node *tree_sitter.Node) {
+		if node == nil {
+			return
+		}
+		if node.Kind() == "class_declaration" || node.Kind() == "record_declaration" || node.Kind() == "record_struct_declaration" || node.Kind() == "struct_declaration" {
+			implementer := nameTextFromNode(node, content)
+			if implementer != "" {
+				implementations = append(implementations, implementationTargetsFromClass(node, content, implementer, relationByKind)...)
+			}
+		}
+		cursor := node.Walk()
+		defer cursor.Close()
+		for _, child := range node.NamedChildren(cursor) {
+			child := child
+			visit(&child)
+		}
+	}
+	visit(root)
+	return implementations
+}
+
+func implementationTargetsFromClass(node *tree_sitter.Node, content []byte, implementer string, relationByKind map[string]string) []Implementation {
+	var out []Implementation
+	cursor := node.Walk()
+	defer cursor.Close()
+	for _, child := range node.NamedChildren(cursor) {
+		relation := relationByKind[child.Kind()]
+		if relation == "" {
+			continue
+		}
+		targets := implementationTargetNames(&child, content, implementer)
+		for _, target := range targets {
+			out = append(out, Implementation{
+				Kind:             relation,
+				ImplementerName:  implementer,
+				ImplementedName:  target,
+				StartLine:        int(child.StartPosition().Row) + 1,
+				EndLine:          int(child.EndPosition().Row) + 1,
+				StartByte:        int(child.StartByte()),
+				EndByte:          int(child.EndByte()),
+				StartColumn:      int(child.StartPosition().Column) + 1,
+				EndColumn:        int(child.EndPosition().Column) + 1,
+				ResolutionStatus: "unresolved",
+				Confidence:       "candidate",
+			})
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, implementationTargetsFromClassText(node, content, implementer, relationByKind)...)
+	}
+	return out
+}
+
+func implementationTargetsFromClassText(node *tree_sitter.Node, content []byte, implementer string, relationByKind map[string]string) []Implementation {
+	text := node.Utf8Text(content)
+	var out []Implementation
+	for _, relation := range []string{"extends", "implements"} {
+		if relationByKind[relation+"_clause"] == "" && !(relation == "implements" && relationByKind["base_list"] != "") {
+			continue
+		}
+		segment := classRelationSegment(text, relation)
+		for _, target := range implementationTargetNamesFromText(segment) {
+			if target == "" || target == implementer {
+				continue
+			}
+			out = append(out, Implementation{
+				Kind:             relation,
+				ImplementerName:  implementer,
+				ImplementedName:  target,
+				StartLine:        int(node.StartPosition().Row) + 1,
+				EndLine:          int(node.EndPosition().Row) + 1,
+				StartByte:        int(node.StartByte()),
+				EndByte:          int(node.EndByte()),
+				StartColumn:      int(node.StartPosition().Column) + 1,
+				EndColumn:        int(node.EndPosition().Column) + 1,
+				ResolutionStatus: "unresolved",
+				Confidence:       "candidate",
+			})
+		}
+	}
+	return out
+}
+
+func classRelationSegment(text string, relation string) string {
+	needle := " " + relation + " "
+	index := strings.Index(text, needle)
+	if index < 0 {
+		return ""
+	}
+	segment := text[index+len(needle):]
+	for _, terminator := range []string{" implements ", " extends ", "{"} {
+		if terminator == needle {
+			continue
+		}
+		if end := strings.Index(segment, terminator); end >= 0 {
+			segment = segment[:end]
+		}
+	}
+	return segment
+}
+
+func implementationTargetNamesFromText(value string) []string {
+	parts := strings.Split(value, ",")
+	names := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := implementationTargetName(part)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func implementationTargetNames(node *tree_sitter.Node, content []byte, implementer string) []string {
+	seen := make(map[string]struct{})
+	var names []string
+	var visit func(*tree_sitter.Node)
+	visit = func(current *tree_sitter.Node) {
+		if current == nil {
+			return
+		}
+		switch current.Kind() {
+		case "identifier", "type_identifier", "qualified_name", "generic_name":
+			name := implementationTargetName(current.Utf8Text(content))
+			if name != "" && name != implementer {
+				if _, ok := seen[name]; !ok {
+					seen[name] = struct{}{}
+					names = append(names, name)
+				}
+			}
+		}
+		cursor := current.Walk()
+		defer cursor.Close()
+		for _, child := range current.NamedChildren(cursor) {
+			child := child
+			visit(&child)
+		}
+	}
+	visit(node)
+	return names
+}
+
+func implementationTargetName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if idx := strings.Index(value, "<"); idx >= 0 {
+		value = strings.TrimSpace(value[:idx])
+	}
+	if idx := strings.LastIndex(value, "."); idx >= 0 {
+		value = strings.TrimSpace(value[idx+1:])
+	}
+	return value
 }
 
 func importSymbolFromNode(node *tree_sitter.Node, content []byte) (Symbol, bool) {

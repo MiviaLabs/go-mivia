@@ -346,6 +346,36 @@ func Run() {
 	}
 }
 
+func TestSymbolImplementersReturnDistinctGraphEdges(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "src", "wallet.ts"), `export interface WalletRepo {}
+
+export class DrizzleWalletRepo implements WalletRepo {}
+`)
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	symbols, err := svc.ListSymbols(ctx, "example-service", SymbolFilter{}, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbols: %v", err)
+	}
+	walletRepo := findSymbolMetadata(t, symbols.Symbols, "WalletRepo")
+	implementers, err := svc.ListSymbolImplementers(ctx, "example-service", walletRepo.ID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list symbol implementers: %v", err)
+	}
+	if len(implementers.Implementations) != 1 {
+		t.Fatalf("expected one implementer edge, got %#v", implementers)
+	}
+	edge := implementers.Implementations[0]
+	if edge.ImplementerName != "DrizzleWalletRepo" || edge.ImplementedName != "WalletRepo" || edge.Kind != "implements" || edge.FileID == "" {
+		t.Fatalf("unexpected implementer edge: %#v", edge)
+	}
+}
+
 func TestSymbolSourceFallsBackToLineRangeWhenByteSpanMissing(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

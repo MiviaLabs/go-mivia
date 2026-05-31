@@ -277,6 +277,34 @@ type SymbolCallEdgeList struct {
 	Index         *SearchIndexMetadata `json:"index,omitempty"`
 }
 
+type SymbolImplementation struct {
+	ID                  string `json:"id"`
+	FileID              string `json:"file_id,omitempty"`
+	ProjectID           string `json:"project_id"`
+	Kind                string `json:"kind"`
+	ImplementerSymbolID string `json:"implementer_symbol_id,omitempty"`
+	ImplementedSymbolID string `json:"implemented_symbol_id,omitempty"`
+	ImplementerName     string `json:"implementer_name,omitempty"`
+	ImplementedName     string `json:"implemented_name,omitempty"`
+	PackageName         string `json:"package,omitempty"`
+	Receiver            string `json:"receiver,omitempty"`
+	ImportPath          string `json:"import_path,omitempty"`
+	StartLine           int    `json:"start_line,omitempty"`
+	EndLine             int    `json:"end_line,omitempty"`
+	StartByte           int    `json:"start_byte,omitempty"`
+	EndByte             int    `json:"end_byte,omitempty"`
+	StartColumn         int    `json:"start_column,omitempty"`
+	EndColumn           int    `json:"end_column,omitempty"`
+	ResolutionStatus    string `json:"resolution_status"`
+	Confidence          string `json:"confidence,omitempty"`
+}
+
+type SymbolImplementationList struct {
+	Symbol          SymbolMetadata         `json:"symbol"`
+	Implementations []SymbolImplementation `json:"implementations"`
+	NextPageToken   string                 `json:"next_page_token,omitempty"`
+}
+
 type SymbolCallGraph struct {
 	Symbol    SymbolMetadata   `json:"symbol"`
 	Direction string           `json:"direction"`

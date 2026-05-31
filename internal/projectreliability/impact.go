@@ -66,6 +66,7 @@ type impactGraphAPI interface {
 	SearchReferences(context.Context, string, projectingestion.ReferenceSearchOptions) (projectingestion.SymbolReferenceList, error)
 	ListSymbolReferences(context.Context, string, string, projectingestion.Pagination) (projectingestion.SymbolReferenceList, error)
 	ListSymbolCallers(context.Context, string, string, projectingestion.Pagination) (projectingestion.SymbolCallEdgeList, error)
+	ListSymbolImplementers(context.Context, string, string, projectingestion.Pagination) (projectingestion.SymbolImplementationList, error)
 	LatestRunMetadata(context.Context, string) (projectingestion.RunMetadata, error)
 }
 
@@ -182,9 +183,23 @@ func (analyzer *ImpactAnalyzer) addFileSymbolImpact(ctx context.Context, result 
 		result = analyzer.addSymbolReferences(ctx, result, projectID, symbol)
 		result = analyzer.addSymbolCallers(ctx, result, projectID, symbol)
 		if symbol.Kind == string(projectingestion.SymbolKindType) || symbol.Kind == string(projectingestion.SymbolKindClass) {
+			result = analyzer.addSymbolImplementers(ctx, result, projectID, symbol)
 			result = analyzer.addNameReferences(ctx, result, projectID, symbol)
-			result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "implementer_edges_not_distinct")
 		}
+	}
+	return result
+}
+
+func (analyzer *ImpactAnalyzer) addSymbolImplementers(ctx context.Context, result ImpactAnalysis, projectID string, symbol projectingestion.SymbolMetadata) ImpactAnalysis {
+	implementers, err := analyzer.ingestion.ListSymbolImplementers(ctx, projectID, symbol.ID, projectingestion.Pagination{PageSize: projectingestion.MaxPageSize})
+	if err != nil {
+		result.Partial = true
+		result.PartialReason = firstNonEmpty(result.PartialReason, "graph_implementer_lookup_failed")
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "graph_implementer_lookup_failed")
+		return result
+	}
+	for _, implementation := range implementers.Implementations {
+		result = analyzer.addAffectedFile(ctx, result, projectID, implementation.FileID, "graph_implementer")
 	}
 	return result
 }

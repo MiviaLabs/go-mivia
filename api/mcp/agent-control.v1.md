@@ -231,7 +231,7 @@ Output: deterministic context readiness and freshness metadata for one project, 
 
 Input schema: `id`, optional safe project-relative `changed_paths`, optional `diff_scope` (`working_tree`, `staged`, or `head`), and optional `max_diff_bytes`.
 
-Output: deterministic impact metadata with graph-backed source anchors, affected domains, REST routes, MCP tools, security flags, residual unknowns, and `partial`/`partial_reason` when index health prevents a complete answer. When no paths are supplied, the tool may use governed workspace diff file metadata; it does not return raw diff content.
+Output: deterministic impact metadata with graph-backed source anchors from defining symbols, references, callers, and implementer edges; affected domains, REST routes, MCP tools, security flags, residual unknowns, and `partial`/`partial_reason` when index health prevents a complete answer. When no paths are supplied, the tool may use governed workspace diff file metadata; it does not return raw diff content.
 
 ### `projects.claims.check`
 

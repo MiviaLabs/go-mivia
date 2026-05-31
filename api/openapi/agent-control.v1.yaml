@@ -264,7 +264,7 @@ paths:
     post:
       operationId: analyzeProjectImpact
       summary: Analyze changed-path impact
-      description: Deterministic local impact analysis from changed paths or governed workspace diff metadata. It does not return raw diff content.
+      description: Deterministic local impact analysis from changed paths or governed workspace diff metadata, including graph-backed references, callers, and implementer edges. It does not return raw diff content.
       parameters:
         - $ref: '#/components/parameters/ID'
       requestBody:

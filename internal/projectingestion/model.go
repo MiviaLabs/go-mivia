@@ -169,6 +169,23 @@ type Call struct {
 	Confidence       string
 }
 
+type Implementation struct {
+	Kind             string
+	ImplementerName  string
+	ImplementedName  string
+	PackageName      string
+	Receiver         string
+	ImportPath       string
+	StartLine        int
+	EndLine          int
+	StartByte        int
+	EndByte          int
+	StartColumn      int
+	EndColumn        int
+	ResolutionStatus string
+	Confidence       string
+}
+
 type Heading struct {
 	Level       int
 	Text        string

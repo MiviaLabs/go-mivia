@@ -24,11 +24,11 @@ func TestGraphStore_DeleteDerivedFileNodesIsFileScopedAndRemovesRelationships(t 
 	run := testGraphRun(project.ID)
 	state := testGraphState("cmd/a.go", "hash-a", "sha256:a")
 
-	if err := store.PutEligibleFile(ctx, project, run, state, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: "sha256:a"}}, []Symbol{{Kind: SymbolKindFunction, Name: "A", StartLine: 1, EndLine: 1}}, nil, nil, nil); err != nil {
+	if err := store.PutEligibleFile(ctx, project, run, state, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: "sha256:a"}}, []Symbol{{Kind: SymbolKindFunction, Name: "A", StartLine: 1, EndLine: 1}}, nil, nil, nil, nil); err != nil {
 		t.Fatalf("put initial file graph: %v", err)
 	}
 	otherState := testGraphState("cmd/b.go", "hash-b", "sha256:b")
-	if err := store.PutEligibleFile(ctx, project, run, otherState, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: "sha256:b"}}, nil, nil, nil, nil); err != nil {
+	if err := store.PutEligibleFile(ctx, project, run, otherState, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: "sha256:b"}}, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("put other file graph: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func BenchmarkGraphDeleteDerivedFileNodes(b *testing.B) {
 		for fileIndex := 0; fileIndex < 200; fileIndex++ {
 			suffix := strconv.Itoa(fileIndex)
 			state := testGraphState("cmd/file-"+suffix+".go", "hash-"+suffix, "sha256:"+suffix)
-			if err := store.PutEligibleFile(ctx, project, run, state, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: state.ContentSHA256}}, nil, nil, nil, nil); err != nil {
+			if err := store.PutEligibleFile(ctx, project, run, state, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: state.ContentSHA256}}, nil, nil, nil, nil, nil); err != nil {
 				b.Fatalf("put file graph: %v", err)
 			}
 		}
