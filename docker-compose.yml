@@ -5,7 +5,7 @@ services:
     # registry tags and may be published as 0.1.0 by the release workflow.
     # To pull instead of building locally, uncomment the image below and remove
     # the build block.
-    # image: ghcr.io/mivialabs/mivia-server:0.1.0
+    # image: ghcr.io/mivialabs/go-mivia:0.1.0
     build:
       context: .
       dockerfile: Dockerfile
@@ -19,9 +19,9 @@ services:
       MIVIA_LADYBUG_PATH: "${MIVIA_LADYBUG_PATH:-/var/lib/mivia/mivialabs.lbug}"
       MIVIA_SQLITE_PATH: "${MIVIA_SQLITE_PATH:-/var/lib/mivia/mivialabs-config.sqlite}"
       MIVIA_SQLITE_WAL_ENABLED: "${MIVIA_SQLITE_WAL_ENABLED:-true}"
-      MIVIA_INGESTION_CONTENT_GRAPH_ENABLED: "${MIVIA_INGESTION_CONTENT_GRAPH_ENABLED:-false}"
+      MIVIA_INGESTION_CONTENT_GRAPH_ENABLED: "${MIVIA_INGESTION_CONTENT_GRAPH_ENABLED:-true}"
       MIVIA_INGESTION_LIVE_UPDATES_ENABLED: "${MIVIA_INGESTION_LIVE_UPDATES_ENABLED:-false}"
-      MIVIA_WORKSPACE_ENABLED: "${MIVIA_WORKSPACE_ENABLED:-false}"
+      MIVIA_WORKSPACE_ENABLED: "${MIVIA_WORKSPACE_ENABLED:-true}"
     volumes:
       - mivia-data:/var/lib/mivia
       - ./configs:/app/configs:ro

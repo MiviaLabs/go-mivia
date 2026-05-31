@@ -45,7 +45,7 @@ docker compose up
 The default Compose file builds from this checkout. After the first public image is published, the Compose file includes a commented pull example:
 
 ```yaml
-# image: ghcr.io/mivialabs/mivia-server:0.1.0
+# image: ghcr.io/mivialabs/go-mivia:0.1.0
 ```
 
 Go module releases and container images are versioned in different registries. The Go module release tag should be `v0.1.0`; the container image tag can be `0.1.0` when the release workflow publishes it that way.
@@ -54,6 +54,9 @@ Defaults:
 
 - Host bind: `MIVIA_HOST_BIND=127.0.0.1`
 - Host port: `MIVIA_HOST_PORT=8080`
+- Content graph ingestion: `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true`
+- Live updates: `MIVIA_INGESTION_LIVE_UPDATES_ENABLED=false`
+- Global workspace gate: `MIVIA_WORKSPACE_ENABLED=true`
 - Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`
 - Container storage: named Compose volume `mivia-data`
 
@@ -66,6 +69,8 @@ MIVIA_HOST_BIND=127.0.0.1 MIVIA_HOST_PORT=18080 docker compose up
 `MIVIA_HOST_BIND=0.0.0.0` publishes beyond loopback. Use it only for approved local-only network exposure; the server has no production authn/authz posture. The container still runs `mivia-server` on internal loopback and forwards container port `8080` for Docker publishing.
 
 The default Compose file mounts `./configs` read-only. Mount `./secrets` only in a local override when an approved ignored config references credential files.
+
+Workspace access still requires a configured project with `workspace_mode = "read_only"` or `"edit"`. Leave project `workspace_mode = "disabled"` for projects that must not expose governed git status/diff/read/edit tools.
 
 ## Optional Local Project Config
 

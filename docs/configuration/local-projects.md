@@ -69,10 +69,12 @@ Docker Compose also reads host-side publishing overrides that are not server con
 
 Keep `MIVIA_HOST_BIND=127.0.0.1` unless an approved local-only exposure requires a different host bind. The Compose image keeps `mivia-server` bound to container loopback and forwards container port `8080` for Docker publishing.
 
+Compose enables content graph ingestion and the global workspace gate by default with `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true` and `MIVIA_WORKSPACE_ENABLED=true`. Live updates remain disabled by default. Workspace tools still require each project to opt in with `workspace_mode = "read_only"` or `"edit"`.
+
 The default Compose path builds locally. For the future public release, `docker-compose.yml` carries a commented image example using a container registry tag:
 
 ```yaml
-# image: ghcr.io/mivialabs/mivia-server:0.1.0
+# image: ghcr.io/mivialabs/go-mivia:0.1.0
 ```
 
 Do not treat that as a Go module proxy path. Go module publication uses repository semantic-version tags such as `v0.1.0`; container publication uses registry image tags such as `0.1.0` when the release workflow chooses that tag.
