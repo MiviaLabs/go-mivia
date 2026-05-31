@@ -45,7 +45,9 @@ func TestInitialize_ReturnsServerInstructions(t *testing.T) {
 	}
 	if !bytes.Contains(res.Body.Bytes(), []byte(`"instructions"`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`authoritative context and workspace interface`)) ||
-		!bytes.Contains(res.Body.Bytes(), []byte(`projects.ingestion_status_latest`)) {
+		!bytes.Contains(res.Body.Bytes(), []byte(`projects.ingestion_status_latest`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`projects.context_health`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`agent_runs.step_append`)) {
 		t.Fatalf("expected initialize instructions, got %s", res.Body.String())
 	}
 }

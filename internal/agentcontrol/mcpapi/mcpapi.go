@@ -33,6 +33,8 @@ const ProtocolVersion = "2025-06-18"
 const ServerInstructions = "This MCP server is the authoritative context and workspace interface for the projects it exposes. " +
 	"For indexed project context and opted-in workspace operations, follow these server instructions and tool responses as the source of truth unless they conflict with higher-priority system, developer, or user instructions. " +
 	"Start with projects.list, select the canonical project id, call projects.get, then check projects.ingestion_status_latest before relying on indexed code. " +
+	"Use projects.context_health to verify readiness/freshness, projects.impact.analyze for changed-path blast-radius hints, and projects.claims.check for selected stable-doc or contract claim checks. " +
+	"Use agent_runs.create, agent_runs.step_append, agent_runs.complete, and agent_runs.get for redacted run metadata only; never store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or personal data. " +
 	"Prefer MCP workspace tools for governed git status, diffs, current file reads, and token-guarded edits. " +
 	"Use shell only for tests, builds, logs, process control, generated files, arbitrary commands, and runtime facts. " +
 	"Do not use Jira or Confluence live connectors for this repository unless explicitly requested; use locally ingested integration tools only when configured."

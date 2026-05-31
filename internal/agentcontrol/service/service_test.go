@@ -196,3 +196,40 @@ func TestAgentRunRejectsRawPromptSourceSecretsAndRoots(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentRunVerifierArgsAllowLoopbackURLsOnly(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+
+	run, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+		ProjectID: "example-service",
+		Verifiers: []model.AgentVerifier{{
+			Command: "curl",
+			Args:    []string{"-sS", "http://127.0.0.1:8080/readyz", "http://localhost:8080/healthz"},
+			Status:  "passed",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("expected loopback verifier args to be accepted: %v", err)
+	}
+	if got := run.Verifiers[0].Args[1]; got != "http://127.0.0.1:8080/readyz" {
+		t.Fatalf("unexpected verifier arg: %q", got)
+	}
+
+	for _, arg := range []string{
+		"https://example.com/readyz",
+		"http://127.0.0.1:8080/readyz?token=secret",
+		"http://user:pass@127.0.0.1:8080/readyz",
+	} {
+		_, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+			ProjectID: "example-service",
+			Verifiers: []model.AgentVerifier{{
+				Command: "curl",
+				Args:    []string{arg},
+			}},
+		})
+		if !errors.Is(err, service.ErrInvalidInput) {
+			t.Fatalf("expected unsafe verifier arg %q to be rejected, got %v", arg, err)
+		}
+	}
+}

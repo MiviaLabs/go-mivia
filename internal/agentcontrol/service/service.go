@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -442,10 +444,35 @@ func safeVerifierArg(value string) (string, error) {
 	if value == "" {
 		return "", fmt.Errorf("%w: verifier arg is required", ErrInvalidInput)
 	}
-	if len(value) > 200 || strings.HasPrefix(value, "/") || filepath.IsAbs(value) || containsProhibitedData(value) {
+	if len(value) > 200 || strings.HasPrefix(value, "/") || filepath.IsAbs(value) {
+		return "", fmt.Errorf("%w: verifier arg is unsafe", ErrInvalidInput)
+	}
+	if strings.Contains(value, "://") {
+		if !isSafeLoopbackURL(value) {
+			return "", fmt.Errorf("%w: verifier arg is unsafe", ErrInvalidInput)
+		}
+		return value, nil
+	}
+	if containsProhibitedData(value) {
 		return "", fmt.Errorf("%w: verifier arg is unsafe", ErrInvalidInput)
 	}
 	return value, nil
+}
+
+func isSafeLoopbackURL(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func safeArtifacts(artifacts []model.AgentArtifact) ([]model.AgentArtifact, error) {
