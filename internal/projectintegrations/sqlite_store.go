@@ -15,8 +15,79 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
+const integrationSQLiteWriteMaxWait = 5 * time.Minute
+
 func NewSQLiteStore(db *sql.DB) *SQLiteStore {
 	return &SQLiteStore{db: db}
+}
+
+func (store *SQLiteStore) execWrite(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	startedAt := time.Now()
+	delay := 100 * time.Millisecond
+	for {
+		result, err := store.db.ExecContext(ctx, query, args...)
+		if err == nil || !isSQLiteBusyError(err) || time.Since(startedAt) >= integrationSQLiteWriteMaxWait {
+			return result, err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		if delay < 2*time.Second {
+			delay *= 2
+		}
+	}
+}
+
+func (store *SQLiteStore) withWriteTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	startedAt := time.Now()
+	delay := 100 * time.Millisecond
+	for {
+		err := store.runWriteTx(ctx, fn)
+		if err == nil || !isSQLiteBusyError(err) || time.Since(startedAt) >= integrationSQLiteWriteMaxWait {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if delay < 2*time.Second {
+			delay *= 2
+		}
+	}
+}
+
+func (store *SQLiteStore) runWriteTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sqlite_busy") ||
+		strings.Contains(message, "sqlite_locked") ||
+		strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "database table is locked") ||
+		strings.Contains(message, "database is busy")
 }
 
 func (store *SQLiteStore) UpsertSource(ctx context.Context, input SourceMetadataInput) (SourceMetadata, error) {
@@ -24,7 +95,7 @@ func (store *SQLiteStore) UpsertSource(ctx context.Context, input SourceMetadata
 	if err != nil {
 		return SourceMetadata{}, err
 	}
-	_, err = store.db.ExecContext(ctx, `INSERT INTO project_integration_sources (
+	_, err = store.execWrite(ctx, `INSERT INTO project_integration_sources (
 		project_id,
 		provider,
 		site_url_hash,
@@ -128,7 +199,7 @@ func (store *SQLiteStore) CreateSyncRun(ctx context.Context, run SyncRun) error 
 	if err != nil {
 		return err
 	}
-	_, err = store.db.ExecContext(ctx, `INSERT INTO project_integration_sync_runs (
+	_, err = store.execWrite(ctx, `INSERT INTO project_integration_sync_runs (
 		run_id,
 		project_id,
 		provider,
@@ -171,7 +242,7 @@ func (store *SQLiteStore) UpdateSyncRun(ctx context.Context, run SyncRun) error 
 	if err != nil {
 		return err
 	}
-	result, err := store.db.ExecContext(ctx, `UPDATE project_integration_sync_runs
+	result, err := store.execWrite(ctx, `UPDATE project_integration_sync_runs
 	SET status = ?,
 		items_seen = ?,
 		items_upserted = ?,
@@ -268,12 +339,38 @@ func (store *SQLiteStore) GetActiveSyncRun(ctx context.Context, projectID string
 	return run, err
 }
 
+func (store *SQLiteStore) FailActiveSyncRuns(ctx context.Context, finishedAt time.Time, errorCategory string) (int, error) {
+	category := strings.TrimSpace(errorCategory)
+	if category == "" {
+		category = string(ErrorCategoryInterrupted)
+	}
+	result, err := store.execWrite(ctx, `UPDATE project_integration_sync_runs
+	SET status = ?,
+		error_category = ?,
+		finished_at = ?
+	WHERE status IN (?, ?)`,
+		string(SyncRunStatusFailed),
+		category,
+		formatTime(finishedAt.UTC()),
+		string(SyncRunStatusPending),
+		string(SyncRunStatusRunning),
+	)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(affected), nil
+}
+
 func (store *SQLiteStore) UpdateSyncState(ctx context.Context, input SyncStateInput) (SyncState, error) {
 	state, err := stateFromInput(input)
 	if err != nil {
 		return SyncState{}, err
 	}
-	_, err = store.db.ExecContext(ctx, `INSERT INTO project_integration_sync_state (
+	_, err = store.execWrite(ctx, `INSERT INTO project_integration_sync_state (
 		project_id,
 		provider,
 		last_run_id,
@@ -357,7 +454,94 @@ func (store *SQLiteStore) UpsertItem(ctx context.Context, input ItemMetadataInpu
 		return ItemMetadata{}, err
 	}
 	item.Changed = errors.Is(err, sql.ErrNoRows) || previousContentSHA != item.ContentSHA256
-	_, err = store.db.ExecContext(ctx, `INSERT INTO project_integration_items (
+	_, err = store.execWrite(ctx, `INSERT INTO project_integration_items (
+		project_id,
+		provider,
+		item_id,
+		item_key,
+		item_id_hash,
+		item_key_hash,
+		item_type,
+		item_status,
+		item_updated_at,
+		content_sha256,
+		provider_version,
+		provider_etag,
+		first_seen_at,
+		last_seen_at,
+		last_run_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(project_id, provider, item_id_hash) DO UPDATE SET
+		item_id = excluded.item_id,
+		item_key = excluded.item_key,
+		item_key_hash = excluded.item_key_hash,
+		item_type = excluded.item_type,
+		item_status = excluded.item_status,
+		item_updated_at = excluded.item_updated_at,
+		content_sha256 = excluded.content_sha256,
+		provider_version = excluded.provider_version,
+		provider_etag = excluded.provider_etag,
+		last_seen_at = excluded.last_seen_at,
+		last_run_id = excluded.last_run_id`,
+		item.ProjectID,
+		string(item.Provider),
+		item.ItemID,
+		item.ItemKey,
+		item.ItemIDHash,
+		item.ItemKeyHash,
+		item.ItemType,
+		item.ItemStatus,
+		formatTime(item.ItemUpdatedAt),
+		item.ContentSHA256,
+		item.ProviderVersion,
+		item.ProviderETag,
+		formatTime(item.FirstSeenAt),
+		formatTime(item.LastSeenAt),
+		item.LastRunID,
+	)
+	if err != nil {
+		return ItemMetadata{}, err
+	}
+	return item, nil
+}
+
+func (store *SQLiteStore) UpsertItems(ctx context.Context, inputs []ItemMetadataInput) ([]ItemMetadata, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+	items := make([]ItemMetadata, 0, len(inputs))
+	for _, input := range inputs {
+		item, err := itemFromInput(input)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := store.withWriteTx(ctx, func(tx *sql.Tx) error {
+		for index := range items {
+			item, err := store.upsertItemTx(ctx, tx, items[index])
+			if err != nil {
+				return err
+			}
+			items[index] = item
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (store *SQLiteStore) upsertItemTx(ctx context.Context, tx *sql.Tx, item ItemMetadata) (ItemMetadata, error) {
+	var previousContentSHA string
+	err := tx.QueryRowContext(ctx, `SELECT content_sha256
+	FROM project_integration_items
+	WHERE project_id = ? AND provider = ? AND item_id_hash = ?`, item.ProjectID, string(item.Provider), item.ItemIDHash).Scan(&previousContentSHA)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ItemMetadata{}, err
+	}
+	item.Changed = errors.Is(err, sql.ErrNoRows) || previousContentSHA != item.ContentSHA256
+	_, err = tx.ExecContext(ctx, `INSERT INTO project_integration_items (
 		project_id,
 		provider,
 		item_id,

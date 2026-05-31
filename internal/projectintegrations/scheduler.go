@@ -181,12 +181,26 @@ func (scheduler *Scheduler) SubmitProviderPoll(ctx context.Context, projectID st
 		startedAt := time.Now()
 		result, err := runner.ExecutePreparedProviderPoll(runCtx, run)
 		if err != nil {
+			category := schedulerErrorCategory(err)
+			if failedRun, failErr := runner.FailPreparedProviderPoll(context.WithoutCancel(runCtx), run, string(category)); failErr != nil {
+				scheduler.logWarn("project integration poll failure status update failed",
+					slog.String("project_id", run.ProjectID),
+					slog.String("provider", string(run.Provider)),
+					slog.String("kind", string(run.Kind)),
+					slog.String("run_id", run.ID),
+					slog.String("error_category", string(ErrorCategoryStorageFailed)),
+					slog.String("error", redactedSchedulerError(run.Provider, failErr).Error()),
+					slog.Duration("elapsed", time.Since(startedAt)),
+				)
+			} else {
+				run = failedRun
+			}
 			scheduler.logWarn("project integration poll failed",
 				slog.String("project_id", run.ProjectID),
 				slog.String("provider", string(run.Provider)),
 				slog.String("kind", string(run.Kind)),
 				slog.String("run_id", run.ID),
-				slog.String("error_category", string(schedulerErrorCategory(err))),
+				slog.String("error_category", string(category)),
 				slog.String("error", redactedSchedulerError(run.Provider, err).Error()),
 				slog.Duration("elapsed", time.Since(startedAt)),
 			)
@@ -405,7 +419,7 @@ func defaultDuration(value time.Duration, fallback time.Duration) time.Duration 
 }
 
 func redactedSchedulerError(provider Provider, err error) error {
-	return fmt.Errorf("%w: provider=%s category=%s", ErrProviderRequestFailed, provider, schedulerErrorCategory(err))
+	return &ProviderError{Provider: string(provider), Operation: "poll", Category: schedulerErrorCategory(err)}
 }
 
 func schedulerErrorCategory(err error) ErrorCategory {

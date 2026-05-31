@@ -202,6 +202,31 @@ func TestScheduler_SubmitProviderPollReturnsBeforeExecutionCompletes(t *testing.
 	close(runner.release)
 }
 
+func TestScheduler_SubmitProviderPollMarksPreparedRunFailedOnExecutionError(t *testing.T) {
+	runner := &schedulerFakeRunner{
+		started:    make(chan schedulerPollCall, 1),
+		failed:     make(chan SyncRun, 1),
+		executeErr: RequestError("jira", "search"),
+	}
+	scheduler := newTestScheduler(t, nil, runner)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	t.Cleanup(func() { _ = scheduler.Stop(context.Background()) })
+
+	run, err := scheduler.SubmitProviderPoll(context.Background(), "project-1", ProviderJira, SyncKindInitialFull)
+	if err != nil {
+		t.Fatalf("submit provider poll: %v", err)
+	}
+	_ = receiveSchedulerCall(t, runner.started)
+	failed := receiveFailedRun(t, runner.failed)
+	if failed.ID != run.ID || failed.Status != SyncRunStatusFailed || failed.ErrorCategory != string(ErrorCategoryRequestFailed) {
+		t.Fatalf("expected submitted run to be marked failed, submitted=%#v failed=%#v", run, failed)
+	}
+}
+
 func TestScheduler_ErrorsAreRedacted(t *testing.T) {
 	runner := &schedulerFakeRunner{
 		err: fmt.Errorf("provider failure MIVIA_ATLASSIAN_TOKEN_PROJECT_1 /home/mac/secret-atlassian-credentials.json ACME raw-provider-cursor-token"),
@@ -227,12 +252,14 @@ type schedulerPollCall struct {
 }
 
 type schedulerFakeRunner struct {
-	mu      sync.Mutex
-	calls   []schedulerPollCall
-	started chan schedulerPollCall
-	release chan struct{}
-	result  PollRunResult
-	err     error
+	mu         sync.Mutex
+	calls      []schedulerPollCall
+	started    chan schedulerPollCall
+	release    chan struct{}
+	failed     chan SyncRun
+	result     PollRunResult
+	err        error
+	executeErr error
 }
 
 func (runner *schedulerFakeRunner) RunProviderPoll(ctx context.Context, projectID string, provider Provider, kind SyncKind) (PollRunResult, error) {
@@ -300,6 +327,9 @@ func (runner *schedulerFakeRunner) ExecutePreparedProviderPoll(ctx context.Conte
 			return PollRunResult{}, ctx.Err()
 		}
 	}
+	if runner.executeErr != nil {
+		return PollRunResult{}, runner.executeErr
+	}
 	if runner.err != nil {
 		return PollRunResult{}, runner.err
 	}
@@ -310,6 +340,12 @@ func (runner *schedulerFakeRunner) ExecutePreparedProviderPoll(ctx context.Conte
 func (runner *schedulerFakeRunner) FailPreparedProviderPoll(_ context.Context, run SyncRun, category string) (SyncRun, error) {
 	run.Status = SyncRunStatusFailed
 	run.ErrorCategory = category
+	if runner.failed != nil {
+		select {
+		case runner.failed <- run:
+		default:
+		}
+	}
 	return run, nil
 }
 
@@ -368,5 +404,16 @@ func receiveDuration(t *testing.T, calls <-chan time.Duration) time.Duration {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for sleep call")
 		return 0
+	}
+}
+
+func receiveFailedRun(t *testing.T, runs <-chan SyncRun) SyncRun {
+	t.Helper()
+	select {
+	case run := <-runs:
+		return run
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed run")
+		return SyncRun{}
 	}
 }

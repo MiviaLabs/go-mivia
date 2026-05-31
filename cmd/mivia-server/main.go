@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/httpapi"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/mcpapi"
@@ -119,6 +120,12 @@ func run() error {
 		projectIngestionService.SetCheckpointFunc(sqliteDB.Checkpoint)
 	}
 	projectIntegrationStore := projectintegrations.NewSQLiteStore(sqliteDB.SQLDB())
+	interruptedIntegrationRuns, err := projectIntegrationStore.FailActiveSyncRuns(ctx, time.Now().UTC(), string(projectintegrations.ErrorCategoryInterrupted))
+	if err != nil {
+		return err
+	} else if interruptedIntegrationRuns > 0 {
+		logger.Warn("failed interrupted integration runs after server restart", slog.Int("run_count", interruptedIntegrationRuns))
+	}
 	projectIntegrationRunner, err := projectintegrations.NewRunner(projectintegrations.RunnerOptions{
 		Projects:           cfg.Projects,
 		Store:              projectIntegrationStore,

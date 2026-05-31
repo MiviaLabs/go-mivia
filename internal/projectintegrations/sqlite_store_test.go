@@ -109,6 +109,46 @@ func TestSQLiteStore_GetActiveSyncRunReturnsNewestPendingOrRunning(t *testing.T)
 	}
 }
 
+func TestSQLiteStore_FailActiveSyncRunsMarksInterruptedRunsFailed(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t)
+	runs := []SyncRun{
+		{ID: "pending-run", ProjectID: "project-1", Provider: ProviderJira, Kind: SyncKindInitialFull, Status: SyncRunStatusPending, StartedAt: testTime()},
+		{ID: "running-run", ProjectID: "project-1", Provider: ProviderJira, Kind: SyncKindIncremental, Status: SyncRunStatusRunning, StartedAt: testTime().Add(time.Minute)},
+		{ID: "completed-run", ProjectID: "project-1", Provider: ProviderJira, Kind: SyncKindIncremental, Status: SyncRunStatusCompleted, StartedAt: testTime().Add(2 * time.Minute), FinishedAt: testTime().Add(3 * time.Minute)},
+	}
+	for _, run := range runs {
+		if err := store.CreateSyncRun(ctx, run); err != nil {
+			t.Fatalf("create run %s: %v", run.ID, err)
+		}
+	}
+
+	finishedAt := testTime().Add(4 * time.Minute)
+	failed, err := store.FailActiveSyncRuns(ctx, finishedAt, string(ErrorCategoryInterrupted))
+	if err != nil {
+		t.Fatalf("fail active runs: %v", err)
+	}
+	if failed != 2 {
+		t.Fatalf("expected 2 failed runs, got %d", failed)
+	}
+	for _, id := range []string{"pending-run", "running-run"} {
+		run, err := store.GetSyncRun(ctx, "project-1", ProviderJira, id)
+		if err != nil {
+			t.Fatalf("get run %s: %v", id, err)
+		}
+		if run.Status != SyncRunStatusFailed || run.ErrorCategory != string(ErrorCategoryInterrupted) || !run.FinishedAt.Equal(finishedAt) {
+			t.Fatalf("unexpected failed run %s: %#v", id, run)
+		}
+	}
+	completed, err := store.GetSyncRun(ctx, "project-1", ProviderJira, "completed-run")
+	if err != nil {
+		t.Fatalf("get completed run: %v", err)
+	}
+	if completed.Status != SyncRunStatusCompleted {
+		t.Fatalf("completed run should not be changed: %#v", completed)
+	}
+}
+
 func TestSQLiteStore_UpdateSyncStatePersistsApprovedRawCursorAndHash(t *testing.T) {
 	ctx := context.Background()
 	store, db := newTestSQLiteStore(t)
@@ -267,6 +307,15 @@ func TestSQLiteStore_RejectsInvalidInputs(t *testing.T) {
 	}
 	if _, err := store.UpsertItem(ctx, ItemMetadataInput{ProjectID: "project-1", Provider: ProviderJira, ItemType: "issue"}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected invalid item, got %v", err)
+	}
+}
+
+func TestSQLiteStore_SQLiteBusyErrorDetection(t *testing.T) {
+	if !isSQLiteBusyError(errors.New("database is locked (SQLITE_BUSY)")) {
+		t.Fatal("expected sqlite busy error to be retryable")
+	}
+	if isSQLiteBusyError(errors.New("constraint failed")) {
+		t.Fatal("expected non-locking sqlite error to be non-retryable")
 	}
 }
 

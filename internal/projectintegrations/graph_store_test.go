@@ -3,12 +3,15 @@ package projectintegrations
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
 func TestRichContentGraphStore_PutRichContentItemWritesArtifactAndChunks(t *testing.T) {
@@ -74,6 +77,59 @@ func TestRichContentGraphStore_PutRichContentItemWritesArtifactAndChunks(t *test
 	}
 	if len(relationships) != 2 {
 		t.Fatalf("expected chunk relationships, got %#v", relationships)
+	}
+}
+
+func TestRichContentGraphStore_PutRichContentItemWorksThroughPersistentProjectRouter(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	registry, err := projectregistry.NewRegistry([]config.Project{{
+		ID:             "example-service",
+		DisplayName:    "Example Service",
+		RootPath:       root,
+		Enabled:        true,
+		GraphNamespace: "example-service",
+		GraphStorage:   projectregistry.GraphStoragePersistent,
+		DigestMode:     projectregistry.DigestModeContentGraph,
+		UpdatePolicy:   projectregistry.UpdatePolicyManual,
+	}}, projectregistry.Options{
+		ContentGraphEnabled:          true,
+		ContentGraphApprovalAccepted: true,
+		LadybugPath:                  filepath.Join(t.TempDir(), "graph.lbug"),
+		SQLitePath:                   ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	persistentGraph, err := ladybug.OpenPersistentGraph(filepath.Join(t.TempDir(), "graph.lbug"))
+	if err != nil {
+		t.Fatalf("open persistent graph: %v", err)
+	}
+	router := projectregistry.NewProjectGraphRouter(registry, ladybug.NewMemoryGraph(), persistentGraph)
+	if err := router.Bootstrap(ctx, schema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	store := NewRichContentGraphStore(router)
+	item := RichContentItem{
+		ProjectID: "example-service",
+		Provider:  ProviderJira,
+		ItemID:    "10001",
+		ItemKey:   "ACME-1",
+		ItemType:  "Task",
+		UpdatedAt: time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC),
+		Fields:    []RichContentField{{Name: "summary", Text: "Fix export"}},
+	}
+	chunks, err := ChunkRichContentItem(item, RichContentOptions{MaxItemTextBytes: 1024, MaxChunkBytes: 64})
+	if err != nil {
+		t.Fatalf("chunk content: %v", err)
+	}
+
+	result, err := store.PutRichContentItem(ctx, item, chunks)
+	if err != nil {
+		t.Fatalf("put rich content item: %v", err)
+	}
+	if result.ArtifactID == "" || !result.Changed {
+		t.Fatalf("unexpected result: %#v", result)
 	}
 }
 

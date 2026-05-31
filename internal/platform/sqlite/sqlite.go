@@ -54,8 +54,8 @@ func OpenWithOptions(path string, options Options) (*DB, error) {
 	if path == ":memory:" {
 		db.SetMaxOpenConns(1)
 	} else {
-		db.SetMaxOpenConns(8)
-		db.SetMaxIdleConns(8)
+		db.SetMaxOpenConns(2)
+		db.SetMaxIdleConns(2)
 	}
 	if err := applyPragmas(context.Background(), db, path, options); err != nil {
 		_ = db.Close()

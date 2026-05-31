@@ -20,6 +20,8 @@ const (
 	ErrorCategoryRequestFailed         ErrorCategory = "request_failed"
 	ErrorCategoryDecodeFailed          ErrorCategory = "decode_failed"
 	ErrorCategoryCredentialUnavailable ErrorCategory = "credential_unavailable"
+	ErrorCategoryStorageFailed         ErrorCategory = "storage_failed"
+	ErrorCategoryInterrupted           ErrorCategory = "interrupted"
 )
 
 type ProviderError struct {

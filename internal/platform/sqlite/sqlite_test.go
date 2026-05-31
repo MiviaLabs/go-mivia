@@ -85,8 +85,8 @@ func TestOpen_FileBackedDefaultsToWAL(t *testing.T) {
 	if busyTimeout != 5000 {
 		t.Fatalf("expected 5000ms busy timeout, got %d", busyTimeout)
 	}
-	if maxOpen := db.SQLDB().Stats().MaxOpenConnections; maxOpen <= 1 {
-		t.Fatalf("expected file-backed sqlite to allow concurrent pooled reads, max open conns=%d", maxOpen)
+	if maxOpen := db.SQLDB().Stats().MaxOpenConnections; maxOpen != 2 {
+		t.Fatalf("expected file-backed sqlite to use two connections, max open conns=%d", maxOpen)
 	}
 	if err := db.Checkpoint(context.Background()); err != nil {
 		t.Fatalf("checkpoint: %v", err)

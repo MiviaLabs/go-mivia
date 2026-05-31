@@ -46,9 +46,9 @@ func TestRunner_RunProviderPollCompletesAndStoresApprovedProviderIdentifiers(t *
 	if len(recorder.created) != 1 || recorder.created[0].Status != SyncRunStatusPending {
 		t.Fatalf("expected pending create, got %#v", recorder.created)
 	}
-	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusCompleted)
-	if recorder.updated[1].ItemsSeen != 1 || recorder.updated[2].ItemsSeen != 2 {
-		t.Fatalf("expected incremental running progress, got %#v", recorder.updated)
+	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusCompleted)
+	if recorder.updated[1].ItemsSeen != 2 {
+		t.Fatalf("expected batched running progress, got %#v", recorder.updated)
 	}
 	if jira.plan.ProjectID != "project-1" || jira.plan.Kind != SyncKindInitialFull || jira.plan.PageSize != 50 || jira.plan.MaxResults != 100 {
 		t.Fatalf("planner output was not consumed: %#v", jira.plan)
@@ -170,7 +170,7 @@ func TestRunner_RunProviderPollRichContentGraphErrorsAreRedactedAndDoNotAdvanceS
 	if err == nil {
 		t.Fatal("expected rich content graph write error")
 	}
-	if result.Run.Status != SyncRunStatusFailed || result.Run.ErrorCategory != string(ErrorCategoryRequestFailed) {
+	if result.Run.Status != SyncRunStatusFailed || result.Run.ErrorCategory != string(ErrorCategoryStorageFailed) {
 		t.Fatalf("unexpected failed run: %#v", result.Run)
 	}
 	if _, stateErr := recorder.GetSyncState(ctx, "project-1", ProviderJira); !errors.Is(stateErr, ErrNotFound) {
@@ -232,12 +232,9 @@ func TestRunner_RunProviderPollUpdatesRunningProgressWhilePersistingItems(t *tes
 	if result.Run.ItemsSeen != 3 || result.Run.ItemsUpserted != 3 {
 		t.Fatalf("unexpected final progress: %#v", result.Run)
 	}
-	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusCompleted)
-	for i, run := range recorder.updated[1:4] {
-		expected := i + 1
-		if run.ItemsSeen != expected || run.ItemsUpserted != expected || run.Status != SyncRunStatusRunning {
-			t.Fatalf("update %d: expected running progress %d, got %#v", i+1, expected, run)
-		}
+	assertRunStatusSequence(t, recorder.updated, SyncRunStatusRunning, SyncRunStatusRunning, SyncRunStatusCompleted)
+	if recorder.updated[1].ItemsSeen != 3 || recorder.updated[1].ItemsUpserted != 3 || recorder.updated[1].Status != SyncRunStatusRunning {
+		t.Fatalf("expected batched running progress, got %#v", recorder.updated[1])
 	}
 }
 

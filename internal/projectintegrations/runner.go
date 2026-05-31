@@ -21,6 +21,10 @@ type RunnerStore interface {
 	UpsertItem(context.Context, ItemMetadataInput) (ItemMetadata, error)
 }
 
+type RunnerBatchItemStore interface {
+	UpsertItems(context.Context, []ItemMetadataInput) ([]ItemMetadata, error)
+}
+
 type RichContentStore interface {
 	PutRichContentItem(context.Context, RichContentItem, []RichContentChunk) (RichContentGraphResult, error)
 }
@@ -218,34 +222,25 @@ func (runner *Runner) ExecutePreparedProviderPoll(ctx context.Context, run SyncR
 			return nil
 		}
 		run.ItemsSeen = progress.ItemsSeen
-		return runner.store.UpdateSyncRun(ctx, run)
+		return nil
 	}
 	result, pollErr := runner.pollProvider(ctx, project, run.Provider, run.Kind, state, progress)
 	finishedAt := runner.now().UTC()
 	if pollErr != nil {
-		run.Status = SyncRunStatusFailed
-		run.ErrorCategory = string(errorCategory(pollErr))
-		run.FinishedAt = finishedAt
-		_ = runner.store.UpdateSyncRun(ctx, run)
+		run = runner.failedRun(ctx, run, errorCategory(pollErr), finishedAt)
 		return PollRunResult{Run: run}, redactedPollError(run.Provider, run.ErrorCategory)
 	}
 	run.ItemsSeen = len(result.Items)
 	itemsChanged, itemsUnchanged, err := runner.upsertItems(ctx, &run, result.Items, finishedAt)
 	if err != nil {
-		run.Status = SyncRunStatusFailed
-		run.ErrorCategory = string(ErrorCategoryRequestFailed)
-		run.FinishedAt = finishedAt
-		_ = runner.store.UpdateSyncRun(ctx, run)
+		run = runner.failedRun(ctx, run, ErrorCategoryStorageFailed, finishedAt)
 		return PollRunResult{Run: run}, redactedPollError(run.Provider, run.ErrorCategory)
 	}
 	run.ItemsChanged = itemsChanged
 	run.ItemsUnchanged = itemsUnchanged
 	run.ItemsUpserted = itemsChanged
 	if err := runner.putRichContent(ctx, &run, result.RichContent); err != nil {
-		run.Status = SyncRunStatusFailed
-		run.ErrorCategory = string(ErrorCategoryRequestFailed)
-		run.FinishedAt = finishedAt
-		_ = runner.store.UpdateSyncRun(ctx, run)
+		run = runner.failedRun(ctx, run, ErrorCategoryStorageFailed, finishedAt)
 		return PollRunResult{Run: run}, redactedPollError(run.Provider, run.ErrorCategory)
 	}
 	run.EmptyPoll = len(result.Items) == 0
@@ -266,6 +261,19 @@ func (runner *Runner) ExecutePreparedProviderPoll(ctx context.Context, run SyncR
 	return PollRunResult{Run: run, State: updatedState}, nil
 }
 
+func (runner *Runner) failedRun(ctx context.Context, run SyncRun, category ErrorCategory, finishedAt time.Time) SyncRun {
+	run.Status = SyncRunStatusFailed
+	run.ErrorCategory = string(category)
+	if strings.TrimSpace(run.ErrorCategory) == "" {
+		run.ErrorCategory = string(ErrorCategoryRequestFailed)
+	}
+	run.FinishedAt = finishedAt
+	if err := runner.store.UpdateSyncRun(context.WithoutCancel(ctx), run); err != nil {
+		run.ErrorCategory = string(ErrorCategoryStorageFailed)
+	}
+	return run
+}
+
 func (runner *Runner) FailPreparedProviderPoll(ctx context.Context, run SyncRun, errorCategory string) (SyncRun, error) {
 	if runner == nil {
 		return SyncRun{}, fmt.Errorf("%w: runner is nil", ErrInvalidInput)
@@ -281,7 +289,7 @@ func (runner *Runner) FailPreparedProviderPoll(ctx context.Context, run SyncRun,
 		run.ErrorCategory = string(ErrorCategoryRequestFailed)
 	}
 	run.FinishedAt = runner.now().UTC()
-	if err := runner.store.UpdateSyncRun(ctx, run); err != nil {
+	if err := runner.store.UpdateSyncRun(context.WithoutCancel(ctx), run); err != nil {
 		return run, err
 	}
 	return run, nil
@@ -291,7 +299,7 @@ func (runner *Runner) putRichContent(ctx context.Context, run *SyncRun, payloads
 	if runner.richContentStore == nil || len(payloads) == 0 {
 		return nil
 	}
-	for _, payload := range payloads {
+	for index, payload := range payloads {
 		result, err := runner.richContentStore.PutRichContentItem(ctx, payload.Item, payload.Chunks)
 		if err != nil {
 			return err
@@ -301,8 +309,10 @@ func (runner *Runner) putRichContent(ctx context.Context, run *SyncRun, payloads
 		} else {
 			run.RichContentUnchanged++
 		}
-		if err := runner.store.UpdateSyncRun(ctx, *run); err != nil {
-			return err
+		if shouldPersistIntegrationProgress(index+1, len(payloads)) {
+			if err := runner.store.UpdateSyncRun(ctx, *run); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -356,23 +366,13 @@ func (runner *Runner) pollProvider(ctx context.Context, project config.Project, 
 }
 
 func (runner *Runner) upsertItems(ctx context.Context, run *SyncRun, items []PollItem, seenAt time.Time) (int, int, error) {
+	if batchStore, ok := runner.store.(RunnerBatchItemStore); ok {
+		return runner.upsertItemsBatched(ctx, batchStore, run, items, seenAt)
+	}
 	changed := 0
 	unchanged := 0
 	for index, item := range items {
-		metadata, err := runner.store.UpsertItem(ctx, ItemMetadataInput{
-			ProjectID:       run.ProjectID,
-			Provider:        run.Provider,
-			ItemID:          item.ID,
-			ItemKey:         item.Key,
-			ItemType:        item.Type,
-			ItemStatus:      item.Status,
-			ItemUpdatedAt:   item.UpdatedAt,
-			ProviderVersion: item.ProviderVersion,
-			ProviderETag:    item.ProviderETag,
-			FirstSeenAt:     seenAt,
-			LastSeenAt:      seenAt,
-			LastRunID:       run.ID,
-		})
+		metadata, err := runner.store.UpsertItem(ctx, itemMetadataInput(run, item, seenAt))
 		if err != nil {
 			return changed, unchanged, err
 		}
@@ -385,11 +385,69 @@ func (runner *Runner) upsertItems(ctx context.Context, run *SyncRun, items []Pol
 		run.ItemsChanged = changed
 		run.ItemsUnchanged = unchanged
 		run.ItemsUpserted = changed
+		if shouldPersistIntegrationProgress(index+1, len(items)) {
+			if err := runner.store.UpdateSyncRun(ctx, *run); err != nil {
+				return changed, unchanged, err
+			}
+		}
+	}
+	return changed, unchanged, nil
+}
+
+func (runner *Runner) upsertItemsBatched(ctx context.Context, store RunnerBatchItemStore, run *SyncRun, items []PollItem, seenAt time.Time) (int, int, error) {
+	changed := 0
+	unchanged := 0
+	const batchSize = 100
+	for start := 0; start < len(items); start += batchSize {
+		end := start + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		inputs := make([]ItemMetadataInput, 0, end-start)
+		for _, item := range items[start:end] {
+			inputs = append(inputs, itemMetadataInput(run, item, seenAt))
+		}
+		metadata, err := store.UpsertItems(ctx, inputs)
+		if err != nil {
+			return changed, unchanged, err
+		}
+		for _, item := range metadata {
+			if item.Changed {
+				changed++
+			} else {
+				unchanged++
+			}
+		}
+		run.ItemsSeen = end
+		run.ItemsChanged = changed
+		run.ItemsUnchanged = unchanged
+		run.ItemsUpserted = changed
 		if err := runner.store.UpdateSyncRun(ctx, *run); err != nil {
 			return changed, unchanged, err
 		}
 	}
 	return changed, unchanged, nil
+}
+
+func itemMetadataInput(run *SyncRun, item PollItem, seenAt time.Time) ItemMetadataInput {
+	return ItemMetadataInput{
+		ProjectID:       run.ProjectID,
+		Provider:        run.Provider,
+		ItemID:          item.ID,
+		ItemKey:         item.Key,
+		ItemType:        item.Type,
+		ItemStatus:      item.Status,
+		ItemUpdatedAt:   item.UpdatedAt,
+		ProviderVersion: item.ProviderVersion,
+		ProviderETag:    item.ProviderETag,
+		FirstSeenAt:     seenAt,
+		LastSeenAt:      seenAt,
+		LastRunID:       run.ID,
+	}
+}
+
+func shouldPersistIntegrationProgress(processed int, total int) bool {
+	return processed == total || processed%100 == 0
 }
 
 func syncStateInputForRun(previous SyncState, run SyncRun, cursor string, now time.Time) SyncStateInput {
@@ -466,7 +524,11 @@ func errorCategory(err error) ErrorCategory {
 }
 
 func redactedPollError(provider Provider, category string) error {
-	return fmt.Errorf("%w: provider=%s category=%s", ErrProviderRequestFailed, provider, category)
+	trimmedCategory := ErrorCategory(strings.TrimSpace(category))
+	if trimmedCategory == "" {
+		trimmedCategory = ErrorCategoryRequestFailed
+	}
+	return &ProviderError{Provider: string(provider), Operation: "poll", Category: trimmedCategory}
 }
 
 func newRandomRunID() string {
