@@ -727,7 +727,7 @@ paths:
     get:
       operationId: searchProjectAST
       summary: Search eligible indexed project AST
-      description: Runs a named Tree-sitter structural query over eligible indexed chunks only. The query parameter is a catalog id, not raw Tree-sitter syntax. Sensitive, denied, absent, parse-error, oversized, and other skipped files are unreachable from AST search. Oversized files may appear only as file_too_large coverage counts, file metadata with skipped_reason=file_too_large, and ingestion reason counts. Skipped sensitive content, roots, content hashes, raw parser internals, raw prompts, provider payloads, secrets, PII, and raw datastore errors are not returned.
+      description: Runs a named Tree-sitter structural query over eligible indexed chunks only. The query parameter is a catalog id, not raw Tree-sitter syntax. Dart supports normal structural query ids plus Flutter-specific flutter_widgets and flutter_build_methods. Sensitive, denied, absent, parse-error, oversized, and other skipped files are unreachable from AST search. Oversized files may appear only as file_too_large coverage counts, file metadata with skipped_reason=file_too_large, and ingestion reason counts. Skipped sensitive content, roots, content hashes, raw parser internals, raw prompts, provider payloads, secrets, PII, and raw datastore errors are not returned.
       parameters:
         - $ref: '#/components/parameters/ID'
         - $ref: '#/components/parameters/PageSize'
@@ -735,13 +735,13 @@ paths:
         - name: language
           in: query
           required: true
-            schema: {type: string, enum: [go, python, javascript, jsx, typescript, tsx, csharp, dart]}
+          schema: {type: string, enum: [go, python, javascript, jsx, typescript, tsx, csharp, dart]}
         - name: query
           in: query
           required: true
           schema:
             type: string
-            enum: [function_declarations, class_declarations, type_declarations, call_expressions, imports, test_functions, assignments, error_handling]
+            enum: [function_declarations, class_declarations, type_declarations, call_expressions, imports, test_functions, assignments, error_handling, flutter_widgets, flutter_build_methods]
         - name: captures
           in: query
           description: Optional comma-separated capture-name allowlist from the named query.

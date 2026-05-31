@@ -103,6 +103,8 @@ Persisted ingestion runs in `pending` or `running` state are local in-memory que
 | `projects.max_chunk_bytes` | No | Per-project chunk cap for storage and response truncation. |
 | `projects.sensitive_marker_policy` | No | Only `skip_file` is accepted. |
 
+For Dart and Flutter projects, generated files are included by default after the normal path, size, binary, UTF-8, and sensitive-marker gates pass. Keep `.g.dart`, `.freezed.dart`, `.mocks.dart`, `.generated.dart`, and similar files indexable unless a project deliberately trades generated-code visibility for less noise. Exclude build outputs such as `build/**` rather than generated Dart source that Flutter engineers may need for references, calls, or symbol navigation.
+
 ## Project Integrations
 
 Project integrations are optional per-project Atlassian Cloud providers under `[projects.integrations.jira]` and `[projects.integrations.confluence]`. They are localhost-only, polling-only, and scoped by explicit allowlists. See [Project integrations security policy](../security/project-integrations.md) for the approved local rich-content and PII boundary.

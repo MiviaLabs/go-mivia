@@ -162,6 +162,18 @@ curl -fsS \
   http://127.0.0.1:8080/mcp
 ```
 
+Flutter project navigation:
+
+```sh
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/<project_id>/search/ast/queries'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/<project_id>/search/ast?language=dart&query=flutter_widgets'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/<project_id>/search/ast?language=dart&query=flutter_build_methods'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/<project_id>/search/symbols?kind=flutter_widget'
+curl -fsS 'http://127.0.0.1:8080/api/v1/projects/<project_id>/search/calls?callee_name_contains=Navigator'
+```
+
+Generated Dart files such as `.g.dart`, `.freezed.dart`, `.mocks.dart`, and `.generated.dart` are indexed by default. Flutter extraction is static metadata only: it identifies widget/state/build symbols and common Flutter calls, but it does not run Flutter, compile Dart, or provide LSP-grade type inference.
+
 ## Safety Boundary
 
 The server is local-only. It must not expose:
