@@ -11,7 +11,10 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
-const defaultStaleAfter = 24 * time.Hour
+const (
+	defaultStaleAfter   = 24 * time.Hour
+	defaultProbeTimeout = 250 * time.Millisecond
+)
 
 var ErrRunNotFound = errors.New("context health run not found")
 
@@ -40,16 +43,18 @@ type WorkspaceGitProvider interface {
 }
 
 type Options struct {
-	StaleAfter time.Duration
-	Now        func() time.Time
+	StaleAfter   time.Duration
+	ProbeTimeout time.Duration
+	Now          func() time.Time
 }
 
 type Service struct {
-	projects   ProjectProvider
-	context    ContextProvider
-	workspace  WorkspaceGitProvider
-	staleAfter time.Duration
-	now        func() time.Time
+	projects     ProjectProvider
+	context      ContextProvider
+	workspace    WorkspaceGitProvider
+	staleAfter   time.Duration
+	probeTimeout time.Duration
+	now          func() time.Time
 }
 
 func NewService(projects ProjectProvider, contextProvider ContextProvider, workspace WorkspaceGitProvider, options Options) *Service {
@@ -57,16 +62,21 @@ func NewService(projects ProjectProvider, contextProvider ContextProvider, works
 	if staleAfter == 0 {
 		staleAfter = defaultStaleAfter
 	}
+	probeTimeout := options.ProbeTimeout
+	if probeTimeout == 0 {
+		probeTimeout = defaultProbeTimeout
+	}
 	now := options.Now
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{
-		projects:   projects,
-		context:    contextProvider,
-		workspace:  workspace,
-		staleAfter: staleAfter,
-		now:        now,
+		projects:     projects,
+		context:      contextProvider,
+		workspace:    workspace,
+		staleAfter:   staleAfter,
+		probeTimeout: probeTimeout,
+		now:          now,
 	}
 }
 
@@ -113,39 +123,42 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		return health, nil
 	}
 
-	latest, hasLatest, err := svc.latestRun(ctx, project.ID)
+	var probeIssue string
+	probeCtx, cancelProbes := svc.probeContext(ctx)
+	defer cancelProbes()
+	latest, hasLatest, err := svc.latestRun(probeCtx, project.ID)
 	if err != nil {
-		return ContextHealth{}, err
-	}
-	if hasLatest {
+		probeIssue = firstNonEmpty(probeIssue, "latest_run_unknown")
+	} else if hasLatest {
 		health.LatestRun = &latest
 		health.ReasonCounts = copyPositiveCounts(latest.ReasonCounts)
 	}
 
-	activeRuns, err := svc.context.ActiveRuns(ctx, project.ID)
+	activeRuns, err := svc.context.ActiveRuns(probeCtx, project.ID)
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "active_runs_unknown")
 	}
 	if len(activeRuns) > 0 {
 		health.ActiveRunID = activeRuns[0].ID
 	}
 
-	health.EligibleFileCount, err = svc.context.EligibleFileCount(ctx, project.ID)
+	health.EligibleFileCount, err = svc.context.EligibleFileCount(probeCtx, project.ID)
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "eligible_file_count_unknown")
 	}
-	health.IndexedSymbolCount, err = svc.context.IndexedSymbolCount(ctx, project.ID)
+	health.IndexedSymbolCount, err = svc.context.IndexedSymbolCount(probeCtx, project.ID)
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "indexed_symbol_count_unknown")
 	}
-	health.IndexedChunkCount, err = svc.context.IndexedChunkCount(ctx, project.ID)
+	health.IndexedChunkCount, err = svc.context.IndexedChunkCount(probeCtx, project.ID)
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "indexed_chunk_count_unknown")
 	}
 
-	searchIndex, err := svc.context.SearchIndexHealth(ctx, project.ID)
+	searchIndex, err := svc.context.SearchIndexHealth(probeCtx, project.ID)
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "search_index_unknown")
+		searchIndex = SearchIndexHealth{Status: "unknown", Degraded: true, Reason: "search_index_unknown"}
 	}
 	health.SearchIndex = SearchIndexHealth{
 		Status:   safeCategory(searchIndex.Status, "unknown"),
@@ -154,11 +167,22 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 	}
 
 	if svc.workspace != nil {
-		health.WorkspaceGitAvailable, _ = svc.workspace.GitAvailable(ctx, project.ID)
+		health.WorkspaceGitAvailable, _ = svc.workspace.GitAvailable(probeCtx, project.ID)
 	}
 
 	health.Status, health.StatusReason = classifyHealth(project, latest, hasLatest, activeRuns, health, checkedAt, svc.staleAfter)
+	if probeIssue != "" && health.Status != ContextHealthDegraded {
+		health.Status = ContextHealthDegraded
+		health.StatusReason = probeIssue
+	}
 	return health, nil
+}
+
+func (svc *Service) probeContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if svc.probeTimeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, svc.probeTimeout)
 }
 
 func (svc *Service) latestRun(ctx context.Context, projectID string) (RunSummary, bool, error) {
@@ -360,6 +384,23 @@ func (provider ingestionContextProvider) IndexedChunkCount(ctx context.Context, 
 func (provider ingestionContextProvider) SearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
 	if provider.ingestion == nil {
 		return SearchIndexHealth{Status: "unknown"}, nil
+	}
+	if healthProvider, ok := provider.ingestion.(interface {
+		SearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error)
+	}); ok {
+		health, err := healthProvider.SearchIndexHealth(ctx, projectID)
+		if err != nil {
+			return SearchIndexHealth{}, err
+		}
+		status := "ok"
+		if health.Degraded {
+			status = "degraded"
+		}
+		return SearchIndexHealth{
+			Status:   status,
+			Degraded: health.Degraded,
+			Reason:   health.Reason,
+		}, nil
 	}
 	result, err := provider.ingestion.SearchFiles(ctx, projectID, projectingestion.FileSearchOptions{PageSize: 1})
 	if err != nil {

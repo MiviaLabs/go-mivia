@@ -73,6 +73,7 @@ type API interface {
 	ListSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
 	SearchText(context.Context, string, TextSearchOptions) (TextSearchResultList, error)
 	SearchFiles(context.Context, string, FileSearchOptions) (FileList, error)
+	SearchIndexHealth(context.Context, string) (SearchIndexHealth, error)
 	SearchSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
 	SearchReferences(context.Context, string, ReferenceSearchOptions) (SymbolReferenceList, error)
 	SearchCalls(context.Context, string, ReferenceSearchOptions) (SymbolCallEdgeList, error)
@@ -1687,6 +1688,18 @@ func (svc *Service) searchIndexMetadata(ctx context.Context, project projectregi
 	}
 	metadata = SearchIndexMetadata{IndexStatus: string(runs[0].Status), IngestionRunID: runs[0].ID}
 	return svc.withSearchIndexHealth(ctx, project, metadata)
+}
+
+func (svc *Service) SearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
+	project, err := svc.projectForQuery(strings.TrimSpace(projectID))
+	if err != nil {
+		return SearchIndexHealth{}, err
+	}
+	search, ok := svc.state.(searchQueryStore)
+	if !ok {
+		return SearchIndexHealth{}, nil
+	}
+	return search.SearchIndexHealth(ctx, project)
 }
 
 func (svc *Service) withSearchIndexHealth(ctx context.Context, project projectregistry.Project, metadata SearchIndexMetadata) SearchIndexMetadata {

@@ -40,6 +40,18 @@ func TestConfigValidate_LiveUpdatesRequireContentGraph(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_LiveUpdatesAllowDisabledLivePathPriority(t *testing.T) {
+	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
+	cfg.Ingestion.ContentGraphEnabled = true
+	cfg.Ingestion.LiveUpdatesEnabled = true
+	cfg.Ingestion.LivePathPriority = false
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected disabled live path priority to be valid: %v", err)
+	}
+}
+
 func TestLoad_DefaultConfigMissing_UsesEnvOnlyDefaults(t *testing.T) {
 	chdir(t, t.TempDir())
 	clearConfigEnv(t)
@@ -61,7 +73,9 @@ func TestLoad_DefaultConfigMissing_UsesEnvOnlyDefaults(t *testing.T) {
 	if cfg.CPUCount != runtime.NumCPU() {
 		t.Fatalf("expected auto CPU count %d, got %d", runtime.NumCPU(), cfg.CPUCount)
 	}
-	if cfg.Ingestion.WorkerCount != runtime.NumCPU() || cfg.Ingestion.GlobalWorkerCount != runtime.NumCPU() || cfg.Ingestion.PerProjectWorkerLimit != runtime.NumCPU() {
+	if cfg.Ingestion.WorkerCount != defaultIngestionWorkerCount ||
+		cfg.Ingestion.GlobalWorkerCount != defaultIngestionGlobalWorkerCount ||
+		cfg.Ingestion.PerProjectWorkerLimit != defaultIngestionPerProjectLimit {
 		t.Fatalf("expected default scheduler worker settings, got %+v", cfg.Ingestion)
 	}
 }
@@ -323,7 +337,7 @@ func TestConfigValidate_FullScanBatchSizeRejectsNonPositiveValues(t *testing.T) 
 	}
 }
 
-func TestLoad_CPUCountAutoAndIngestionAutoUseRuntimeCPU(t *testing.T) {
+func TestLoad_CPUCountAutoAndIngestionAutoUseSQLiteFriendlyDefaults(t *testing.T) {
 	clearConfigEnv(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mivia-server.local.toml")
@@ -348,12 +362,14 @@ per_project_worker_limit = "auto"
 	if cfg.CPUCount != runtime.NumCPU() {
 		t.Fatalf("expected runtime CPU count %d, got %d", runtime.NumCPU(), cfg.CPUCount)
 	}
-	if cfg.Ingestion.WorkerCount != runtime.NumCPU() || cfg.Ingestion.GlobalWorkerCount != runtime.NumCPU() || cfg.Ingestion.PerProjectWorkerLimit != runtime.NumCPU() {
-		t.Fatalf("expected ingestion auto worker counts to use runtime CPU count, got %+v", cfg.Ingestion)
+	if cfg.Ingestion.WorkerCount != defaultIngestionWorkerCount ||
+		cfg.Ingestion.GlobalWorkerCount != defaultIngestionGlobalWorkerCount ||
+		cfg.Ingestion.PerProjectWorkerLimit != defaultIngestionPerProjectLimit {
+		t.Fatalf("expected ingestion auto worker counts to use SQLite-friendly defaults, got %+v", cfg.Ingestion)
 	}
 }
 
-func TestLoad_CPUEnvOverrideDrivesAutoIngestionDefaults(t *testing.T) {
+func TestLoad_CPUEnvOverrideDoesNotDriveIngestionDefaults(t *testing.T) {
 	chdir(t, t.TempDir())
 	clearConfigEnv(t)
 	t.Setenv("MIVIA_CPU_COUNT", "3")
@@ -365,8 +381,10 @@ func TestLoad_CPUEnvOverrideDrivesAutoIngestionDefaults(t *testing.T) {
 	if cfg.CPUCount != 3 {
 		t.Fatalf("expected CPU count override, got %d", cfg.CPUCount)
 	}
-	if cfg.Ingestion.WorkerCount != 3 || cfg.Ingestion.GlobalWorkerCount != 3 || cfg.Ingestion.PerProjectWorkerLimit != 3 {
-		t.Fatalf("expected ingestion defaults to follow CPU count, got %+v", cfg.Ingestion)
+	if cfg.Ingestion.WorkerCount != defaultIngestionWorkerCount ||
+		cfg.Ingestion.GlobalWorkerCount != defaultIngestionGlobalWorkerCount ||
+		cfg.Ingestion.PerProjectWorkerLimit != defaultIngestionPerProjectLimit {
+		t.Fatalf("expected ingestion defaults to ignore CPU count, got %+v", cfg.Ingestion)
 	}
 }
 

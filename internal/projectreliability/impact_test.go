@@ -101,6 +101,27 @@ func TestImpactAnalyzer_UsesGraphEdgesForExternalProject(t *testing.T) {
 	}
 }
 
+func TestImpactAnalyzer_UsesSearchIndexHealthWithoutSearchSymbolProbe(t *testing.T) {
+	graph := &fakeImpactGraph{
+		files: map[string]projectingestion.FileMetadata{
+			"service": {ID: "service", ProjectID: "example-service", RelativePath: "internal/projectreliability/service.go", Status: "eligible", Present: true, RelativePathOK: true},
+		},
+		symbolsByFile: map[string][]projectingestion.SymbolMetadata{},
+		indexHealth:   projectingestion.SearchIndexHealth{Degraded: true, Reason: "search_index_drift"},
+	}
+	result, err := NewImpactAnalyzerWithGraph(nil, graph).Analyze(context.Background(), ImpactAnalysisRequest{
+		ProjectID:    "example-service",
+		ChangedPaths: []string{"internal/projectreliability/service.go"},
+	})
+	if err != nil {
+		t.Fatalf("analyze impact: %v", err)
+	}
+	if !result.Partial || result.PartialReason != "search_index_drift" {
+		t.Fatalf("expected degraded index health, got %#v", result)
+	}
+	assertContains(t, result.ResidualUnknowns, "index_degraded_search_index_drift")
+}
+
 type fakeWorkspace struct {
 	diff projectworkspace.GitDiff
 	err  error
@@ -113,6 +134,7 @@ type fakeImpactGraph struct {
 	nameRefs          map[string][]projectingestion.SymbolReferenceMetadata
 	callersBySym      map[string][]projectingestion.SymbolCallEdge
 	implementersBySym map[string][]projectingestion.SymbolImplementation
+	indexHealth       projectingestion.SearchIndexHealth
 }
 
 func (graph *fakeImpactGraph) ListFiles(_ context.Context, _ string, filter projectingestion.FileStateFilter, _ projectingestion.Pagination) (projectingestion.FileList, error) {
@@ -138,10 +160,6 @@ func (graph *fakeImpactGraph) ListSymbols(_ context.Context, _ string, filter pr
 	return projectingestion.SymbolList{Symbols: append([]projectingestion.SymbolMetadata(nil), graph.symbolsByFile[filter.FileID]...)}, nil
 }
 
-func (graph *fakeImpactGraph) SearchSymbols(context.Context, string, projectingestion.SymbolFilter, projectingestion.Pagination) (projectingestion.SymbolList, error) {
-	return projectingestion.SymbolList{}, nil
-}
-
 func (graph *fakeImpactGraph) SearchReferences(_ context.Context, _ string, options projectingestion.ReferenceSearchOptions) (projectingestion.SymbolReferenceList, error) {
 	return projectingestion.SymbolReferenceList{References: append([]projectingestion.SymbolReferenceMetadata(nil), graph.nameRefs[options.TargetNameContains]...)}, nil
 }
@@ -160,6 +178,10 @@ func (graph *fakeImpactGraph) ListSymbolImplementers(_ context.Context, _ string
 
 func (graph *fakeImpactGraph) LatestRunMetadata(context.Context, string) (projectingestion.RunMetadata, error) {
 	return projectingestion.RunMetadata{Status: string(projectingestion.RunStatusCompleted)}, nil
+}
+
+func (graph *fakeImpactGraph) SearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error) {
+	return graph.indexHealth, nil
 }
 
 func (workspace fakeWorkspace) GitStatus(context.Context, string, projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {

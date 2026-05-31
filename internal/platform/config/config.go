@@ -24,6 +24,9 @@ const (
 	defaultIngestionDebounceInterval  = 2 * time.Second
 	defaultIngestionMaxChunkBytes     = 16 * 1024
 	defaultIngestionQueueDepth        = 10000
+	defaultIngestionWorkerCount       = 4
+	defaultIngestionGlobalWorkerCount = 4
+	defaultIngestionPerProjectLimit   = 2
 	defaultIngestionFullScanBatchSize = 500
 	defaultIngestionTaskWarnAfter     = 30 * time.Second
 	defaultIntegrationIncremental     = time.Minute
@@ -378,13 +381,13 @@ func (cfg *Config) resolveAutoSettings(maxCPU int) {
 		cfg.CPUCount = maxCPU
 	}
 	if cfg.Ingestion.WorkerCount <= 0 {
-		cfg.Ingestion.WorkerCount = cfg.CPUCount
+		cfg.Ingestion.WorkerCount = defaultIngestionWorkerCount
 	}
 	if cfg.Ingestion.GlobalWorkerCount <= 0 {
-		cfg.Ingestion.GlobalWorkerCount = cfg.CPUCount
+		cfg.Ingestion.GlobalWorkerCount = defaultIngestionGlobalWorkerCount
 	}
 	if cfg.Ingestion.PerProjectWorkerLimit <= 0 {
-		cfg.Ingestion.PerProjectWorkerLimit = cfg.Ingestion.GlobalWorkerCount
+		cfg.Ingestion.PerProjectWorkerLimit = defaultIngestionPerProjectLimit
 	}
 	if cfg.SQLitePath == ":memory:" {
 		cfg.SQLite.WALEnabled = false

@@ -2,7 +2,6 @@ package projectingestion
 
 import (
 	"context"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -39,15 +38,12 @@ func TestSchedulerFullScansBothMakeProgress(t *testing.T) {
 	}
 }
 
-func TestSchedulerDefaultsUseRuntimeCPUCount(t *testing.T) {
+func TestSchedulerDefaultsUseBoundedWorkerCounts(t *testing.T) {
 	runner := newBlockingSchedulerRunner()
 	scheduler := NewScheduler(runner, SchedulerOptions{})
-	want := runtime.NumCPU()
-	if want <= 0 {
-		want = 1
-	}
-	if scheduler.options.GlobalWorkerCount != want || scheduler.options.PerProjectWorkerLimit != want {
-		t.Fatalf("expected scheduler defaults to use runtime CPU count %d, got %+v", want, scheduler.options)
+	if scheduler.options.GlobalWorkerCount != defaultSchedulerGlobalWorkers ||
+		scheduler.options.PerProjectWorkerLimit != defaultSchedulerPerProjectLimit {
+		t.Fatalf("expected bounded scheduler defaults, got %+v", scheduler.options)
 	}
 }
 
@@ -109,7 +105,7 @@ func TestSchedulerProjectWideTasksRunInParallelForDifferentProjects(t *testing.T
 	}
 }
 
-func TestSchedulerPathRunsDuringSameProjectFullScan(t *testing.T) {
+func TestSchedulerPathWaitsForSameProjectFullScan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	runner := newBlockingSchedulerRunner()
@@ -131,15 +127,16 @@ func TestSchedulerPathRunsDuringSameProjectFullScan(t *testing.T) {
 		_, err := scheduler.SubmitPath(ctx, "project-a", "src/app.go", TriggerLive)
 		pathDone <- err
 	}()
-	runner.waitStarted(t, "path", "project-a")
-	runner.release("path", "project-a")
-	if err := <-pathDone; err != nil {
-		t.Fatalf("path ingest: %v", err)
-	}
+	runner.assertNotStarted(t, "path", "project-a", 30*time.Millisecond)
 
 	runner.release("full_scan", "project-a")
 	if err := <-fullDone; err != nil {
 		t.Fatalf("full scan: %v", err)
+	}
+	runner.waitStarted(t, "path", "project-a")
+	runner.release("path", "project-a")
+	if err := <-pathDone; err != nil {
+		t.Fatalf("path ingest: %v", err)
 	}
 }
 
@@ -220,7 +217,7 @@ func TestSchedulerPathStartsWhileOtherProjectFullScanActive(t *testing.T) {
 	runner.release("full_scan", "project-a")
 }
 
-func TestSchedulerPathDuringFullScanStillUsesPerProjectLimit(t *testing.T) {
+func TestSchedulerQueuedPathsWaitForSameProjectFullScanAndRemainSerialized(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	runner := newBlockingSchedulerRunner()
@@ -233,13 +230,55 @@ func TestSchedulerPathDuringFullScanStillUsesPerProjectLimit(t *testing.T) {
 	go scheduler.SubmitFullScan(ctx, "project-a", TriggerManual)
 	runner.waitStarted(t, "full_scan", "project-a")
 	go scheduler.SubmitPath(ctx, "project-a", "src/app.go", TriggerLive)
-	runner.waitStarted(t, "path", "project-a")
 	go scheduler.SubmitPath(ctx, "project-a", "src/other.go", TriggerLive)
+	runner.assertNotStarted(t, "path", "project-a", 30*time.Millisecond)
+
+	runner.release("full_scan", "project-a")
+	runner.waitStarted(t, "path", "project-a")
 	runner.assertStartedCount(t, "path", "project-a", 1, 30*time.Millisecond)
 	runner.release("path", "project-a")
 	runner.waitStartedCount(t, "path", "project-a", 2)
 	runner.release("path", "project-a")
+}
+
+func TestSchedulerPendingProjectWideWorkRunsBeforeSameProjectPath(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runner := newBlockingSchedulerRunner()
+	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 1, PerProjectWorkerLimit: 1, LivePathPriority: true})
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	defer scheduler.Stop(context.Background())
+
+	go scheduler.SubmitFullScan(ctx, "project-a", TriggerManual)
+	runner.waitStarted(t, "full_scan", "project-a")
+
+	rebuildRun, err := scheduler.SubmitRebuildSearchIndex(ctx, "project-a")
+	if err != nil {
+		t.Fatalf("submit search index rebuild: %v", err)
+	}
+	if rebuildRun.Status != RunStatusPending {
+		t.Fatalf("expected pending rebuild run, got %#v", rebuildRun)
+	}
+
+	pathDone := make(chan error, 1)
+	go func() {
+		_, err := scheduler.SubmitPath(ctx, "project-a", "src/app.go", TriggerLive)
+		pathDone <- err
+	}()
+	runner.assertNotStarted(t, "path", "project-a", 30*time.Millisecond)
+
 	runner.release("full_scan", "project-a")
+	runner.waitStarted(t, "search_index_rebuild", "project-a")
+	runner.assertNotStarted(t, "path", "project-a", 30*time.Millisecond)
+	runner.release("search_index_rebuild", "project-a")
+
+	runner.waitStarted(t, "path", "project-a")
+	runner.release("path", "project-a")
+	if err := <-pathDone; err != nil {
+		t.Fatalf("path ingest: %v", err)
+	}
 }
 
 func TestSchedulerGlobalLimitStillCapsPathPromotion(t *testing.T) {

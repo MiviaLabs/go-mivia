@@ -278,12 +278,68 @@ func (fn WorkspaceGitProviderFunc) GitAvailable(ctx context.Context, projectID s
 	return fn(ctx, projectID)
 }
 
-func TestContextHealth_PropagatesProviderErrors(t *testing.T) {
+func TestContextHealth_DegradesProviderErrors(t *testing.T) {
 	wantErr := errors.New("store unavailable")
 	svc := newTestService(ContextProviderFunc{eligibleErr: wantErr})
 
-	_, err := svc.ContextHealth(context.Background(), "example")
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("expected provider error, got %v", err)
+	health, err := svc.ContextHealth(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("context health should degrade instead of returning provider error: %v", err)
 	}
+	if health.Status != ContextHealthDegraded || health.StatusReason != "eligible_file_count_unknown" {
+		t.Fatalf("expected degraded provider error, got %#v", health)
+	}
+}
+
+func TestContextHealth_BoundsSlowProvider(t *testing.T) {
+	svc := NewService(
+		ProjectProviderFunc(func(context.Context, string) (projectregistry.Project, error) {
+			return testProject(), nil
+		}),
+		slowContextProvider{},
+		nil,
+		Options{
+			Now:          func() time.Time { return testNow },
+			ProbeTimeout: 10 * time.Millisecond,
+		},
+	)
+
+	start := time.Now()
+	health, err := svc.ContextHealth(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("context health should degrade instead of timing out: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("context health was not bounded: %s", elapsed)
+	}
+	if health.Status != ContextHealthDegraded || health.StatusReason != "latest_run_unknown" {
+		t.Fatalf("expected degraded timeout, got %#v", health)
+	}
+}
+
+type slowContextProvider struct{}
+
+func (slowContextProvider) LatestRun(ctx context.Context, _ string) (RunSummary, error) {
+	<-ctx.Done()
+	return RunSummary{}, ctx.Err()
+}
+
+func (slowContextProvider) ActiveRuns(context.Context, string) ([]RunSummary, error) {
+	return nil, nil
+}
+
+func (slowContextProvider) EligibleFileCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (slowContextProvider) IndexedSymbolCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (slowContextProvider) IndexedChunkCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (slowContextProvider) SearchIndexHealth(context.Context, string) (SearchIndexHealth, error) {
+	return SearchIndexHealth{Status: "unknown"}, nil
 }

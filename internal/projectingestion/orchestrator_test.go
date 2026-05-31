@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -34,6 +33,18 @@ func TestOrchestrator_GlobalDisabledDoesNotStartWatchers(t *testing.T) {
 	}
 	if created {
 		t.Fatal("expected no watcher when global live updates are disabled")
+	}
+}
+
+func TestNewOrchestrator_PreservesDisabledLivePathPriority(t *testing.T) {
+	registry := newLiveRegistry(t)
+	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{
+		LiveUpdatesEnabled: true,
+		LivePathPriority:   false,
+	})
+
+	if orchestrator.options.LivePathPriority {
+		t.Fatal("expected explicit disabled live path priority to be preserved")
 	}
 }
 
@@ -192,15 +203,13 @@ func TestOrchestrator_TaskQueueFullDefersSingleRescanWithoutRequeueLoop(t *testi
 	}
 }
 
-func TestOrchestratorDefaultsUseRuntimeCPUCount(t *testing.T) {
+func TestOrchestratorDefaultsUseBoundedWorkerCounts(t *testing.T) {
 	registry := newLiveRegistry(t)
 	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{})
-	want := runtime.NumCPU()
-	if want <= 0 {
-		want = 1
-	}
-	if orchestrator.options.WorkerCount != want || orchestrator.options.GlobalWorkerCount != want || orchestrator.options.PerProjectWorkerLimit != want {
-		t.Fatalf("expected orchestrator defaults to use runtime CPU count %d, got %+v", want, orchestrator.options)
+	if orchestrator.options.WorkerCount != defaultSchedulerGlobalWorkers ||
+		orchestrator.options.GlobalWorkerCount != defaultSchedulerGlobalWorkers ||
+		orchestrator.options.PerProjectWorkerLimit != defaultSchedulerPerProjectLimit {
+		t.Fatalf("expected bounded orchestrator defaults, got %+v", orchestrator.options)
 	}
 }
 

@@ -209,8 +209,9 @@ func run() error {
 
 	checker := health.NewChecker(
 		health.Check{
-			Name: "sqlite",
-			Fn:   sqliteDB.Ping,
+			Name:    "sqlite",
+			Fn:      sqliteDB.Ping,
+			Timeout: 250 * time.Millisecond,
 		},
 		health.Check{
 			Name: "ladybug_native",

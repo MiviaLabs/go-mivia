@@ -62,12 +62,12 @@ type impactGraphAPI interface {
 	ListFiles(context.Context, string, projectingestion.FileStateFilter, projectingestion.Pagination) (projectingestion.FileList, error)
 	GetFile(context.Context, string, string) (projectingestion.FileMetadata, error)
 	ListSymbols(context.Context, string, projectingestion.SymbolFilter, projectingestion.Pagination) (projectingestion.SymbolList, error)
-	SearchSymbols(context.Context, string, projectingestion.SymbolFilter, projectingestion.Pagination) (projectingestion.SymbolList, error)
 	SearchReferences(context.Context, string, projectingestion.ReferenceSearchOptions) (projectingestion.SymbolReferenceList, error)
 	ListSymbolReferences(context.Context, string, string, projectingestion.Pagination) (projectingestion.SymbolReferenceList, error)
 	ListSymbolCallers(context.Context, string, string, projectingestion.Pagination) (projectingestion.SymbolCallEdgeList, error)
 	ListSymbolImplementers(context.Context, string, string, projectingestion.Pagination) (projectingestion.SymbolImplementationList, error)
 	LatestRunMetadata(context.Context, string) (projectingestion.RunMetadata, error)
+	SearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error)
 }
 
 func (analyzer *ImpactAnalyzer) Analyze(ctx context.Context, request ImpactAnalysisRequest) (ImpactAnalysis, error) {
@@ -118,10 +118,10 @@ func (analyzer *ImpactAnalyzer) Analyze(ctx context.Context, request ImpactAnaly
 }
 
 func (analyzer *ImpactAnalyzer) addGraphImpact(ctx context.Context, result ImpactAnalysis, projectID string, paths []string) ImpactAnalysis {
-	if symbols, err := analyzer.ingestion.SearchSymbols(ctx, projectID, projectingestion.SymbolFilter{NameContains: "__mivia_impact_health_probe__"}, projectingestion.Pagination{PageSize: 1}); err == nil && symbols.Index != nil && symbols.Index.Degraded {
+	if health, err := analyzer.ingestion.SearchIndexHealth(ctx, projectID); err == nil && health.Degraded {
 		result.Partial = true
-		result.PartialReason = firstNonEmpty(result.PartialReason, symbols.Index.DegradedReason, "index_degraded")
-		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "index_degraded_"+safeCategory(symbols.Index.DegradedReason, "unknown"))
+		result.PartialReason = firstNonEmpty(result.PartialReason, health.Reason, "index_degraded")
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "index_degraded_"+safeCategory(health.Reason, "unknown"))
 	} else if err != nil {
 		result.Partial = true
 		result.PartialReason = firstNonEmpty(result.PartialReason, "index_health_unknown")

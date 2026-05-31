@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
 )
@@ -13,6 +14,7 @@ type Check struct {
 	Name     string
 	Fn       func(context.Context) error
 	Optional bool
+	Timeout  time.Duration
 }
 
 type Checker struct {
@@ -39,7 +41,9 @@ func (checker Checker) Ready(ctx context.Context) (map[string]string, bool) {
 	status := make(map[string]string, len(checker.checks))
 	ready := true
 	for _, check := range checker.checks {
-		err := check.Fn(ctx)
+		checkCtx, cancel := checkContext(ctx, check.Timeout)
+		err := check.Fn(checkCtx)
+		cancel()
 		if err == nil {
 			status[check.Name] = "ok"
 			continue
@@ -52,6 +56,13 @@ func (checker Checker) Ready(ctx context.Context) (map[string]string, bool) {
 		ready = false
 	}
 	return status, ready
+}
+
+func checkContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 func LivenessHandler(w http.ResponseWriter, r *http.Request) {

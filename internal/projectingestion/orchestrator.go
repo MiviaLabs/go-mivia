@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"time"
 
@@ -116,18 +115,14 @@ func NewOrchestrator(registry *projectregistry.Registry, ingestion ingestionRunn
 	if options.QueueDepth <= 0 {
 		options.QueueDepth = defaultSchedulerQueueDepth
 	}
-	defaultWorkerCount := runtime.NumCPU()
-	if defaultWorkerCount <= 0 {
-		defaultWorkerCount = 1
-	}
 	if options.WorkerCount <= 0 {
-		options.WorkerCount = defaultWorkerCount
+		options.WorkerCount = defaultSchedulerGlobalWorkers
 	}
 	if options.GlobalWorkerCount <= 0 {
-		options.GlobalWorkerCount = options.WorkerCount
+		options.GlobalWorkerCount = defaultSchedulerGlobalWorkers
 	}
 	if options.PerProjectWorkerLimit <= 0 {
-		options.PerProjectWorkerLimit = options.GlobalWorkerCount
+		options.PerProjectWorkerLimit = defaultSchedulerPerProjectLimit
 	}
 	if options.TaskWarnAfter <= 0 {
 		options.TaskWarnAfter = 30 * time.Second
