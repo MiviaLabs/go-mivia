@@ -511,7 +511,7 @@ Output: supported named AST query catalog entries for the project surface. Each 
 
 ### `projects.search.ast`
 
-Input schema: `id`, required `language` (`go`, `python`, `javascript`, `jsx`, `typescript`, `tsx`, `csharp`), required `query` named catalog id, optional `captures`, `extension`, `path_prefix`, `page_size`, `page_token`, `max_matches`, and `max_snippet_bytes`.
+Input schema: `id`, required `language` (`go`, `python`, `javascript`, `jsx`, `typescript`, `tsx`, `csharp`, `dart`), required `query` named catalog id, optional `captures`, `extension`, `path_prefix`, `page_size`, `page_token`, `max_matches`, and `max_snippet_bytes`.
 
 Named query ids: `function_declarations`, `class_declarations`, `type_declarations`, `call_expressions`, `imports`, `test_functions`, `assignments`, and `error_handling` where supported by the language.
 

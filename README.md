@@ -27,7 +27,7 @@ flowchart TB
   Live["Live watcher and rescan queue"]
   Workers["Parallel full-scan file workers"]
   Safety["Safety gates: path, symlink, include/exclude, size, binary, UTF-8, sensitive markers"]
-  Extractors["Extractors: Go AST, Tree-sitter JS/TS/TSX/C#/Python, Markdown, infra/config"]
+  Extractors["Extractors: Go AST, Tree-sitter JS/TS/TSX/C#/Python/Dart, Markdown, infra/config"]
   Graph["Ladybug graph: files, chunks, symbols, references, calls, headings"]
   SQLite["SQLite: config, run state, file state, extractor cache"]
   FTS["SQLite FTS5: eligible indexed search rows"]
@@ -391,7 +391,7 @@ Manual content graph ingestion and search index repair are asynchronous. `POST /
 
 Project config is local-only and loaded through `MIVIA_CONFIG_PATH` or the ignored default `configs/mivia-server.local.toml`. The committed schema example is [configs/mivia-server.example.toml](configs/mivia-server.example.toml).
 
-Project digest is manual and metadata-only. Content graph ingestion is opt-in with `digest_mode = "content_graph"` and uses the same local path, denylist, binary, UTF-8, size, and sensitive-marker gates before storing eligible source chunks. Promoted AST extraction uses Go stdlib AST for Go, Tree-sitter for JS/TS/TSX/JSX/C#/Python, Markdown headings, and lightweight infrastructure metadata. TS/JS/TSX/JSX, C#, and Python have no regex fallback after startup validation.
+Project digest is manual and metadata-only. Content graph ingestion is opt-in with `digest_mode = "content_graph"` and uses the same local path, denylist, binary, UTF-8, size, and sensitive-marker gates before storing eligible source chunks. Promoted AST extraction uses Go stdlib AST for Go, Tree-sitter for JS/TS/TSX/JSX/C#/Python/Dart, Markdown headings, and lightweight infrastructure metadata. Dart extraction includes generated `.g.dart`, `.freezed.dart`, `.mocks.dart`, and similar files by default unless project include/exclude config filters them. Flutter widget recognition is exposed through symbol/reference/call metadata for widget classes, state classes, build methods, `setState`, `Navigator`, route calls, and widget constructor call candidates. TS/JS/TSX/JSX, C#, Python, and Dart have no regex fallback after startup validation.
 
 `projects.search.ast.queries` returns supported named AST query IDs, languages, captures, query versions, matching extensions, and safe per-language `file_too_large` coverage counts so agents can discover the safe structural-search surface before calling `projects.search.ast`. Raw Tree-sitter query syntax remains blocked. Sensitive, denied, absent, parse-error, and other skipped files are not searched. Oversized files are reported as safe coverage gaps through ingestion/file metadata such as `skipped_reason=file_too_large`, size, and reason counts; their source text, chunks, snippets, content hashes, raw parser/SQLite/FTS/Tree-sitter errors, roots, secrets, PII, raw prompts, and provider payloads are not exposed.
 

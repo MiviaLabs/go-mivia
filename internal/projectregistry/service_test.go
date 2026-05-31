@@ -367,6 +367,46 @@ func TestRegistry_DoesNotExposeIntegrationCredentialReferences(t *testing.T) {
 	}
 }
 
+func TestRegistry_MetadataReportsCredentialsFileSource(t *testing.T) {
+	root := t.TempDir()
+	project := validConfigProject(root)
+	project.Integrations = config.IntegrationConfig{
+		Jira: &config.JiraIntegration{
+			Enabled: true,
+			CredentialRefs: config.AtlassianCredentialRefs{
+				CredentialsFile: "secrets/atlassian.json",
+			},
+			ProjectKeys: []string{"ABC"},
+		},
+		Confluence: &config.ConfluenceIntegration{
+			Enabled: true,
+			CredentialRefs: config.AtlassianCredentialRefs{
+				CredentialsFile: "secrets/atlassian.json",
+			},
+			SpaceKeys: []string{"ENG"},
+		},
+	}
+
+	registry, err := NewRegistry([]config.Project{project}, Options{})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	loaded, ok := registry.Get("example-service")
+	if !ok {
+		t.Fatal("expected project")
+	}
+	metadata := MetadataForProject(loaded)
+	if metadata.Integrations == nil || metadata.Integrations.Jira == nil || metadata.Integrations.Confluence == nil {
+		t.Fatalf("expected integration metadata: %+v", metadata.Integrations)
+	}
+	if metadata.Integrations.Jira.CredentialSource != "file" {
+		t.Fatalf("expected Jira file credential source, got %+v", metadata.Integrations.Jira)
+	}
+	if metadata.Integrations.Confluence.CredentialSource != "file" {
+		t.Fatalf("expected Confluence file credential source, got %+v", metadata.Integrations.Confluence)
+	}
+}
+
 func validConfigProject(root string) config.Project {
 	return config.Project{
 		ID:                    "example-service",

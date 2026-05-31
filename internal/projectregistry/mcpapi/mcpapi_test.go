@@ -495,7 +495,7 @@ func TestCallToolWithIngestion_SearchToolsSupportDottedAndUnderscoreNames(t *tes
 		t.Fatalf("unexpected ast query catalog result: %#v", astQueries)
 	}
 	astQueriesBody := marshalResult(t, astQueriesResult)
-	if !strings.Contains(astQueriesBody, `"id":"function_declarations"`) || strings.Contains(astQueriesBody, "(function_declaration") || strings.Contains(astQueriesBody, "content_sha256") {
+	if !strings.Contains(astQueriesBody, `"language":"dart"`) || !strings.Contains(astQueriesBody, `"id":"function_declarations"`) || strings.Contains(astQueriesBody, "(function_declaration") || strings.Contains(astQueriesBody, "content_sha256") {
 		t.Fatalf("unexpected ast query catalog body: %s", astQueriesBody)
 	}
 
@@ -511,7 +511,16 @@ func TestCallToolWithIngestion_SearchToolsSupportDottedAndUnderscoreNames(t *tes
 		t.Fatalf("missing ast search coverage: %#v", ast.Coverage)
 	}
 
-	body := marshalResult(t, map[string]any{"text": textResult, "files": filesResult, "symbols": symbolsResult, "refs": refsResult, "calls": callsResult, "ast_queries": astQueriesResult, "ast": astResult})
+	dartASTResult, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_search_ast", json.RawMessage(`{"id":"example-service","language":"dart","query":"flutter_widgets","captures":["name"],"page_size":10,"max_snippet_bytes":16}`))
+	if err != nil {
+		t.Fatalf("call dart ast search tool: %v", err)
+	}
+	dartAST := dartASTResult["structuredContent"].(projectingestion.ASTSearchResultList)
+	if dartAST.QueryLanguage != "dart" || dartAST.Coverage == nil || dartAST.Coverage.Language != "dart" {
+		t.Fatalf("unexpected dart ast search result: %#v", dartAST)
+	}
+
+	body := marshalResult(t, map[string]any{"text": textResult, "files": filesResult, "symbols": symbolsResult, "refs": refsResult, "calls": callsResult, "ast_queries": astQueriesResult, "ast": astResult, "dart_ast": dartASTResult})
 	for _, forbidden := range []string{"root_path", "content_sha256", "access_token", "provider_payload", "raw_prompt"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("search tool response leaked %q: %s", forbidden, body)

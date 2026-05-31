@@ -1,5 +1,7 @@
 github.com/LadybugDB/go-ladybug v0.17.0 h1:RXDbkBjrbRmLdEbhGl4CLOIEzSt09gbP0n9UbKDEfwI=
 github.com/LadybugDB/go-ladybug v0.17.0/go.mod h1:GeIXmE8XyF5TFS94NAuTag7vgCC+no/HTBMRA6Rd5Cs=
+github.com/UserNobody14/tree-sitter-dart v0.0.0-20260520003023-a9bdfa3db2fb h1:FiLZ1SaC4O9W+opTLv1fuPWWaGTclcMm/0DehtlNGNs=
+github.com/UserNobody14/tree-sitter-dart v0.0.0-20260520003023-a9bdfa3db2fb/go.mod h1:6zSIbyfHyxL/+XWRHElGLw+EUPYbDOyhDqIiAX6svrE=
 github.com/andybalholm/brotli v1.2.1 h1:R+f5xP285VArJDRgowrfb9DqL18yVK0gKAW/F+eTWro=
 github.com/andybalholm/brotli v1.2.1/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/apache/arrow-go/v18 v18.6.0 h1:GX/Jyd3R7mCLiECAwY9FWbbaYblie2WXBSz4Sw8fNpM=

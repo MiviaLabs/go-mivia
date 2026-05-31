@@ -6,7 +6,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 )
+
+func TestASTSearchCatalogQueriesCompile(t *testing.T) {
+	for _, entry := range astSearchCatalog {
+		language, err := astSearchLanguage(entry.Language)
+		if err != nil {
+			t.Fatalf("language %s: %v", entry.Language, err)
+		}
+		query, queryErr := tree_sitter.NewQuery(language, entry.Query)
+		if queryErr != nil {
+			t.Fatalf("query %s/%s: %v", entry.Language, entry.ID, queryErr)
+		}
+		query.Close()
+	}
+}
 
 func TestASTSearchNamedQueriesAcrossSupportedLanguages(t *testing.T) {
 	ctx := context.Background()
@@ -17,6 +33,7 @@ func TestASTSearchNamedQueriesAcrossSupportedLanguages(t *testing.T) {
 	writeFile(t, filepath.Join(root, "web", "app.ts"), "export function helper(): number { return 1; }\nexport function run(): number { return helper(); }\n")
 	writeFile(t, filepath.Join(root, "web", "component.tsx"), "export function Widget() { return <div />; }\n")
 	writeFile(t, filepath.Join(root, "src", "Worker.cs"), "namespace Demo;\nclass Worker {\n  int Helper() { return 1; }\n  int Run() { return Helper(); }\n}\n")
+	writeFile(t, filepath.Join(root, "lib", "home.dart"), "import 'package:flutter/widgets.dart';\nclass Home extends StatelessWidget {\n  Widget build(BuildContext context) => Text('home');\n}\nvoid main() { runApp(Home()); }\n")
 
 	svc, _, _ := newTestService(t, root)
 	if run, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil || run.Status != RunStatusCompleted {
@@ -36,6 +53,8 @@ func TestASTSearchNamedQueriesAcrossSupportedLanguages(t *testing.T) {
 		{name: "typescript function", language: "typescript", query: "function_declarations", capture: "name", want: "run"},
 		{name: "tsx function", language: "tsx", query: "function_declarations", capture: "name", want: "Widget"},
 		{name: "csharp method", language: "csharp", query: "function_declarations", capture: "name", want: "Run"},
+		{name: "dart function", language: "dart", query: "function_declarations", capture: "name", want: "build"},
+		{name: "flutter widget", language: "dart", query: "flutter_widgets", capture: "name", want: "Home"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			results, err := svc.SearchAST(ctx, "example-service", ASTSearchOptions{
@@ -119,6 +138,9 @@ func TestASTQueryCatalogAndCoverage(t *testing.T) {
 	}
 	if !astCatalogContains(catalog.Queries, "typescript", "function_declarations", "name") {
 		t.Fatalf("missing expected typescript query metadata: %#v", catalog.Queries)
+	}
+	if !astCatalogContains(catalog.Queries, "dart", "flutter_widgets", "name") {
+		t.Fatalf("missing expected dart query metadata: %#v", catalog.Queries)
 	}
 	coverage := astCoverageForLanguage(t, catalog.Coverage, "typescript")
 	if coverage.EligibleFiles != 1 || coverage.SkippedFileTooLarge != 1 || coverage.CoverageScope != string(SkipReasonFileTooLarge) || coverage.CoverageStatus != "partial" || coverage.CoveragePartialCause != string(SkipReasonFileTooLarge) {

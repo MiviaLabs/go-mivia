@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	tree_sitter_dart "github.com/UserNobody14/tree-sitter-dart/bindings/go"
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_c_sharp "github.com/tree-sitter/tree-sitter-c-sharp/bindings/go"
 	tree_sitter_javascript "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
@@ -21,6 +22,7 @@ const (
 	ExtractorTreeSitterTSX        ExtractorName = "treesitter-tsx"
 	ExtractorTreeSitterCSharp     ExtractorName = "treesitter-csharp"
 	ExtractorTreeSitterPython     ExtractorName = "treesitter-python"
+	ExtractorTreeSitterDart       ExtractorName = "treesitter-dart"
 )
 
 //go:embed queries/javascript.scm
@@ -37,6 +39,9 @@ var csharpQuery string
 
 //go:embed queries/python.scm
 var pythonQuery string
+
+//go:embed queries/dart.scm
+var dartQuery string
 
 type treeSitterExtractor struct {
 	name         string
@@ -78,6 +83,18 @@ func newTreeSitterPythonExtractor() Extractor {
 		query:      pythonQuery,
 		languageFunc: func() *tree_sitter.Language {
 			return tree_sitter.NewLanguage(tree_sitter_python.Language())
+		},
+	}
+}
+
+func newTreeSitterDartExtractor() Extractor {
+	return treeSitterExtractor{
+		name:       string(ExtractorTreeSitterDart),
+		version:    extractorVersionOne,
+		extensions: extensionSet(".dart"),
+		query:      dartQuery,
+		languageFunc: func() *tree_sitter.Language {
+			return tree_sitter.NewLanguage(tree_sitter_dart.Language())
 		},
 	}
 }
@@ -183,6 +200,9 @@ func (extractor treeSitterExtractor) Parse(ctx context.Context, relative string,
 	} else if extractor.name == string(ExtractorTreeSitterPython) {
 		symbols = extractPythonSymbols(root, content)
 		references, calls = extractPythonOccurrences(root, content)
+	} else if extractor.name == string(ExtractorTreeSitterDart) {
+		symbols = extractDartSymbols(root, content)
+		references, calls = extractDartOccurrences(root, content)
 	} else {
 		symbols = extractJavaScriptFamilySymbols(root, content)
 		references, calls = extractJavaScriptFamilyOccurrences(root, content)

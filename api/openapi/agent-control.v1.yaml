@@ -735,7 +735,7 @@ paths:
         - name: language
           in: query
           required: true
-          schema: {type: string, enum: [go, python, javascript, jsx, typescript, tsx, csharp]}
+            schema: {type: string, enum: [go, python, javascript, jsx, typescript, tsx, csharp, dart]}
         - name: query
           in: query
           required: true
@@ -1588,7 +1588,7 @@ components:
           description: Named query id. This is not raw Tree-sitter query syntax.
         language:
           type: string
-          enum: [go, python, javascript, jsx, typescript, tsx, csharp]
+          enum: [go, python, javascript, jsx, typescript, tsx, csharp, dart]
         version:
           type: string
         captures:

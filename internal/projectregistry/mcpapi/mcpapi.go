@@ -943,7 +943,7 @@ func ingestionToolDefinitions() []map[string]any {
 			"description": "Run a named Tree-sitter structural query over eligible indexed chunks only. Raw Tree-sitter query syntax, skipped sensitive source, root paths, and parser internals are never returned.",
 			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
 				"id":                map[string]any{"type": "string", "minLength": 1},
-				"language":          map[string]any{"type": "string", "enum": []string{"go", "python", "javascript", "jsx", "typescript", "tsx", "csharp"}},
+				"language":          map[string]any{"type": "string", "enum": []string{"go", "python", "javascript", "jsx", "typescript", "tsx", "csharp", "dart"}},
 				"query":             map[string]any{"type": "string", "description": "Named query id such as function_declarations, class_declarations, call_expressions, imports, test_functions, assignments, or error_handling."},
 				"captures":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 16},
 				"extension":         map[string]any{"type": "string"},

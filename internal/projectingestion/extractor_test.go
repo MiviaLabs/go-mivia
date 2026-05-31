@@ -19,6 +19,7 @@ func TestExtractorRegistryDispatchesSupportedFiles(t *testing.T) {
 		{relative: "cmd/main.go", content: "package main\n\nfunc Run() {}\n", name: string(ExtractorGoStdlibAST)},
 		{relative: "docs/guide.md", content: "# Guide\n", name: string(ExtractorMarkdownHeading)},
 		{relative: "web/app.tsx", content: "export function App() { return <main /> }\n", name: string(ExtractorTreeSitterTSX)},
+		{relative: "lib/home.dart", content: "class Home {}\n", name: string(ExtractorTreeSitterDart)},
 		{relative: "Dockerfile", content: "FROM scratch AS runtime\n", name: string(ExtractorInfraLightweight)},
 	}
 

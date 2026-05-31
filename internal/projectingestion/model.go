@@ -92,18 +92,21 @@ type Chunk struct {
 type SymbolKind string
 
 const (
-	SymbolKindPackage   SymbolKind = "package"
-	SymbolKindImport    SymbolKind = "import"
-	SymbolKindFunction  SymbolKind = "function"
-	SymbolKindMethod    SymbolKind = "method"
-	SymbolKindType      SymbolKind = "type"
-	SymbolKindClass     SymbolKind = "class"
-	SymbolKindExport    SymbolKind = "export"
-	SymbolKindStage     SymbolKind = "stage"
-	SymbolKindTarget    SymbolKind = "target"
-	SymbolKindPath      SymbolKind = "path"
-	SymbolKindKey       SymbolKind = "key"
-	SymbolKindMigration SymbolKind = "migration"
+	SymbolKindPackage            SymbolKind = "package"
+	SymbolKindImport             SymbolKind = "import"
+	SymbolKindFunction           SymbolKind = "function"
+	SymbolKindMethod             SymbolKind = "method"
+	SymbolKindType               SymbolKind = "type"
+	SymbolKindClass              SymbolKind = "class"
+	SymbolKindExport             SymbolKind = "export"
+	SymbolKindFlutterWidget      SymbolKind = "flutter_widget"
+	SymbolKindFlutterState       SymbolKind = "flutter_state"
+	SymbolKindFlutterBuildMethod SymbolKind = "flutter_build_method"
+	SymbolKindStage              SymbolKind = "stage"
+	SymbolKindTarget             SymbolKind = "target"
+	SymbolKindPath               SymbolKind = "path"
+	SymbolKindKey                SymbolKind = "key"
+	SymbolKindMigration          SymbolKind = "migration"
 )
 
 type Symbol struct {

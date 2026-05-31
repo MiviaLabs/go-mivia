@@ -88,6 +88,7 @@ var astSearchLanguageExtensions = map[string][]string{
 	"typescript": {".ts", ".mts", ".cts"},
 	"tsx":        {".tsx"},
 	"csharp":     {".cs"},
+	"dart":       {".dart"},
 }
 
 var astSearchCatalog = []astSearchQuery{
@@ -130,7 +131,7 @@ var astSearchCatalog = []astSearchQuery{
 	{ID: "error_handling", Language: "tsx", Version: astSearchQueryVersion, Query: `[(try_statement) (catch_clause) (throw_statement)] @error`, Captures: []string{"error"}, Extensions: astSearchLanguageExtensions["tsx"]},
 
 	{ID: "function_declarations", Language: "jsx", Version: astSearchQueryVersion, Query: `[(function_declaration name: (identifier) @name) (method_definition name: (property_identifier) @name) (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])] @definition`, Captures: []string{"definition", "name"}, Extensions: astSearchLanguageExtensions["jsx"]},
-	{ID: "class_declarations", Language: "jsx", Version: astSearchQueryVersion, Query: `(class_declaration name: (identifier) @name) @class`, Captures: []string{"class", "name"}, Extensions: astSearchLanguageExtensions["jsx"]},
+	{ID: "class_declarations", Language: "jsx", Version: astSearchQueryVersion, Query: `(class_declaration name: (type_identifier) @name) @class`, Captures: []string{"class", "name"}, Extensions: astSearchLanguageExtensions["jsx"]},
 	{ID: "call_expressions", Language: "jsx", Version: astSearchQueryVersion, Query: `(call_expression function: [(identifier) @callee (member_expression property: (property_identifier) @callee)]) @call`, Captures: []string{"call", "callee"}, Extensions: astSearchLanguageExtensions["jsx"]},
 	{ID: "imports", Language: "jsx", Version: astSearchQueryVersion, Query: `[(import_statement) (call_expression function: (identifier) @callee arguments: (arguments (string) @path) (#eq? @callee "require"))] @import`, Captures: []string{"import", "callee", "path"}, Extensions: astSearchLanguageExtensions["jsx"]},
 	{ID: "test_functions", Language: "jsx", Version: astSearchQueryVersion, Query: `(call_expression function: (identifier) @test_name arguments: (arguments) (#match? @test_name "^(it|test|describe)$")) @test`, Captures: []string{"test", "test_name"}, Extensions: astSearchLanguageExtensions["jsx"]},
@@ -144,4 +145,15 @@ var astSearchCatalog = []astSearchQuery{
 	{ID: "test_functions", Language: "csharp", Version: astSearchQueryVersion, Query: `[(method_declaration (attribute_list) @attribute name: (identifier) @name)] @test`, Captures: []string{"test", "attribute", "name"}, Extensions: astSearchLanguageExtensions["csharp"]},
 	{ID: "assignments", Language: "csharp", Version: astSearchQueryVersion, Query: `[(assignment_expression) (variable_declaration)] @assignment`, Captures: []string{"assignment"}, Extensions: astSearchLanguageExtensions["csharp"]},
 	{ID: "error_handling", Language: "csharp", Version: astSearchQueryVersion, Query: `[(try_statement) (catch_clause) (throw_statement)] @error`, Captures: []string{"error"}, Extensions: astSearchLanguageExtensions["csharp"]},
+
+	{ID: "function_declarations", Language: "dart", Version: astSearchQueryVersion, Query: `[(function_signature name: (identifier) @name) (method_signature (function_signature name: (identifier) @name)) (method_signature (getter_signature name: (identifier) @name)) (method_signature (setter_signature name: (identifier) @name))] @definition`, Captures: []string{"definition", "name"}, Extensions: astSearchLanguageExtensions["dart"]},
+	{ID: "class_declarations", Language: "dart", Version: astSearchQueryVersion, Query: `(class_definition name: (identifier) @name) @class`, Captures: []string{"class", "name"}, Extensions: astSearchLanguageExtensions["dart"]},
+	{ID: "type_declarations", Language: "dart", Version: astSearchQueryVersion, Query: `[(mixin_declaration (identifier) @name) (extension_declaration name: (identifier) @name) (extension_type_declaration name: (identifier) @name) (enum_declaration name: (identifier) @name) (type_alias (type_identifier) @name)] @type`, Captures: []string{"type", "name"}, Extensions: astSearchLanguageExtensions["dart"]},
+	{ID: "call_expressions", Language: "dart", Version: astSearchQueryVersion, Query: `(selector (argument_part) @callee) @call`, Captures: []string{"call", "callee"}, Extensions: astSearchLanguageExtensions["dart"]},
+	{ID: "imports", Language: "dart", Version: astSearchQueryVersion, Query: `(import_or_export [(library_import) (library_export)] @import)`, Captures: []string{"import"}, Extensions: astSearchLanguageExtensions["dart"]},
+	{ID: "test_functions", Language: "dart", Version: astSearchQueryVersion, Query: `((identifier) @test_name (selector (argument_part)) @test (#match? @test_name "^(test|group|testWidgets)$"))`, Captures: []string{"test", "test_name"}, Extensions: astSearchLanguageExtensions["dart"]},
+	{ID: "assignments", Language: "dart", Version: astSearchQueryVersion, Query: `[(assignment_expression) (initialized_identifier)] @assignment`, Captures: []string{"assignment"}, Extensions: astSearchLanguageExtensions["dart"]},
+	{ID: "error_handling", Language: "dart", Version: astSearchQueryVersion, Query: `[(try_statement) (catch_clause) (throw_expression)] @error`, Captures: []string{"error"}, Extensions: astSearchLanguageExtensions["dart"]},
+	{ID: "flutter_widgets", Language: "dart", Version: astSearchQueryVersion, Query: `(class_definition name: (identifier) @name superclass: (superclass) @base (#match? @base "(StatelessWidget|StatefulWidget|State<)")) @widget`, Captures: []string{"widget", "name", "base"}, Extensions: astSearchLanguageExtensions["dart"]},
+	{ID: "flutter_build_methods", Language: "dart", Version: astSearchQueryVersion, Query: `(method_signature (function_signature (type_identifier) @return_type name: (identifier) @name (#eq? @return_type "Widget") (#eq? @name "build"))) @build_method`, Captures: []string{"build_method", "return_type", "name"}, Extensions: astSearchLanguageExtensions["dart"]},
 }

@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/UserNobody14/tree-sitter-dart v0.0.0-20260520003023-a9bdfa3db2fb // indirect
 	github.com/apache/arrow-go/v18 v18.6.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect

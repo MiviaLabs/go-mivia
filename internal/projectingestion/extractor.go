@@ -60,6 +60,7 @@ func NewDefaultExtractorRegistry() *ExtractorRegistry {
 		newTreeSitterTSXExtractor(),
 		newTreeSitterCSharpExtractor(),
 		newTreeSitterPythonExtractor(),
+		newTreeSitterDartExtractor(),
 		staticExtractor{
 			name:    string(ExtractorMarkdownHeading),
 			version: extractorVersionOne,

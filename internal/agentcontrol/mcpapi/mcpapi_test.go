@@ -361,7 +361,7 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 		t.Fatalf("expected call search success, got %s", searchCalls.Body.String())
 	}
 	astQueries := postMCP(t, handler, `{"jsonrpc":"2.0","id":171,"method":"tools/call","params":{"name":"projects_search_ast_queries","arguments":{"id":"example-service"}}}`)
-	if bytes.Contains(astQueries.Body.Bytes(), []byte(`"error":{`)) || bytes.Contains(astQueries.Body.Bytes(), []byte(`"isError":true`)) || !bytes.Contains(astQueries.Body.Bytes(), []byte(`"id":"function_declarations"`)) || strings.Contains(astQueries.Body.String(), "(function_declaration") {
+	if bytes.Contains(astQueries.Body.Bytes(), []byte(`"error":{`)) || bytes.Contains(astQueries.Body.Bytes(), []byte(`"isError":true`)) || !bytes.Contains(astQueries.Body.Bytes(), []byte(`"language":"dart"`)) || !bytes.Contains(astQueries.Body.Bytes(), []byte(`"id":"function_declarations"`)) || strings.Contains(astQueries.Body.String(), "(function_declaration") {
 		t.Fatalf("expected AST query catalog success, got %s", astQueries.Body.String())
 	}
 
