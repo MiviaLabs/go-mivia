@@ -1549,7 +1549,7 @@ components:
           type: string
         status:
           type: string
-          enum: [ready, warming_up, running, degraded, stale, empty, disabled, unavailable]
+          enum: [ready, warming_up, running, syncing, degraded, stale, empty, disabled, unavailable]
         enabled:
           type: boolean
         digest_mode:

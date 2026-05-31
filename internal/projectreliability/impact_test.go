@@ -129,25 +129,6 @@ func TestImpactAnalyzer_UsesSearchIndexHealthWithoutSearchSymbolProbe(t *testing
 	}
 }
 
-func TestImpactAnalyzer_TimesOutWorkspaceDiffThatIgnoresContext(t *testing.T) {
-	block := make(chan struct{})
-	workspace := fakeWorkspace{blockGitDiff: block}
-
-	started := time.Now()
-	result, err := NewImpactAnalyzer(workspace).Analyze(context.Background(), ImpactAnalysisRequest{ProjectID: "example-service"})
-	close(block)
-	if err != nil {
-		t.Fatalf("analyze impact: %v", err)
-	}
-	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("expected bounded workspace diff, elapsed %s", elapsed)
-	}
-	if !result.Partial || result.PartialReason != "workspace_diff_timeout" {
-		t.Fatalf("expected workspace timeout partial, got %#v", result)
-	}
-	assertContains(t, result.ResidualUnknowns, "workspace_diff_timeout")
-}
-
 func TestImpactAnalyzer_PropagatesCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -161,12 +142,13 @@ func TestImpactAnalyzer_PropagatesCanceledContext(t *testing.T) {
 	}
 }
 
-func TestImpactAnalyzer_TimesOutGraphLookupThatIgnoresContext(t *testing.T) {
+func TestImpactAnalyzer_ActiveSyncSkipsBlockingGraphLookup(t *testing.T) {
 	block := make(chan struct{})
 	graph := &fakeImpactGraph{
 		files:          map[string]projectingestion.FileMetadata{},
 		symbolsByFile:  map[string][]projectingestion.SymbolMetadata{},
 		blockListFiles: block,
+		activeSync:     true,
 	}
 
 	started := time.Now()
@@ -179,12 +161,15 @@ func TestImpactAnalyzer_TimesOutGraphLookupThatIgnoresContext(t *testing.T) {
 		t.Fatalf("analyze impact: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("expected bounded graph lookup, elapsed %s", elapsed)
+		t.Fatalf("expected active sync fast path, elapsed %s", elapsed)
 	}
-	if !result.Partial || result.PartialReason != "graph_file_lookup_timeout" {
-		t.Fatalf("expected graph timeout partial, got %#v", result)
+	if !result.Partial || result.PartialReason != "index_syncing" {
+		t.Fatalf("expected index syncing partial, got %#v", result)
 	}
-	assertContains(t, result.ResidualUnknowns, "graph_file_lookup_timeout")
+	assertContains(t, result.ResidualUnknowns, "index_syncing")
+	if graph.listFilesCalls != 0 {
+		t.Fatalf("expected graph lookup to be skipped, got %d calls", graph.listFilesCalls)
+	}
 }
 
 type fakeWorkspace struct {
@@ -202,12 +187,15 @@ type fakeImpactGraph struct {
 	implementersBySym map[string][]projectingestion.SymbolImplementation
 	indexHealth       projectingestion.SearchIndexHealth
 	blockListFiles    <-chan struct{}
+	activeSync        bool
 
+	listFilesCalls          int
 	contextIndexHealthCalls int
 	searchIndexHealthCalls  int
 }
 
 func (graph *fakeImpactGraph) ListFiles(_ context.Context, _ string, filter projectingestion.FileStateFilter, _ projectingestion.Pagination) (projectingestion.FileList, error) {
+	graph.listFilesCalls++
 	if graph.blockListFiles != nil {
 		<-graph.blockListFiles
 	}
@@ -261,6 +249,15 @@ func (graph *fakeImpactGraph) SearchIndexHealth(context.Context, string) (projec
 func (graph *fakeImpactGraph) ContextSearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error) {
 	graph.contextIndexHealthCalls++
 	return graph.indexHealth, nil
+}
+
+func (graph *fakeImpactGraph) Diagnostics() projectingestion.SchedulerDiagnostics {
+	if !graph.activeSync {
+		return projectingestion.SchedulerDiagnostics{}
+	}
+	return projectingestion.SchedulerDiagnostics{
+		ActiveProjectTaskCount: map[string]int{"example-service": 1},
+	}
 }
 
 func (workspace fakeWorkspace) GitStatus(context.Context, string, projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {

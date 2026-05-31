@@ -56,10 +56,7 @@ const (
 	maxImpactGraphPaths       = 32
 	maxImpactGraphSymbols     = 64
 	impactGraphPageSize       = projectingestion.MaxPageSize
-	maxImpactProbes           = 64
 )
-
-var impactProbeSlots = make(chan struct{}, maxImpactProbes)
 
 func NewImpactAnalyzer(workspace projectworkspace.API) *ImpactAnalyzer {
 	return &ImpactAnalyzer{workspace: workspace}
@@ -148,6 +145,12 @@ func (analyzer *ImpactAnalyzer) Analyze(ctx context.Context, request ImpactAnaly
 }
 
 func (analyzer *ImpactAnalyzer) addGraphImpact(ctx context.Context, result ImpactAnalysis, projectID string, paths []string) ImpactAnalysis {
+	if projectHasActiveSync(analyzer.ingestion, projectID) {
+		result.Partial = true
+		result.PartialReason = firstNonEmpty(result.PartialReason, "index_syncing")
+		result.ResidualUnknowns = appendUnique(result.ResidualUnknowns, "index_syncing")
+		return result
+	}
 	if health, err := analyzer.searchIndexHealth(ctx, projectID); err == nil && health.Degraded {
 		result.Partial = true
 		result.PartialReason = firstNonEmpty(result.PartialReason, health.Reason, "index_degraded")
@@ -368,35 +371,7 @@ func impactProbe[T any](parent context.Context, timeout time.Duration, fn func(c
 	}
 	probeCtx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	select {
-	case impactProbeSlots <- struct{}{}:
-	default:
-		var zero T
-		return zero, context.DeadlineExceeded
-	}
-
-	type probeResult struct {
-		value T
-		err   error
-	}
-	done := make(chan probeResult, 1)
-	go func() {
-		defer func() { <-impactProbeSlots }()
-		value, err := fn(probeCtx)
-		done <- probeResult{value: value, err: err}
-	}()
-
-	select {
-	case result := <-done:
-		return result.value, result.err
-	case <-probeCtx.Done():
-		if err := parent.Err(); err != nil {
-			var zero T
-			return zero, err
-		}
-		var zero T
-		return zero, probeCtx.Err()
-	}
+	return fn(probeCtx)
 }
 
 func markImpactTimeout(result ImpactAnalysis) ImpactAnalysis {

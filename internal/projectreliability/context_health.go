@@ -8,6 +8,7 @@ const (
 	ContextHealthReady       ContextHealthStatus = "ready"
 	ContextHealthWarmingUp   ContextHealthStatus = "warming_up"
 	ContextHealthRunning     ContextHealthStatus = "running"
+	ContextHealthSyncing     ContextHealthStatus = "syncing"
 	ContextHealthDegraded    ContextHealthStatus = "degraded"
 	ContextHealthStale       ContextHealthStatus = "stale"
 	ContextHealthEmpty       ContextHealthStatus = "empty"

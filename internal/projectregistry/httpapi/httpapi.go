@@ -31,7 +31,7 @@ func RegisterRoutesWithWorkspace(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("POST /api/v1/projects/{id}/ingestion-runs", createIngestionRunHandler(ingestion))
 		mux.Handle("POST /api/v1/projects/{id}/search-index/rebuild", rebuildSearchIndexHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/context-health", getContextHealthHandler(registry, ingestion, workspace))
-		mux.Handle("POST /api/v1/projects/{id}/impact/analyze", analyzeImpactHandler(workspace))
+		mux.Handle("POST /api/v1/projects/{id}/impact/analyze", analyzeImpactHandler(ingestion, workspace))
 		mux.Handle("POST /api/v1/projects/{id}/context-pack", buildContextPackHandler(ingestion, workspace))
 		mux.Handle("POST /api/v1/projects/{id}/claims/check", checkClaimsHandler(workspace))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/latest", getLatestIngestionRunHandler(ingestion))
@@ -70,7 +70,7 @@ func getContextHealthHandler(registry *projectregistry.Registry, ingestion proje
 	})
 }
 
-func analyzeImpactHandler(workspace projectworkspace.API) http.Handler {
+func analyzeImpactHandler(ingestion projectingestion.API, workspace projectworkspace.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !httpserver.RequireJSON(r) {
 			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
@@ -82,7 +82,7 @@ func analyzeImpactHandler(workspace projectworkspace.API) http.Handler {
 			return
 		}
 		input.ProjectID = strings.TrimSpace(r.PathValue("id"))
-		impact, err := projectreliability.NewImpactAnalyzer(workspace).Analyze(r.Context(), input)
+		impact, err := projectreliability.NewImpactAnalyzerWithGraph(workspace, ingestion).Analyze(r.Context(), input)
 		writeReliabilityResult(w, impact, err, http.StatusOK)
 	})
 }

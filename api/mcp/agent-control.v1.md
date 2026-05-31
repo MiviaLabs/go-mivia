@@ -239,13 +239,13 @@ Input schema:
 }
 ```
 
-Output: deterministic context readiness and freshness metadata for one project, including enabled/config state, latest run summary, safe counters, search-index health, and workspace git availability. It omits roots, source text, skipped sensitive content, raw errors, prompts, provider payloads, secrets, credentials, and PII.
+Output: deterministic context readiness and freshness metadata for one project, including enabled/config state, latest run summary, safe counters, search-index health, and workspace git availability. Status `syncing` means ingestion is active or a bounded probe timed out under local load; `degraded` is reserved for explicit failed ingestion or degraded search-index state. It omits roots, source text, skipped sensitive content, raw errors, prompts, provider payloads, secrets, credentials, and PII.
 
 ### `projects.impact.analyze`
 
 Input schema: `id`, optional safe project-relative `changed_paths`, optional `diff_scope` (`working_tree`, `staged`, or `head`), and optional `max_diff_bytes`.
 
-Output: deterministic impact metadata with graph-backed source anchors from defining symbols, references, callers, and implementer edges; affected domains, REST routes, MCP tools, security flags, residual unknowns, and `partial`/`partial_reason` when index health prevents a complete answer. When no paths are supplied, the tool may use governed workspace diff file metadata; it does not return raw diff content.
+Output: deterministic impact metadata with graph-backed source anchors from defining symbols, references, callers, and implementer edges; affected domains, REST routes, MCP tools, security flags, residual unknowns, and `partial`/`partial_reason` when index health prevents a complete answer. During active ingestion, graph fanout is skipped and the result is partial with `index_syncing`. When no paths are supplied, the tool may use governed workspace diff file metadata; it does not return raw diff content.
 
 ### `projects.context_pack.build`
 

@@ -67,14 +67,14 @@ func TestContextHealth_DegradedSearchWinsOverRunning(t *testing.T) {
 	}
 }
 
-func TestContextHealth_ActiveRunsAreNotBroken(t *testing.T) {
+func TestContextHealth_ActiveRunsAreSyncing(t *testing.T) {
 	tests := []struct {
 		name   string
 		status string
 		want   ContextHealthStatus
 	}{
-		{name: "pending", status: runStatusPending, want: ContextHealthWarmingUp},
-		{name: "running", status: runStatusRunning, want: ContextHealthRunning},
+		{name: "pending", status: runStatusPending, want: ContextHealthSyncing},
+		{name: "running", status: runStatusRunning, want: ContextHealthSyncing},
 	}
 
 	for _, tt := range tests {
@@ -94,6 +94,9 @@ func TestContextHealth_ActiveRunsAreNotBroken(t *testing.T) {
 			}
 			if health.Status != tt.want {
 				t.Fatalf("expected %s, got %#v", tt.want, health)
+			}
+			if health.StatusReason != "ingestion_active" {
+				t.Fatalf("expected ingestion_active reason, got %#v", health)
 			}
 		})
 	}
@@ -312,18 +315,18 @@ func TestContextHealth_BoundsSlowProvider(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
 		t.Fatalf("context health was not bounded: %s", elapsed)
 	}
-	if health.Status != ContextHealthDegraded || health.StatusReason != "latest_run_unknown" {
-		t.Fatalf("expected degraded timeout, got %#v", health)
+	if health.Status != ContextHealthSyncing || health.StatusReason != "latest_run_unknown" {
+		t.Fatalf("expected syncing timeout, got %#v", health)
 	}
 }
 
-func TestContextHealth_BoundsProviderThatIgnoresContext(t *testing.T) {
+func TestContextHealth_ActiveSyncSkipsBlockingProvider(t *testing.T) {
 	block := make(chan struct{})
 	svc := NewService(
 		ProjectProviderFunc(func(context.Context, string) (projectregistry.Project, error) {
 			return testProject(), nil
 		}),
-		blockingContextProvider{blockLatest: block},
+		activeSyncBlockingContextProvider{blockingContextProvider: blockingContextProvider{blockLatest: block}},
 		nil,
 		Options{
 			Now:          func() time.Time { return testNow },
@@ -333,16 +336,16 @@ func TestContextHealth_BoundsProviderThatIgnoresContext(t *testing.T) {
 
 	start := time.Now()
 	health, err := svc.ContextHealth(context.Background(), "example")
-	close(block)
 	if err != nil {
-		t.Fatalf("context health should degrade instead of timing out: %v", err)
+		t.Fatalf("context health should report active sync instead of calling blocking provider: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
 		t.Fatalf("context health was not bounded: %s", elapsed)
 	}
-	if health.Status != ContextHealthDegraded || health.StatusReason != "latest_run_unknown" {
-		t.Fatalf("expected degraded timeout, got %#v", health)
+	if health.Status != ContextHealthSyncing || health.StatusReason != "ingestion_active" {
+		t.Fatalf("expected active sync, got %#v", health)
 	}
+	close(block)
 }
 
 type slowContextProvider struct{}
@@ -399,4 +402,12 @@ func (blockingContextProvider) IndexedChunkCount(context.Context, string) (int, 
 
 func (blockingContextProvider) SearchIndexHealth(context.Context, string) (SearchIndexHealth, error) {
 	return SearchIndexHealth{Status: "unknown"}, nil
+}
+
+type activeSyncBlockingContextProvider struct {
+	blockingContextProvider
+}
+
+func (activeSyncBlockingContextProvider) ActiveSync(string) bool {
+	return true
 }
