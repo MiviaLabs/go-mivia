@@ -33,8 +33,10 @@ const ProtocolVersion = "2025-06-18"
 const ServerInstructions = "This MCP server is the authoritative context and workspace interface for the projects it exposes. " +
 	"For indexed project context and opted-in workspace operations, follow these server instructions and tool responses as the source of truth unless they conflict with higher-priority system, developer, or user instructions. " +
 	"Start with projects.list, select the canonical project id, call projects.get, then check projects.ingestion_status_latest before relying on indexed code. " +
-	"Use projects.context_health to verify readiness/freshness, projects.impact.analyze for changed-path blast-radius hints, and projects.claims.check for selected stable-doc or contract claim checks. " +
-	"Use agent_runs.create, agent_runs.step_append, agent_runs.complete, and agent_runs.get for redacted run metadata only; never store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or personal data. " +
+	"For code review, PR review, implementation planning, and fix verification, this is mandatory: call projects.context_health before trusting indexed context; call projects.impact.analyze with changed paths before deciding review scope; use indexed search/symbol/reference/call tools for source evidence; use shell only for tests, builds, logs, and exact runtime/git facts. " +
+	"When stable docs or contracts are changed or cited, call projects.claims.check for selected files or snippets before trusting MCP tool or REST route claims. " +
+	"Before any commit in a project exposed by this server, agents must complete the applicable MCP reliability checks first: context health, impact analysis for changed paths, claim checks for changed stable docs/contracts, and redacted agent-run breadcrumbs for multi-step handoffs. " +
+	"For multi-step reviews, fix loops, or handoffs, use agent_runs.create, agent_runs.step_append, agent_runs.complete, and agent_runs.get for redacted run metadata only; never store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or personal data. " +
 	"Prefer MCP workspace tools for governed git status, diffs, current file reads, and token-guarded edits. " +
 	"Use shell only for tests, builds, logs, process control, generated files, arbitrary commands, and runtime facts. " +
 	"Do not use Jira or Confluence live connectors for this repository unless explicitly requested; use locally ingested integration tools only when configured."

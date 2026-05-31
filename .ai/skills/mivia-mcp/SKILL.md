@@ -11,6 +11,17 @@ Portable skill. It can be copied into any repository indexed by a running Mivia 
 
 When a Mivia MCP server is available for the target project, agents must use it before broad shell scans, manual file walking, Serena indexed-context discovery, or chat-only assumptions for every capability listed below.
 
+Critical review and implementation rule:
+
+- For code review, PR review, implementation planning, and fix verification, agents must start with `projects.list` -> `projects.get` -> `projects.ingestion_status_latest` -> `projects.context_health`.
+- If `projects.context_health.status` is not `ready`, agents must state the status and freshness gap before relying on indexed context. They may wait/poll, request or run ingestion when appropriate, or fall back to shell/Serena with the gap explicit.
+- For any changed-path review, agents must call `projects.impact.analyze` with the changed paths before deciding review scope. Use its affected domains, routes, tools, security flags, and source anchors to decide which code, contracts, docs, and tests need inspection.
+- For source evidence, agents must use indexed MCP search/navigation first when available: `projects.search.*`, `projects.symbols.list`, `projects.symbol.source`, `projects.symbol.references`, callers/callees, call graph, headings, outlines, and bounded chunks.
+- For actual runtime proof, agents must use shell: tests, builds, logs, process control, generated files, and exact git/runtime facts.
+- For stable docs/contracts that changed or are cited in a review, agents must call `projects.claims.check` on selected files or snippets before trusting MCP tool names, REST route names, or `.ai/tasks/*` link claims.
+- Before any commit in a project exposed by Mivia MCP, agents must complete the applicable MCP reliability checks: `projects.context_health`, `projects.impact.analyze` for changed paths, `projects.claims.check` for changed stable docs/contracts, and `agent_runs.*` breadcrumbs for multi-step handoffs. If Mivia MCP is unavailable, agents must state that gap before committing.
+- For multi-step reviews, fix loops, implementation handoffs, or resumable work, agents should use `agent_runs.*` to record redacted breadcrumbs. Store only safe metadata; never store raw prompts, completions, source dumps, raw stderr, roots, secrets, provider payloads, skipped sensitive content, or PII.
+
 Mandatory MCP-first surfaces:
 
 - Project discovery, enabled state, digest mode, update policy, workspace mode, and graph storage.
