@@ -62,6 +62,21 @@ Environment variables remain final overrides over file values:
 - `MIVIA_INGESTION_SENSITIVE_MARKER_POLICY`
 - `MIVIA_WORKSPACE_ENABLED`
 
+Docker Compose also reads host-side publishing overrides that are not server config fields:
+
+- `MIVIA_HOST_BIND`, default `127.0.0.1`
+- `MIVIA_HOST_PORT`, default `8080`
+
+Keep `MIVIA_HOST_BIND=127.0.0.1` unless an approved local-only exposure requires a different host bind. The Compose image keeps `mivia-server` bound to container loopback and forwards container port `8080` for Docker publishing.
+
+The default Compose path builds locally. For the future public release, `docker-compose.yml` carries a commented image example using a container registry tag:
+
+```yaml
+# image: ghcr.io/mivialabs/mivia-server:0.1.0
+```
+
+Do not treat that as a Go module proxy path. Go module publication uses repository semantic-version tags such as `v0.1.0`; container publication uses registry image tags such as `0.1.0` when the release workflow chooses that tag.
+
 ## Field Reference
 
 | Field | Required | Notes |

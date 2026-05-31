@@ -34,6 +34,39 @@ go run ./cmd/mivia-server
 
 Default bind is localhost-only. Do not bind to `0.0.0.0` or a public interface until authn/authz, origin policy, rate limits, and audit logging are approved.
 
+## Run With Docker Compose
+
+Use Docker Compose when Docker is available but Go is not installed on the host:
+
+```sh
+docker compose up
+```
+
+The default Compose file builds from this checkout. After the first public image is published, the Compose file includes a commented pull example:
+
+```yaml
+# image: ghcr.io/mivialabs/mivia-server:0.1.0
+```
+
+Go module releases and container images are versioned in different registries. The Go module release tag should be `v0.1.0`; the container image tag can be `0.1.0` when the release workflow publishes it that way.
+
+Defaults:
+
+- Host bind: `MIVIA_HOST_BIND=127.0.0.1`
+- Host port: `MIVIA_HOST_PORT=8080`
+- Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`
+- Container storage: named Compose volume `mivia-data`
+
+Change the published host address or port from the host environment:
+
+```sh
+MIVIA_HOST_BIND=127.0.0.1 MIVIA_HOST_PORT=18080 docker compose up
+```
+
+`MIVIA_HOST_BIND=0.0.0.0` publishes beyond loopback. Use it only for approved local-only network exposure; the server has no production authn/authz posture. The container still runs `mivia-server` on internal loopback and forwards container port `8080` for Docker publishing.
+
+The default Compose file mounts `./configs` read-only. Mount `./secrets` only in a local override when an approved ignored config references credential files.
+
 ## Optional Local Project Config
 
 Project config is local-only and intended for engineer local computers. Copy the committed example and replace placeholder paths:

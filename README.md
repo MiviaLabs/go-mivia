@@ -329,6 +329,23 @@ curl -fsS \
   http://127.0.0.1:8080/mcp
 ```
 
+Docker Compose, without requiring Go on the host:
+
+```sh
+docker compose up
+```
+
+The Compose service publishes to `${MIVIA_HOST_BIND:-127.0.0.1}:${MIVIA_HOST_PORT:-8080}`. Keep `MIVIA_HOST_BIND=127.0.0.1` unless an approved local-only network exposure requires otherwise. Inside the container, `mivia-server` still binds to `127.0.0.1:18080`; a local TCP forwarder exposes container port `8080` so Docker port publishing works without relaxing the server's localhost-only bind rule.
+
+Default container data paths are:
+
+```sh
+MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug
+MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite
+```
+
+Override `MIVIA_HOST_BIND`, `MIVIA_HOST_PORT`, `MIVIA_LADYBUG_PATH`, `MIVIA_SQLITE_PATH`, and feature flags from the host environment when needed. The default Compose file mounts `./configs` read-only at `/app/configs`. Mount `./secrets` only in a local override when an approved local config references credential files; keep real local config and secret files ignored.
+
 ## Codex Desktop MCP
 
 Codex Desktop can register the server directly as a Streamable HTTP MCP server:
