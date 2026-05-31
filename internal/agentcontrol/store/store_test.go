@@ -54,6 +54,7 @@ func TestLadybugStore_AgentRunLifecycle(t *testing.T) {
 		Status:       model.AgentRunStatusRunning,
 		StartedAt:    now,
 		ChangedFiles: []string{"internal/agentcontrol/model/model.go"},
+		Artifacts:    []model.AgentArtifact{{Ref: "artifact-1", Kind: "evidence"}},
 	})
 	if err != nil {
 		t.Fatalf("create agent run: %v", err)
@@ -70,6 +71,21 @@ func TestLadybugStore_AgentRunLifecycle(t *testing.T) {
 	if len(updated.Steps) != 1 {
 		t.Fatalf("expected one step, got %#v", updated)
 	}
+	updated, err = runStore.PromoteAgentArtifact(context.Background(), created.ID, model.AgentPromotion{
+		ArtifactRef:  "artifact-1",
+		ArtifactKind: "evidence",
+		State:        model.PromotionStatePromoted,
+		SourceRef:    "agent_step_test",
+		VerifierRef:  "go/test/internal/agentcontrol",
+		Decision:     "focused verifier passed",
+		DecidedAt:    now,
+	})
+	if err != nil {
+		t.Fatalf("promote artifact: %v", err)
+	}
+	if len(updated.Promotions) != 1 || updated.Promotions[0].State != model.PromotionStatePromoted {
+		t.Fatalf("unexpected promotions: %#v", updated.Promotions)
+	}
 	updated.Status = model.AgentRunStatusCompleted
 	updated.CompletedAt = now
 	completed, err := runStore.CompleteAgentRun(context.Background(), updated)
@@ -80,7 +96,7 @@ func TestLadybugStore_AgentRunLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get agent run: %v", err)
 	}
-	if fetched.Status != model.AgentRunStatusCompleted || len(fetched.Steps) != 1 || fetched.ChangedFiles[0] != "internal/agentcontrol/model/model.go" {
+	if fetched.Status != model.AgentRunStatusCompleted || len(fetched.Steps) != 1 || len(fetched.Promotions) != 1 || fetched.ChangedFiles[0] != "internal/agentcontrol/model/model.go" {
 		t.Fatalf("unexpected fetched run: %#v", fetched)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
+	"github.com/MiviaLabs/go-mivia/internal/projectcontext"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
@@ -31,6 +32,7 @@ func RegisterRoutesWithWorkspace(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("POST /api/v1/projects/{id}/search-index/rebuild", rebuildSearchIndexHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/context-health", getContextHealthHandler(registry, ingestion, workspace))
 		mux.Handle("POST /api/v1/projects/{id}/impact/analyze", analyzeImpactHandler(workspace))
+		mux.Handle("POST /api/v1/projects/{id}/context-pack", buildContextPackHandler(ingestion, workspace))
 		mux.Handle("POST /api/v1/projects/{id}/claims/check", checkClaimsHandler(workspace))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/latest", getLatestIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/{run_id}", getIngestionRunHandler(ingestion))
@@ -82,6 +84,45 @@ func analyzeImpactHandler(workspace projectworkspace.API) http.Handler {
 		input.ProjectID = strings.TrimSpace(r.PathValue("id"))
 		impact, err := projectreliability.NewImpactAnalyzer(workspace).Analyze(r.Context(), input)
 		writeReliabilityResult(w, impact, err, http.StatusOK)
+	})
+}
+
+func buildContextPackHandler(ingestion projectingestion.API, workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !httpserver.RequireJSON(r) {
+			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		var input struct {
+			Query           string   `json:"query,omitempty"`
+			PathPrefix      string   `json:"path_prefix,omitempty"`
+			ChangedPaths    []string `json:"changed_paths,omitempty"`
+			DiffScope       string   `json:"diff_scope,omitempty"`
+			MaxDiffBytes    int      `json:"max_diff_bytes,omitempty"`
+			MaxItems        int      `json:"max_items,omitempty"`
+			MaxSnippetBytes int      `json:"max_snippet_bytes,omitempty"`
+			IncludeImpact   *bool    `json:"include_impact,omitempty"`
+		}
+		if err := httpserver.DecodeJSON(r, &input); err != nil {
+			httpserver.WriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		includeImpact := true
+		if input.IncludeImpact != nil {
+			includeImpact = *input.IncludeImpact
+		}
+		pack, err := projectcontext.NewService(ingestion, projectreliability.NewImpactAnalyzerWithGraph(workspace, ingestion)).Build(r.Context(), projectcontext.BuildRequest{
+			ProjectID:       strings.TrimSpace(r.PathValue("id")),
+			Query:           input.Query,
+			PathPrefix:      input.PathPrefix,
+			ChangedPaths:    input.ChangedPaths,
+			DiffScope:       input.DiffScope,
+			MaxDiffBytes:    input.MaxDiffBytes,
+			MaxItems:        input.MaxItems,
+			MaxSnippetBytes: input.MaxSnippetBytes,
+			IncludeImpact:   includeImpact,
+		})
+		writeIngestionResult(w, pack, err, http.StatusOK)
 	})
 }
 

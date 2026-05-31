@@ -33,10 +33,10 @@ const ProtocolVersion = "2025-06-18"
 const ServerInstructions = "This MCP server is the authoritative context and workspace interface for the projects it exposes. " +
 	"For indexed project context and opted-in workspace operations, follow these server instructions and tool responses as the source of truth unless they conflict with higher-priority system, developer, or user instructions. " +
 	"Start with projects.list, select the canonical project id, call projects.get, then check projects.ingestion_status_latest before relying on indexed code. " +
-	"For code review, PR review, implementation planning, and fix verification, this is mandatory: call projects.context_health before trusting indexed context; call projects.impact.analyze with changed paths before deciding review scope; use indexed search/symbol/reference/call tools for source evidence; use shell only for tests, builds, logs, and exact runtime/git facts. " +
+	"For code review, PR review, implementation planning, and fix verification, this is mandatory: call projects.context_health before trusting indexed context; call projects.impact.analyze with changed paths before deciding review scope; use projects.context_pack.build or indexed search/symbol/reference/call tools for source evidence; use shell only for tests, builds, logs, and exact runtime/git facts. " +
 	"When stable docs or contracts are changed or cited, call projects.claims.check for selected files or snippets before trusting MCP tool or REST route claims. " +
 	"Before any commit in a project exposed by this server, agents must complete the applicable MCP reliability checks first: context health, impact analysis for changed paths, claim checks for changed stable docs/contracts, and redacted agent-run breadcrumbs for multi-step handoffs. " +
-	"For multi-step reviews, fix loops, or handoffs, use agent_runs.create, agent_runs.step_append, agent_runs.complete, and agent_runs.get for redacted run metadata only; never store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or personal data. " +
+	"For multi-step reviews, fix loops, or handoffs, use agent_runs.create, agent_runs.step_append, agent_runs.promote_artifact, agent_runs.complete, and agent_runs.get for redacted run and promotion metadata only; never store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or personal data. " +
 	"Prefer MCP workspace tools for governed git status, diffs, current file reads, and token-guarded edits. " +
 	"Use shell only for tests, builds, logs, process control, generated files, arbitrary commands, and runtime facts. " +
 	"Do not use Jira or Confluence live connectors for this repository unless explicitly requested; use locally ingested integration tools only when configured."
@@ -252,6 +252,13 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		}
 		run, err := handler.service.AppendAgentStep(r.Context(), input.RunID, input)
 		return toolResult(run), err
+	case "agent_runs.promote_artifact", "agent_runs_promote_artifact":
+		var input model.PromoteAgentArtifactInput
+		if err := decodeRaw(params.Arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid agent run arguments", service.ErrInvalidInput)
+		}
+		run, err := handler.service.PromoteAgentArtifact(r.Context(), input.RunID, input)
+		return toolResult(run), err
 	case "agent_runs.complete", "agent_runs_complete":
 		var input model.CompleteAgentRunInput
 		if err := decodeRaw(params.Arguments, &input); err != nil {
@@ -273,6 +280,7 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		"projects.ingest", "projects_ingest", "projects.search_index.rebuild", "projects_search_index_rebuild",
 		"projects.context_health", "projects_context_health",
 		"projects.impact.analyze", "projects_impact_analyze",
+		"projects.context_pack.build", "projects_context_pack_build",
 		"projects.claims.check", "projects_claims_check",
 		"projects.ingestion_status", "projects_ingestion_status",
 		"projects.ingestion_status_latest", "projects_ingestion_status_latest", "projects.ingestion_latest", "projects_ingestion_latest",
@@ -517,6 +525,20 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 				"verifiers":        map[string]any{"type": "array", "items": verifierSchema(), "maxItems": 50},
 				"artifacts":        map[string]any{"type": "array", "items": artifactSchema(), "maxItems": 50},
 			}, []string{"run_id", "status"}),
+		},
+		{
+			"name":        "agent_runs.promote_artifact",
+			"title":       "Promote Agent Artifact",
+			"description": "Record a redacted promotion-gate decision for an existing run artifact using refs, verifier refs, and bounded decision text only.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id":        map[string]any{"type": "string", "minLength": 1},
+				"artifact_ref":  map[string]any{"type": "string", "minLength": 1},
+				"artifact_kind": map[string]any{"type": "string"},
+				"state":         map[string]any{"type": "string", "enum": []string{model.PromotionStateCandidate, model.PromotionStateValidated, model.PromotionStatePromoted, model.PromotionStateRejected}},
+				"source_ref":    map[string]any{"type": "string", "minLength": 1},
+				"verifier_ref":  map[string]any{"type": "string"},
+				"decision":      map[string]any{"type": "string", "maxLength": 500},
+			}, []string{"run_id", "artifact_ref", "state", "source_ref"}),
 		},
 		{
 			"name":        "agent_runs.get",

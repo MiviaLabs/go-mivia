@@ -175,6 +175,30 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /agent-runs/{id}/promotions:
+    post:
+      operationId: promoteAgentArtifact
+      summary: Record agent artifact promotion-gate decision
+      description: Records metadata-only promotion vocabulary for an existing agent-run artifact. Stores refs, state, verifier ref, and bounded decision text only; raw prompts, source dumps, raw stderr, roots, secrets, provider payloads, and PII are prohibited.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoteAgentArtifactRequest'
+      responses:
+        '200':
+          description: Updated redacted agent run metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /agent-runs/{id}/complete:
     post:
       operationId: completeAgentRun
@@ -282,6 +306,32 @@ paths:
                 $ref: '#/components/schemas/ImpactAnalysis'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /projects/{id}/context-pack:
+    post:
+      operationId: buildProjectContextPack
+      summary: Build bounded project context pack
+      description: Composes bounded text search hits, file metadata, symbol metadata, and optional impact metadata from existing local indexed context. It creates no new storage and returns no roots, raw diffs, external provider data, or uncapped chunk source.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContextPackBuildRequest'
+      responses:
+        '200':
+          description: Bounded project context pack
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextPack'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
   /projects/{id}/claims/check:
@@ -1286,6 +1336,34 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AgentArtifact'
+    PromoteAgentArtifactRequest:
+      type: object
+      additionalProperties: false
+      required: [artifact_ref, state, source_ref]
+      properties:
+        run_id:
+          type: string
+          description: Optional body alias; path id is authoritative for REST.
+        artifact_ref:
+          type: string
+          minLength: 1
+          description: Existing run or step artifact ref. Absolute roots and traversal are rejected.
+        artifact_kind:
+          type: string
+        state:
+          type: string
+          enum: [candidate, validated, promoted, rejected]
+        source_ref:
+          type: string
+          minLength: 1
+          description: Safe runtime source ref for the evidence decision.
+        verifier_ref:
+          type: string
+          description: Required for validated, promoted, and rejected decisions.
+        decision:
+          type: string
+          maxLength: 500
+          description: Required for validated, promoted, and rejected decisions; raw source, prompts, stderr, secrets, provider payloads, and PII are prohibited.
     AgentRun:
       type: object
       additionalProperties: false
@@ -1322,6 +1400,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AgentArtifact'
+        promotions:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentPromotion'
         steps:
           type: array
           items:
@@ -1389,6 +1471,27 @@ components:
           type: string
         kind:
           type: string
+    AgentPromotion:
+      type: object
+      additionalProperties: false
+      required: [artifact_ref, state, source_ref, decided_at]
+      properties:
+        artifact_ref:
+          type: string
+        artifact_kind:
+          type: string
+        state:
+          type: string
+          enum: [candidate, validated, promoted, rejected]
+        source_ref:
+          type: string
+        verifier_ref:
+          type: string
+        decision:
+          type: string
+        decided_at:
+          type: string
+          format: date-time
     ProjectList:
       type: object
       additionalProperties: false
@@ -1579,6 +1682,86 @@ components:
           type: boolean
         workspace_truncated:
           type: boolean
+    ContextPackBuildRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        query:
+          type: string
+          description: Optional literal search query. Empty query returns a bounded file sample plus warning.
+        path_prefix:
+          type: string
+          description: Safe project-relative prefix. Absolute paths and traversal are rejected.
+        changed_paths:
+          type: array
+          items:
+            type: string
+            description: Safe project-relative paths for impact analysis and indexed-file lookup.
+        diff_scope:
+          type: string
+          enum: [working_tree, staged, head]
+        max_diff_bytes:
+          type: integer
+          minimum: 1
+          maximum: 262144
+        max_items:
+          type: integer
+          minimum: 1
+          maximum: 25
+        max_snippet_bytes:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        include_impact:
+          type: boolean
+    ContextPack:
+      type: object
+      additionalProperties: false
+      required: [project_id, limits]
+      properties:
+        project_id:
+          type: string
+        query:
+          type: string
+        path_prefix:
+          type: string
+        changed_paths:
+          type: array
+          items: {type: string}
+        limits:
+          $ref: '#/components/schemas/ContextPackLimits'
+        text_hits:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectTextSearchResult'
+          description: Capped snippets only; chunk text is intentionally empty.
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectFile'
+        symbols:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSymbol'
+        impact:
+          $ref: '#/components/schemas/ImpactAnalysis'
+        partial:
+          type: boolean
+        warnings:
+          type: array
+          items: {type: string}
+        limitations:
+          type: array
+          items: {type: string}
+    ContextPackLimits:
+      type: object
+      additionalProperties: false
+      required: [max_items, max_snippet_bytes]
+      properties:
+        max_items:
+          type: integer
+        max_snippet_bytes:
+          type: integer
     ImpactDomain:
       type: object
       additionalProperties: false

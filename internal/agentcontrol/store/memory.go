@@ -85,6 +85,18 @@ func (store *MemoryStore) AppendAgentStep(_ context.Context, runID string, step 
 	return cloneAgentRun(run), nil
 }
 
+func (store *MemoryStore) PromoteAgentArtifact(_ context.Context, runID string, promotion model.AgentPromotion) (model.AgentRun, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	run, ok := store.agentRuns[runID]
+	if !ok {
+		return model.AgentRun{}, ErrNotFound
+	}
+	run.Promotions = appendAgentPromotion(run.Promotions, promotion)
+	store.agentRuns[runID] = run
+	return cloneAgentRun(run), nil
+}
+
 func (store *MemoryStore) CompleteAgentRun(_ context.Context, run model.AgentRun) (model.AgentRun, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -109,6 +121,7 @@ func cloneAgentRun(run model.AgentRun) model.AgentRun {
 	run.ChangedFiles = append([]string(nil), run.ChangedFiles...)
 	run.Verifiers = cloneAgentVerifiers(run.Verifiers)
 	run.Artifacts = cloneAgentArtifacts(run.Artifacts)
+	run.Promotions = cloneAgentPromotions(run.Promotions)
 	run.Steps = append([]model.AgentStep(nil), run.Steps...)
 	for i := range run.Steps {
 		run.Steps[i] = cloneAgentStep(run.Steps[i])
@@ -133,4 +146,13 @@ func cloneAgentVerifiers(verifiers []model.AgentVerifier) []model.AgentVerifier 
 
 func cloneAgentArtifacts(artifacts []model.AgentArtifact) []model.AgentArtifact {
 	return append([]model.AgentArtifact(nil), artifacts...)
+}
+
+func cloneAgentPromotions(promotions []model.AgentPromotion) []model.AgentPromotion {
+	return append([]model.AgentPromotion(nil), promotions...)
+}
+
+func appendAgentPromotion(promotions []model.AgentPromotion, promotion model.AgentPromotion) []model.AgentPromotion {
+	out := append([]model.AgentPromotion(nil), promotions...)
+	return append(out, promotion)
 }

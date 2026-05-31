@@ -255,6 +255,32 @@ func TestCallToolWithIngestion_ImpactAnalyzeMapsPaths(t *testing.T) {
 	}
 }
 
+func TestCallToolWithIngestion_ContextPackBuildComposesSearchAndImpact(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+	if _, err := ingestion.IngestProject(context.Background(), "example-service", projectingestion.TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if !hasToolDefinition(mcpapi.ToolDefinitionsWithIngestion(true), "projects.context_pack.build") {
+		t.Fatalf("expected projects.context_pack.build tool definition")
+	}
+
+	result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_context_pack_build", json.RawMessage(`{"id":"example-service","query":"helper","changed_paths":["cmd/main.go"],"max_items":2,"max_snippet_bytes":80}`))
+	if err != nil {
+		t.Fatalf("call context pack build: %v", err)
+	}
+	body := marshalResult(t, result)
+	for _, expected := range []string{`"project_id":"example-service"`, `"text_hits"`, `"files"`, `"symbols"`, `"impact"`, `"integration_artifacts_not_included_v1"`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %s in context pack, got %s", expected, body)
+		}
+	}
+	for _, forbidden := range []string{"content_sha256", "root_path"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("context pack leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
 func TestCallToolWithIngestion_ClaimsCheckFlagsStaleTool(t *testing.T) {
 	registry, digest, ingestion := newIngestionServices(t)
 	result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_claims_check", json.RawMessage(`{"id":"example-service","documents":[{"path":"README.md","text":"Use projects.context_health not projects.verifiers.recommend and never link .ai/tasks/active/local.md"}]}`))

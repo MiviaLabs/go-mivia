@@ -165,11 +165,11 @@ func TestToolsCall_RejectsRawQueryArgument(t *testing.T) {
 func TestToolsCall_AgentRunLifecycleIsRedacted(t *testing.T) {
 	handler := newHandler()
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if !bytes.Contains(list.Body.Bytes(), []byte(`"agent_runs.create"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"agent_runs.get"`)) {
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"agent_runs.create"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"agent_runs.get"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"agent_runs.promote_artifact"`)) {
 		t.Fatalf("expected agent run tools, got %s", list.Body.String())
 	}
 
-	create := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"agent_runs.create","arguments":{"project_id":"example-service","summary":"bounded run metadata","changed_files":["internal/agentcontrol/model/model.go"]}}}`)
+	create := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"agent_runs.create","arguments":{"project_id":"example-service","summary":"bounded run metadata","changed_files":["internal/agentcontrol/model/model.go"],"artifacts":[{"ref":"artifact-1","kind":"evidence"}]}}}`)
 	if bytes.Contains(create.Body.Bytes(), []byte(`"error"`)) {
 		t.Fatalf("expected create success, got %s", create.Body.String())
 	}
@@ -182,6 +182,11 @@ func TestToolsCall_AgentRunLifecycleIsRedacted(t *testing.T) {
 	step := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"agent_runs_step_append","arguments":{"run_id":"`+runID+`","tool_name":"go","tool_category":"test","status":"completed","notes":"focused verifier passed"}}}`)
 	if bytes.Contains(step.Body.Bytes(), []byte(`"error"`)) || bytes.Contains(step.Body.Bytes(), []byte("raw prompt")) || bytes.Contains(step.Body.Bytes(), []byte("package main")) {
 		t.Fatalf("unexpected step response: %s", step.Body.String())
+	}
+
+	promote := postMCP(t, handler, `{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"agent_runs.promote_artifact","arguments":{"run_id":"`+runID+`","artifact_ref":"artifact-1","state":"validated","source_ref":"agent_step_1","verifier_ref":"go/test","decision":"focused verifier passed"}}}`)
+	if bytes.Contains(promote.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(promote.Body.Bytes(), []byte(`"state":"validated"`)) || bytes.Contains(promote.Body.Bytes(), []byte("package main")) {
+		t.Fatalf("unexpected promote response: %s", promote.Body.String())
 	}
 
 	complete := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"agent_runs.complete","arguments":{"run_id":"`+runID+`","status":"completed"}}}`)

@@ -13,6 +13,11 @@ const (
 	AgentRunStatusRunning   = "running"
 	AgentRunStatusCompleted = "completed"
 	AgentRunStatusFailed    = "failed"
+
+	PromotionStateCandidate = "candidate"
+	PromotionStateValidated = "validated"
+	PromotionStatePromoted  = "promoted"
+	PromotionStateRejected  = "rejected"
 )
 
 type Task struct {
@@ -42,18 +47,19 @@ type CreateResearchRunInput struct {
 }
 
 type AgentRun struct {
-	ID              string          `json:"id"`
-	ProjectID       string          `json:"project_id"`
-	TaskID          string          `json:"task_id,omitempty"`
-	Status          string          `json:"status"`
-	StartedAt       time.Time       `json:"started_at"`
-	CompletedAt     time.Time       `json:"completed_at,omitempty"`
-	FailureCategory string          `json:"failure_category,omitempty"`
-	Summary         string          `json:"summary,omitempty"`
-	ChangedFiles    []string        `json:"changed_files,omitempty"`
-	Verifiers       []AgentVerifier `json:"verifiers,omitempty"`
-	Artifacts       []AgentArtifact `json:"artifacts,omitempty"`
-	Steps           []AgentStep     `json:"steps,omitempty"`
+	ID              string           `json:"id"`
+	ProjectID       string           `json:"project_id"`
+	TaskID          string           `json:"task_id,omitempty"`
+	Status          string           `json:"status"`
+	StartedAt       time.Time        `json:"started_at"`
+	CompletedAt     time.Time        `json:"completed_at,omitempty"`
+	FailureCategory string           `json:"failure_category,omitempty"`
+	Summary         string           `json:"summary,omitempty"`
+	ChangedFiles    []string         `json:"changed_files,omitempty"`
+	Verifiers       []AgentVerifier  `json:"verifiers,omitempty"`
+	Artifacts       []AgentArtifact  `json:"artifacts,omitempty"`
+	Promotions      []AgentPromotion `json:"promotions,omitempty"`
+	Steps           []AgentStep      `json:"steps,omitempty"`
 }
 
 type AgentStep struct {
@@ -83,6 +89,16 @@ type AgentArtifact struct {
 	Kind string `json:"kind,omitempty"`
 }
 
+type AgentPromotion struct {
+	ArtifactRef  string    `json:"artifact_ref"`
+	ArtifactKind string    `json:"artifact_kind,omitempty"`
+	State        string    `json:"state"`
+	SourceRef    string    `json:"source_ref"`
+	VerifierRef  string    `json:"verifier_ref,omitempty"`
+	Decision     string    `json:"decision,omitempty"`
+	DecidedAt    time.Time `json:"decided_at"`
+}
+
 type CreateAgentRunInput struct {
 	ProjectID    string          `json:"project_id"`
 	TaskID       string          `json:"task_id,omitempty"`
@@ -102,6 +118,16 @@ type AppendAgentStepInput struct {
 	ChangedFiles    []string        `json:"changed_files,omitempty"`
 	Verifiers       []AgentVerifier `json:"verifiers,omitempty"`
 	Artifacts       []AgentArtifact `json:"artifacts,omitempty"`
+}
+
+type PromoteAgentArtifactInput struct {
+	RunID        string `json:"run_id,omitempty"`
+	ArtifactRef  string `json:"artifact_ref"`
+	ArtifactKind string `json:"artifact_kind,omitempty"`
+	State        string `json:"state"`
+	SourceRef    string `json:"source_ref"`
+	VerifierRef  string `json:"verifier_ref,omitempty"`
+	Decision     string `json:"decision,omitempty"`
 }
 
 type CompleteAgentRunInput struct {
