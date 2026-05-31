@@ -1,0 +1,31 @@
+{
+  "name": "Project with Mivia context server",
+  "dockerComposeFile": [
+    "../docker-compose.yml",
+    "docker-compose.yml",
+    "docker-compose.mivia.example.yml"
+  ],
+  "service": "dev",
+  "workspaceFolder": "/workspaces/example-project",
+  "shutdownAction": "stopCompose",
+  "overrideCommand": false,
+  "runServices": ["dev", "mivia-server"],
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "Mivia MCP and REST",
+      "onAutoForward": "notify"
+    }
+  },
+  "remoteEnv": {
+    "MIVIA_BASE_URL": "http://mivia-server:8080",
+    "MIVIA_MCP_URL": "http://mivia-server:8080/mcp"
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "mivia.serverUrl": "http://mivia-server:8080"
+      }
+    }
+  }
+}

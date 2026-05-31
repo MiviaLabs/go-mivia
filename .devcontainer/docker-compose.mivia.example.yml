@@ -1,0 +1,51 @@
+# Example Dev Container Compose override for a consuming project.
+#
+# Copy this into the consuming repository's `.devcontainer/` directory, add it
+# to `devcontainer.json` `dockerComposeFile`, and adjust the project volume and
+# config path. This assumes the first package-registry release has published:
+#
+#   ghcr.io/mivialabs/go-mivia:0.1.0
+#
+# Keep real credentials, local paths, and project allowlists in ignored local
+# config files. Do not commit real `.env`, token, or credential files.
+
+services:
+  mivia-server:
+    image: ghcr.io/mivialabs/go-mivia:0.1.0
+    init: true
+    pull_policy: missing
+    ports:
+      - "127.0.0.1:${MIVIA_HOST_PORT:-8080}:8080"
+    environment:
+      MIVIA_CONFIG_PATH: /app/configs/mivia-server.local.toml
+      MIVIA_INTERNAL_ADDR: 127.0.0.1:18080
+      MIVIA_PUBLIC_PORT: "8080"
+      MIVIA_LADYBUG_PATH: /var/lib/mivia/mivialabs.lbug
+      MIVIA_SQLITE_PATH: /var/lib/mivia/mivialabs-config.sqlite
+    volumes:
+      - mivia_data:/var/lib/mivia
+      # Put the consuming project's Mivia config in an ignored local file.
+      - type: bind
+        source: ../configs/mivia-server.local.toml
+        target: /app/configs/mivia-server.local.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      # Mount only project roots that Mivia should be allowed to inspect.
+      # Remove `read_only` only when explicitly opting into governed workspace edits.
+      - type: bind
+        source: ..
+        target: /workspaces/example-project
+        read_only: true
+      # Optional local credentials file for explicitly approved integrations.
+      # - ../secrets/atlassian-credentials.json:/app/secrets/atlassian-credentials.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18080/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 6
+    restart: unless-stopped
+
+volumes:
+  mivia_data:
