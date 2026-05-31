@@ -15,6 +15,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/mcpapi"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
+	dashboardhttpapi "github.com/MiviaLabs/go-mivia/internal/dashboard/httpapi"
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/platform/health"
@@ -180,6 +181,10 @@ func run() error {
 			logger.Info("enqueued restart recovery ingestion scan", slog.String("project_id", project.ID))
 		}
 	}
+	initialScanOnStart := effectiveInitialScanOnStart(cfg.Ingestion.InitialScanOnStart, interruptedIngestionRuns)
+	if cfg.Ingestion.InitialScanOnStart && !initialScanOnStart {
+		logger.Info("skipping live initial ingestion scans because restart recovery scans were queued")
+	}
 	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
 	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
 		return err
@@ -192,7 +197,7 @@ func run() error {
 		GlobalWorkerCount:        cfg.Ingestion.GlobalWorkerCount,
 		PerProjectWorkerLimit:    cfg.Ingestion.PerProjectWorkerLimit,
 		LivePathPriority:         cfg.Ingestion.LivePathPriority,
-		InitialScanOnStart:       cfg.Ingestion.InitialScanOnStart,
+		InitialScanOnStart:       initialScanOnStart,
 		MaxWatchedDirectoryCount: cfg.Ingestion.MaxWatchedDirectoryCount,
 		TaskWarnAfter:            cfg.Ingestion.TaskWarnAfter,
 		Logger:                   logger,
@@ -208,8 +213,9 @@ func run() error {
 
 	checker := health.NewChecker(
 		health.Check{
-			Name: "sqlite",
-			Fn:   sqliteDB.Ping,
+			Name:    "sqlite",
+			Fn:      sqliteDB.Ready,
+			Timeout: 50 * time.Millisecond,
 		},
 		health.Check{
 			Name: "ladybug_native",
@@ -225,6 +231,7 @@ func run() error {
 	)
 
 	mux := http.NewServeMux()
+	dashboardhttpapi.RegisterRoutes(mux)
 	mux.HandleFunc("GET /healthz", health.LivenessHandler)
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
 	httpapi.RegisterRoutes(mux, agentService)
@@ -343,4 +350,11 @@ func (poller confluencePollerByProject) PollConfluence(ctx context.Context, cred
 		return projectintegrations.PollResult{}, projectintegrations.ErrNotFound
 	}
 	return projectPoller.PollConfluence(ctx, credentials, plan)
+}
+
+func effectiveInitialScanOnStart(configured bool, interruptedIngestionRuns int) bool {
+	if interruptedIngestionRuns > 0 {
+		return false
+	}
+	return configured
 }

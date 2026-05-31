@@ -150,6 +150,10 @@ func TestAgentRunLifecycle_RedactedMetadataOnly(t *testing.T) {
 			Status:     "passed",
 			ExitStatus: 0,
 		}},
+		Artifacts: []model.AgentArtifact{{
+			Ref:  "finding-authz-boundary",
+			Kind: "finding",
+		}},
 	})
 	if err != nil {
 		t.Fatalf("create agent run: %v", err)
@@ -169,6 +173,20 @@ func TestAgentRunLifecycle_RedactedMetadataOnly(t *testing.T) {
 	}
 	if len(run.Steps) != 1 || run.Steps[0].Notes != "focused verifier passed" {
 		t.Fatalf("unexpected steps: %#v", run.Steps)
+	}
+
+	run, err = svc.PromoteAgentArtifact(context.Background(), run.ID, model.PromoteAgentArtifactInput{
+		ArtifactRef: "finding-authz-boundary",
+		State:       model.PromotionStateValidated,
+		SourceRef:   run.Steps[0].ID,
+		VerifierRef: "go/test/internal/projectreliability",
+		Decision:    "focused verifier passed",
+	})
+	if err != nil {
+		t.Fatalf("promote artifact: %v", err)
+	}
+	if len(run.Promotions) != 1 || run.Promotions[0].State != model.PromotionStateValidated || run.Promotions[0].ArtifactKind != "finding" {
+		t.Fatalf("unexpected promotions: %#v", run.Promotions)
 	}
 
 	run, err = svc.CompleteAgentRun(context.Background(), run.ID, model.CompleteAgentRunInput{Status: model.AgentRunStatusCompleted})
@@ -193,6 +211,51 @@ func TestAgentRunRejectsRawPromptSourceSecretsAndRoots(t *testing.T) {
 		_, err := svc.CreateAgentRun(context.Background(), input)
 		if !errors.Is(err, service.ErrInvalidInput) {
 			t.Fatalf("expected invalid input for %#v, got %v", input, err)
+		}
+	}
+}
+
+func TestPromoteAgentArtifact_RejectsUnknownUnsafeOrUnverifiedDecisions(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	run, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+		ProjectID: "example-service",
+		Artifacts: []model.AgentArtifact{{Ref: "artifact-1", Kind: "evidence"}},
+	})
+	if err != nil {
+		t.Fatalf("create agent run: %v", err)
+	}
+
+	cases := []model.PromoteAgentArtifactInput{
+		{ArtifactRef: "missing", State: model.PromotionStateCandidate, SourceRef: "agent_step_1"},
+		{ArtifactRef: "artifact-1", State: model.PromotionStatePromoted, SourceRef: "agent_step_1"},
+		{ArtifactRef: "artifact-1", State: model.PromotionStateValidated, SourceRef: "agent_step_1", VerifierRef: "go/test"},
+		{ArtifactRef: "artifact-1", State: model.PromotionStateRejected, SourceRef: "agent_step_1", VerifierRef: "go/test", Decision: "raw source package main"},
+		{ArtifactRef: "artifact-1", State: model.PromotionStateCandidate, SourceRef: "/home/mac/project"},
+		{ArtifactRef: "artifact-1", State: model.PromotionStateCandidate, SourceRef: "../project"},
+		{ArtifactRef: "artifact-1", State: "approved", SourceRef: "agent_step_1", VerifierRef: "go/test"},
+	}
+	for _, input := range cases {
+		_, err := svc.PromoteAgentArtifact(context.Background(), run.ID, input)
+		if !errors.Is(err, service.ErrInvalidInput) {
+			t.Fatalf("expected invalid input for %#v, got %v", input, err)
+		}
+	}
+}
+
+func TestAgentRunArtifactsRejectRootOrTraversalRefs(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	for _, ref := range []string{"/home/mac/project", "../project"} {
+		_, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+			ProjectID: "example-service",
+			Artifacts: []model.AgentArtifact{{
+				Ref:  ref,
+				Kind: "evidence",
+			}},
+		})
+		if !errors.Is(err, service.ErrInvalidInput) {
+			t.Fatalf("expected invalid artifact ref %q, got %v", ref, err)
 		}
 	}
 }

@@ -84,10 +84,10 @@ The commented local override template at the bottom of `docker-compose.yml` show
 The default Compose path builds locally. For the future public release, `docker-compose.yml` carries a commented image example using a container registry tag:
 
 ```yaml
-# image: ghcr.io/mivialabs/go-mivia:0.1.0
+# image: ghcr.io/mivialabs/go-mivia:0.1.1
 ```
 
-Do not treat that as a Go module proxy path. Go module publication uses repository semantic-version tags such as `v0.1.0`; container publication uses registry image tags such as `0.1.0` when the release workflow chooses that tag.
+Do not treat that as a Go module proxy path. Go module publication uses repository semantic-version tags such as `v0.1.1`; container publication uses registry image tags such as `0.1.1` when the release workflow chooses that tag.
 
 ## Field Reference
 
@@ -120,10 +120,10 @@ Do not treat that as a Go module proxy path. Go module publication uses reposito
 | `ingestion.max_file_bytes` | No | Global source ingestion coverage cap. Unset or `0` means unlimited; positive values explicitly cap indexed file bytes. Project value can override. |
 | `ingestion.max_chunk_bytes` | No | Global chunk cap for ingestion and query responses; project value can override. |
 | `ingestion.queue_depth` | No | Positive live update queue size. |
-| `ingestion.worker_count` | No | `"auto"` or a positive integer; backward-compatible live submitter worker count. |
-| `ingestion.global_worker_count` | No | `"auto"` or a positive integer; default `"auto"` follows `server.cpu_count` and caps scheduler workers plus full-scan file workers globally. |
-| `ingestion.per_project_worker_limit` | No | `"auto"` or a positive integer no larger than global worker count; default `"auto"` follows `ingestion.global_worker_count` and caps full-scan/path workers per project. |
-| `ingestion.live_path_priority` | No | Must remain `true` while live updates are enabled; default `true`. |
+| `ingestion.worker_count` | No | `"auto"` or a positive integer; default `"auto"` resolves to `4` for local SQLite-backed ingestion. |
+| `ingestion.global_worker_count` | No | `"auto"` or a positive integer; default `"auto"` resolves to `4` and caps scheduler workers plus full-scan file workers globally. |
+| `ingestion.per_project_worker_limit` | No | `"auto"` or a positive integer no larger than global worker count; default `"auto"` resolves to `2` and caps full-scan/path workers per project. |
+| `ingestion.live_path_priority` | No | Boolean; default `true`. Set `false` to process live path events through the regular scheduler queue. |
 | `ingestion.full_scan_batch_size` | No | Positive full-scan batch size; default `500`. Large values such as `20000` are valid but can increase memory during later batched-write phases. |
 | `ingestion.max_watched_directory_count` | No | Optional watched-directory cap per project; `0` means unlimited. |
 | `ingestion.task_warn_after` | No | Positive duration before slow live ingestion task warning; default `30s`. |
@@ -363,7 +363,7 @@ Project integration MCP tools expose configured provider listing/status, manual 
 
 Extractor cache data is stored in SQLite table `project_extractor_cache`. It stores symbols, headings, references, and calls only; it does not store raw source, AST text, chunks, absolute paths, skipped sensitive data, or matched sensitive text. Cache rows are keyed by project, relative-path hash, content hash, extractor name, and extractor version, and are removed when a file becomes skipped or absent. Symbol source responses derive text only from eligible indexed chunks and enforce request/project caps.
 
-Full scans commit graph and FTS writes in bounded windows. Manual and live ingestion submissions run through the scheduler. Manual submissions and search index repair return queued run metadata without waiting for scan completion; clients should use latest status or poll the returned run ID before trusting indexed data. The scheduler prioritizes live path events over full-scan continuation and enforces global and per-project worker limits.
+Full scans commit graph and FTS writes in bounded windows. Manual and live ingestion submissions run through the scheduler. Manual submissions and search index repair return queued run metadata without waiting for scan completion; clients should use latest status or poll the returned run ID before trusting indexed data. The scheduler enforces global and per-project worker limits and holds same-project path work behind active or pending project-wide scans.
 
 File listing accepts optional `status`, `extension`, `path_prefix`, `skipped_reason`, `present`, `modified_since`, `page_size`, and `page_token` filters. Extension values may be `go` or `.go`; matching is case-insensitive and invalidates whitespace or path separators.
 

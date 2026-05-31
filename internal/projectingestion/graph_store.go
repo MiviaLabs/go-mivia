@@ -32,25 +32,26 @@ type GraphStore struct {
 }
 
 type PreparedGraphFile struct {
-	State      FileState
-	Unchanged  bool
-	Chunks     []Chunk
-	Symbols    []Symbol
-	References []Reference
-	Calls      []Call
-	Headings   []Heading
+	State           FileState
+	Unchanged       bool
+	Chunks          []Chunk
+	Symbols         []Symbol
+	References      []Reference
+	Calls           []Call
+	Implementations []Implementation
+	Headings        []Heading
 }
 
 func NewGraphStore(graph graphBackend) *GraphStore {
 	return &GraphStore{graph: graph}
 }
 
-func (store *GraphStore) PutEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, headings []Heading) error {
+func (store *GraphStore) PutEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, implementations []Implementation, headings []Heading) error {
 	return store.withBatch(ctx, func(store *GraphStore) error {
 		if err := store.putProjectAndRun(ctx, project, run); err != nil {
 			return err
 		}
-		return store.putEligibleFile(ctx, project, run, state, chunks, symbols, references, calls, headings)
+		return store.putEligibleFile(ctx, project, run, state, chunks, symbols, references, calls, implementations, headings)
 	})
 }
 
@@ -75,7 +76,7 @@ func (store *GraphStore) PutPreparedFilesBatch(ctx context.Context, project proj
 			case file.Unchanged:
 				err = store.putUnchangedFile(ctx, project, run, file.State)
 			case file.State.Status == FileStatusEligible:
-				err = store.putEligibleFile(ctx, project, run, file.State, file.Chunks, file.Symbols, file.References, file.Calls, file.Headings)
+				err = store.putEligibleFile(ctx, project, run, file.State, file.Chunks, file.Symbols, file.References, file.Calls, file.Implementations, file.Headings)
 			default:
 				err = store.putSkippedFile(ctx, project, run, file.State)
 			}
@@ -95,13 +96,14 @@ func normalizePreparedGraphFiles(files any) ([]PreparedGraphFile, error) {
 		out := make([]PreparedGraphFile, 0, len(typed))
 		for _, result := range typed {
 			out = append(out, PreparedGraphFile{
-				State:      result.state,
-				Unchanged:  result.unchanged,
-				Chunks:     result.chunks,
-				Symbols:    result.symbols,
-				References: result.references,
-				Calls:      result.calls,
-				Headings:   result.headings,
+				State:           result.state,
+				Unchanged:       result.unchanged,
+				Chunks:          result.chunks,
+				Symbols:         result.symbols,
+				References:      result.references,
+				Calls:           result.calls,
+				Implementations: result.implementations,
+				Headings:        result.headings,
 			})
 		}
 		return out, nil
@@ -176,7 +178,7 @@ func (store *GraphStore) putUnchangedFile(ctx context.Context, project projectre
 	})
 }
 
-func (store *GraphStore) putEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, headings []Heading) error {
+func (store *GraphStore) putEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, implementations []Implementation, headings []Heading) error {
 	repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
 	if err := store.deleteDerivedFileNodes(ctx, project.ID, repoFileID); err != nil {
 		return err
@@ -272,10 +274,16 @@ func (store *GraphStore) putEligibleFile(ctx context.Context, project projectreg
 	}
 
 	symbolIDs := symbolIDIndex(repoFileID, symbols)
+	if err := store.addProjectSymbolIDs(ctx, project.ID, symbolIDs); err != nil {
+		return err
+	}
 	if err := store.putReferences(ctx, project.ID, repoFileID, versionID, chunks, references, symbolIDs); err != nil {
 		return err
 	}
 	if err := store.putCalls(ctx, project.ID, repoFileID, versionID, chunks, calls, symbolIDs); err != nil {
+		return err
+	}
+	if err := store.putImplementations(ctx, project.ID, repoFileID, versionID, chunks, implementations, symbolIDs); err != nil {
 		return err
 	}
 
@@ -898,6 +906,37 @@ func (store *GraphStore) ListSymbolCallees(ctx context.Context, project projectr
 	return store.listSymbolCallEdges(ctx, project, symbol, ladybug.RelationshipFilter{From: &from, Properties: map[string]string{"project_id": project.ID}}, pagination)
 }
 
+func (store *GraphStore) ListSymbolImplementers(ctx context.Context, project projectregistry.Project, symbolID string, pagination Pagination) (SymbolImplementationList, error) {
+	symbol, err := store.GetSymbol(ctx, project, symbolID)
+	if err != nil {
+		return SymbolImplementationList{}, err
+	}
+	nodes, err := store.graph.ListNodes(ctx, "CodeImplementation", map[string]string{
+		"project_id":       project.ID,
+		"implemented_name": symbol.Name,
+	})
+	if err != nil {
+		return SymbolImplementationList{}, err
+	}
+	filtered := make([]ladybug.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Properties["implemented_symbol_id"] != "" && node.Properties["implemented_symbol_id"] != symbol.ID {
+			continue
+		}
+		filtered = append(filtered, node)
+	}
+	sortImplementationNodes(filtered)
+	window, nextToken, err := paginate(filtered, pagination)
+	if err != nil {
+		return SymbolImplementationList{}, err
+	}
+	implementations := make([]SymbolImplementation, 0, len(window))
+	for _, node := range window {
+		implementations = append(implementations, implementationFromNode(node))
+	}
+	return SymbolImplementationList{Symbol: symbol, Implementations: implementations, NextPageToken: nextToken}, nil
+}
+
 func (store *GraphStore) listSymbolCallEdges(ctx context.Context, project projectregistry.Project, symbol SymbolMetadata, filter ladybug.RelationshipFilter, pagination Pagination) (SymbolCallEdgeList, error) {
 	relationships, err := store.graph.ListRelationships(ctx, "SYMBOL_CALLS_SYMBOL", filter)
 	if err != nil {
@@ -999,6 +1038,9 @@ func (store *GraphStore) putReferences(ctx context.Context, projectID string, re
 		refID := codeReferenceID(repoFileID, index, ref)
 		enclosingID := symbols.byName[ref.EnclosingSymbolName]
 		targetID := symbols.byName[ref.TargetName]
+		if targetID == "" && ref.Receiver == "" && ref.ImportPath == "" {
+			targetID = symbols.resolvePackageSymbol(ref.PackageName, ref.TargetName)
+		}
 		status := ref.ResolutionStatus
 		confidence := ref.Confidence
 		if targetID != "" {
@@ -1063,6 +1105,9 @@ func (store *GraphStore) putCalls(ctx context.Context, projectID string, repoFil
 		callID := codeCallID(repoFileID, index, call)
 		callerID := symbols.byName[call.CallerName]
 		calleeID := symbols.byName[call.CalleeName]
+		if calleeID == "" && call.Receiver == "" && call.ImportPath == "" {
+			calleeID = symbols.resolvePackageSymbol(symbols.packageName, call.CalleeName)
+		}
 		status := call.ResolutionStatus
 		confidence := call.Confidence
 		if callerID != "" && calleeID != "" {
@@ -1129,19 +1174,96 @@ func (store *GraphStore) putCalls(ctx context.Context, projectID string, repoFil
 	return nil
 }
 
+func (store *GraphStore) putImplementations(ctx context.Context, projectID string, repoFileID string, versionID string, chunks []Chunk, implementations []Implementation, symbols symbolIndex) error {
+	for index, implementation := range implementations {
+		implementationID := codeImplementationID(repoFileID, index, implementation)
+		implementerID := symbols.byName[implementation.ImplementerName]
+		implementedID := symbols.byName[implementation.ImplementedName]
+		if implementedID == "" && implementation.Receiver == "" && implementation.ImportPath == "" {
+			implementedID = symbols.resolvePackageSymbol(implementation.PackageName, implementation.ImplementedName)
+		}
+		status := implementation.ResolutionStatus
+		confidence := implementation.Confidence
+		if implementerID != "" && implementedID != "" {
+			status = "resolved"
+			confidence = "direct"
+		} else if status == "" {
+			status = "unresolved"
+		}
+		if confidence == "" {
+			confidence = "candidate"
+		}
+		if err := store.graph.PutNode(ctx, ladybug.Node{
+			Label: "CodeImplementation",
+			ID:    implementationID,
+			Properties: map[string]string{
+				"id":                    implementationID,
+				"project_id":            projectID,
+				"repo_file_id":          repoFileID,
+				"file_version_id":       versionID,
+				"kind":                  implementation.Kind,
+				"implementer_symbol_id": implementerID,
+				"implemented_symbol_id": implementedID,
+				"implementer_name":      implementation.ImplementerName,
+				"implemented_name":      implementation.ImplementedName,
+				"package":               implementation.PackageName,
+				"receiver":              implementation.Receiver,
+				"import_path":           implementation.ImportPath,
+				"start_line":            strconv.Itoa(implementation.StartLine),
+				"end_line":              strconv.Itoa(implementation.EndLine),
+				"start_byte":            strconv.Itoa(implementation.StartByte),
+				"end_byte":              strconv.Itoa(implementation.EndByte),
+				"start_column":          strconv.Itoa(implementation.StartColumn),
+				"end_column":            strconv.Itoa(implementation.EndColumn),
+				"resolution_status":     status,
+				"confidence":            confidence,
+			},
+		}); err != nil {
+			return err
+		}
+		if implementerID != "" && implementedID != "" {
+			if err := store.putRelationshipWithProperties(ctx, "SYMBOL_IMPLEMENTS_SYMBOL", "CodeSymbol", implementerID, "CodeSymbol", implementedID, projectID, map[string]string{
+				"implementation_id": implementationID,
+				"repo_file_id":      repoFileID,
+				"kind":              implementation.Kind,
+				"implementer_name":  implementation.ImplementerName,
+				"implemented_name":  implementation.ImplementedName,
+				"resolution_status": status,
+				"confidence":        confidence,
+			}); err != nil {
+				return err
+			}
+		}
+		if chunkID := containingChunkID(versionID, chunks, implementation.StartLine); chunkID != "" {
+			if err := store.putRelationship(ctx, "IMPLEMENTATION_IN_CHUNK", "CodeImplementation", implementationID, "ContentChunk", chunkID, projectID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 type symbolIndex struct {
-	byName     map[string]string
-	byNameKind map[string]SymbolKind
+	byName        map[string]string
+	byNameKind    map[string]SymbolKind
+	byPackageName map[string]string
+	ambiguous     map[string]bool
+	packageName   string
 }
 
 func symbolIDIndex(repoFileID string, symbols []Symbol) symbolIndex {
 	index := symbolIndex{
-		byName:     make(map[string]string, len(symbols)),
-		byNameKind: make(map[string]SymbolKind, len(symbols)),
+		byName:        make(map[string]string, len(symbols)),
+		byNameKind:    make(map[string]SymbolKind, len(symbols)),
+		byPackageName: make(map[string]string, len(symbols)),
+		ambiguous:     make(map[string]bool),
 	}
 	for _, symbol := range symbols {
 		if symbol.Name == "" {
 			continue
+		}
+		if index.packageName == "" && symbol.PackageName != "" {
+			index.packageName = symbol.PackageName
 		}
 		id := codeSymbolID(repoFileID, symbol)
 		existingKind, exists := index.byNameKind[symbol.Name]
@@ -1149,8 +1271,52 @@ func symbolIDIndex(repoFileID string, symbols []Symbol) symbolIndex {
 			index.byName[symbol.Name] = id
 			index.byNameKind[symbol.Name] = symbol.Kind
 		}
+		index.addPackageSymbol(symbol.PackageName, symbol.Name, id)
 	}
 	return index
+}
+
+func (index symbolIndex) addPackageSymbol(packageName string, name string, id string) {
+	key := packageSymbolKey(packageName, name)
+	if key == "" || id == "" {
+		return
+	}
+	if existing := index.byPackageName[key]; existing != "" && existing != id {
+		index.ambiguous[key] = true
+		delete(index.byPackageName, key)
+		return
+	}
+	if !index.ambiguous[key] {
+		index.byPackageName[key] = id
+	}
+}
+
+func (index symbolIndex) resolvePackageSymbol(packageName string, name string) string {
+	key := packageSymbolKey(packageName, name)
+	if key == "" || index.ambiguous[key] {
+		return ""
+	}
+	return index.byPackageName[key]
+}
+
+func packageSymbolKey(packageName string, name string) string {
+	packageName = strings.TrimSpace(packageName)
+	name = strings.TrimSpace(name)
+	if packageName == "" || name == "" {
+		return ""
+	}
+	return packageName + "\x00" + name
+}
+
+func (store *GraphStore) addProjectSymbolIDs(ctx context.Context, projectID string, index symbolIndex) error {
+	nodes, err := store.graph.ListNodes(ctx, "CodeSymbol", map[string]string{"project_id": projectID})
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		index.addPackageSymbol(node.Properties["package"], node.Properties["name"], node.ID)
+	}
+	return nil
 }
 
 func preferredResolutionKind(candidate SymbolKind, existing SymbolKind) bool {
@@ -1183,6 +1349,7 @@ func (store *GraphStore) putRun(ctx context.Context, run Run) error {
 			"id":               run.ID,
 			"project_id":       run.ProjectID,
 			"trigger":          string(run.Trigger),
+			"run_kind":         string(run.RunKind),
 			"mode":             run.Mode,
 			"status":           string(run.Status),
 			"files_seen":       strconv.Itoa(run.FilesSeen),
@@ -1268,6 +1435,10 @@ func codeReferenceID(repoFileID string, index int, ref Reference) string {
 
 func codeCallID(repoFileID string, index int, call Call) string {
 	return repoFileID + ":call:" + shortHash(strconv.Itoa(index)+"\x00"+call.CallerName+"\x00"+call.CalleeName+"\x00"+call.Receiver+"\x00"+strconv.Itoa(call.StartLine)+"\x00"+strconv.Itoa(call.StartByte))
+}
+
+func codeImplementationID(repoFileID string, index int, implementation Implementation) string {
+	return repoFileID + ":implementation:" + shortHash(strconv.Itoa(index)+"\x00"+implementation.Kind+"\x00"+implementation.ImplementerName+"\x00"+implementation.ImplementedName+"\x00"+strconv.Itoa(implementation.StartLine)+"\x00"+strconv.Itoa(implementation.StartByte))
 }
 
 func documentHeadingID(repoFileID string, index int, heading Heading) string {
@@ -1518,9 +1689,37 @@ func callEdgeFromNode(node ladybug.Node) SymbolCallEdge {
 	}
 }
 
+func implementationFromNode(node ladybug.Node) SymbolImplementation {
+	props := node.Properties
+	return SymbolImplementation{
+		ID:                  node.ID,
+		FileID:              props["repo_file_id"],
+		ProjectID:           props["project_id"],
+		Kind:                props["kind"],
+		ImplementerSymbolID: props["implementer_symbol_id"],
+		ImplementedSymbolID: props["implemented_symbol_id"],
+		ImplementerName:     props["implementer_name"],
+		ImplementedName:     props["implemented_name"],
+		PackageName:         props["package"],
+		Receiver:            props["receiver"],
+		ImportPath:          props["import_path"],
+		StartLine:           atoiDefault(props["start_line"]),
+		EndLine:             atoiDefault(props["end_line"]),
+		StartByte:           atoiDefault(props["start_byte"]),
+		EndByte:             atoiDefault(props["end_byte"]),
+		StartColumn:         atoiDefault(props["start_column"]),
+		EndColumn:           atoiDefault(props["end_column"]),
+		ResolutionStatus:    props["resolution_status"],
+		Confidence:          props["confidence"],
+	}
+}
+
 func relationshipKeyID(relationship ladybug.Relationship) string {
 	if callID := relationship.Properties["call_id"]; callID != "" {
 		return callID
+	}
+	if implementationID := relationship.Properties["implementation_id"]; implementationID != "" {
+		return implementationID
 	}
 	return shortHash(relationship.Type + "\x00" + relationship.From.ID + "\x00" + relationship.To.ID)
 }
@@ -1542,6 +1741,17 @@ func sortCallRelationships(relationships []ladybug.Relationship) {
 		right := atoiDefault(relationships[j].Properties["start_line"])
 		if left == right {
 			return relationshipKeyID(relationships[i]) < relationshipKeyID(relationships[j])
+		}
+		return left < right
+	})
+}
+
+func sortImplementationNodes(nodes []ladybug.Node) {
+	sort.Slice(nodes, func(i, j int) bool {
+		left := atoiDefault(nodes[i].Properties["start_line"])
+		right := atoiDefault(nodes[j].Properties["start_line"])
+		if left == right {
+			return nodes[i].ID < nodes[j].ID
 		}
 		return left < right
 	})

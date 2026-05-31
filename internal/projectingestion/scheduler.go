@@ -3,7 +3,6 @@ package projectingestion
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"sync"
 )
 
@@ -14,15 +13,20 @@ type SchedulerOptions struct {
 	LivePathPriority      bool
 }
 
-const defaultSchedulerQueueDepth = 10000
+const (
+	defaultSchedulerQueueDepth      = 10000
+	defaultSchedulerGlobalWorkers   = 4
+	defaultSchedulerPerProjectLimit = 2
+)
 
 type SchedulerDiagnostics struct {
-	QueueDepth             int
-	LiveQueueDepth         int
-	FullScanQueueDepth     int
-	ActiveTaskCount        int
-	ActiveProjectTaskCount map[string]int
-	ProjectWideTaskCount   map[string]int
+	QueueDepth                  int
+	LiveQueueDepth              int
+	FullScanQueueDepth          int
+	ActiveTaskCount             int
+	ActiveProjectTaskCount      map[string]int
+	ProjectWideTaskCount        map[string]int
+	PendingProjectWideTaskCount map[string]int
 }
 
 type Scheduler struct {
@@ -35,27 +39,30 @@ type Scheduler struct {
 	fullCh chan schedulerTask
 	wg     sync.WaitGroup
 
-	mu            sync.Mutex
-	projectState  map[string]*schedulerProjectState
-	active        int
-	activeProject map[string]int
-	projectWide   map[string]int
-	started       bool
+	mu                 sync.Mutex
+	projectState       map[string]*schedulerProjectState
+	active             int
+	activeProject      map[string]int
+	projectWide        map[string]int
+	pendingProjectWide map[string]int
+	started            bool
 }
 
 type schedulerTask struct {
-	projectID    string
-	relativePath string
-	trigger      Trigger
-	taskType     string
-	preparedRun  Run
-	done         chan schedulerResult
+	projectID          string
+	relativePath       string
+	trigger            Trigger
+	taskType           string
+	preparedRun        Run
+	pendingProjectWide bool
+	done               chan schedulerResult
 }
 
 type schedulerProjectState struct {
-	active            int
-	projectWideActive bool
-	changed           chan struct{}
+	active             int
+	projectWideActive  bool
+	projectWidePending int
+	changed            chan struct{}
 }
 
 type schedulerResult struct {
@@ -78,27 +85,24 @@ func NewScheduler(runner ingestionRunner, options SchedulerOptions) *Scheduler {
 	if options.QueueDepth <= 0 {
 		options.QueueDepth = defaultSchedulerQueueDepth
 	}
-	defaultWorkerCount := runtime.NumCPU()
-	if defaultWorkerCount <= 0 {
-		defaultWorkerCount = 1
-	}
 	if options.GlobalWorkerCount <= 0 {
-		options.GlobalWorkerCount = defaultWorkerCount
+		options.GlobalWorkerCount = defaultSchedulerGlobalWorkers
 	}
 	if options.PerProjectWorkerLimit <= 0 {
-		options.PerProjectWorkerLimit = options.GlobalWorkerCount
+		options.PerProjectWorkerLimit = defaultSchedulerPerProjectLimit
 	}
 	if options.PerProjectWorkerLimit > options.GlobalWorkerCount {
 		options.PerProjectWorkerLimit = options.GlobalWorkerCount
 	}
 	return &Scheduler{
-		runner:        runner,
-		options:       options,
-		liveCh:        make(chan schedulerTask, options.QueueDepth),
-		fullCh:        make(chan schedulerTask, options.QueueDepth),
-		projectState:  make(map[string]*schedulerProjectState),
-		activeProject: make(map[string]int),
-		projectWide:   make(map[string]int),
+		runner:             runner,
+		options:            options,
+		liveCh:             make(chan schedulerTask, options.QueueDepth),
+		fullCh:             make(chan schedulerTask, options.QueueDepth),
+		projectState:       make(map[string]*schedulerProjectState),
+		activeProject:      make(map[string]int),
+		projectWide:        make(map[string]int),
+		pendingProjectWide: make(map[string]int),
 	}
 }
 
@@ -180,13 +184,12 @@ func (scheduler *Scheduler) SubmitRebuildSearchIndex(ctx context.Context, projec
 		taskType:    "search_index_rebuild",
 		preparedRun: run,
 	}
-	select {
-	case scheduler.fullCh <- task:
+	if err := scheduler.enqueueTask(ctx, scheduler.fullCh, &task, false); err == nil {
 		return run, nil
-	case <-ctx.Done():
+	} else if ctx.Err() != nil {
 		_, _ = runner.FailPreparedProjectRun(context.Background(), run, "enqueue_canceled")
 		return run, ctx.Err()
-	default:
+	} else {
 		failed, failErr := runner.FailPreparedProjectRun(ctx, run, "queue_full")
 		if failErr != nil {
 			return failed, failErr
@@ -280,6 +283,26 @@ func (scheduler *Scheduler) SearchFiles(ctx context.Context, projectID string, o
 	return api.SearchFiles(ctx, projectID, options)
 }
 
+func (scheduler *Scheduler) SearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
+	api, ok := scheduler.runner.(interface {
+		SearchIndexHealth(context.Context, string) (SearchIndexHealth, error)
+	})
+	if !ok {
+		return SearchIndexHealth{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.SearchIndexHealth(ctx, projectID)
+}
+
+func (scheduler *Scheduler) ContextSearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
+	api, ok := scheduler.runner.(interface {
+		ContextSearchIndexHealth(context.Context, string) (SearchIndexHealth, error)
+	})
+	if !ok {
+		return SearchIndexHealth{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ContextSearchIndexHealth(ctx, projectID)
+}
+
 func (scheduler *Scheduler) SearchSymbols(ctx context.Context, projectID string, filter SymbolFilter, pagination Pagination) (SymbolList, error) {
 	api, ok := scheduler.runner.(API)
 	if !ok {
@@ -360,6 +383,14 @@ func (scheduler *Scheduler) ListSymbolCallees(ctx context.Context, projectID str
 	return api.ListSymbolCallees(ctx, projectID, symbolID, pagination)
 }
 
+func (scheduler *Scheduler) ListSymbolImplementers(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolImplementationList, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return SymbolImplementationList{}, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.ListSymbolImplementers(ctx, projectID, symbolID, pagination)
+}
+
 func (scheduler *Scheduler) GetSymbolCallGraph(ctx context.Context, projectID string, symbolID string, options CallGraphOptions) (SymbolCallGraph, error) {
 	api, ok := scheduler.runner.(API)
 	if !ok {
@@ -417,13 +448,12 @@ func (scheduler *Scheduler) SubmitFullScanAsync(ctx context.Context, projectID s
 		taskType:    "full_scan",
 		preparedRun: run,
 	}
-	select {
-	case scheduler.fullCh <- task:
+	if err := scheduler.enqueueTask(ctx, scheduler.fullCh, &task, false); err == nil {
 		return run, nil
-	case <-ctx.Done():
+	} else if ctx.Err() != nil {
 		_, _ = runner.FailPreparedProjectRun(context.Background(), run, "enqueue_canceled")
 		return run, ctx.Err()
-	default:
+	} else {
 		failed, failErr := runner.FailPreparedProjectRun(ctx, run, "queue_full")
 		if failErr != nil {
 			return failed, failErr
@@ -446,16 +476,42 @@ func (scheduler *Scheduler) submit(ctx context.Context, queue chan schedulerTask
 	if scheduler == nil {
 		return Run{}, fmt.Errorf("%w: scheduler is required", ErrUnsupportedIngest)
 	}
-	select {
-	case queue <- task:
-	case <-ctx.Done():
-		return Run{}, ctx.Err()
+	if err := scheduler.enqueueTask(ctx, queue, &task, true); err != nil {
+		if ctx.Err() != nil {
+			return Run{}, ctx.Err()
+		}
+		return Run{}, err
 	}
 	select {
 	case result := <-task.done:
 		return result.run, result.err
 	case <-ctx.Done():
 		return Run{}, ctx.Err()
+	}
+}
+
+func (scheduler *Scheduler) enqueueTask(ctx context.Context, queue chan schedulerTask, task *schedulerTask, block bool) error {
+	if task.projectWide() {
+		scheduler.registerPendingProjectWide(task)
+	}
+	if block {
+		select {
+		case queue <- *task:
+			return nil
+		case <-ctx.Done():
+			scheduler.unregisterPendingProjectWide(task)
+			return ctx.Err()
+		}
+	}
+	select {
+	case queue <- *task:
+		return nil
+	case <-ctx.Done():
+		scheduler.unregisterPendingProjectWide(task)
+		return ctx.Err()
+	default:
+		scheduler.unregisterPendingProjectWide(task)
+		return fmt.Errorf("%w: ingestion queue is full", ErrUnsupportedIngest)
 	}
 }
 
@@ -470,6 +526,13 @@ func (scheduler *Scheduler) workerLoop(ctx context.Context) {
 }
 
 func (scheduler *Scheduler) nextTask(ctx context.Context) (schedulerTask, bool) {
+	if scheduler.hasPendingProjectWide() {
+		select {
+		case task := <-scheduler.fullCh:
+			return task, true
+		default:
+		}
+	}
 	if scheduler.options.LivePathPriority {
 		select {
 		case task := <-scheduler.liveCh:
@@ -489,6 +552,7 @@ func (scheduler *Scheduler) nextTask(ctx context.Context) (schedulerTask, bool) 
 
 func (scheduler *Scheduler) runTask(ctx context.Context, task schedulerTask) {
 	if !scheduler.acquireProject(ctx, task) {
+		scheduler.unregisterPendingProjectWide(&task)
 		result := schedulerResult{err: ctx.Err()}
 		if task.preparedRun.ID != "" {
 			if failed, err := scheduler.failPreparedRun(context.Background(), task, "execution_canceled"); err != nil {
@@ -545,6 +609,10 @@ func (scheduler *Scheduler) acquireProject(ctx context.Context, task schedulerTa
 		scheduler.mu.Lock()
 		state := scheduler.projectStateLocked(task.projectID)
 		if scheduler.canAcquireProjectLocked(state, task) {
+			if task.pendingProjectWide {
+				scheduler.decrementPendingProjectWideLocked(state, task.projectID)
+				task.pendingProjectWide = false
+			}
 			state.active++
 			scheduler.active++
 			scheduler.activeProject[task.projectID]++
@@ -588,7 +656,7 @@ func (scheduler *Scheduler) releaseProject(task schedulerTask) {
 	}
 	close(state.changed)
 	state.changed = make(chan struct{})
-	if state.active == 0 && !state.projectWideActive {
+	if state.active == 0 && !state.projectWideActive && state.projectWidePending == 0 {
 		delete(scheduler.projectState, task.projectID)
 	}
 	scheduler.mu.Unlock()
@@ -607,14 +675,66 @@ func (scheduler *Scheduler) canAcquireProjectLocked(state *schedulerProjectState
 	if task.projectWide() {
 		return state.active == 0 && !state.projectWideActive
 	}
-	if state.projectWideActive {
-		return state.active-1 < scheduler.options.PerProjectWorkerLimit
+	if state.projectWideActive || state.projectWidePending > 0 {
+		return false
 	}
 	return state.active < scheduler.options.PerProjectWorkerLimit && !state.projectWideActive
 }
 
 func (schedulerTask schedulerTask) projectWide() bool {
 	return schedulerTask.taskType == "full_scan" || schedulerTask.taskType == "search_index_rebuild"
+}
+
+func (scheduler *Scheduler) registerPendingProjectWide(task *schedulerTask) {
+	if scheduler == nil || task == nil || !task.projectWide() || task.pendingProjectWide {
+		return
+	}
+	scheduler.mu.Lock()
+	state := scheduler.projectStateLocked(task.projectID)
+	state.projectWidePending++
+	scheduler.pendingProjectWide[task.projectID]++
+	task.pendingProjectWide = true
+	close(state.changed)
+	state.changed = make(chan struct{})
+	scheduler.mu.Unlock()
+}
+
+func (scheduler *Scheduler) unregisterPendingProjectWide(task *schedulerTask) {
+	if scheduler == nil || task == nil || !task.pendingProjectWide {
+		return
+	}
+	scheduler.mu.Lock()
+	state := scheduler.projectStateLocked(task.projectID)
+	scheduler.unregisterPendingProjectWideLocked(state, task.projectID)
+	task.pendingProjectWide = false
+	scheduler.mu.Unlock()
+}
+
+func (scheduler *Scheduler) unregisterPendingProjectWideLocked(state *schedulerProjectState, projectID string) {
+	scheduler.decrementPendingProjectWideLocked(state, projectID)
+	if state.active == 0 && !state.projectWideActive && state.projectWidePending == 0 {
+		delete(scheduler.projectState, projectID)
+	}
+}
+
+func (scheduler *Scheduler) decrementPendingProjectWideLocked(state *schedulerProjectState, projectID string) {
+	if state.projectWidePending > 0 {
+		state.projectWidePending--
+	}
+	if scheduler.pendingProjectWide[projectID] > 0 {
+		scheduler.pendingProjectWide[projectID]--
+	}
+	if scheduler.pendingProjectWide[projectID] <= 0 {
+		delete(scheduler.pendingProjectWide, projectID)
+	}
+	close(state.changed)
+	state.changed = make(chan struct{})
+}
+
+func (scheduler *Scheduler) hasPendingProjectWide() bool {
+	scheduler.mu.Lock()
+	defer scheduler.mu.Unlock()
+	return len(scheduler.pendingProjectWide) > 0
 }
 
 func (scheduler *Scheduler) failPreparedRun(ctx context.Context, task schedulerTask, category string) (Run, error) {
@@ -636,12 +756,17 @@ func (scheduler *Scheduler) Diagnostics() SchedulerDiagnostics {
 	for projectID, count := range scheduler.projectWide {
 		projectWide[projectID] = count
 	}
+	pendingProjectWide := make(map[string]int, len(scheduler.pendingProjectWide))
+	for projectID, count := range scheduler.pendingProjectWide {
+		pendingProjectWide[projectID] = count
+	}
 	return SchedulerDiagnostics{
-		QueueDepth:             len(scheduler.liveCh) + len(scheduler.fullCh),
-		LiveQueueDepth:         len(scheduler.liveCh),
-		FullScanQueueDepth:     len(scheduler.fullCh),
-		ActiveTaskCount:        scheduler.active,
-		ActiveProjectTaskCount: activeProject,
-		ProjectWideTaskCount:   projectWide,
+		QueueDepth:                  len(scheduler.liveCh) + len(scheduler.fullCh),
+		LiveQueueDepth:              len(scheduler.liveCh),
+		FullScanQueueDepth:          len(scheduler.fullCh),
+		ActiveTaskCount:             scheduler.active,
+		ActiveProjectTaskCount:      activeProject,
+		ProjectWideTaskCount:        projectWide,
+		PendingProjectWideTaskCount: pendingProjectWide,
 	}
 }

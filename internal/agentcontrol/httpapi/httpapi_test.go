@@ -79,7 +79,7 @@ func TestResearchRunRoutes_CreateAndGet(t *testing.T) {
 
 func TestAgentRunRoutes_CreateAppendCompleteAndGet(t *testing.T) {
 	mux := newMux()
-	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/agent-runs", bytes.NewBufferString(`{"project_id":"example-service","summary":"bounded run metadata","changed_files":["internal/agentcontrol/model/model.go"]}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/agent-runs", bytes.NewBufferString(`{"project_id":"example-service","summary":"bounded run metadata","changed_files":["internal/agentcontrol/model/model.go"],"artifacts":[{"ref":"artifact-1","kind":"evidence"}]}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRes := httptest.NewRecorder()
 	mux.ServeHTTP(createRes, createReq)
@@ -99,6 +99,14 @@ func TestAgentRunRoutes_CreateAppendCompleteAndGet(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", stepRes.Code, stepRes.Body.String())
 	}
 
+	promoteReq := httptest.NewRequest(http.MethodPost, "/api/v1/agent-runs/"+run.ID+"/promotions", bytes.NewBufferString(`{"artifact_ref":"artifact-1","state":"promoted","source_ref":"agent_step_1","verifier_ref":"go/test","decision":"focused verifier passed"}`))
+	promoteReq.Header.Set("Content-Type", "application/json")
+	promoteRes := httptest.NewRecorder()
+	mux.ServeHTTP(promoteRes, promoteReq)
+	if promoteRes.Code != http.StatusOK || bytes.Contains(promoteRes.Body.Bytes(), []byte("raw prompt")) {
+		t.Fatalf("unexpected promotion response: %d %s", promoteRes.Code, promoteRes.Body.String())
+	}
+
 	completeReq := httptest.NewRequest(http.MethodPost, "/api/v1/agent-runs/"+run.ID+"/complete", bytes.NewBufferString(`{"status":"completed"}`))
 	completeReq.Header.Set("Content-Type", "application/json")
 	completeRes := httptest.NewRecorder()
@@ -110,7 +118,7 @@ func TestAgentRunRoutes_CreateAppendCompleteAndGet(t *testing.T) {
 	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/agent-runs/"+run.ID, nil)
 	getRes := httptest.NewRecorder()
 	mux.ServeHTTP(getRes, getReq)
-	if getRes.Code != http.StatusOK || bytes.Contains(getRes.Body.Bytes(), []byte("raw prompt")) || bytes.Contains(getRes.Body.Bytes(), []byte("package main")) {
+	if getRes.Code != http.StatusOK || !bytes.Contains(getRes.Body.Bytes(), []byte(`"state":"promoted"`)) || bytes.Contains(getRes.Body.Bytes(), []byte("raw prompt")) || bytes.Contains(getRes.Body.Bytes(), []byte("package main")) {
 		t.Fatalf("unexpected get response: %d %s", getRes.Code, getRes.Body.String())
 	}
 }

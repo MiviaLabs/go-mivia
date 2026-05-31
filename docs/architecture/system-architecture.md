@@ -1,7 +1,7 @@
 # System Architecture
 
 Status: Bootstrap current-state
-Date: 2026-05-31
+Date: 2026-06-01
 Classification: Internal; PII-prohibited
 Owners: Engineering owner TBD; Security/DPO required before PII, public exposure, provider, retention, or production decisions.
 
@@ -15,9 +15,10 @@ Local task plans and research plans are not stable technical documentation. Do n
 
 - One Go module with one local service entrypoint: `cmd/mivia-server`.
 - HTTP surfaces: `/healthz`, `/readyz`, REST under `/api/v1`, and MCP Streamable HTTP under `/mcp`.
-- Domain services: `internal/agentcontrol` for tasks, research runs, and redacted agent-run metadata; `internal/research` for redacted research source metadata.
+- Domain services: `internal/agentcontrol` for tasks, research runs, redacted agent-run metadata, and promotion-gate decisions; `internal/research` for redacted research source metadata.
 - Local project services: `internal/projectregistry` loads optional local project config from `configs/mivia-server.local.toml` or explicit `MIVIA_CONFIG_PATH`, validates local roots and patterns, exposes bounded project metadata, runs manual metadata-only digest, and routes content graph data to per-project `persistent` or `in_memory` graph storage.
 - Reliability services: `internal/projectreliability` exposes context health, changed-path impact analysis, and stale-claim checking through REST and MCP without raw diff or document-content echoing.
+- Context-pack services: `internal/projectcontext` composes bounded text search hits, file metadata, symbol metadata, and optional impact analysis without new storage, roots, raw diffs, provider calls, or full chunk text.
 - Project ingestion services: `internal/projectingestion` handles eligible local source safety gates, chunking, promoted AST extraction, extractor cache, SQLite FTS5 search indexing, bounded graph writes, SQLite run/file state, bounded REST/MCP query views, fair scheduling, live watcher orchestration, parallel full-scan file workers, search-index repair, startup recovery for interrupted runs, and periodic running-progress persistence.
 - Project workspace services: `internal/projectworkspace` handles governed git status/diff, current eligible file reads with opaque edit tokens, and token-guarded exact byte-span edits for explicitly opted-in workspaces.
 - Stores: Ladybug graph abstraction for graph data; SQLite for local app configuration, ingestion state, extractor cache, and FTS-backed governed search. Project graph storage can be persistent or process-local per project.
@@ -34,8 +35,10 @@ flowchart TB
   MCP["MCP adapter /mcp"]
   AgentService["internal/agentcontrol service"]
   AgentRuns["redacted agent-run metadata"]
+  Promotions["promotion-gate decisions"]
   ProjectRegistry["internal/projectregistry registry"]
   Reliability["internal/projectreliability"]
+  ContextPacks["internal/projectcontext"]
   ProjectDigest["metadata-only project digest"]
   ProjectIngestion["content graph ingestion"]
   ProjectWorkspace["governed workspace status/diff/read/edit"]
@@ -60,10 +63,14 @@ flowchart TB
   REST --> AgentService
   MCP --> AgentService
   AgentService --> AgentRuns
+  AgentRuns --> Promotions
   REST --> ProjectRegistry
   MCP --> ProjectRegistry
   REST --> Reliability
   MCP --> Reliability
+  REST --> ContextPacks
+  MCP --> ContextPacks
+  ContextPacks --> Reliability
   Reliability --> ProjectRegistry
   Reliability --> ProjectWorkspace
   Reliability --> SearchIndex
@@ -78,7 +85,9 @@ flowchart TB
   SemanticGraph --> Ladybug
   SemanticGraph --> SearchIndex
   SearchIndex --> SQLite
+  SearchIndex --> ContextPacks
   SemanticGraph --> ASTSearch
+  SemanticGraph --> ContextPacks
   ASTSearch --> REST
   ASTSearch --> MCP
   ProjectIngestion --> Ladybug
@@ -240,6 +249,30 @@ flowchart LR
   Response --> Agent
 ```
 
+## Context Pack And Promotion Flow
+
+```mermaid
+flowchart LR
+  Agent["AI agent"]
+  ContextPack["projects.context_pack.build"]
+  Search["Indexed text/file/symbol search"]
+  Impact["Optional impact analysis"]
+  Pack["Bounded context pack"]
+  Run["Agent run artifacts"]
+  Gate["agent_runs.promote_artifact"]
+  Decision["candidate, validated, promoted, rejected"]
+
+  Agent --> ContextPack
+  ContextPack --> Search
+  ContextPack --> Impact
+  Search --> Pack
+  Impact --> Pack
+  Pack --> Agent
+  Agent --> Run
+  Run --> Gate
+  Gate --> Decision
+```
+
 ## Documentation Update Sequence
 
 ```mermaid
@@ -269,6 +302,8 @@ sequenceDiagram
 - Promoted AST extraction runs after safety gates. Go uses the Go stdlib parser; JS, JSX, TS, TSX, C#, Python, and Dart use mandatory Tree-sitter extractors with embedded queries and startup validation; Markdown and infrastructure/config files use metadata-only extractors. Dart generated files are indexed by default unless project config excludes them, and Flutter widget/state/build metadata is promoted through symbols, references, and calls. No regex fallback is allowed for promoted Tree-sitter languages.
 - The SQLite extractor cache stores only serialized symbols, headings, references, and calls keyed by project, relative-path hash, content hash, extractor name, and extractor version. It does not store raw source, AST node text, chunks, absolute roots, skipped sensitive content, matched sensitive text, secrets, prompts, provider payloads, or PII. Skipped or absent files do not keep extractor cache rows or content hashes.
 - SQLite FTS5 stores governed search rows for eligible chunks, files, symbols, references, and calls. Search APIs are literal/metadata search over already-indexed content, not crawling, provider calls, embeddings, vectors, raw DB queries, or raw FTS query execution. Symbol source, text search, and AST search return text only from eligible indexed chunks and only under explicit caps.
+- Context packs compose existing indexed search and reliability metadata only. They return capped snippets and metadata, not full chunk text, raw diffs, roots, provider payloads, secrets, prompts, or PII.
+- Promotion gates store metadata-only decisions for existing agent-run artifact refs. They do not copy runtime payloads into the knowledge graph, and validated/promoted/rejected decisions require verifier refs and bounded decision text.
 - Named AST search runs against eligible indexed chunks using the server-owned query catalog for Go, Python, JavaScript, JSX, TypeScript, TSX, C#, and Dart. Raw Tree-sitter query syntax is not exposed. Coverage gaps such as oversized files are represented only as safe metadata counts.
 - Full scans run through a fair scheduler, dispatch configurable file workers under a shared global cap, persist running progress counters, and tombstone stale files only after enumeration and workers drain. REST and MCP manual ingestion and search-index repair calls enqueue work and return run metadata without waiting for scan completion. Live path events have priority over full-scan continuation, and operators can cap per-project worker use below the global worker count when fairness across projects matters.
 - On startup, persisted `pending` or `running` ingestion runs from a previous server process are marked failed with `error_category=server_restarted`; live startup scans or fresh manual ingestion are the repair path.

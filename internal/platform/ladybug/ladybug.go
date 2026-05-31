@@ -125,7 +125,11 @@ func (graph *MemoryGraph) ListNodes(_ context.Context, label string, filter map[
 	graph.mu.RLock()
 	defer graph.mu.RUnlock()
 	nodes := make([]Node, 0)
-	for _, node := range graph.nodes {
+	for _, key := range graph.nodeCandidateKeysLocked(label, filter) {
+		node, ok := graph.nodes[key]
+		if !ok {
+			continue
+		}
 		if node.Label != label {
 			continue
 		}
@@ -201,7 +205,11 @@ func (graph *MemoryGraph) ListRelationships(_ context.Context, relationshipType 
 	graph.mu.RLock()
 	defer graph.mu.RUnlock()
 	out := make([]Relationship, 0)
-	for _, relationship := range graph.relationships {
+	for _, key := range graph.relationshipCandidateKeysLocked(filter) {
+		relationship, ok := graph.relationships[key]
+		if !ok {
+			continue
+		}
 		if relationship.Type != relationshipType {
 			continue
 		}
@@ -263,8 +271,50 @@ func relationshipKey(relationshipType string, from NodeRef, to NodeRef) string {
 	return relationshipType + ":" + nodeKey(from.Label, from.ID) + "->" + nodeKey(to.Label, to.ID)
 }
 
+func (graph *MemoryGraph) nodeCandidateKeysLocked(label string, filter map[string]string) []string {
+	if repoFileID := filter["repo_file_id"]; repoFileID != "" {
+		keysByFile := graph.nodesByLabelFileID[label]
+		if len(keysByFile) == 0 {
+			return nil
+		}
+		keys := keysByFile[repoFileID]
+		out := make([]string, 0, len(keys))
+		for key := range keys {
+			out = append(out, key)
+		}
+		return out
+	}
+	out := make([]string, 0, len(graph.nodes))
+	for key := range graph.nodes {
+		out = append(out, key)
+	}
+	return out
+}
+
+func (graph *MemoryGraph) relationshipCandidateKeysLocked(filter RelationshipFilter) []string {
+	if filter.From != nil {
+		return setToSlice(graph.relationshipsByNode[nodeKey(filter.From.Label, filter.From.ID)])
+	}
+	if filter.To != nil {
+		return setToSlice(graph.relationshipsByNode[nodeKey(filter.To.Label, filter.To.ID)])
+	}
+	out := make([]string, 0, len(graph.relationships))
+	for key := range graph.relationships {
+		out = append(out, key)
+	}
+	return out
+}
+
+func setToSlice(values map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
 func derivedFileNodeLabels() []string {
-	return []string{"CodeReference", "CodeCall", "CodeSymbol", "DocumentHeading", "ContentChunk", "FileVersion"}
+	return []string{"CodeReference", "CodeCall", "CodeImplementation", "CodeSymbol", "DocumentHeading", "ContentChunk", "FileVersion"}
 }
 
 func (graph *MemoryGraph) fileNodeCandidatesLocked(label string, repoFileID string) map[string]struct{} {

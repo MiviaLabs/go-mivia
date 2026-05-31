@@ -23,6 +23,7 @@ type ResearchRunStore interface {
 type AgentRunStore interface {
 	CreateAgentRun(context.Context, model.AgentRun) (model.AgentRun, error)
 	AppendAgentStep(context.Context, string, model.AgentStep) (model.AgentRun, error)
+	PromoteAgentArtifact(context.Context, string, model.AgentPromotion) (model.AgentRun, error)
 	CompleteAgentRun(context.Context, model.AgentRun) (model.AgentRun, error)
 	GetAgentRun(context.Context, string) (model.AgentRun, error)
 }

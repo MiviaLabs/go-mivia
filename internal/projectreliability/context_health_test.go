@@ -67,14 +67,14 @@ func TestContextHealth_DegradedSearchWinsOverRunning(t *testing.T) {
 	}
 }
 
-func TestContextHealth_ActiveRunsAreNotBroken(t *testing.T) {
+func TestContextHealth_ActiveRunsAreSyncing(t *testing.T) {
 	tests := []struct {
 		name   string
 		status string
 		want   ContextHealthStatus
 	}{
-		{name: "pending", status: runStatusPending, want: ContextHealthWarmingUp},
-		{name: "running", status: runStatusRunning, want: ContextHealthRunning},
+		{name: "pending", status: runStatusPending, want: ContextHealthSyncing},
+		{name: "running", status: runStatusRunning, want: ContextHealthSyncing},
 	}
 
 	for _, tt := range tests {
@@ -94,6 +94,9 @@ func TestContextHealth_ActiveRunsAreNotBroken(t *testing.T) {
 			}
 			if health.Status != tt.want {
 				t.Fatalf("expected %s, got %#v", tt.want, health)
+			}
+			if health.StatusReason != "ingestion_active" {
+				t.Fatalf("expected ingestion_active reason, got %#v", health)
 			}
 		})
 	}
@@ -278,12 +281,133 @@ func (fn WorkspaceGitProviderFunc) GitAvailable(ctx context.Context, projectID s
 	return fn(ctx, projectID)
 }
 
-func TestContextHealth_PropagatesProviderErrors(t *testing.T) {
+func TestContextHealth_DegradesProviderErrors(t *testing.T) {
 	wantErr := errors.New("store unavailable")
 	svc := newTestService(ContextProviderFunc{eligibleErr: wantErr})
 
-	_, err := svc.ContextHealth(context.Background(), "example")
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("expected provider error, got %v", err)
+	health, err := svc.ContextHealth(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("context health should degrade instead of returning provider error: %v", err)
 	}
+	if health.Status != ContextHealthDegraded || health.StatusReason != "eligible_file_count_unknown" {
+		t.Fatalf("expected degraded provider error, got %#v", health)
+	}
+}
+
+func TestContextHealth_BoundsSlowProvider(t *testing.T) {
+	svc := NewService(
+		ProjectProviderFunc(func(context.Context, string) (projectregistry.Project, error) {
+			return testProject(), nil
+		}),
+		slowContextProvider{},
+		nil,
+		Options{
+			Now:          func() time.Time { return testNow },
+			ProbeTimeout: 10 * time.Millisecond,
+		},
+	)
+
+	start := time.Now()
+	health, err := svc.ContextHealth(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("context health should degrade instead of timing out: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("context health was not bounded: %s", elapsed)
+	}
+	if health.Status != ContextHealthSyncing || health.StatusReason != "latest_run_unknown" {
+		t.Fatalf("expected syncing timeout, got %#v", health)
+	}
+}
+
+func TestContextHealth_ActiveSyncSkipsBlockingProvider(t *testing.T) {
+	block := make(chan struct{})
+	svc := NewService(
+		ProjectProviderFunc(func(context.Context, string) (projectregistry.Project, error) {
+			return testProject(), nil
+		}),
+		activeSyncBlockingContextProvider{blockingContextProvider: blockingContextProvider{blockLatest: block}},
+		nil,
+		Options{
+			Now:          func() time.Time { return testNow },
+			ProbeTimeout: 10 * time.Millisecond,
+		},
+	)
+
+	start := time.Now()
+	health, err := svc.ContextHealth(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("context health should report active sync instead of calling blocking provider: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("context health was not bounded: %s", elapsed)
+	}
+	if health.Status != ContextHealthSyncing || health.StatusReason != "ingestion_active" {
+		t.Fatalf("expected active sync, got %#v", health)
+	}
+	close(block)
+}
+
+type slowContextProvider struct{}
+
+func (slowContextProvider) LatestRun(ctx context.Context, _ string) (RunSummary, error) {
+	<-ctx.Done()
+	return RunSummary{}, ctx.Err()
+}
+
+func (slowContextProvider) ActiveRuns(context.Context, string) ([]RunSummary, error) {
+	return nil, nil
+}
+
+func (slowContextProvider) EligibleFileCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (slowContextProvider) IndexedSymbolCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (slowContextProvider) IndexedChunkCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (slowContextProvider) SearchIndexHealth(context.Context, string) (SearchIndexHealth, error) {
+	return SearchIndexHealth{Status: "unknown"}, nil
+}
+
+type blockingContextProvider struct {
+	blockLatest <-chan struct{}
+}
+
+func (provider blockingContextProvider) LatestRun(context.Context, string) (RunSummary, error) {
+	<-provider.blockLatest
+	return RunSummary{}, ErrRunNotFound
+}
+
+func (blockingContextProvider) ActiveRuns(context.Context, string) ([]RunSummary, error) {
+	return nil, nil
+}
+
+func (blockingContextProvider) EligibleFileCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (blockingContextProvider) IndexedSymbolCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (blockingContextProvider) IndexedChunkCount(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+func (blockingContextProvider) SearchIndexHealth(context.Context, string) (SearchIndexHealth, error) {
+	return SearchIndexHealth{Status: "unknown"}, nil
+}
+
+type activeSyncBlockingContextProvider struct {
+	blockingContextProvider
+}
+
+func (activeSyncBlockingContextProvider) ActiveSync(string) bool {
+	return true
 }

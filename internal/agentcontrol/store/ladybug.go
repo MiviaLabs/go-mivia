@@ -91,6 +91,15 @@ func (store *LadybugStore) AppendAgentStep(ctx context.Context, runID string, st
 	return store.putAgentRun(ctx, run)
 }
 
+func (store *LadybugStore) PromoteAgentArtifact(ctx context.Context, runID string, promotion model.AgentPromotion) (model.AgentRun, error) {
+	run, err := store.GetAgentRun(ctx, runID)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	run.Promotions = appendAgentPromotion(run.Promotions, promotion)
+	return store.putAgentRun(ctx, run)
+}
+
 func (store *LadybugStore) CompleteAgentRun(ctx context.Context, run model.AgentRun) (model.AgentRun, error) {
 	if _, err := store.GetAgentRun(ctx, run.ID); err != nil {
 		return model.AgentRun{}, err
@@ -172,6 +181,10 @@ func agentRunProperties(run model.AgentRun) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	promotions, err := marshalJSON(run.Promotions)
+	if err != nil {
+		return nil, err
+	}
 	steps, err := marshalJSON(run.Steps)
 	if err != nil {
 		return nil, err
@@ -188,6 +201,7 @@ func agentRunProperties(run model.AgentRun) (map[string]string, error) {
 		"changed_files":    changedFiles,
 		"verifiers":        verifiers,
 		"artifacts":        artifacts,
+		"promotions":       promotions,
 		"steps":            steps,
 	}, nil
 }
@@ -213,6 +227,10 @@ func agentRunFromNode(node ladybug.Node) (model.AgentRun, error) {
 	if err := unmarshalJSON(node.Properties["artifacts"], &artifacts); err != nil {
 		return model.AgentRun{}, err
 	}
+	var promotions []model.AgentPromotion
+	if err := unmarshalJSON(node.Properties["promotions"], &promotions); err != nil {
+		return model.AgentRun{}, err
+	}
 	var steps []model.AgentStep
 	if err := unmarshalJSON(node.Properties["steps"], &steps); err != nil {
 		return model.AgentRun{}, err
@@ -229,6 +247,7 @@ func agentRunFromNode(node ladybug.Node) (model.AgentRun, error) {
 		ChangedFiles:    changedFiles,
 		Verifiers:       verifiers,
 		Artifacts:       artifacts,
+		Promotions:      promotions,
 		Steps:           steps,
 	}, nil
 }

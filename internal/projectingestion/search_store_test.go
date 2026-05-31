@@ -3,6 +3,7 @@ package projectingestion
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
@@ -78,6 +79,96 @@ func TestSQLiteStore_UpdateSearchFileMetadataBatch(t *testing.T) {
 	}
 	if len(files.Files) != 1 || files.Files[0].RelativePath != "internal/main.go" {
 		t.Fatalf("expected updated path, got %#v", files.Files)
+	}
+}
+
+func TestSQLiteStore_ApplySearchFileBatchDoesNotRewriteFTSForUnchangedFiles(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	state := testSearchFileState("project-1", "cmd/main.go", "sha256:main")
+	if err := store.UpsertSearchFile(ctx, project, state, []Chunk{{Index: 0, Text: "body"}}, nil, nil, nil); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	updated := state
+	updated.ModifiedAt = state.ModifiedAt.Add(time.Hour)
+	if err := store.ApplySearchFileBatch(ctx, project, []fullScanFileResult{{state: updated, unchanged: true}}); err != nil {
+		t.Fatalf("apply unchanged batch: %v", err)
+	}
+
+	var versionModifiedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT modified_at
+		FROM project_search_file_versions
+		WHERE project_id = ? AND file_id = ?`, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)).Scan(&versionModifiedAt); err != nil {
+		t.Fatalf("query version modified_at: %v", err)
+	}
+	if versionModifiedAt != formatTime(updated.ModifiedAt) {
+		t.Fatalf("expected version metadata update, got %q", versionModifiedAt)
+	}
+	var ftsModifiedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT modified_at
+		FROM project_search_chunks_fts
+		WHERE project_id = ? AND file_id = ?`, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)).Scan(&ftsModifiedAt); err != nil {
+		t.Fatalf("query fts modified_at: %v", err)
+	}
+	if ftsModifiedAt != formatTime(state.ModifiedAt) {
+		t.Fatalf("expected unchanged FTS metadata, got %q", ftsModifiedAt)
+	}
+}
+
+func TestSQLiteStore_CountSearchSymbolsAndChunks(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	state := testSearchFileState("project-1", "cmd/main.go", "sha256:main")
+	if err := store.UpsertSearchFile(ctx, project, state,
+		[]Chunk{{Index: 0, Text: "body"}, {Index: 1, Text: "more"}},
+		[]Symbol{{Kind: SymbolKindFunction, Name: "main"}, {Kind: SymbolKindFunction, Name: "helper"}},
+		nil,
+		nil,
+	); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	symbols, err := store.CountSearchSymbols(ctx, project)
+	if err != nil {
+		t.Fatalf("count symbols: %v", err)
+	}
+	chunks, err := store.CountSearchChunks(ctx, project)
+	if err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if symbols != 2 || chunks != 2 {
+		t.Fatalf("expected two symbols and chunks, got symbols=%d chunks=%d", symbols, chunks)
+	}
+}
+
+func TestSQLiteStore_ContextSearchIndexHealthDoesNotRunDriftScan(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	state := testSearchFileState("project-1", "cmd/main.go", "sha256:main")
+	if err := store.UpsertSearchFile(ctx, project, state, []Chunk{{Index: 0, Text: "body"}}, nil, nil, nil); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM project_search_files_fts WHERE project_id = ?", "project-1"); err != nil {
+		t.Fatalf("delete fts file row: %v", err)
+	}
+
+	health, err := store.ContextSearchIndexHealth(ctx, project)
+	if err != nil {
+		t.Fatalf("context health: %v", err)
+	}
+	if health.Degraded {
+		t.Fatalf("context health should not run request-time drift scans, got %#v", health)
+	}
+	searchHealth, err := store.SearchIndexHealth(ctx, project)
+	if err != nil {
+		t.Fatalf("search health: %v", err)
+	}
+	if !searchHealth.Degraded || searchHealth.Reason != "search_index_drift" {
+		t.Fatalf("expected deep search health to detect drift, got %#v", searchHealth)
 	}
 }
 

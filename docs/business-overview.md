@@ -1,10 +1,10 @@
 # Business Overview
 
 Status: Current local capability summary
-Date: 2026-05-31
+Date: 2026-06-01
 Classification: Internal; PII-prohibited
 
-`mivia-server` is a local context and control service for engineers using AI agents. It gives agents a governed way to discover, search, navigate, inspect git status/diff, and apply exact edits in approved local codebases without sending source code to external providers and without broad ad hoc filesystem scans.
+`mivia-server` is a local context and control service for engineers using AI agents. It gives agents a governed way to discover, search, build bounded context packs, navigate, inspect git status/diff, record redacted promotion decisions, and apply exact edits in approved local codebases without sending source code to external providers and without broad ad hoc filesystem scans.
 
 ## Value
 
@@ -17,6 +17,8 @@ flowchart LR
   Safety["Safety gates"]
   Graph["Local semantic graph"]
   Search["SQLite FTS and named AST search"]
+  ContextPack["Context packs"]
+  Promotion["Promotion gates"]
   Workspace["Governed workspace status/diff/read/edit"]
   Outcome["Faster, safer project understanding and edits"]
 
@@ -26,6 +28,10 @@ flowchart LR
   Projects --> Safety
   Safety --> Graph
   Safety --> Search
+  Graph --> ContextPack
+  Search --> ContextPack
+  ContextPack --> Agent
+  Agent --> Promotion
   Safety --> Workspace
   Graph --> Agent
   Search --> Agent
@@ -41,9 +47,11 @@ What exists now:
 - Opt-in content graph ingestion for eligible local source after path, symlink, include/exclude, size, binary, UTF-8, and sensitive-marker gates.
 - Live ingestion as the freshness path, with startup recovery for interrupted local runs.
 - Governed SQLite FTS-backed text, file, symbol, reference, and call search.
+- Context-pack assembly that combines bounded snippets, file metadata, symbol metadata, and optional impact analysis.
 - Bounded file chunks, outlines, symbol source, references, callers, callees, and call graph traversal.
 - Named AST structural search for supported languages through a safe query catalog.
 - Governed workspace status/diff/read/edit tools for opted-in `content_graph` projects, with opaque edit tokens and path ingestion after successful edits.
+- Promotion-gate metadata for existing agent-run artifacts using `candidate`, `validated`, `promoted`, and `rejected` states.
 - REST and MCP contracts for local scripts and agent clients.
 
 ## Business Boundary

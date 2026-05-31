@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Mivia Dashboard</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Mivia</h1>
+        <p id="summary">Loading projects</p>
+      </div>
+      <button id="refresh" type="button">Refresh</button>
+    </header>
+    <main>
+      <section id="status" class="status" aria-live="polite"></section>
+      <section class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>State</th>
+              <th>Graph</th>
+              <th>Workspace</th>
+              <th>Integrations</th>
+              <th>Context</th>
+            </tr>
+          </thead>
+          <tbody id="projects"></tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

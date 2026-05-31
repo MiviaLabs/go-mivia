@@ -11,11 +11,14 @@ import (
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
+	"github.com/MiviaLabs/go-mivia/internal/projectcontext"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
+
+const workspaceGitStatusTimeout = 2 * time.Second
 
 func ToolDefinitions() []map[string]any {
 	return ToolDefinitionsWithIngestion(false)
@@ -191,13 +194,53 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if projectID == "" {
 			projectID = strings.TrimSpace(input.ProjectID)
 		}
-		impact, err := projectreliability.NewImpactAnalyzer(workspace).Analyze(ctx, projectreliability.ImpactAnalysisRequest{
+		impact, err := projectreliability.NewImpactAnalyzerWithGraph(workspace, ingestion).Analyze(ctx, projectreliability.ImpactAnalysisRequest{
 			ProjectID:    projectID,
 			ChangedPaths: input.ChangedPaths,
 			DiffScope:    input.DiffScope,
 			MaxDiffBytes: input.MaxDiffBytes,
 		})
 		return toolResult(impact), err
+	case "projects.context_pack.build", "projects_context_pack_build":
+		var input struct {
+			ID              string          `json:"id"`
+			ProjectID       string          `json:"project_id,omitempty"`
+			Query           string          `json:"query,omitempty"`
+			PathPrefix      string          `json:"path_prefix,omitempty"`
+			ChangedPaths    []string        `json:"changed_paths,omitempty"`
+			DiffScope       string          `json:"diff_scope,omitempty"`
+			MaxDiffBytes    int             `json:"max_diff_bytes,omitempty"`
+			MaxItems        int             `json:"max_items,omitempty"`
+			MaxSnippetBytes int             `json:"max_snippet_bytes,omitempty"`
+			IncludeImpact   *bool           `json:"include_impact,omitempty"`
+			Meta            json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid context pack arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		projectID := strings.TrimSpace(input.ID)
+		if projectID == "" {
+			projectID = strings.TrimSpace(input.ProjectID)
+		}
+		includeImpact := true
+		if input.IncludeImpact != nil {
+			includeImpact = *input.IncludeImpact
+		}
+		pack, err := projectcontext.NewService(ingestion, projectreliability.NewImpactAnalyzerWithGraph(workspace, ingestion)).Build(ctx, projectcontext.BuildRequest{
+			ProjectID:       projectID,
+			Query:           input.Query,
+			PathPrefix:      input.PathPrefix,
+			ChangedPaths:    input.ChangedPaths,
+			DiffScope:       input.DiffScope,
+			MaxDiffBytes:    input.MaxDiffBytes,
+			MaxItems:        input.MaxItems,
+			MaxSnippetBytes: input.MaxSnippetBytes,
+			IncludeImpact:   includeImpact,
+		})
+		return toolResult(pack), err
 	case "projects.claims.check", "projects_claims_check":
 		var input struct {
 			ID            string                             `json:"id"`
@@ -708,7 +751,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if input.IncludeUntracked != nil {
 			includeUntracked = *input.IncludeUntracked
 		}
-		status, err := workspace.GitStatus(ctx, strings.TrimSpace(input.ID), projectworkspace.GitStatusOptions{
+		statusCtx, cancelStatus := context.WithTimeout(ctx, workspaceGitStatusTimeout)
+		defer cancelStatus()
+		status, err := workspace.GitStatus(statusCtx, strings.TrimSpace(input.ID), projectworkspace.GitStatusOptions{
 			IncludeUntracked: includeUntracked,
 			PathPrefix:       input.PathPrefix,
 			PageSize:         input.PageSize,
@@ -891,6 +936,23 @@ func ingestionToolDefinitions() []map[string]any {
 					"minimum": 1,
 					"maximum": projectworkspace.MaxDiffBytes,
 				},
+			}, []string{"id"}),
+		},
+		{
+			"name":        "projects.context_pack.build",
+			"title":       "Build Project Context Pack",
+			"description": "Compose bounded code search hits, file metadata, symbol metadata, and optional impact metadata for an opted-in local project without new storage, raw roots, raw diffs, or external provider calls.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":                map[string]any{"type": "string", "minLength": 1},
+				"project_id":        map[string]any{"type": "string"},
+				"query":             map[string]any{"type": "string", "maxLength": projectingestion.MaxSearchQueryBytes},
+				"path_prefix":       map[string]any{"type": "string", "description": "Safe project-relative path prefix. Absolute paths and parent traversal are invalid."},
+				"changed_paths":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 200},
+				"diff_scope":        map[string]any{"type": "string", "enum": []string{projectworkspace.DiffScopeWorkingTree, projectworkspace.DiffScopeStaged, projectworkspace.DiffScopeHead}},
+				"max_diff_bytes":    map[string]any{"type": "integer", "minimum": 1, "maximum": projectworkspace.MaxDiffBytes},
+				"max_items":         map[string]any{"type": "integer", "minimum": 1, "maximum": projectcontext.MaxItems},
+				"max_snippet_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": projectingestion.MaxSnippetBytes},
+				"include_impact":    map[string]any{"type": "boolean"},
 			}, []string{"id"}),
 		},
 		{

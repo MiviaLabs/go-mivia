@@ -36,6 +36,8 @@ type fsnotifyFileWatcher struct {
 	errors  chan error
 }
 
+const fsnotifyForwardBuffer = 1024
+
 func NewFSNotifyWatcher() (FileWatcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -43,8 +45,8 @@ func NewFSNotifyWatcher() (FileWatcher, error) {
 	}
 	out := &fsnotifyFileWatcher{
 		watcher: watcher,
-		events:  make(chan WatchEvent),
-		errors:  make(chan error),
+		events:  make(chan WatchEvent, fsnotifyForwardBuffer),
+		errors:  make(chan error, fsnotifyForwardBuffer),
 	}
 	go out.forward()
 	return out, nil

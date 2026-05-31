@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -8,11 +9,14 @@ import (
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
+	"github.com/MiviaLabs/go-mivia/internal/projectcontext"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
+
+const workspaceGitStatusTimeout = 2 * time.Second
 
 func RegisterRoutes(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService) {
 	RegisterRoutesWithIngestion(mux, registry, digest, nil)
@@ -30,7 +34,8 @@ func RegisterRoutesWithWorkspace(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("POST /api/v1/projects/{id}/ingestion-runs", createIngestionRunHandler(ingestion))
 		mux.Handle("POST /api/v1/projects/{id}/search-index/rebuild", rebuildSearchIndexHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/context-health", getContextHealthHandler(registry, ingestion, workspace))
-		mux.Handle("POST /api/v1/projects/{id}/impact/analyze", analyzeImpactHandler(workspace))
+		mux.Handle("POST /api/v1/projects/{id}/impact/analyze", analyzeImpactHandler(ingestion, workspace))
+		mux.Handle("POST /api/v1/projects/{id}/context-pack", buildContextPackHandler(ingestion, workspace))
 		mux.Handle("POST /api/v1/projects/{id}/claims/check", checkClaimsHandler(workspace))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/latest", getLatestIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/{run_id}", getIngestionRunHandler(ingestion))
@@ -68,7 +73,7 @@ func getContextHealthHandler(registry *projectregistry.Registry, ingestion proje
 	})
 }
 
-func analyzeImpactHandler(workspace projectworkspace.API) http.Handler {
+func analyzeImpactHandler(ingestion projectingestion.API, workspace projectworkspace.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !httpserver.RequireJSON(r) {
 			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
@@ -80,8 +85,47 @@ func analyzeImpactHandler(workspace projectworkspace.API) http.Handler {
 			return
 		}
 		input.ProjectID = strings.TrimSpace(r.PathValue("id"))
-		impact, err := projectreliability.NewImpactAnalyzer(workspace).Analyze(r.Context(), input)
+		impact, err := projectreliability.NewImpactAnalyzerWithGraph(workspace, ingestion).Analyze(r.Context(), input)
 		writeReliabilityResult(w, impact, err, http.StatusOK)
+	})
+}
+
+func buildContextPackHandler(ingestion projectingestion.API, workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !httpserver.RequireJSON(r) {
+			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		var input struct {
+			Query           string   `json:"query,omitempty"`
+			PathPrefix      string   `json:"path_prefix,omitempty"`
+			ChangedPaths    []string `json:"changed_paths,omitempty"`
+			DiffScope       string   `json:"diff_scope,omitempty"`
+			MaxDiffBytes    int      `json:"max_diff_bytes,omitempty"`
+			MaxItems        int      `json:"max_items,omitempty"`
+			MaxSnippetBytes int      `json:"max_snippet_bytes,omitempty"`
+			IncludeImpact   *bool    `json:"include_impact,omitempty"`
+		}
+		if err := httpserver.DecodeJSON(r, &input); err != nil {
+			httpserver.WriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		includeImpact := true
+		if input.IncludeImpact != nil {
+			includeImpact = *input.IncludeImpact
+		}
+		pack, err := projectcontext.NewService(ingestion, projectreliability.NewImpactAnalyzerWithGraph(workspace, ingestion)).Build(r.Context(), projectcontext.BuildRequest{
+			ProjectID:       strings.TrimSpace(r.PathValue("id")),
+			Query:           input.Query,
+			PathPrefix:      input.PathPrefix,
+			ChangedPaths:    input.ChangedPaths,
+			DiffScope:       input.DiffScope,
+			MaxDiffBytes:    input.MaxDiffBytes,
+			MaxItems:        input.MaxItems,
+			MaxSnippetBytes: input.MaxSnippetBytes,
+			IncludeImpact:   includeImpact,
+		})
+		writeIngestionResult(w, pack, err, http.StatusOK)
 	})
 }
 
@@ -417,7 +461,9 @@ func workspaceGitStatusHandler(workspace projectworkspace.API) http.Handler {
 			writeWorkspaceResult(w, nil, err, http.StatusOK)
 			return
 		}
-		status, err := workspace.GitStatus(r.Context(), strings.TrimSpace(r.PathValue("id")), projectworkspace.GitStatusOptions{
+		statusCtx, cancelStatus := context.WithTimeout(r.Context(), workspaceGitStatusTimeout)
+		defer cancelStatus()
+		status, err := workspace.GitStatus(statusCtx, strings.TrimSpace(r.PathValue("id")), projectworkspace.GitStatusOptions{
 			IncludeUntracked: includeUntracked,
 			PathPrefix:       r.URL.Query().Get("path_prefix"),
 			PageSize:         pageSize,
@@ -547,6 +593,10 @@ func writeWorkspaceResult(w http.ResponseWriter, body any, err error, successSta
 	}
 	if errors.Is(err, projectworkspace.ErrGitUnavailable) {
 		httpserver.WriteError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not available in the mivia-server runtime")
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		httpserver.WriteError(w, http.StatusGatewayTimeout, "workspace_timeout", "project workspace request timed out")
 		return
 	}
 	if errors.Is(err, projectworkspace.ErrInvalidInput) ||

@@ -24,11 +24,11 @@ func TestGraphStore_DeleteDerivedFileNodesIsFileScopedAndRemovesRelationships(t 
 	run := testGraphRun(project.ID)
 	state := testGraphState("cmd/a.go", "hash-a", "sha256:a")
 
-	if err := store.PutEligibleFile(ctx, project, run, state, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: "sha256:a"}}, []Symbol{{Kind: SymbolKindFunction, Name: "A", StartLine: 1, EndLine: 1}}, nil, nil, nil); err != nil {
+	if err := store.PutEligibleFile(ctx, project, run, state, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: "sha256:a"}}, []Symbol{{Kind: SymbolKindFunction, Name: "A", StartLine: 1, EndLine: 1}}, nil, nil, nil, nil); err != nil {
 		t.Fatalf("put initial file graph: %v", err)
 	}
 	otherState := testGraphState("cmd/b.go", "hash-b", "sha256:b")
-	if err := store.PutEligibleFile(ctx, project, run, otherState, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: "sha256:b"}}, nil, nil, nil, nil); err != nil {
+	if err := store.PutEligibleFile(ctx, project, run, otherState, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: "sha256:b"}}, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("put other file graph: %v", err)
 	}
 
@@ -75,6 +75,57 @@ func TestGraphStore_PutPreparedFilesBatchWritesProjectAndRunOnce(t *testing.T) {
 	}
 }
 
+func TestGraphStore_ResolvesUnambiguousSamePackageCrossFileCallsAndReferences(t *testing.T) {
+	ctx := context.Background()
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(ctx, schema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	store := NewGraphStore(graph)
+	project := testGraphProject()
+	run := testGraphRun(project.ID)
+
+	calleeState := testGraphState("cmd/callee.go", "hash-callee", "sha256:callee")
+	if err := store.PutEligibleFile(ctx, project, run, calleeState,
+		[]Chunk{{Index: 0, StartLine: 1, EndLine: 5, Text: "package main\nfunc Target() {}\n", ContentSHA256: "sha256:callee"}},
+		[]Symbol{{Kind: SymbolKindFunction, Name: "Target", PackageName: "main", StartLine: 2, EndLine: 2}},
+		nil,
+		nil,
+		nil,
+		nil,
+	); err != nil {
+		t.Fatalf("put callee file: %v", err)
+	}
+
+	callerState := testGraphState("cmd/caller.go", "hash-caller", "sha256:caller")
+	if err := store.PutEligibleFile(ctx, project, run, callerState,
+		[]Chunk{{Index: 0, StartLine: 1, EndLine: 8, Text: "package main\nfunc Caller() { Target() }\n", ContentSHA256: "sha256:caller"}},
+		[]Symbol{{Kind: SymbolKindFunction, Name: "Caller", PackageName: "main", StartLine: 2, EndLine: 2}},
+		[]Reference{{Kind: "identifier", Name: "Target", TargetName: "Target", PackageName: "main", EnclosingSymbolName: "Caller", StartLine: 2, EndLine: 2}},
+		[]Call{{CallerName: "Caller", CalleeName: "Target", StartLine: 2, EndLine: 2}},
+		nil,
+		nil,
+	); err != nil {
+		t.Fatalf("put caller file: %v", err)
+	}
+
+	targetID := codeSymbolID(repoFileID(project.GraphNamespace, calleeState.RelativePathHash), Symbol{Kind: SymbolKindFunction, Name: "Target", PackageName: "main", StartLine: 2, EndLine: 2})
+	refs, err := store.ListSymbolReferences(ctx, project, targetID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list references: %v", err)
+	}
+	if len(refs.References) != 1 || refs.References[0].TargetSymbolID != targetID || refs.References[0].ResolutionStatus != "resolved" || refs.References[0].Confidence != "direct" {
+		t.Fatalf("expected direct cross-file reference, got %#v", refs.References)
+	}
+	callers, err := store.ListSymbolCallers(ctx, project, targetID, Pagination{PageSize: MaxPageSize})
+	if err != nil {
+		t.Fatalf("list callers: %v", err)
+	}
+	if len(callers.Edges) != 1 || callers.Edges[0].CalleeSymbolID != targetID || callers.Edges[0].ResolutionStatus != "resolved" || callers.Edges[0].Confidence != "direct" {
+		t.Fatalf("expected direct cross-file caller edge, got %#v", callers.Edges)
+	}
+}
+
 func BenchmarkGraphDeleteDerivedFileNodes(b *testing.B) {
 	ctx := context.Background()
 	project := testGraphProject()
@@ -88,7 +139,7 @@ func BenchmarkGraphDeleteDerivedFileNodes(b *testing.B) {
 		for fileIndex := 0; fileIndex < 200; fileIndex++ {
 			suffix := strconv.Itoa(fileIndex)
 			state := testGraphState("cmd/file-"+suffix+".go", "hash-"+suffix, "sha256:"+suffix)
-			if err := store.PutEligibleFile(ctx, project, run, state, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: state.ContentSHA256}}, nil, nil, nil, nil); err != nil {
+			if err := store.PutEligibleFile(ctx, project, run, state, []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: state.ContentSHA256}}, nil, nil, nil, nil, nil); err != nil {
 				b.Fatalf("put file graph: %v", err)
 			}
 		}

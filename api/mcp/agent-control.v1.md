@@ -137,6 +137,20 @@ Input schema: `run_id`, `status` (`running`, `completed`, or `failed`), and opti
 
 Output: updated structured redacted `AgentRun` metadata plus a JSON text content block.
 
+### `agent_runs.promote_artifact`
+
+Input schema: `run_id`, existing `artifact_ref`, optional `artifact_kind`, `state` (`candidate`, `validated`, `promoted`, or `rejected`), `source_ref`, optional `verifier_ref`, and optional bounded `decision`.
+
+Output: updated structured redacted `AgentRun` metadata plus a JSON text content block.
+
+Rules:
+
+- `artifact_ref` must match an artifact already present on the run or one of its steps.
+- `validated`, `promoted`, and `rejected` require `verifier_ref` and `decision`.
+- `candidate` records evidence before validation and does not require a verifier.
+- Refs must be safe local refs, not absolute roots or traversal paths.
+- Raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, roots, and PII are rejected.
+
 ### `agent_runs.complete`
 
 Input schema: `run_id`, final `status` (`completed` or `failed`), and optional `failure_category`, redacted `summary`, safe `changed_files`, verifier metadata, and artifact refs.
@@ -225,13 +239,21 @@ Input schema:
 }
 ```
 
-Output: deterministic context readiness and freshness metadata for one project, including enabled/config state, latest run summary, safe counters, search-index health, and workspace git availability. It omits roots, source text, skipped sensitive content, raw errors, prompts, provider payloads, secrets, credentials, and PII.
+Output: deterministic context readiness and freshness metadata for one project, including enabled/config state, latest run summary, safe counters, search-index health, and workspace git availability. Status `syncing` means ingestion is active or a bounded probe timed out under local load; `degraded` is reserved for explicit failed ingestion or degraded search-index state. It omits roots, source text, skipped sensitive content, raw errors, prompts, provider payloads, secrets, credentials, and PII.
 
 ### `projects.impact.analyze`
 
 Input schema: `id`, optional safe project-relative `changed_paths`, optional `diff_scope` (`working_tree`, `staged`, or `head`), and optional `max_diff_bytes`.
 
-Output: deterministic impact metadata with affected domains, REST routes, MCP tools, security flags, source anchors, and residual unknowns. When no paths are supplied, the tool may use governed workspace diff file metadata; it does not return raw diff content.
+Output: deterministic impact metadata with graph-backed source anchors from defining symbols, references, callers, and implementer edges; affected domains, REST routes, MCP tools, security flags, residual unknowns, and `partial`/`partial_reason` when index health prevents a complete answer. During active ingestion, graph fanout is skipped and the result is partial with `index_syncing`. When no paths are supplied, the tool may use governed workspace diff file metadata; it does not return raw diff content.
+
+### `projects.context_pack.build`
+
+Input schema: `id`, optional `query`, optional `path_prefix`, optional safe project-relative `changed_paths`, optional `diff_scope` (`working_tree`, `staged`, or `head`), optional `max_diff_bytes`, optional `max_items` capped at 25, optional `max_snippet_bytes`, and optional `include_impact`.
+
+Output: bounded context pack with project ID, limits, text search hits, file metadata, symbol metadata, optional impact analysis, warnings, partial flag, and explicit v1 limitations.
+
+The tool composes existing local indexed context only. It does not create storage, call providers, return roots, return raw workspace diffs, or include full chunk text. Text hits include capped snippets and chunk metadata with empty `chunk.text`.
 
 ### `projects.claims.check`
 
@@ -458,7 +480,7 @@ Input schema:
 }
 ```
 
-Output: non-sensitive ingestion run metadata.
+Output: non-sensitive ingestion run metadata, including `run_kind` (`full_scan`, `delta`, or `search_index_rebuild`).
 
 ### `projects.ingestion_status_latest`
 
@@ -474,6 +496,8 @@ Input schema:
   }
 }
 ```
+
+Output: latest meaningful non-sensitive ingestion run metadata. Zero-delta live heartbeat runs are skipped so they do not mask the last full scan; direct `projects.ingestion_status` still returns a heartbeat when called by `run_id`.
 
 Output: latest non-sensitive ingestion run metadata for the project: run ID, status, trigger, counts, reason counts, timestamps, and error category only.
 

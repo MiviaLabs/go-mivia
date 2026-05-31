@@ -9,6 +9,14 @@ const (
 	TriggerLive   Trigger = "live"
 )
 
+type RunKind string
+
+const (
+	RunKindFullScan           RunKind = "full_scan"
+	RunKindDelta              RunKind = "delta"
+	RunKindSearchIndexRebuild RunKind = "search_index_rebuild"
+)
+
 type RunStatus string
 
 const (
@@ -22,6 +30,7 @@ type Run struct {
 	ID             string
 	ProjectID      string
 	Trigger        Trigger
+	RunKind        RunKind
 	Mode           string
 	Status         RunStatus
 	FilesSeen      int
@@ -160,6 +169,23 @@ type Call struct {
 	Confidence       string
 }
 
+type Implementation struct {
+	Kind             string
+	ImplementerName  string
+	ImplementedName  string
+	PackageName      string
+	Receiver         string
+	ImportPath       string
+	StartLine        int
+	EndLine          int
+	StartByte        int
+	EndByte          int
+	StartColumn      int
+	EndColumn        int
+	ResolutionStatus string
+	Confidence       string
+}
+
 type Heading struct {
 	Level       int
 	Text        string
@@ -180,11 +206,12 @@ type DiagnosticsSnapshot struct {
 }
 
 type StageDiagnostic struct {
-	Count         int64 `json:"count"`
-	TotalMillis   int64 `json:"total_ms"`
-	MaxMillis     int64 `json:"max_ms"`
-	LastMillis    int64 `json:"last_ms"`
-	LastSeenUnix  int64 `json:"last_seen_unix,omitempty"`
-	ErrorCount    int64 `json:"error_count,omitempty"`
-	LastErrorUnix int64 `json:"last_error_unix,omitempty"`
+	Count         int64  `json:"count"`
+	TotalMillis   int64  `json:"total_ms"`
+	MaxMillis     int64  `json:"max_ms"`
+	LastMillis    int64  `json:"last_ms"`
+	LastSeenUnix  int64  `json:"last_seen_unix,omitempty"`
+	ErrorCount    int64  `json:"error_count,omitempty"`
+	LastErrorUnix int64  `json:"last_error_unix,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
 }

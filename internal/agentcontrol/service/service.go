@@ -253,6 +253,70 @@ func (svc *Service) AppendAgentStep(ctx context.Context, runID string, input mod
 	return svc.agentRuns.AppendAgentStep(ctx, runID, step)
 }
 
+func (svc *Service) PromoteAgentArtifact(ctx context.Context, runID string, input model.PromoteAgentArtifactInput) (model.AgentRun, error) {
+	if svc.agentRuns == nil {
+		return model.AgentRun{}, fmt.Errorf("%w: agent run store is not configured", ErrInvalidInput)
+	}
+	runID, err := safeIdentifier(firstNonEmpty(runID, input.RunID), "run_id")
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	artifactRef, err := safeRefIdentifier(input.ArtifactRef, "artifact_ref")
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	state, err := safePromotionState(input.State)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	sourceRef, err := safeRefIdentifier(input.SourceRef, "source_ref")
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	verifierRef, err := safeOptionalIdentifier(input.VerifierRef, "verifier_ref")
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	if state != model.PromotionStateCandidate && verifierRef == "" {
+		return model.AgentRun{}, fmt.Errorf("%w: verifier_ref is required for promotion decisions", ErrInvalidInput)
+	}
+	decision, err := safeOptionalText(input.Decision, "decision", 500)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	if state != model.PromotionStateCandidate && decision == "" {
+		return model.AgentRun{}, fmt.Errorf("%w: decision is required for promotion decisions", ErrInvalidInput)
+	}
+	run, err := svc.agentRuns.GetAgentRun(ctx, runID)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	artifact, ok := findAgentArtifact(run, artifactRef)
+	if !ok {
+		return model.AgentRun{}, fmt.Errorf("%w: artifact_ref must match an existing run or step artifact", ErrInvalidInput)
+	}
+	artifactKind, err := safeOptionalIdentifier(input.ArtifactKind, "artifact_kind")
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	if artifactKind == "" {
+		artifactKind = artifact.Kind
+	}
+	if artifact.Kind != "" && artifactKind != artifact.Kind {
+		return model.AgentRun{}, fmt.Errorf("%w: artifact_kind does not match artifact_ref", ErrInvalidInput)
+	}
+	promotion := model.AgentPromotion{
+		ArtifactRef:  artifactRef,
+		ArtifactKind: artifactKind,
+		State:        state,
+		SourceRef:    sourceRef,
+		VerifierRef:  verifierRef,
+		Decision:     decision,
+		DecidedAt:    svc.now(),
+	}
+	return svc.agentRuns.PromoteAgentArtifact(ctx, runID, promotion)
+}
+
 func (svc *Service) CompleteAgentRun(ctx context.Context, runID string, input model.CompleteAgentRunInput) (model.AgentRun, error) {
 	if svc.agentRuns == nil {
 		return model.AgentRun{}, fmt.Errorf("%w: agent run store is not configured", ErrInvalidInput)
@@ -379,6 +443,18 @@ func safeOptionalIdentifier(value string, field string) (string, error) {
 	return safeIdentifier(value, field)
 }
 
+func safeRefIdentifier(value string, field string) (string, error) {
+	value, err := safeIdentifier(value, field)
+	if err != nil {
+		return "", err
+	}
+	normalized := strings.ReplaceAll(value, "\\", "/")
+	if strings.HasPrefix(normalized, "/") || strings.Contains(normalized, "..") || filepath.IsAbs(normalized) || containsProhibitedData(normalized) {
+		return "", fmt.Errorf("%w: %s is unsafe", ErrInvalidInput, field)
+	}
+	return normalized, nil
+}
+
 func safeOptionalText(value string, field string, maxLength int) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -478,7 +554,7 @@ func isSafeLoopbackURL(value string) bool {
 func safeArtifacts(artifacts []model.AgentArtifact) ([]model.AgentArtifact, error) {
 	out := make([]model.AgentArtifact, 0, len(artifacts))
 	for _, artifact := range artifacts {
-		ref, err := safeIdentifier(artifact.Ref, "artifact.ref")
+		ref, err := safeRefIdentifier(artifact.Ref, "artifact.ref")
 		if err != nil {
 			return nil, err
 		}
@@ -502,6 +578,32 @@ func safeAgentRunStatus(status string, allowRunning bool) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%w: status is invalid", ErrInvalidInput)
+}
+
+func safePromotionState(state string) (string, error) {
+	state = strings.TrimSpace(state)
+	switch state {
+	case model.PromotionStateCandidate, model.PromotionStateValidated, model.PromotionStatePromoted, model.PromotionStateRejected:
+		return state, nil
+	default:
+		return "", fmt.Errorf("%w: promotion state is invalid", ErrInvalidInput)
+	}
+}
+
+func findAgentArtifact(run model.AgentRun, ref string) (model.AgentArtifact, bool) {
+	for _, artifact := range run.Artifacts {
+		if artifact.Ref == ref {
+			return artifact, true
+		}
+	}
+	for _, step := range run.Steps {
+		for _, artifact := range step.Artifacts {
+			if artifact.Ref == ref {
+				return artifact, true
+			}
+		}
+	}
+	return model.AgentArtifact{}, false
 }
 
 func looksLikeSourceDump(value string) bool {

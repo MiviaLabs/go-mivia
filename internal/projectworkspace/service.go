@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -86,6 +87,9 @@ func (svc *Service) GitStatus(ctx context.Context, projectID string, options Git
 	}
 	out, _, err := svc.git.Run(ctx, project.CanonicalRootPath, 256<<10, args...)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return GitStatus{}, err
+		}
 		return GitStatus{}, ErrGitUnavailable
 	}
 	status := parseGitStatus(project.ID, out, prefix)
@@ -541,6 +545,9 @@ func (execGitRunner) Run(ctx context.Context, root string, maxBytes int, args ..
 	waitErr := cmd.Wait()
 	if readErr != nil {
 		return nil, false, readErr
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, false, ctxErr
 	}
 	if waitErr != nil {
 		return nil, false, waitErr

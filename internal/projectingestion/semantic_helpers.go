@@ -29,3 +29,17 @@ func dedupeCalls(calls []Call) []Call {
 	}
 	return out
 }
+
+func dedupeImplementations(implementations []Implementation) []Implementation {
+	seen := make(map[string]struct{}, len(implementations))
+	out := make([]Implementation, 0, len(implementations))
+	for _, implementation := range implementations {
+		key := implementation.Kind + "\x00" + implementation.ImplementerName + "\x00" + implementation.ImplementedName + "\x00" + fmt.Sprint(implementation.StartLine) + "\x00" + fmt.Sprint(implementation.StartByte)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, implementation)
+	}
+	return out
+}

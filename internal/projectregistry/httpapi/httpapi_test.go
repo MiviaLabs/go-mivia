@@ -132,6 +132,20 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 		t.Fatalf("expected impact domains, got %s", impact.Body.String())
 	}
 
+	contextPackReq := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/context-pack", bytes.NewBufferString(`{"query":"helper","changed_paths":["cmd/main.go"],"max_items":2,"max_snippet_bytes":80}`))
+	contextPackReq.Header.Set("Content-Type", "application/json")
+	contextPack := httptest.NewRecorder()
+	mux.ServeHTTP(contextPack, contextPackReq)
+	if contextPack.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", contextPack.Code, contextPack.Body.String())
+	}
+	assertDoesNotLeak(t, contextPack.Body.String(), root, "content_sha256", "root_path")
+	for _, expected := range []string{`"project_id":"` + projectID + `"`, `"text_hits"`, `"files"`, `"symbols"`, `"impact"`} {
+		if !strings.Contains(contextPack.Body.String(), expected) {
+			t.Fatalf("expected context pack to contain %s, got %s", expected, contextPack.Body.String())
+		}
+	}
+
 	claimsReq := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/claims/check", bytes.NewBufferString(`{"documents":[{"path":"README.md","text":"Use projects.context_health and not projects.verifiers.recommend. Do not link .ai/tasks/active/local.md"}]}`))
 	claimsReq.Header.Set("Content-Type", "application/json")
 	claims := httptest.NewRecorder()

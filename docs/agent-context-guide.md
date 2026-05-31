@@ -1,10 +1,10 @@
 # Agent Context Server Guide
 
 Status: Current local guide
-Date: 2026-05-31
+Date: 2026-06-01
 Classification: Internal; PII-prohibited
 
-`mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, symbol navigation, call graph views, named AST structural search, governed workspace git/read/edit operations, redacted agent-run metadata, and deterministic reliability checks, and keeps source understanding inside the developer machine.
+`mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, context packs, symbol navigation, call graph views, named AST structural search, governed workspace git/read/edit operations, redacted agent-run metadata, promotion-gate decisions, and deterministic reliability checks, and keeps source understanding inside the developer machine.
 
 ## Who It Helps
 
@@ -26,14 +26,18 @@ flowchart LR
   MCP --> Indexed["Indexed files, chunks, symbols, refs, calls, AST"]
   MCP --> Workspace["Governed workspace status/diff/read/edit"]
   MCP --> Reliability["Context health, impact analysis, stale-claim checks"]
+  MCP --> ContextPack["Context packs"]
   MCP --> AgentRuns["Redacted agent-run metadata"]
+  MCP --> Promotion["Promotion gates"]
   MCP --> Server["mivia-server on localhost"]
   Server --> Project["Approved local project"]
   Server --> Store["Local graph, SQLite, and FTS"]
   Store --> MCP
   Indexed --> Agent
   Reliability --> Agent
+  ContextPack --> Agent
   AgentRuns --> Agent
+  Promotion --> Agent
   Serena --> Code["Edit-time semantic gaps"]
   Shell --> Disk["Tests, build, logs, process control, generated files, arbitrary commands, non-opted-in repos"]
   Code --> Agent
@@ -54,6 +58,7 @@ Mivia MCP, Serena, and shell are complementary:
 | Understand indexed code structure, symbols, references, calls, or source | MCP |
 | Find indexed files or symbols without scanning the repo in chat | MCP |
 | Run routine text, path, symbol, reference, call, or named AST discovery | MCP `projects.search.*` |
+| Build one bounded package of relevant search/file/symbol/impact context | MCP `projects.context_pack.build` |
 | Read a bounded chunk by opaque file ID | MCP |
 | Check governed git status/diff for an opted-in workspace | MCP workspace tools |
 | Read or exact-edit an eligible current file in an opted-in workspace | MCP workspace tools |
@@ -79,6 +84,7 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Get research source metadata | `GET /research-runs/{id}/sources/{source_id}` | `research_sources.get` |
 | Create redacted agent run metadata | `POST /agent-runs` | `agent_runs.create` |
 | Append redacted agent run step | `POST /agent-runs/{id}/steps` | `agent_runs.step_append` |
+| Record artifact promotion-gate decision | `POST /agent-runs/{id}/promotions` | `agent_runs.promote_artifact` |
 | Complete redacted agent run metadata | `POST /agent-runs/{id}/complete` | `agent_runs.complete` |
 | Get redacted agent run metadata | `GET /agent-runs/{id}` | `agent_runs.get` |
 | List projects | `GET /projects` | `projects.list` |
@@ -86,6 +92,7 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Run metadata-only digest | `POST /projects/{id}/digest-runs` | `projects.digest` |
 | Get project context health | `GET /projects/{id}/context-health` | `projects.context_health` |
 | Analyze changed-path impact | `POST /projects/{id}/impact/analyze` | `projects.impact.analyze` |
+| Build context pack | `POST /projects/{id}/context-pack` | `projects.context_pack.build` |
 | Check stale documentation claims | `POST /projects/{id}/claims/check` | `projects.claims.check` |
 | Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
 | Rebuild local search index | `POST /projects/{id}/search-index/rebuild` | `projects.search_index.rebuild` |
@@ -128,9 +135,9 @@ Project integration polling is also asynchronous. Configure Jira and Confluence 
 
 `projects.digest` is only for `metadata_only` projects. For `content_graph` projects, use ingestion status and bounded file/search tools; the MCP error is `project digest unsupported`, not an active-ingestion block.
 
-`projects.context_health` summarizes whether a project is ready, warming up, running, degraded, stale, empty, disabled, or unavailable using only safe config, ingestion, search-index, and workspace-git metadata. `projects.impact.analyze` maps changed paths or governed workspace diff file metadata to affected domains, routes, tools, security flags, and residual unknowns without returning raw diff content. `projects.claims.check` checks selected stable docs/contracts for registered REST/MCP names and forbidden `.ai/tasks/` links; it does not use LLM judgment, broad crawling, or document-content echoing.
+`projects.context_health` summarizes whether a project is ready, warming up, syncing, running, degraded, stale, empty, disabled, or unavailable using only safe config, ingestion, search-index, and workspace-git metadata. `syncing` means ingestion is active or a bounded local probe timed out under load; `degraded` means explicit failure or degraded search-index state. `projects.impact.analyze` maps changed paths or governed workspace diff file metadata to affected domains, routes, tools, security flags, and residual unknowns without returning raw diff content. During active ingestion, graph fanout is skipped and impact returns partial `index_syncing` metadata instead of waiting on busy stores. `projects.context_pack.build` combines bounded search snippets, file metadata, symbol metadata, and optional impact analysis without new storage, provider calls, roots, raw diffs, or full chunk text. `projects.claims.check` checks selected stable docs/contracts for registered REST/MCP names and forbidden `.ai/tasks/` links; it does not use LLM judgment, broad crawling, or document-content echoing.
 
-`agent_runs.*` tools store redacted execution metadata only: project/task IDs, statuses, timestamps, changed project-relative paths, verifier command metadata, artifact refs, and short summaries/notes. They reject raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII.
+`agent_runs.*` tools store redacted execution metadata only: project/task IDs, statuses, timestamps, changed project-relative paths, verifier command metadata, artifact refs, promotion decisions, and short summaries/notes. `agent_runs.promote_artifact` records `candidate`, `validated`, `promoted`, or `rejected` decisions for existing artifact refs; validated, promoted, and rejected decisions require a verifier ref and bounded decision text. They reject raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII.
 
 Search tools are backed by governed indexed state. Text search is literal-only and returns capped snippets from eligible chunks. File, symbol, reference, and call search use indexed metadata and pagination. Raw FTS syntax and raw SQLite errors are not exposed.
 

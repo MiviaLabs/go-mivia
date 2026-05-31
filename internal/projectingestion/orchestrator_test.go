@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -34,6 +33,18 @@ func TestOrchestrator_GlobalDisabledDoesNotStartWatchers(t *testing.T) {
 	}
 	if created {
 		t.Fatal("expected no watcher when global live updates are disabled")
+	}
+}
+
+func TestNewOrchestrator_PreservesDisabledLivePathPriority(t *testing.T) {
+	registry := newLiveRegistry(t)
+	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{
+		LiveUpdatesEnabled: true,
+		LivePathPriority:   false,
+	})
+
+	if orchestrator.options.LivePathPriority {
+		t.Fatal("expected explicit disabled live path priority to be preserved")
 	}
 }
 
@@ -192,15 +203,13 @@ func TestOrchestrator_TaskQueueFullDefersSingleRescanWithoutRequeueLoop(t *testi
 	}
 }
 
-func TestOrchestratorDefaultsUseRuntimeCPUCount(t *testing.T) {
+func TestOrchestratorDefaultsUseBoundedWorkerCounts(t *testing.T) {
 	registry := newLiveRegistry(t)
 	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{})
-	want := runtime.NumCPU()
-	if want <= 0 {
-		want = 1
-	}
-	if orchestrator.options.WorkerCount != want || orchestrator.options.GlobalWorkerCount != want || orchestrator.options.PerProjectWorkerLimit != want {
-		t.Fatalf("expected orchestrator defaults to use runtime CPU count %d, got %+v", want, orchestrator.options)
+	if orchestrator.options.WorkerCount != defaultSchedulerGlobalWorkers ||
+		orchestrator.options.GlobalWorkerCount != defaultSchedulerGlobalWorkers ||
+		orchestrator.options.PerProjectWorkerLimit != defaultSchedulerPerProjectLimit {
+		t.Fatalf("expected bounded orchestrator defaults, got %+v", orchestrator.options)
 	}
 }
 
@@ -294,6 +303,39 @@ func TestOrchestrator_WatchDirectoryBudgetDegradesWithSkippedCount(t *testing.T)
 	}
 	if len(watcher.addedPaths()) != 1 {
 		t.Fatalf("expected watch budget to cap added paths, got %#v", watcher.addedPaths())
+	}
+}
+
+func TestOrchestrator_WatchStateReportsBackpressureCounters(t *testing.T) {
+	registry := newLiveRegistry(t)
+	project, _ := registry.Get("live_project")
+	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{
+		LiveUpdatesEnabled: true,
+		QueueDepth:         1,
+	})
+	projectWatcher := &projectWatcher{
+		project: project,
+		events:  make(chan WatchEvent, 1),
+		rescans: make(chan struct{}, 1),
+		tasks:   make(chan ingestTask, 1),
+	}
+	orchestrator.mu.Lock()
+	orchestrator.states[project.ID] = WatchState{ProjectID: project.ID, Status: WatchStatusLive, QueueDepth: 1}
+	orchestrator.watchers[project.ID] = projectWatcher
+	orchestrator.mu.Unlock()
+
+	orchestrator.handleWatchEvent(projectWatcher, WatchEvent{Path: filepath.Join(project.CanonicalRootPath, "one.go"), Op: WatchWrite})
+	orchestrator.handleWatchEvent(projectWatcher, WatchEvent{Path: filepath.Join(project.CanonicalRootPath, "two.go"), Op: WatchWrite})
+
+	state := findWatchState(t, orchestrator.WatchStates(), project.ID)
+	if state.EventQueueDepth != 1 || state.RescanQueueDepth != 1 {
+		t.Fatalf("expected queued event and rescan diagnostics, got %#v", state)
+	}
+	if state.DroppedEventCount != 1 || state.CoalescedEventCount != 1 {
+		t.Fatalf("expected dropped/coalesced counters, got %#v", state)
+	}
+	if state.OldestEventAgeMillis < 0 {
+		t.Fatalf("oldest event age must not be negative: %#v", state)
 	}
 }
 

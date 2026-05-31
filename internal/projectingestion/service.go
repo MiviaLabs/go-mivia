@@ -58,6 +58,16 @@ type activeRunLister interface {
 	ListActiveRuns(context.Context, string) ([]Run, error)
 }
 
+type fileStateCounter interface {
+	CountFileStates(context.Context, string, FileStateFilter) (int, error)
+}
+
+type searchCounter interface {
+	CountSearchSymbols(context.Context, projectregistry.Project) (int, error)
+	CountSearchChunks(context.Context, projectregistry.Project) (int, error)
+	ContextSearchIndexHealth(context.Context, projectregistry.Project) (SearchIndexHealth, error)
+}
+
 type API interface {
 	IngestProject(context.Context, string, Trigger) (Run, error)
 	IngestPath(context.Context, string, string, Trigger) (Run, error)
@@ -73,6 +83,7 @@ type API interface {
 	ListSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
 	SearchText(context.Context, string, TextSearchOptions) (TextSearchResultList, error)
 	SearchFiles(context.Context, string, FileSearchOptions) (FileList, error)
+	SearchIndexHealth(context.Context, string) (SearchIndexHealth, error)
 	SearchSymbols(context.Context, string, SymbolFilter, Pagination) (SymbolList, error)
 	SearchReferences(context.Context, string, ReferenceSearchOptions) (SymbolReferenceList, error)
 	SearchCalls(context.Context, string, ReferenceSearchOptions) (SymbolCallEdgeList, error)
@@ -83,6 +94,7 @@ type API interface {
 	ListSymbolReferences(context.Context, string, string, Pagination) (SymbolReferenceList, error)
 	ListSymbolCallers(context.Context, string, string, Pagination) (SymbolCallEdgeList, error)
 	ListSymbolCallees(context.Context, string, string, Pagination) (SymbolCallEdgeList, error)
+	ListSymbolImplementers(context.Context, string, string, Pagination) (SymbolImplementationList, error)
 	GetSymbolCallGraph(context.Context, string, string, CallGraphOptions) (SymbolCallGraph, error)
 	ListHeadings(context.Context, string, string, Pagination) (HeadingList, error)
 	GetFileOutline(context.Context, string, string, FileOutlineOptions) (FileOutline, error)
@@ -167,8 +179,55 @@ func (svc *Service) recordStage(stage string, startedAt time.Time, err error) {
 	if err != nil {
 		diagnostic.ErrorCount++
 		diagnostic.LastErrorUnix = now
+		diagnostic.LastError = safeStageError(stage, err)
 	}
 	svc.stageMetrics[stage] = diagnostic
+}
+
+func safeStageError(stage string, err error) string {
+	if err == nil {
+		return ""
+	}
+	switch stage {
+	case "extract":
+		return string(SkipReasonParseError)
+	case "read":
+		return string(SkipReasonReadError)
+	case "chunk":
+		return string(SkipReasonChunkError)
+	case "walk":
+		return "walk_failed"
+	default:
+		return safeStageCategory(err.Error(), "error")
+	}
+}
+
+func safeStageCategory(value string, fallback string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return fallback
+	}
+	var builder strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '_' || r == '-':
+			builder.WriteRune(r)
+		case r == ' ' || r == ':' || r == '/' || r == '.':
+			builder.WriteRune('_')
+		}
+		if builder.Len() >= 64 {
+			break
+		}
+	}
+	out := strings.Trim(builder.String(), "_-")
+	if out == "" {
+		return fallback
+	}
+	return out
 }
 
 func (svc *Service) withGraphBatch(ctx context.Context, fn func(*Service) (Run, error)) (Run, error) {
@@ -225,6 +284,7 @@ func (svc *Service) mergeStageDiagnostic(stage string, diagnostic StageDiagnosti
 	existing.ErrorCount += diagnostic.ErrorCount
 	if diagnostic.LastErrorUnix > existing.LastErrorUnix {
 		existing.LastErrorUnix = diagnostic.LastErrorUnix
+		existing.LastError = diagnostic.LastError
 	}
 	svc.stageMetrics[stage] = existing
 }
@@ -256,6 +316,7 @@ func (svc *Service) RebuildSearchIndex(ctx context.Context, projectID string) (R
 		return Run{}, err
 	}
 	run := svc.startRun(project, TriggerManual)
+	run.RunKind = RunKindSearchIndexRebuild
 	run.Status = RunStatusRunning
 	if err := svc.persistRun(ctx, project, run); err != nil {
 		return run, err
@@ -273,6 +334,7 @@ func (svc *Service) ExecutePreparedSearchIndexRebuild(ctx context.Context, run R
 	}
 	run.ProjectID = project.ID
 	run.Trigger = TriggerManual
+	run.RunKind = RunKindSearchIndexRebuild
 	run.Mode = project.DigestMode
 	run.Status = RunStatusRunning
 	if run.StartedAt.IsZero() {
@@ -442,6 +504,7 @@ func (svc *Service) PrepareProjectRun(ctx context.Context, projectID string, tri
 		return Run{}, err
 	}
 	run := svc.startRun(project, trigger)
+	run.RunKind = RunKindDelta
 	run.Status = RunStatusPending
 	if err := svc.persistRun(ctx, project, run); err != nil {
 		return run, err
@@ -557,6 +620,87 @@ func (svc *Service) FailInterruptedRuns(ctx context.Context, errorCategory strin
 	return failed, nil
 }
 
+func (svc *Service) ActiveRunMetadata(ctx context.Context, projectID string) ([]RunMetadata, error) {
+	if svc == nil || svc.state == nil {
+		return nil, fmt.Errorf("%w: ingestion service dependencies are required", ErrUnsupportedIngest)
+	}
+	runs, err := listActiveRuns(ctx, svc.state, strings.TrimSpace(projectID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RunMetadata, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, MetadataForRun(run))
+	}
+	return out, nil
+}
+
+func (svc *Service) EligibleFileCount(ctx context.Context, projectID string) (int, error) {
+	if svc == nil || svc.state == nil {
+		return 0, fmt.Errorf("%w: ingestion service dependencies are required", ErrUnsupportedIngest)
+	}
+	if counter, ok := svc.state.(fileStateCounter); ok {
+		return counter.CountFileStates(ctx, strings.TrimSpace(projectID), FileStateFilter{Status: FileStatusEligible})
+	}
+	states, err := svc.state.ListFileStates(ctx, strings.TrimSpace(projectID), FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		return 0, err
+	}
+	return len(states), nil
+}
+
+func (svc *Service) IndexedSymbolCount(ctx context.Context, projectID string) (int, error) {
+	project, err := svc.projectForQuery(strings.TrimSpace(projectID))
+	if err != nil {
+		return 0, err
+	}
+	if counter, ok := svc.state.(searchCounter); ok {
+		return counter.CountSearchSymbols(ctx, project)
+	}
+	total := 0
+	pageToken := ""
+	for {
+		result, err := svc.ListSymbols(ctx, project.ID, SymbolFilter{}, Pagination{PageSize: MaxPageSize, PageToken: pageToken})
+		if err != nil {
+			return 0, err
+		}
+		total += len(result.Symbols)
+		if result.NextPageToken == "" {
+			return total, nil
+		}
+		pageToken = result.NextPageToken
+	}
+}
+
+func (svc *Service) IndexedChunkCount(ctx context.Context, projectID string) (int, error) {
+	project, err := svc.projectForQuery(strings.TrimSpace(projectID))
+	if err != nil {
+		return 0, err
+	}
+	if counter, ok := svc.state.(searchCounter); ok {
+		return counter.CountSearchChunks(ctx, project)
+	}
+	run, err := svc.LatestRunMetadata(ctx, project.ID)
+	if errors.Is(err, ErrRunNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return run.ChunksStored, nil
+}
+
+func (svc *Service) ContextSearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
+	project, err := svc.projectForQuery(strings.TrimSpace(projectID))
+	if err != nil {
+		return SearchIndexHealth{}, err
+	}
+	if counter, ok := svc.state.(searchCounter); ok {
+		return counter.ContextSearchIndexHealth(ctx, project)
+	}
+	return SearchIndexHealth{}, nil
+}
+
 func listActiveRuns(ctx context.Context, state stateStore, projectID string) ([]Run, error) {
 	if lister, ok := state.(activeRunLister); ok {
 		return lister.ListActiveRuns(ctx, projectID)
@@ -631,7 +775,7 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 				return nil
 			}
 			flushSize := svc.fullScanBatchSize
-			if flushSize <= 0 || fullScanProgressFlushFiles < flushSize {
+			if flushSize <= 0 {
 				flushSize = fullScanProgressFlushFiles
 			}
 			if !force && len(batch) < flushSize {
@@ -640,13 +784,8 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 			if err := svc.saveFullScanPreparedBatch(ctx, project, progress.currentRun(), batch); err != nil {
 				return err
 			}
-			for _, result := range batch {
-				if result.state.RelativePathHash != "" {
-					progress.record(result.state, true, result.chunkCount, result.symbolCount, result.unchanged)
-				}
-			}
 			batch = batch[:0]
-			return progress.flush(ctx, svc, project, false)
+			return progress.flush(ctx, svc, project, true)
 		}
 		for result := range results {
 			if result.err != nil {
@@ -659,6 +798,18 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 				continue
 			}
 			batch = append(batch, result)
+			if result.state.RelativePathHash != "" {
+				progress.record(result.state, true, result.chunkCount, result.symbolCount, result.unchanged)
+				if err := progress.flush(ctx, svc, project, false); err != nil {
+					resultMu.Lock()
+					if resultErr == nil {
+						resultErr = err
+					}
+					resultMu.Unlock()
+					cancel()
+					continue
+				}
+			}
 			if err := flushBatch(false); err != nil {
 				resultMu.Lock()
 				if resultErr == nil {
@@ -842,16 +993,17 @@ type fullScanFileJob struct {
 }
 
 type fullScanFileResult struct {
-	state       FileState
-	chunks      []Chunk
-	symbols     []Symbol
-	references  []Reference
-	calls       []Call
-	headings    []Heading
-	chunkCount  int
-	symbolCount int
-	unchanged   bool
-	err         error
+	state           FileState
+	chunks          []Chunk
+	symbols         []Symbol
+	references      []Reference
+	calls           []Call
+	implementations []Implementation
+	headings        []Heading
+	chunkCount      int
+	symbolCount     int
+	unchanged       bool
+	err             error
 }
 
 type fullScanProgress struct {
@@ -977,6 +1129,9 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 		}
 		run.Status = RunStatusCompleted
 		run.FinishedAt = svc.now().UTC()
+		run.HeartbeatAt = run.FinishedAt
+		run.LastProgressAt = run.FinishedAt
+		run.CurrentPhase = "completed"
 		return run, svc.persistRun(ctx, project, run)
 	}
 	if err != nil {
@@ -999,6 +1154,9 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 		}
 		run.Status = RunStatusCompleted
 		run.FinishedAt = svc.now().UTC()
+		run.HeartbeatAt = run.FinishedAt
+		run.LastProgressAt = run.FinishedAt
+		run.CurrentPhase = "completed"
 		return run, svc.persistRun(ctx, project, run)
 	}
 	result := svc.prepareExistingFile(ctx, project, relative, fullPath, info, run)
@@ -1059,14 +1217,31 @@ func (svc *Service) LatestRunMetadata(ctx context.Context, projectID string) (Ru
 	if err != nil {
 		return RunMetadata{}, err
 	}
-	runs, err := svc.state.ListLatestRuns(ctx, project.ID, 1)
+	runs, err := svc.state.ListLatestRuns(ctx, project.ID, 25)
 	if err != nil {
 		return RunMetadata{}, err
 	}
 	if len(runs) == 0 {
 		return RunMetadata{}, ErrRunNotFound
 	}
+	for _, run := range runs {
+		if isZeroDeltaHeartbeat(run) {
+			continue
+		}
+		return MetadataForRun(run), nil
+	}
 	return MetadataForRun(runs[0]), nil
+}
+
+func isZeroDeltaHeartbeat(run Run) bool {
+	return run.RunKind == RunKindDelta &&
+		run.Status == RunStatusCompleted &&
+		run.FilesSeen == 0 &&
+		run.FilesIngested == 0 &&
+		run.FilesSkipped == 0 &&
+		run.FilesUnchanged == 0 &&
+		run.ChunksStored == 0 &&
+		run.SymbolsStored == 0
 }
 
 func (svc *Service) ListFileStates(ctx context.Context, projectID string, filter FileStateFilter) ([]FileState, error) {
@@ -1215,11 +1390,11 @@ func (svc *Service) SearchText(ctx context.Context, projectID string, options Te
 	if err != nil {
 		return TextSearchResultList{}, err
 	}
-	results, err := svc.searchBackend().SearchText(ctx, project, normalized)
+	index := svc.searchIndexMetadata(ctx, project)
+	results, err := svc.searchBackendForIndex(index).SearchText(ctx, project, normalized)
 	if err != nil {
 		return TextSearchResultList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project)
 	results.Index = &index
 	return results, nil
 }
@@ -1280,11 +1455,11 @@ func (svc *Service) SearchSymbols(ctx context.Context, projectID string, filter 
 	if err != nil {
 		return SymbolList{}, err
 	}
-	symbols, err := svc.searchBackend().SearchSymbols(ctx, project, normalized, pagination)
+	index := svc.searchIndexMetadata(ctx, project)
+	symbols, err := svc.searchBackendForIndex(index).SearchSymbols(ctx, project, normalized, pagination)
 	if err != nil {
 		return SymbolList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project)
 	symbols.Index = &index
 	return symbols, nil
 }
@@ -1298,11 +1473,11 @@ func (svc *Service) SearchReferences(ctx context.Context, projectID string, opti
 	if err != nil {
 		return SymbolReferenceList{}, err
 	}
-	refs, err := svc.searchBackend().SearchReferences(ctx, project, normalized)
+	index := svc.searchIndexMetadata(ctx, project)
+	refs, err := svc.searchBackendForIndex(index).SearchReferences(ctx, project, normalized)
 	if err != nil {
 		return SymbolReferenceList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project)
 	refs.Index = &index
 	return refs, nil
 }
@@ -1316,11 +1491,11 @@ func (svc *Service) SearchCalls(ctx context.Context, projectID string, options R
 	if err != nil {
 		return SymbolCallEdgeList{}, err
 	}
-	calls, err := svc.searchBackend().SearchCalls(ctx, project, normalized)
+	index := svc.searchIndexMetadata(ctx, project)
+	calls, err := svc.searchBackendForIndex(index).SearchCalls(ctx, project, normalized)
 	if err != nil {
 		return SymbolCallEdgeList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project)
 	calls.Index = &index
 	return calls, nil
 }
@@ -1606,12 +1781,30 @@ func (svc *Service) searchIndexMetadata(ctx context.Context, project projectregi
 	return svc.withSearchIndexHealth(ctx, project, metadata)
 }
 
+func (svc *Service) SearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
+	project, err := svc.projectForQuery(strings.TrimSpace(projectID))
+	if err != nil {
+		return SearchIndexHealth{}, err
+	}
+	search, ok := svc.state.(searchQueryStore)
+	if !ok {
+		return SearchIndexHealth{}, nil
+	}
+	return search.SearchIndexHealth(ctx, project)
+}
+
 func (svc *Service) withSearchIndexHealth(ctx context.Context, project projectregistry.Project, metadata SearchIndexMetadata) SearchIndexMetadata {
 	search, ok := svc.state.(searchQueryStore)
 	if !ok {
 		return metadata
 	}
-	health, err := search.SearchIndexHealth(ctx, project)
+	var health SearchIndexHealth
+	var err error
+	if counter, ok := svc.state.(searchCounter); ok {
+		health, err = counter.ContextSearchIndexHealth(ctx, project)
+	} else {
+		health, err = search.SearchIndexHealth(ctx, project)
+	}
 	if err != nil || !health.Degraded {
 		return metadata
 	}
@@ -1625,6 +1818,13 @@ func (svc *Service) searchBackend() searchQueryStore {
 		return search
 	}
 	return graphSearchAdapter{graph: svc.graph}
+}
+
+func (svc *Service) searchBackendForIndex(index SearchIndexMetadata) searchQueryStore {
+	if index.Degraded && index.DegradedReason == "search_index_drift" && svc.graph != nil {
+		return graphSearchAdapter{graph: svc.graph}
+	}
+	return svc.searchBackend()
 }
 
 func containsWithCaseOption(value string, query string, caseSensitive bool) bool {
@@ -1713,6 +1913,17 @@ func (svc *Service) ListSymbolCallees(ctx context.Context, projectID string, sym
 		return SymbolCallEdgeList{}, ErrIngestionNotFound
 	}
 	return svc.graph.ListSymbolCallees(ctx, project, strings.TrimSpace(symbolID), pagination)
+}
+
+func (svc *Service) ListSymbolImplementers(ctx context.Context, projectID string, symbolID string, pagination Pagination) (SymbolImplementationList, error) {
+	project, err := svc.projectForQuery(projectID)
+	if err != nil {
+		return SymbolImplementationList{}, err
+	}
+	if svc.graph == nil {
+		return SymbolImplementationList{}, ErrIngestionNotFound
+	}
+	return svc.graph.ListSymbolImplementers(ctx, project, strings.TrimSpace(symbolID), pagination)
 }
 
 func (svc *Service) GetSymbolCallGraph(ctx context.Context, projectID string, symbolID string, options CallGraphOptions) (SymbolCallGraph, error) {
@@ -1815,6 +2026,7 @@ func (svc *Service) startRun(project projectregistry.Project, trigger Trigger) R
 		ID:             svc.newID(project, startedAt),
 		ProjectID:      project.ID,
 		Trigger:        trigger,
+		RunKind:        RunKindFullScan,
 		Mode:           project.DigestMode,
 		Status:         RunStatusRunning,
 		StartedAt:      startedAt,
@@ -1907,14 +2119,15 @@ func (svc *Service) prepareExistingFile(ctx context.Context, project projectregi
 		return fullScanFileResult{state: state}
 	}
 	return fullScanFileResult{
-		state:       state,
-		chunks:      chunkSet.Chunks,
-		symbols:     result.Symbols,
-		references:  result.References,
-		calls:       result.Calls,
-		headings:    result.Headings,
-		chunkCount:  len(chunkSet.Chunks),
-		symbolCount: len(result.Symbols),
+		state:           state,
+		chunks:          chunkSet.Chunks,
+		symbols:         result.Symbols,
+		references:      result.References,
+		calls:           result.Calls,
+		implementations: result.Implementations,
+		headings:        result.Headings,
+		chunkCount:      len(chunkSet.Chunks),
+		symbolCount:     len(result.Symbols),
 	}
 }
 
@@ -2028,7 +2241,7 @@ func (svc *Service) saveEligiblePreparedFile(ctx context.Context, project projec
 	}
 	svc.recordStage("storage.state_write", stateStartedAt, nil)
 	graphStartedAt := time.Now()
-	if err := svc.graph.PutEligibleFile(ctx, project, run, result.state, result.chunks, result.symbols, result.references, result.calls, result.headings); err != nil {
+	if err := svc.graph.PutEligibleFile(ctx, project, run, result.state, result.chunks, result.symbols, result.references, result.calls, result.implementations, result.headings); err != nil {
 		svc.recordStage("storage.graph_write", graphStartedAt, err)
 		return err
 	}
@@ -2131,6 +2344,7 @@ func (svc *Service) extractEligible(ctx context.Context, project projectregistry
 				Headings:         entry.Headings,
 				References:       entry.References,
 				Calls:            entry.Calls,
+				Implementations:  entry.Implementations,
 			}, nil
 		}
 		if err != nil && !errors.Is(err, ErrExtractorCacheMiss) {
@@ -2154,6 +2368,7 @@ func (svc *Service) extractEligible(ctx context.Context, project projectregistry
 			Headings:         result.Headings,
 			References:       result.References,
 			Calls:            result.Calls,
+			Implementations:  result.Implementations,
 			CreatedAt:        eventAt,
 			UpdatedAt:        eventAt,
 		}); err != nil {

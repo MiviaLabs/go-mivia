@@ -59,6 +59,7 @@ var statements = []string{
 		run_id TEXT PRIMARY KEY,
 		project_id TEXT NOT NULL,
 		trigger TEXT NOT NULL,
+		run_kind TEXT NOT NULL DEFAULT '',
 		mode TEXT NOT NULL,
 		status TEXT NOT NULL,
 		files_seen INTEGER NOT NULL DEFAULT 0 CHECK (files_seen >= 0),
@@ -120,6 +121,7 @@ var statements = []string{
 		headings_json TEXT NOT NULL DEFAULT '[]',
 		references_json TEXT NOT NULL DEFAULT '[]',
 		calls_json TEXT NOT NULL DEFAULT '[]',
+		implementations_json TEXT NOT NULL DEFAULT '[]',
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY(project_id, relative_path_hash, content_sha256, extractor_name, extractor_version),
@@ -387,9 +389,17 @@ var extractorCacheColumns = []columnDefinition{
 		Name:       "calls_json",
 		Definition: "calls_json TEXT NOT NULL DEFAULT '[]'",
 	},
+	{
+		Name:       "implementations_json",
+		Definition: "implementations_json TEXT NOT NULL DEFAULT '[]'",
+	},
 }
 
 var ingestionRunColumns = []columnDefinition{
+	{
+		Name:       "run_kind",
+		Definition: "run_kind TEXT NOT NULL DEFAULT ''",
+	},
 	{
 		Name:       "files_unchanged",
 		Definition: "files_unchanged INTEGER NOT NULL DEFAULT 0 CHECK (files_unchanged >= 0)",

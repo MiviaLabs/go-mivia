@@ -11,7 +11,10 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
-const defaultStaleAfter = 24 * time.Hour
+const (
+	defaultStaleAfter   = 24 * time.Hour
+	defaultProbeTimeout = 250 * time.Millisecond
+)
 
 var ErrRunNotFound = errors.New("context health run not found")
 
@@ -35,21 +38,32 @@ type ContextProvider interface {
 	SearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error)
 }
 
+type activeSyncProvider interface {
+	ActiveSync(projectID string) bool
+}
+
 type WorkspaceGitProvider interface {
 	GitAvailable(ctx context.Context, projectID string) (bool, error)
 }
 
 type Options struct {
-	StaleAfter time.Duration
-	Now        func() time.Time
+	StaleAfter   time.Duration
+	ProbeTimeout time.Duration
+	Now          func() time.Time
 }
 
 type Service struct {
-	projects   ProjectProvider
-	context    ContextProvider
-	workspace  WorkspaceGitProvider
-	staleAfter time.Duration
-	now        func() time.Time
+	projects     ProjectProvider
+	context      ContextProvider
+	workspace    WorkspaceGitProvider
+	staleAfter   time.Duration
+	probeTimeout time.Duration
+	now          func() time.Time
+}
+
+type latestRunResult struct {
+	run RunSummary
+	ok  bool
 }
 
 func NewService(projects ProjectProvider, contextProvider ContextProvider, workspace WorkspaceGitProvider, options Options) *Service {
@@ -57,16 +71,21 @@ func NewService(projects ProjectProvider, contextProvider ContextProvider, works
 	if staleAfter == 0 {
 		staleAfter = defaultStaleAfter
 	}
+	probeTimeout := options.ProbeTimeout
+	if probeTimeout == 0 {
+		probeTimeout = defaultProbeTimeout
+	}
 	now := options.Now
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{
-		projects:   projects,
-		context:    contextProvider,
-		workspace:  workspace,
-		staleAfter: staleAfter,
-		now:        now,
+		projects:     projects,
+		context:      contextProvider,
+		workspace:    workspace,
+		staleAfter:   staleAfter,
+		probeTimeout: probeTimeout,
+		now:          now,
 	}
 }
 
@@ -112,40 +131,69 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		health.StatusReason = "context_provider_unavailable"
 		return health, nil
 	}
-
-	latest, hasLatest, err := svc.latestRun(ctx, project.ID)
-	if err != nil {
-		return ContextHealth{}, err
+	if provider, ok := svc.context.(activeSyncProvider); ok && provider.ActiveSync(project.ID) {
+		health.Status = ContextHealthSyncing
+		health.StatusReason = "ingestion_active"
+		health.SearchIndex = SearchIndexHealth{Status: "unknown"}
+		return health, nil
 	}
-	if hasLatest {
+
+	var probeIssue string
+	var probeTimedOut bool
+	latestResult, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (latestRunResult, error) {
+		latest, hasLatest, err := svc.latestRun(probeCtx, project.ID)
+		return latestRunResult{run: latest, ok: hasLatest}, err
+	})
+	latest := latestResult.run
+	hasLatest := latestResult.ok
+	if err != nil {
+		probeIssue = firstNonEmpty(probeIssue, "latest_run_unknown")
+		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
+	} else if hasLatest {
 		health.LatestRun = &latest
 		health.ReasonCounts = copyPositiveCounts(latest.ReasonCounts)
 	}
 
-	activeRuns, err := svc.context.ActiveRuns(ctx, project.ID)
+	activeRuns, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) ([]RunSummary, error) {
+		return svc.context.ActiveRuns(probeCtx, project.ID)
+	})
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "active_runs_unknown")
+		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
 	}
 	if len(activeRuns) > 0 {
 		health.ActiveRunID = activeRuns[0].ID
 	}
 
-	health.EligibleFileCount, err = svc.context.EligibleFileCount(ctx, project.ID)
+	health.EligibleFileCount, err = contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (int, error) {
+		return svc.context.EligibleFileCount(probeCtx, project.ID)
+	})
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "eligible_file_count_unknown")
+		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
 	}
-	health.IndexedSymbolCount, err = svc.context.IndexedSymbolCount(ctx, project.ID)
+	health.IndexedSymbolCount, err = contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (int, error) {
+		return svc.context.IndexedSymbolCount(probeCtx, project.ID)
+	})
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "indexed_symbol_count_unknown")
+		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
 	}
-	health.IndexedChunkCount, err = svc.context.IndexedChunkCount(ctx, project.ID)
+	health.IndexedChunkCount, err = contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (int, error) {
+		return svc.context.IndexedChunkCount(probeCtx, project.ID)
+	})
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "indexed_chunk_count_unknown")
+		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
 	}
 
-	searchIndex, err := svc.context.SearchIndexHealth(ctx, project.ID)
+	searchIndex, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (SearchIndexHealth, error) {
+		return svc.context.SearchIndexHealth(probeCtx, project.ID)
+	})
 	if err != nil {
-		return ContextHealth{}, err
+		probeIssue = firstNonEmpty(probeIssue, "search_index_unknown")
+		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
+		searchIndex = SearchIndexHealth{Status: "unknown", Degraded: true, Reason: "search_index_unknown"}
 	}
 	health.SearchIndex = SearchIndexHealth{
 		Status:   safeCategory(searchIndex.Status, "unknown"),
@@ -154,11 +202,34 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 	}
 
 	if svc.workspace != nil {
-		health.WorkspaceGitAvailable, _ = svc.workspace.GitAvailable(ctx, project.ID)
+		health.WorkspaceGitAvailable, _ = contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (bool, error) {
+			return svc.workspace.GitAvailable(probeCtx, project.ID)
+		})
 	}
 
 	health.Status, health.StatusReason = classifyHealth(project, latest, hasLatest, activeRuns, health, checkedAt, svc.staleAfter)
+	if probeIssue != "" && health.Status != ContextHealthDegraded {
+		if probeTimedOut {
+			health.Status = ContextHealthSyncing
+		} else {
+			health.Status = ContextHealthDegraded
+		}
+		health.StatusReason = probeIssue
+	}
 	return health, nil
+}
+
+func contextHealthProbe[T any](parent context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {
+	if err := parent.Err(); err != nil {
+		var zero T
+		return zero, err
+	}
+	if timeout <= 0 {
+		return fn(parent)
+	}
+	probeCtx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	return fn(probeCtx)
 }
 
 func (svc *Service) latestRun(ctx context.Context, projectID string) (RunSummary, bool, error) {
@@ -183,9 +254,9 @@ func classifyHealth(project projectregistry.Project, latest RunSummary, hasLates
 	if len(activeRuns) > 0 {
 		switch activeRuns[0].Status {
 		case runStatusRunning:
-			return ContextHealthRunning, ""
+			return ContextHealthSyncing, "ingestion_active"
 		case runStatusPending:
-			return ContextHealthWarmingUp, ""
+			return ContextHealthSyncing, "ingestion_active"
 		}
 	}
 	if hasLatest && latest.Status == runStatusFailed {
@@ -215,11 +286,31 @@ func classifyHealth(project projectregistry.Project, latest RunSummary, hasLates
 	return ContextHealthUnavailable, "no_ingestion_run"
 }
 
+type schedulerDiagnosticsProvider interface {
+	Diagnostics() projectingestion.SchedulerDiagnostics
+}
+
+func projectHasActiveSync(provider any, projectID string) bool {
+	diagnosticsProvider, ok := provider.(schedulerDiagnosticsProvider)
+	if !ok {
+		return false
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return false
+	}
+	diagnostics := diagnosticsProvider.Diagnostics()
+	return diagnostics.ActiveProjectTaskCount[projectID] > 0 ||
+		diagnostics.ProjectWideTaskCount[projectID] > 0 ||
+		diagnostics.PendingProjectWideTaskCount[projectID] > 0
+}
+
 func sanitizeRunSummary(run RunSummary) RunSummary {
 	return RunSummary{
 		ID:             run.ID,
 		Status:         safeCategory(run.Status, ""),
 		Trigger:        safeCategory(run.Trigger, ""),
+		RunKind:        safeCategory(run.RunKind, ""),
 		Mode:           safeCategory(run.Mode, ""),
 		FilesSeen:      run.FilesSeen,
 		FilesIngested:  run.FilesIngested,
@@ -289,6 +380,10 @@ type ingestionContextProvider struct {
 	ingestion projectingestion.API
 }
 
+func (provider ingestionContextProvider) ActiveSync(projectID string) bool {
+	return projectHasActiveSync(provider.ingestion, projectID)
+}
+
 func (provider ingestionContextProvider) LatestRun(ctx context.Context, projectID string) (RunSummary, error) {
 	if provider.ingestion == nil {
 		return RunSummary{}, ErrRunNotFound
@@ -304,6 +399,22 @@ func (provider ingestionContextProvider) LatestRun(ctx context.Context, projectI
 }
 
 func (provider ingestionContextProvider) ActiveRuns(ctx context.Context, projectID string) ([]RunSummary, error) {
+	if provider.ingestion == nil {
+		return nil, nil
+	}
+	if activeProvider, ok := provider.ingestion.(interface {
+		ActiveRunMetadata(context.Context, string) ([]projectingestion.RunMetadata, error)
+	}); ok {
+		runs, err := activeProvider.ActiveRunMetadata(ctx, projectID)
+		if err != nil {
+			return nil, err
+		}
+		summaries := make([]RunSummary, 0, len(runs))
+		for _, run := range runs {
+			summaries = append(summaries, sanitizeRunSummary(runSummaryFromIngestion(run)))
+		}
+		return summaries, nil
+	}
 	latest, err := provider.LatestRun(ctx, projectID)
 	if errors.Is(err, ErrRunNotFound) {
 		return nil, nil
@@ -323,12 +434,22 @@ func (provider ingestionContextProvider) EligibleFileCount(ctx context.Context, 
 	if provider.ingestion == nil {
 		return 0, nil
 	}
+	if counter, ok := provider.ingestion.(interface {
+		EligibleFileCount(context.Context, string) (int, error)
+	}); ok {
+		return counter.EligibleFileCount(ctx, projectID)
+	}
 	return countFiles(ctx, provider.ingestion, projectID, projectingestion.FileStateFilter{Status: projectingestion.FileStatusEligible})
 }
 
 func (provider ingestionContextProvider) IndexedSymbolCount(ctx context.Context, projectID string) (int, error) {
 	if provider.ingestion == nil {
 		return 0, nil
+	}
+	if counter, ok := provider.ingestion.(interface {
+		IndexedSymbolCount(context.Context, string) (int, error)
+	}); ok {
+		return counter.IndexedSymbolCount(ctx, projectID)
 	}
 	total := 0
 	pageToken := ""
@@ -346,6 +467,14 @@ func (provider ingestionContextProvider) IndexedSymbolCount(ctx context.Context,
 }
 
 func (provider ingestionContextProvider) IndexedChunkCount(ctx context.Context, projectID string) (int, error) {
+	if provider.ingestion == nil {
+		return 0, nil
+	}
+	if counter, ok := provider.ingestion.(interface {
+		IndexedChunkCount(context.Context, string) (int, error)
+	}); ok {
+		return counter.IndexedChunkCount(ctx, projectID)
+	}
 	latest, err := provider.LatestRun(ctx, projectID)
 	if errors.Is(err, ErrRunNotFound) {
 		return 0, nil
@@ -359,6 +488,40 @@ func (provider ingestionContextProvider) IndexedChunkCount(ctx context.Context, 
 func (provider ingestionContextProvider) SearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
 	if provider.ingestion == nil {
 		return SearchIndexHealth{Status: "unknown"}, nil
+	}
+	if healthProvider, ok := provider.ingestion.(interface {
+		ContextSearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error)
+	}); ok {
+		health, err := healthProvider.ContextSearchIndexHealth(ctx, projectID)
+		if err != nil {
+			return SearchIndexHealth{}, err
+		}
+		status := "ok"
+		if health.Degraded {
+			status = "degraded"
+		}
+		return SearchIndexHealth{
+			Status:   status,
+			Degraded: health.Degraded,
+			Reason:   health.Reason,
+		}, nil
+	}
+	if healthProvider, ok := provider.ingestion.(interface {
+		SearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error)
+	}); ok {
+		health, err := healthProvider.SearchIndexHealth(ctx, projectID)
+		if err != nil {
+			return SearchIndexHealth{}, err
+		}
+		status := "ok"
+		if health.Degraded {
+			status = "degraded"
+		}
+		return SearchIndexHealth{
+			Status:   status,
+			Degraded: health.Degraded,
+			Reason:   health.Reason,
+		}, nil
 	}
 	result, err := provider.ingestion.SearchFiles(ctx, projectID, projectingestion.FileSearchOptions{PageSize: 1})
 	if err != nil {
@@ -395,6 +558,7 @@ func runSummaryFromIngestion(run projectingestion.RunMetadata) RunSummary {
 		ID:             run.ID,
 		Status:         run.Status,
 		Trigger:        run.Trigger,
+		RunKind:        run.RunKind,
 		Mode:           run.Mode,
 		FilesSeen:      run.FilesSeen,
 		FilesIngested:  run.FilesIngested,

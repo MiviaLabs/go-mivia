@@ -53,11 +53,15 @@ type ExtractorCacheEntry struct {
 	Headings         []Heading
 	References       []Reference
 	Calls            []Call
+	Implementations  []Implementation
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
 
 func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
+	if run.RunKind == "" {
+		run.RunKind = RunKindFullScan
+	}
 	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return err
@@ -68,6 +72,7 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		run_id,
 		project_id,
 		trigger,
+		run_kind,
 		mode,
 		status,
 		files_seen,
@@ -82,10 +87,11 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		finished_at,
 		heartbeat_at,
 		last_progress_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(run_id) DO UPDATE SET
 		project_id = excluded.project_id,
 		trigger = excluded.trigger,
+		run_kind = excluded.run_kind,
 		mode = excluded.mode,
 		status = excluded.status,
 		files_seen = excluded.files_seen,
@@ -103,6 +109,7 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		run.ID,
 		run.ProjectID,
 		string(run.Trigger),
+		string(run.RunKind),
 		run.Mode,
 		string(run.Status),
 		run.FilesSeen,
@@ -144,6 +151,7 @@ func (store *SQLiteStore) GetRun(ctx context.Context, projectID string, runID st
 		run_id,
 		project_id,
 		trigger,
+		run_kind,
 		mode,
 		status,
 		files_seen,
@@ -183,6 +191,7 @@ func (store *SQLiteStore) ListLatestRuns(ctx context.Context, projectID string, 
 		run_id,
 		project_id,
 		trigger,
+		run_kind,
 		mode,
 		status,
 		files_seen,
@@ -234,6 +243,7 @@ func (store *SQLiteStore) ListActiveRuns(ctx context.Context, projectID string) 
 		run_id,
 		project_id,
 		trigger,
+		run_kind,
 		mode,
 		status,
 		files_seen,
@@ -432,6 +442,7 @@ func (store *SQLiteStore) GetExtractorCache(ctx context.Context, projectID strin
 		headings_json,
 		references_json,
 		calls_json,
+		implementations_json,
 		created_at,
 		updated_at
 	FROM project_extractor_cache
@@ -473,6 +484,10 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 	if err != nil {
 		return err
 	}
+	implementationsJSON, err := json.Marshal(entry.Implementations)
+	if err != nil {
+		return err
+	}
 	createdAt := entry.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = entry.UpdatedAt
@@ -496,14 +511,16 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 		headings_json,
 		references_json,
 		calls_json,
+		implementations_json,
 		created_at,
 		updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(project_id, relative_path_hash, content_sha256, extractor_name, extractor_version) DO UPDATE SET
 		symbols_json = excluded.symbols_json,
 		headings_json = excluded.headings_json,
 		references_json = excluded.references_json,
 		calls_json = excluded.calls_json,
+		implementations_json = excluded.implementations_json,
 		updated_at = excluded.updated_at`,
 		entry.ProjectID,
 		entry.RelativePathHash,
@@ -514,6 +531,7 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 		string(headingsJSON),
 		string(referencesJSON),
 		string(callsJSON),
+		string(implementationsJSON),
 		formatTime(createdAt),
 		formatTime(updatedAt),
 	)
@@ -582,6 +600,19 @@ func (store *SQLiteStore) ListFileStatesPage(ctx context.Context, projectID stri
 	return states, next, nil
 }
 
+func (store *SQLiteStore) CountFileStates(ctx context.Context, projectID string, filter FileStateFilter) (int, error) {
+	query := `SELECT COUNT(*)
+	FROM project_file_ingestion_state
+	WHERE project_id = ?`
+	args := []any{projectID}
+	query, args = appendFileStateFilters(query, args, filter)
+	var count int
+	if err := store.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string, filter FileStateFilter, limit int, offset int) (*sql.Rows, error) {
 	query := `SELECT
 		project_id,
@@ -600,6 +631,16 @@ func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string,
 	FROM project_file_ingestion_state
 	WHERE project_id = ?`
 	args := []any{projectID}
+	query, args = appendFileStateFilters(query, args, filter)
+	query += ` ORDER BY relative_path_hash`
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	return store.db.QueryContext(ctx, query, args...)
+}
+
+func appendFileStateFilters(query string, args []any, filter FileStateFilter) (string, []any) {
 	if filter.Status != "" {
 		query += ` AND status = ?`
 		args = append(args, string(filter.Status))
@@ -624,12 +665,7 @@ func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string,
 		query += ` AND modified_at >= ?`
 		args = append(args, formatTime(filter.ModifiedSince))
 	}
-	query += ` ORDER BY relative_path_hash`
-	if limit > 0 {
-		query += ` LIMIT ? OFFSET ?`
-		args = append(args, limit, offset)
-	}
-	return store.db.QueryContext(ctx, query, args...)
+	return query, args
 }
 
 func scanFileStates(rows *sql.Rows) ([]FileState, error) {
@@ -654,6 +690,7 @@ type runScanner interface {
 func scanRun(scanner runScanner) (Run, error) {
 	var run Run
 	var trigger string
+	var runKind string
 	var status string
 	var startedAt string
 	var finishedAt string
@@ -663,6 +700,7 @@ func scanRun(scanner runScanner) (Run, error) {
 		&run.ID,
 		&run.ProjectID,
 		&trigger,
+		&runKind,
 		&run.Mode,
 		&status,
 		&run.FilesSeen,
@@ -682,6 +720,7 @@ func scanRun(scanner runScanner) (Run, error) {
 		return Run{}, err
 	}
 	run.Trigger = Trigger(trigger)
+	run.RunKind = RunKind(runKind)
 	run.Status = RunStatus(status)
 	run.StartedAt, err = parseOptionalTime(startedAt)
 	if err != nil {
@@ -757,6 +796,7 @@ func scanExtractorCacheEntry(scanner runScanner) (ExtractorCacheEntry, error) {
 	var headingsJSON string
 	var referencesJSON string
 	var callsJSON string
+	var implementationsJSON string
 	var createdAt string
 	var updatedAt string
 	err := scanner.Scan(
@@ -769,6 +809,7 @@ func scanExtractorCacheEntry(scanner runScanner) (ExtractorCacheEntry, error) {
 		&headingsJSON,
 		&referencesJSON,
 		&callsJSON,
+		&implementationsJSON,
 		&createdAt,
 		&updatedAt,
 	)
@@ -785,6 +826,9 @@ func scanExtractorCacheEntry(scanner runScanner) (ExtractorCacheEntry, error) {
 		return ExtractorCacheEntry{}, err
 	}
 	if err := json.Unmarshal([]byte(callsJSON), &entry.Calls); err != nil {
+		return ExtractorCacheEntry{}, err
+	}
+	if err := json.Unmarshal([]byte(implementationsJSON), &entry.Implementations); err != nil {
 		return ExtractorCacheEntry{}, err
 	}
 	var parseErr error

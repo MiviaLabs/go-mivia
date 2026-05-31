@@ -25,6 +25,7 @@ type ExtractorResult struct {
 	Headings         []Heading
 	References       []Reference
 	Calls            []Call
+	Implementations  []Implementation
 }
 
 type Extractor interface {
