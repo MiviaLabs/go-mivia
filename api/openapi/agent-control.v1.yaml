@@ -1493,6 +1493,7 @@ components:
         id: {type: string}
         status: {type: string}
         trigger: {type: string}
+        run_kind: {type: string}
         mode: {type: string}
         files_seen: {type: integer, minimum: 0}
         files_ingested: {type: integer, minimum: 0}
@@ -1570,6 +1571,10 @@ components:
         residual_unknowns:
           type: array
           items: {type: string}
+        partial:
+          type: boolean
+        partial_reason:
+          type: string
         workspace_diff_used:
           type: boolean
         workspace_truncated:
@@ -1848,6 +1853,9 @@ components:
         trigger:
           type: string
           enum: [manual, live]
+        run_kind:
+          type: string
+          enum: [full_scan, delta, search_index_rebuild]
         mode:
           type: string
           enum: [content_graph]

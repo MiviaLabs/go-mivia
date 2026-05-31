@@ -40,6 +40,7 @@ type RunSummary struct {
 	ID             string         `json:"id"`
 	Status         string         `json:"status"`
 	Trigger        string         `json:"trigger,omitempty"`
+	RunKind        string         `json:"run_kind,omitempty"`
 	Mode           string         `json:"mode,omitempty"`
 	FilesSeen      int            `json:"files_seen"`
 	FilesIngested  int            `json:"files_ingested"`

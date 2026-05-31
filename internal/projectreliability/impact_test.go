@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
@@ -62,9 +63,95 @@ func TestImpactAnalyzer_WorkspaceUnavailableFallsBack(t *testing.T) {
 	assertContains(t, result.ResidualUnknowns, "no_changed_paths")
 }
 
+func TestImpactAnalyzer_UsesGraphEdgesForExternalProject(t *testing.T) {
+	graph := &fakeImpactGraph{
+		files: map[string]projectingestion.FileMetadata{
+			"interface":   {ID: "interface", ProjectID: "mass-monorepo", RelativePath: "apps/domain-loyalty/src/domain/repositories/point-wallet.repository.interface.ts", Status: "eligible", Present: true, RelativePathOK: true},
+			"implementer": {ID: "implementer", ProjectID: "mass-monorepo", RelativePath: "apps/domain-loyalty/src/infrastructure/database/repositories/drizzle-point-wallet.repository.ts", Status: "eligible", Present: true, RelativePathOK: true},
+			"module":      {ID: "module", ProjectID: "mass-monorepo", RelativePath: "apps/domain-loyalty/src/point-wallet.module.ts", Status: "eligible", Present: true, RelativePathOK: true},
+		},
+		symbolsByFile: map[string][]projectingestion.SymbolMetadata{
+			"interface": {{ID: "sym-interface", FileID: "interface", ProjectID: "mass-monorepo", Kind: string(projectingestion.SymbolKindType), Name: "PointWalletRepository"}},
+		},
+		refsBySymbol: map[string][]projectingestion.SymbolReferenceMetadata{
+			"sym-interface": {{ID: "ref-module", FileID: "module", ProjectID: "mass-monorepo", TargetSymbolID: "sym-interface", TargetName: "PointWalletRepository"}},
+		},
+		nameRefs: map[string][]projectingestion.SymbolReferenceMetadata{
+			"PointWalletRepository": {{ID: "ref-impl", FileID: "implementer", ProjectID: "mass-monorepo", TargetName: "PointWalletRepository", Kind: "implements"}},
+		},
+	}
+	result, err := NewImpactAnalyzerWithGraph(nil, graph).Analyze(context.Background(), ImpactAnalysisRequest{
+		ProjectID:    "mass-monorepo",
+		ChangedPaths: []string{"apps/domain-loyalty/src/domain/repositories/point-wallet.repository.interface.ts"},
+	})
+	if err != nil {
+		t.Fatalf("analyze impact: %v", err)
+	}
+	assertAnchor(t, result, "apps/domain-loyalty/src/infrastructure/database/repositories/drizzle-point-wallet.repository.ts", "graph_name_reference")
+	assertAnchor(t, result, "apps/domain-loyalty/src/point-wallet.module.ts", "graph_reference")
+	assertDomain(t, result, "graph_affected_files")
+	assertContains(t, result.ResidualUnknowns, "implementer_edges_not_distinct")
+	for _, domain := range result.AffectedDomains {
+		if domain.Name == "unknown" {
+			t.Fatalf("did not expect bare unknown domain when graph produced anchors: %#v", result.AffectedDomains)
+		}
+	}
+}
+
 type fakeWorkspace struct {
 	diff projectworkspace.GitDiff
 	err  error
+}
+
+type fakeImpactGraph struct {
+	files         map[string]projectingestion.FileMetadata
+	symbolsByFile map[string][]projectingestion.SymbolMetadata
+	refsBySymbol  map[string][]projectingestion.SymbolReferenceMetadata
+	nameRefs      map[string][]projectingestion.SymbolReferenceMetadata
+	callersBySym  map[string][]projectingestion.SymbolCallEdge
+}
+
+func (graph *fakeImpactGraph) ListFiles(_ context.Context, _ string, filter projectingestion.FileStateFilter, _ projectingestion.Pagination) (projectingestion.FileList, error) {
+	out := projectingestion.FileList{}
+	for _, file := range graph.files {
+		if filter.PathPrefix != "" && file.RelativePath != filter.PathPrefix {
+			continue
+		}
+		out.Files = append(out.Files, file)
+	}
+	return out, nil
+}
+
+func (graph *fakeImpactGraph) GetFile(_ context.Context, _ string, fileID string) (projectingestion.FileMetadata, error) {
+	file, ok := graph.files[fileID]
+	if !ok {
+		return projectingestion.FileMetadata{}, projectingestion.ErrIngestionNotFound
+	}
+	return file, nil
+}
+
+func (graph *fakeImpactGraph) ListSymbols(_ context.Context, _ string, filter projectingestion.SymbolFilter, _ projectingestion.Pagination) (projectingestion.SymbolList, error) {
+	return projectingestion.SymbolList{Symbols: append([]projectingestion.SymbolMetadata(nil), graph.symbolsByFile[filter.FileID]...)}, nil
+}
+
+func (graph *fakeImpactGraph) SearchSymbols(context.Context, string, projectingestion.SymbolFilter, projectingestion.Pagination) (projectingestion.SymbolList, error) {
+	return projectingestion.SymbolList{}, nil
+}
+
+func (graph *fakeImpactGraph) SearchReferences(_ context.Context, _ string, options projectingestion.ReferenceSearchOptions) (projectingestion.SymbolReferenceList, error) {
+	return projectingestion.SymbolReferenceList{References: append([]projectingestion.SymbolReferenceMetadata(nil), graph.nameRefs[options.TargetNameContains]...)}, nil
+}
+
+func (graph *fakeImpactGraph) ListSymbolReferences(_ context.Context, _ string, symbolID string, _ projectingestion.Pagination) (projectingestion.SymbolReferenceList, error) {
+	return projectingestion.SymbolReferenceList{References: append([]projectingestion.SymbolReferenceMetadata(nil), graph.refsBySymbol[symbolID]...)}, nil
+}
+
+func (graph *fakeImpactGraph) ListSymbolCallers(_ context.Context, _ string, symbolID string, _ projectingestion.Pagination) (projectingestion.SymbolCallEdgeList, error) {
+	return projectingestion.SymbolCallEdgeList{Edges: append([]projectingestion.SymbolCallEdge(nil), graph.callersBySym[symbolID]...)}, nil
+}
+
+func (graph *fakeImpactGraph) LatestRunMetadata(context.Context, string) (projectingestion.RunMetadata, error) {
+	return projectingestion.RunMetadata{Status: string(projectingestion.RunStatusCompleted)}, nil
 }
 
 func (workspace fakeWorkspace) GitStatus(context.Context, string, projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {
@@ -101,4 +188,14 @@ func assertContains(t *testing.T, values []string, want string) {
 		}
 	}
 	t.Fatalf("expected %q in %#v", want, values)
+}
+
+func assertAnchor(t *testing.T, result ImpactAnalysis, path string, kind string) {
+	t.Helper()
+	for _, anchor := range result.SourceAnchors {
+		if anchor.Path == path && anchor.Kind == kind {
+			return
+		}
+	}
+	t.Fatalf("expected anchor %s/%s in %#v", path, kind, result.SourceAnchors)
 }

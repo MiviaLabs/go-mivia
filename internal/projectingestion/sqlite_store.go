@@ -58,6 +58,9 @@ type ExtractorCacheEntry struct {
 }
 
 func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
+	if run.RunKind == "" {
+		run.RunKind = RunKindFullScan
+	}
 	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return err
@@ -68,6 +71,7 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		run_id,
 		project_id,
 		trigger,
+		run_kind,
 		mode,
 		status,
 		files_seen,
@@ -82,10 +86,11 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		finished_at,
 		heartbeat_at,
 		last_progress_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(run_id) DO UPDATE SET
 		project_id = excluded.project_id,
 		trigger = excluded.trigger,
+		run_kind = excluded.run_kind,
 		mode = excluded.mode,
 		status = excluded.status,
 		files_seen = excluded.files_seen,
@@ -103,6 +108,7 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		run.ID,
 		run.ProjectID,
 		string(run.Trigger),
+		string(run.RunKind),
 		run.Mode,
 		string(run.Status),
 		run.FilesSeen,
@@ -144,6 +150,7 @@ func (store *SQLiteStore) GetRun(ctx context.Context, projectID string, runID st
 		run_id,
 		project_id,
 		trigger,
+		run_kind,
 		mode,
 		status,
 		files_seen,
@@ -183,6 +190,7 @@ func (store *SQLiteStore) ListLatestRuns(ctx context.Context, projectID string, 
 		run_id,
 		project_id,
 		trigger,
+		run_kind,
 		mode,
 		status,
 		files_seen,
@@ -234,6 +242,7 @@ func (store *SQLiteStore) ListActiveRuns(ctx context.Context, projectID string) 
 		run_id,
 		project_id,
 		trigger,
+		run_kind,
 		mode,
 		status,
 		files_seen,
@@ -654,6 +663,7 @@ type runScanner interface {
 func scanRun(scanner runScanner) (Run, error) {
 	var run Run
 	var trigger string
+	var runKind string
 	var status string
 	var startedAt string
 	var finishedAt string
@@ -663,6 +673,7 @@ func scanRun(scanner runScanner) (Run, error) {
 		&run.ID,
 		&run.ProjectID,
 		&trigger,
+		&runKind,
 		&run.Mode,
 		&status,
 		&run.FilesSeen,
@@ -682,6 +693,7 @@ func scanRun(scanner runScanner) (Run, error) {
 		return Run{}, err
 	}
 	run.Trigger = Trigger(trigger)
+	run.RunKind = RunKind(runKind)
 	run.Status = RunStatus(status)
 	run.StartedAt, err = parseOptionalTime(startedAt)
 	if err != nil {

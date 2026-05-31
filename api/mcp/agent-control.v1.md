@@ -231,7 +231,7 @@ Output: deterministic context readiness and freshness metadata for one project, 
 
 Input schema: `id`, optional safe project-relative `changed_paths`, optional `diff_scope` (`working_tree`, `staged`, or `head`), and optional `max_diff_bytes`.
 
-Output: deterministic impact metadata with affected domains, REST routes, MCP tools, security flags, source anchors, and residual unknowns. When no paths are supplied, the tool may use governed workspace diff file metadata; it does not return raw diff content.
+Output: deterministic impact metadata with graph-backed source anchors, affected domains, REST routes, MCP tools, security flags, residual unknowns, and `partial`/`partial_reason` when index health prevents a complete answer. When no paths are supplied, the tool may use governed workspace diff file metadata; it does not return raw diff content.
 
 ### `projects.claims.check`
 
@@ -458,7 +458,7 @@ Input schema:
 }
 ```
 
-Output: non-sensitive ingestion run metadata.
+Output: non-sensitive ingestion run metadata, including `run_kind` (`full_scan`, `delta`, or `search_index_rebuild`).
 
 ### `projects.ingestion_status_latest`
 
@@ -474,6 +474,8 @@ Input schema:
   }
 }
 ```
+
+Output: latest meaningful non-sensitive ingestion run metadata. Zero-delta live heartbeat runs are skipped so they do not mask the last full scan; direct `projects.ingestion_status` still returns a heartbeat when called by `run_id`.
 
 Output: latest non-sensitive ingestion run metadata for the project: run ID, status, trigger, counts, reason counts, timestamps, and error category only.
 

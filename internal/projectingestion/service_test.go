@@ -696,6 +696,9 @@ func CallDrift() {
 	if results.Index == nil || !results.Index.Degraded || results.Index.DegradedReason != "search_index_drift" {
 		t.Fatalf("expected degraded drift metadata, got %#v", results.Index)
 	}
+	if len(results.Results) == 0 {
+		t.Fatalf("expected graph fallback text results during drift")
+	}
 	assertNoSearchLeak(t, root, results.Index, "project_search_files_fts", "content_sha256")
 
 	files, err := svc.SearchFiles(ctx, "example-service", FileSearchOptions{PathContains: "main", PageSize: MaxPageSize})
@@ -719,12 +722,18 @@ func CallDrift() {
 	if refs.Index == nil || !refs.Index.Degraded || refs.Index.DegradedReason != "search_index_drift" {
 		t.Fatalf("expected degraded reference search metadata, got %#v", refs.Index)
 	}
+	if len(refs.References) == 0 {
+		t.Fatalf("expected graph fallback references during drift")
+	}
 	calls, err := svc.SearchCalls(ctx, "example-service", ReferenceSearchOptions{CalleeNameContains: "DriftNeedle", PageSize: MaxPageSize})
 	if err != nil {
 		t.Fatalf("search calls: %v", err)
 	}
 	if calls.Index == nil || !calls.Index.Degraded || calls.Index.DegradedReason != "search_index_drift" {
 		t.Fatalf("expected degraded call search metadata, got %#v", calls.Index)
+	}
+	if len(calls.Edges) == 0 {
+		t.Fatalf("expected graph fallback calls during drift")
 	}
 }
 
@@ -771,6 +780,61 @@ func TestRebuildSearchIndexRepairsDriftAndClearsDegradedState(t *testing.T) {
 		t.Fatalf("expected degraded state cleared after repair, got %#v", after.Index)
 	}
 	requireTextMatches(t, ctx, svc, "RepairNeedle", 1)
+}
+
+func TestLatestRunMetadataSkipsZeroDeltaHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	svc, _, state := newTestService(t, root)
+	started := svc.now()
+	full := Run{
+		ID:             "ingest_full",
+		ProjectID:      "example-service",
+		Trigger:        TriggerManual,
+		RunKind:        RunKindFullScan,
+		Mode:           projectregistry.DigestModeContentGraph,
+		Status:         RunStatusCompleted,
+		FilesSeen:      2,
+		FilesIngested:  2,
+		CurrentPhase:   "completed",
+		StartedAt:      started,
+		FinishedAt:     started.Add(time.Second),
+		HeartbeatAt:    started.Add(time.Second),
+		LastProgressAt: started.Add(time.Second),
+	}
+	heartbeat := Run{
+		ID:             "ingest_heartbeat",
+		ProjectID:      "example-service",
+		Trigger:        TriggerLive,
+		RunKind:        RunKindDelta,
+		Mode:           projectregistry.DigestModeContentGraph,
+		Status:         RunStatusCompleted,
+		CurrentPhase:   "completed",
+		StartedAt:      started.Add(2 * time.Second),
+		FinishedAt:     started.Add(3 * time.Second),
+		HeartbeatAt:    started.Add(3 * time.Second),
+		LastProgressAt: started.Add(3 * time.Second),
+	}
+	if err := state.SaveRun(ctx, full); err != nil {
+		t.Fatalf("save full run: %v", err)
+	}
+	if err := state.SaveRun(ctx, heartbeat); err != nil {
+		t.Fatalf("save heartbeat run: %v", err)
+	}
+	latest, err := svc.LatestRunMetadata(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("latest run metadata: %v", err)
+	}
+	if latest.ID != full.ID || latest.RunKind != string(RunKindFullScan) {
+		t.Fatalf("expected latest meaningful full scan, got %#v", latest)
+	}
+	direct, err := svc.RunMetadata(ctx, "example-service", heartbeat.ID)
+	if err != nil {
+		t.Fatalf("direct heartbeat metadata: %v", err)
+	}
+	if direct.ID != heartbeat.ID || direct.RunKind != string(RunKindDelta) {
+		t.Fatalf("expected direct heartbeat lookup, got %#v", direct)
+	}
 }
 
 func TestRebuildSearchIndex_DoesNotRewriteUnchangedIndexedFiles(t *testing.T) {

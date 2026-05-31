@@ -1183,6 +1183,7 @@ func (store *GraphStore) putRun(ctx context.Context, run Run) error {
 			"id":               run.ID,
 			"project_id":       run.ProjectID,
 			"trigger":          string(run.Trigger),
+			"run_kind":         string(run.RunKind),
 			"mode":             run.Mode,
 			"status":           string(run.Status),
 			"files_seen":       strconv.Itoa(run.FilesSeen),

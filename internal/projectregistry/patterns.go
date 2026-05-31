@@ -48,7 +48,18 @@ func validatePattern(pattern string) error {
 func defaultExcludePatterns(projectRoot string, storagePaths ...string) []string {
 	excludes := []string{
 		".git/**",
+		".hg/**",
+		".svn/**",
+		".claude/worktrees/**",
 		"data/**",
+		"node_modules/**",
+		"vendor/**",
+		"dist/**",
+		"build/**",
+		"out/**",
+		".next/**",
+		"coverage/**",
+		"target/**",
 		"secrets/**",
 		".env*",
 		"lib-ladybug/**",

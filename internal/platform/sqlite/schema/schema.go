@@ -59,6 +59,7 @@ var statements = []string{
 		run_id TEXT PRIMARY KEY,
 		project_id TEXT NOT NULL,
 		trigger TEXT NOT NULL,
+		run_kind TEXT NOT NULL DEFAULT '',
 		mode TEXT NOT NULL,
 		status TEXT NOT NULL,
 		files_seen INTEGER NOT NULL DEFAULT 0 CHECK (files_seen >= 0),
@@ -390,6 +391,10 @@ var extractorCacheColumns = []columnDefinition{
 }
 
 var ingestionRunColumns = []columnDefinition{
+	{
+		Name:       "run_kind",
+		Definition: "run_kind TEXT NOT NULL DEFAULT ''",
+	},
 	{
 		Name:       "files_unchanged",
 		Definition: "files_unchanged INTEGER NOT NULL DEFAULT 0 CHECK (files_unchanged >= 0)",

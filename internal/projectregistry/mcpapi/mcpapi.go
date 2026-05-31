@@ -191,7 +191,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if projectID == "" {
 			projectID = strings.TrimSpace(input.ProjectID)
 		}
-		impact, err := projectreliability.NewImpactAnalyzer(workspace).Analyze(ctx, projectreliability.ImpactAnalysisRequest{
+		impact, err := projectreliability.NewImpactAnalyzerWithGraph(workspace, ingestion).Analyze(ctx, projectreliability.ImpactAnalysisRequest{
 			ProjectID:    projectID,
 			ChangedPaths: input.ChangedPaths,
 			DiffScope:    input.DiffScope,

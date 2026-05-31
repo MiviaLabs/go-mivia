@@ -167,8 +167,55 @@ func (svc *Service) recordStage(stage string, startedAt time.Time, err error) {
 	if err != nil {
 		diagnostic.ErrorCount++
 		diagnostic.LastErrorUnix = now
+		diagnostic.LastError = safeStageError(stage, err)
 	}
 	svc.stageMetrics[stage] = diagnostic
+}
+
+func safeStageError(stage string, err error) string {
+	if err == nil {
+		return ""
+	}
+	switch stage {
+	case "extract":
+		return string(SkipReasonParseError)
+	case "read":
+		return string(SkipReasonReadError)
+	case "chunk":
+		return string(SkipReasonChunkError)
+	case "walk":
+		return "walk_failed"
+	default:
+		return safeStageCategory(err.Error(), "error")
+	}
+}
+
+func safeStageCategory(value string, fallback string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return fallback
+	}
+	var builder strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '_' || r == '-':
+			builder.WriteRune(r)
+		case r == ' ' || r == ':' || r == '/' || r == '.':
+			builder.WriteRune('_')
+		}
+		if builder.Len() >= 64 {
+			break
+		}
+	}
+	out := strings.Trim(builder.String(), "_-")
+	if out == "" {
+		return fallback
+	}
+	return out
 }
 
 func (svc *Service) withGraphBatch(ctx context.Context, fn func(*Service) (Run, error)) (Run, error) {
@@ -225,6 +272,7 @@ func (svc *Service) mergeStageDiagnostic(stage string, diagnostic StageDiagnosti
 	existing.ErrorCount += diagnostic.ErrorCount
 	if diagnostic.LastErrorUnix > existing.LastErrorUnix {
 		existing.LastErrorUnix = diagnostic.LastErrorUnix
+		existing.LastError = diagnostic.LastError
 	}
 	svc.stageMetrics[stage] = existing
 }
@@ -256,6 +304,7 @@ func (svc *Service) RebuildSearchIndex(ctx context.Context, projectID string) (R
 		return Run{}, err
 	}
 	run := svc.startRun(project, TriggerManual)
+	run.RunKind = RunKindSearchIndexRebuild
 	run.Status = RunStatusRunning
 	if err := svc.persistRun(ctx, project, run); err != nil {
 		return run, err
@@ -273,6 +322,7 @@ func (svc *Service) ExecutePreparedSearchIndexRebuild(ctx context.Context, run R
 	}
 	run.ProjectID = project.ID
 	run.Trigger = TriggerManual
+	run.RunKind = RunKindSearchIndexRebuild
 	run.Mode = project.DigestMode
 	run.Status = RunStatusRunning
 	if run.StartedAt.IsZero() {
@@ -442,6 +492,7 @@ func (svc *Service) PrepareProjectRun(ctx context.Context, projectID string, tri
 		return Run{}, err
 	}
 	run := svc.startRun(project, trigger)
+	run.RunKind = RunKindDelta
 	run.Status = RunStatusPending
 	if err := svc.persistRun(ctx, project, run); err != nil {
 		return run, err
@@ -631,7 +682,7 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 				return nil
 			}
 			flushSize := svc.fullScanBatchSize
-			if flushSize <= 0 || fullScanProgressFlushFiles < flushSize {
+			if flushSize <= 0 {
 				flushSize = fullScanProgressFlushFiles
 			}
 			if !force && len(batch) < flushSize {
@@ -640,13 +691,8 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 			if err := svc.saveFullScanPreparedBatch(ctx, project, progress.currentRun(), batch); err != nil {
 				return err
 			}
-			for _, result := range batch {
-				if result.state.RelativePathHash != "" {
-					progress.record(result.state, true, result.chunkCount, result.symbolCount, result.unchanged)
-				}
-			}
 			batch = batch[:0]
-			return progress.flush(ctx, svc, project, false)
+			return progress.flush(ctx, svc, project, true)
 		}
 		for result := range results {
 			if result.err != nil {
@@ -659,6 +705,18 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 				continue
 			}
 			batch = append(batch, result)
+			if result.state.RelativePathHash != "" {
+				progress.record(result.state, true, result.chunkCount, result.symbolCount, result.unchanged)
+				if err := progress.flush(ctx, svc, project, false); err != nil {
+					resultMu.Lock()
+					if resultErr == nil {
+						resultErr = err
+					}
+					resultMu.Unlock()
+					cancel()
+					continue
+				}
+			}
 			if err := flushBatch(false); err != nil {
 				resultMu.Lock()
 				if resultErr == nil {
@@ -977,6 +1035,9 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 		}
 		run.Status = RunStatusCompleted
 		run.FinishedAt = svc.now().UTC()
+		run.HeartbeatAt = run.FinishedAt
+		run.LastProgressAt = run.FinishedAt
+		run.CurrentPhase = "completed"
 		return run, svc.persistRun(ctx, project, run)
 	}
 	if err != nil {
@@ -999,6 +1060,9 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 		}
 		run.Status = RunStatusCompleted
 		run.FinishedAt = svc.now().UTC()
+		run.HeartbeatAt = run.FinishedAt
+		run.LastProgressAt = run.FinishedAt
+		run.CurrentPhase = "completed"
 		return run, svc.persistRun(ctx, project, run)
 	}
 	result := svc.prepareExistingFile(ctx, project, relative, fullPath, info, run)
@@ -1059,14 +1123,31 @@ func (svc *Service) LatestRunMetadata(ctx context.Context, projectID string) (Ru
 	if err != nil {
 		return RunMetadata{}, err
 	}
-	runs, err := svc.state.ListLatestRuns(ctx, project.ID, 1)
+	runs, err := svc.state.ListLatestRuns(ctx, project.ID, 25)
 	if err != nil {
 		return RunMetadata{}, err
 	}
 	if len(runs) == 0 {
 		return RunMetadata{}, ErrRunNotFound
 	}
+	for _, run := range runs {
+		if isZeroDeltaHeartbeat(run) {
+			continue
+		}
+		return MetadataForRun(run), nil
+	}
 	return MetadataForRun(runs[0]), nil
+}
+
+func isZeroDeltaHeartbeat(run Run) bool {
+	return run.RunKind == RunKindDelta &&
+		run.Status == RunStatusCompleted &&
+		run.FilesSeen == 0 &&
+		run.FilesIngested == 0 &&
+		run.FilesSkipped == 0 &&
+		run.FilesUnchanged == 0 &&
+		run.ChunksStored == 0 &&
+		run.SymbolsStored == 0
 }
 
 func (svc *Service) ListFileStates(ctx context.Context, projectID string, filter FileStateFilter) ([]FileState, error) {
@@ -1215,11 +1296,11 @@ func (svc *Service) SearchText(ctx context.Context, projectID string, options Te
 	if err != nil {
 		return TextSearchResultList{}, err
 	}
-	results, err := svc.searchBackend().SearchText(ctx, project, normalized)
+	index := svc.searchIndexMetadata(ctx, project)
+	results, err := svc.searchBackendForIndex(index).SearchText(ctx, project, normalized)
 	if err != nil {
 		return TextSearchResultList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project)
 	results.Index = &index
 	return results, nil
 }
@@ -1280,11 +1361,11 @@ func (svc *Service) SearchSymbols(ctx context.Context, projectID string, filter 
 	if err != nil {
 		return SymbolList{}, err
 	}
-	symbols, err := svc.searchBackend().SearchSymbols(ctx, project, normalized, pagination)
+	index := svc.searchIndexMetadata(ctx, project)
+	symbols, err := svc.searchBackendForIndex(index).SearchSymbols(ctx, project, normalized, pagination)
 	if err != nil {
 		return SymbolList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project)
 	symbols.Index = &index
 	return symbols, nil
 }
@@ -1298,11 +1379,11 @@ func (svc *Service) SearchReferences(ctx context.Context, projectID string, opti
 	if err != nil {
 		return SymbolReferenceList{}, err
 	}
-	refs, err := svc.searchBackend().SearchReferences(ctx, project, normalized)
+	index := svc.searchIndexMetadata(ctx, project)
+	refs, err := svc.searchBackendForIndex(index).SearchReferences(ctx, project, normalized)
 	if err != nil {
 		return SymbolReferenceList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project)
 	refs.Index = &index
 	return refs, nil
 }
@@ -1316,11 +1397,11 @@ func (svc *Service) SearchCalls(ctx context.Context, projectID string, options R
 	if err != nil {
 		return SymbolCallEdgeList{}, err
 	}
-	calls, err := svc.searchBackend().SearchCalls(ctx, project, normalized)
+	index := svc.searchIndexMetadata(ctx, project)
+	calls, err := svc.searchBackendForIndex(index).SearchCalls(ctx, project, normalized)
 	if err != nil {
 		return SymbolCallEdgeList{}, err
 	}
-	index := svc.searchIndexMetadata(ctx, project)
 	calls.Index = &index
 	return calls, nil
 }
@@ -1627,6 +1708,13 @@ func (svc *Service) searchBackend() searchQueryStore {
 	return graphSearchAdapter{graph: svc.graph}
 }
 
+func (svc *Service) searchBackendForIndex(index SearchIndexMetadata) searchQueryStore {
+	if index.Degraded && index.DegradedReason == "search_index_drift" && svc.graph != nil {
+		return graphSearchAdapter{graph: svc.graph}
+	}
+	return svc.searchBackend()
+}
+
 func containsWithCaseOption(value string, query string, caseSensitive bool) bool {
 	if query == "" {
 		return true
@@ -1815,6 +1903,7 @@ func (svc *Service) startRun(project projectregistry.Project, trigger Trigger) R
 		ID:             svc.newID(project, startedAt),
 		ProjectID:      project.ID,
 		Trigger:        trigger,
+		RunKind:        RunKindFullScan,
 		Mode:           project.DigestMode,
 		Status:         RunStatusRunning,
 		StartedAt:      startedAt,

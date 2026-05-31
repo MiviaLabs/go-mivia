@@ -116,6 +116,7 @@ type RunMetadata struct {
 	ID             string         `json:"id"`
 	ProjectID      string         `json:"project_id"`
 	Trigger        string         `json:"trigger"`
+	RunKind        string         `json:"run_kind,omitempty"`
 	Mode           string         `json:"mode"`
 	Status         string         `json:"status"`
 	FilesSeen      int            `json:"files_seen"`
@@ -379,6 +380,7 @@ func MetadataForRun(run Run) RunMetadata {
 		ID:             run.ID,
 		ProjectID:      run.ProjectID,
 		Trigger:        string(run.Trigger),
+		RunKind:        string(run.RunKind),
 		Mode:           run.Mode,
 		Status:         string(run.Status),
 		FilesSeen:      run.FilesSeen,
