@@ -66,6 +66,24 @@ func (svc *Service) SetGitRunner(runner GitRunner) {
 	}
 }
 
+func (svc *Service) GitAvailable(ctx context.Context, projectID string) (bool, error) {
+	project, err := svc.project(projectID, false)
+	if err != nil {
+		if errors.Is(err, ErrWorkspaceDisabled) || errors.Is(err, ErrProjectNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	out, _, err := svc.git.Run(ctx, project.CanonicalRootPath, 64, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return false, err
+		}
+		return false, nil
+	}
+	return strings.TrimSpace(string(out)) == "true", nil
+}
+
 func (svc *Service) GitStatus(ctx context.Context, projectID string, options GitStatusOptions) (GitStatus, error) {
 	project, err := svc.project(projectID, false)
 	if err != nil {
@@ -529,7 +547,7 @@ func (execGitRunner) Run(ctx context.Context, root string, maxBytes int, args ..
 	if _, err := exec.LookPath("git"); err != nil {
 		return nil, false, ErrGitUnavailable
 	}
-	commandArgs := append([]string{"-c", "safe.directory=" + root}, args...)
+	commandArgs := append([]string{"--no-optional-locks", "-c", "safe.directory=" + root}, args...)
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	cmd.Dir = root
 	stdout, err := cmd.StdoutPipe()

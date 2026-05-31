@@ -264,6 +264,10 @@ func (workspace fakeWorkspace) GitStatus(context.Context, string, projectworkspa
 	return projectworkspace.GitStatus{}, nil
 }
 
+func (workspace fakeWorkspace) GitAvailable(context.Context, string) (bool, error) {
+	return true, nil
+}
+
 func (workspace fakeWorkspace) GitDiff(context.Context, string, projectworkspace.GitDiffOptions) (projectworkspace.GitDiff, error) {
 	if workspace.blockGitDiff != nil {
 		<-workspace.blockGitDiff

@@ -79,6 +79,9 @@ type API interface {
 	RebuildSearchIndex(context.Context, string) (Run, error)
 	RunMetadata(context.Context, string, string) (RunMetadata, error)
 	LatestRunMetadata(context.Context, string) (RunMetadata, error)
+	EligibleFileCount(context.Context, string) (int, error)
+	IndexedSymbolCount(context.Context, string) (int, error)
+	IndexedChunkCount(context.Context, string) (int, error)
 	ListFiles(context.Context, string, FileStateFilter, Pagination) (FileList, error)
 	GetFile(context.Context, string, string) (FileMetadata, error)
 	ListChunks(context.Context, string, string, Pagination, int) (ChunkList, error)
@@ -676,22 +679,18 @@ func (svc *Service) IndexedSymbolCount(ctx context.Context, projectID string) (i
 	if err != nil {
 		return 0, err
 	}
+	count, err := svc.graph.CountGraphSymbols(ctx, project)
+	if err != nil {
+		return 0, err
+	}
 	if counter, ok := svc.searchStore().(searchCounter); ok {
-		return counter.CountSearchSymbols(ctx, project)
-	}
-	total := 0
-	pageToken := ""
-	for {
-		result, err := svc.ListSymbols(ctx, project.ID, SymbolFilter{}, Pagination{PageSize: MaxPageSize, PageToken: pageToken})
+		searchCount, err := counter.CountSearchSymbols(ctx, project)
 		if err != nil {
-			return 0, err
+			return count, nil
 		}
-		total += len(result.Symbols)
-		if result.NextPageToken == "" {
-			return total, nil
-		}
-		pageToken = result.NextPageToken
+		count = max(count, searchCount)
 	}
+	return count, nil
 }
 
 func (svc *Service) IndexedChunkCount(ctx context.Context, projectID string) (int, error) {
@@ -699,17 +698,18 @@ func (svc *Service) IndexedChunkCount(ctx context.Context, projectID string) (in
 	if err != nil {
 		return 0, err
 	}
-	if counter, ok := svc.searchStore().(searchCounter); ok {
-		return counter.CountSearchChunks(ctx, project)
-	}
-	run, err := svc.LatestRunMetadata(ctx, project.ID)
-	if errors.Is(err, ErrRunNotFound) {
-		return 0, nil
-	}
+	count, err := svc.graph.CountGraphChunks(ctx, project)
 	if err != nil {
 		return 0, err
 	}
-	return run.ChunksStored, nil
+	if counter, ok := svc.searchStore().(searchCounter); ok {
+		searchCount, err := counter.CountSearchChunks(ctx, project)
+		if err != nil {
+			return count, nil
+		}
+		count = max(count, searchCount)
+	}
+	return count, nil
 }
 
 func (svc *Service) ContextSearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {

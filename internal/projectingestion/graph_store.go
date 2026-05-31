@@ -524,6 +524,22 @@ func (store *GraphStore) ListSymbols(ctx context.Context, project projectregistr
 	return SymbolList{Symbols: symbols, NextPageToken: nextToken}, nil
 }
 
+func (store *GraphStore) CountGraphSymbols(ctx context.Context, project projectregistry.Project) (int, error) {
+	nodes, err := store.graph.ListNodes(ctx, "CodeSymbol", map[string]string{"project_id": project.ID})
+	if err != nil {
+		return 0, err
+	}
+	return len(nodes), nil
+}
+
+func (store *GraphStore) CountGraphChunks(ctx context.Context, project projectregistry.Project) (int, error) {
+	nodes, err := store.graph.ListNodes(ctx, "ContentChunk", map[string]string{"project_id": project.ID})
+	if err != nil {
+		return 0, err
+	}
+	return len(nodes), nil
+}
+
 func (store *GraphStore) filterSymbolNodes(ctx context.Context, project projectregistry.Project, nodes []ladybug.Node, filter SymbolFilter) ([]ladybug.Node, error) {
 	out := make([]ladybug.Node, 0, len(nodes))
 	fileExtension := make(map[string]string)

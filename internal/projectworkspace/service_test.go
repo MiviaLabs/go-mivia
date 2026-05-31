@@ -68,6 +68,26 @@ func TestWorkspaceService_GitStatusPreservesContextTimeout(t *testing.T) {
 	}
 }
 
+func TestWorkspaceService_GitAvailableUsesFastRevParse(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "cmd/main.go", "package main\n")
+	registry := newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly)
+	svc := NewService(registry, nil, Options{Enabled: true})
+	runner := &recordingGitRunner{out: []byte("true\n")}
+	svc.SetGitRunner(runner)
+
+	available, err := svc.GitAvailable(context.Background(), "example-service")
+	if err != nil {
+		t.Fatalf("git available: %v", err)
+	}
+	if !available {
+		t.Fatalf("expected git to be available")
+	}
+	if len(runner.args) != 2 || runner.args[0] != "rev-parse" || runner.args[1] != "--is-inside-work-tree" {
+		t.Fatalf("expected fast rev-parse probe, got %#v", runner.args)
+	}
+}
+
 func TestWorkspaceService_RejectsReadOnlyAndStaleToken(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package main\n")
@@ -293,11 +313,15 @@ func (runner contextErrorGitRunner) Run(context.Context, string, int, ...string)
 type recordingGitRunner struct {
 	root string
 	args []string
+	out  []byte
 }
 
 func (runner *recordingGitRunner) Run(_ context.Context, root string, _ int, args ...string) ([]byte, bool, error) {
 	runner.root = root
 	runner.args = append([]string(nil), args...)
+	if runner.out != nil {
+		return runner.out, false, nil
+	}
 	return []byte("# branch.head main\x00# branch.oid 1234567890abcdef\x00"), false, nil
 }
 

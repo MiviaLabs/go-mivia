@@ -37,6 +37,7 @@ const (
 )
 
 type API interface {
+	GitAvailable(ctx context.Context, projectID string) (bool, error)
 	GitStatus(ctx context.Context, projectID string, options GitStatusOptions) (GitStatus, error)
 	GitDiff(ctx context.Context, projectID string, options GitDiffOptions) (GitDiff, error)
 	ReadFile(ctx context.Context, projectID string, options ReadFileOptions) (WorkspaceFile, error)

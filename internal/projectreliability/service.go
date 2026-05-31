@@ -13,7 +13,7 @@ import (
 
 const (
 	defaultStaleAfter   = 24 * time.Hour
-	defaultProbeTimeout = 250 * time.Millisecond
+	defaultProbeTimeout = 2 * time.Second
 )
 
 var ErrRunNotFound = errors.New("context health run not found")
@@ -188,6 +188,10 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
 	}
 	health.IndexedContentAvailable = health.EligibleFileCount > 0 || health.IndexedSymbolCount > 0 || health.IndexedChunkCount > 0
+	if health.LatestRun != nil {
+		health.LatestRun.ChunksStored = max(health.LatestRun.ChunksStored, health.IndexedChunkCount)
+		health.LatestRun.SymbolsStored = max(health.LatestRun.SymbolsStored, health.IndexedSymbolCount)
+	}
 
 	searchIndex, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (SearchIndexHealth, error) {
 		return svc.context.SearchIndexHealth(probeCtx, project.ID)
@@ -609,6 +613,11 @@ type workspaceGitProvider struct {
 func (provider workspaceGitProvider) GitAvailable(ctx context.Context, projectID string) (bool, error) {
 	if provider.workspace == nil {
 		return false, nil
+	}
+	if checker, ok := provider.workspace.(interface {
+		GitAvailable(context.Context, string) (bool, error)
+	}); ok {
+		return checker.GitAvailable(ctx, projectID)
 	}
 	_, err := provider.workspace.GitStatus(ctx, projectID, projectworkspace.GitStatusOptions{PageSize: 1})
 	if err == nil {

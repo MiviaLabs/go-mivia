@@ -18,7 +18,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
-const workspaceGitStatusTimeout = 2 * time.Second
+const workspaceGitStatusTimeout = 30 * time.Second
 
 func ToolDefinitions() []map[string]any {
 	return ToolDefinitionsWithIngestion(false)

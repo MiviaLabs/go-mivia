@@ -372,6 +372,13 @@ func (fake *fakeWorkspaceAPI) GitStatus(context.Context, string, projectworkspac
 	return projectworkspace.GitStatus{ProjectID: "example-service"}, nil
 }
 
+func (fake *fakeWorkspaceAPI) GitAvailable(context.Context, string) (bool, error) {
+	if fake.err != nil {
+		return false, fake.err
+	}
+	return true, nil
+}
+
 func (fake *fakeWorkspaceAPI) GitDiff(context.Context, string, projectworkspace.GitDiffOptions) (projectworkspace.GitDiff, error) {
 	return projectworkspace.GitDiff{ProjectID: "example-service"}, nil
 }

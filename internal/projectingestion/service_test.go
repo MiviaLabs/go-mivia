@@ -146,6 +146,32 @@ func TestIngestProject_RecordsWalkSubstageDiagnostics(t *testing.T) {
 	}
 }
 
+func TestServiceIndexedCountsUseGraphInventoryWhenSearchIsEmpty(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc Run() {}\n")
+
+	svc, _, state := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if err := state.DeleteSearchProject(ctx, "example-service"); err != nil {
+		t.Fatalf("delete search project: %v", err)
+	}
+
+	symbols, err := svc.IndexedSymbolCount(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("indexed symbol count: %v", err)
+	}
+	chunks, err := svc.IndexedChunkCount(ctx, "example-service")
+	if err != nil {
+		t.Fatalf("indexed chunk count: %v", err)
+	}
+	if symbols == 0 || chunks == 0 {
+		t.Fatalf("expected graph inventory counts after search reset, symbols=%d chunks=%d", symbols, chunks)
+	}
+}
+
 func TestNewServiceDefaultsFullScanWorkerCountToRuntimeCPUCount(t *testing.T) {
 	root := t.TempDir()
 	svc, _, _ := newTestService(t, root)

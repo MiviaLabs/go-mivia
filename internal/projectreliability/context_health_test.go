@@ -350,6 +350,9 @@ func TestContextHealth_ActiveSyncStillReportsGraphInventory(t *testing.T) {
 	if health.LatestRun == nil || health.LatestRun.ID != "run-1" {
 		t.Fatalf("expected active sync to keep latest run context, got %#v", health)
 	}
+	if health.LatestRun.SymbolsStored != 100 || health.LatestRun.ChunksStored != 60 {
+		t.Fatalf("expected latest run summary to carry indexed inventory, got %#v", health.LatestRun)
+	}
 }
 
 func TestContextHealth_ActiveSyncBoundsBlockingProvider(t *testing.T) {

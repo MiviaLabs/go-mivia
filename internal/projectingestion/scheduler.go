@@ -227,6 +227,30 @@ func (scheduler *Scheduler) LatestRunMetadata(ctx context.Context, projectID str
 	return api.LatestRunMetadata(ctx, projectID)
 }
 
+func (scheduler *Scheduler) EligibleFileCount(ctx context.Context, projectID string) (int, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return 0, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.EligibleFileCount(ctx, projectID)
+}
+
+func (scheduler *Scheduler) IndexedSymbolCount(ctx context.Context, projectID string) (int, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return 0, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.IndexedSymbolCount(ctx, projectID)
+}
+
+func (scheduler *Scheduler) IndexedChunkCount(ctx context.Context, projectID string) (int, error) {
+	api, ok := scheduler.runner.(API)
+	if !ok {
+		return 0, fmt.Errorf("%w: ingestion query API is required", ErrUnsupportedIngest)
+	}
+	return api.IndexedChunkCount(ctx, projectID)
+}
+
 func (scheduler *Scheduler) ListFiles(ctx context.Context, projectID string, filter FileStateFilter, pagination Pagination) (FileList, error) {
 	api, ok := scheduler.runner.(API)
 	if !ok {
