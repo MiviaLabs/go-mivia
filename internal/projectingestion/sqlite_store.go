@@ -25,12 +25,21 @@ type FileStateFilter struct {
 }
 
 type SQLiteStore struct {
-	db      *sql.DB
-	writeMu sync.Mutex
+	db          *sql.DB
+	writeMu     sync.Mutex
+	searchState searchStateStore
 }
 
 func NewSQLiteStore(db *sql.DB) *SQLiteStore {
 	return &SQLiteStore{db: db}
+}
+
+type searchStateStore interface {
+	ListFileStates(context.Context, string, FileStateFilter) ([]FileState, error)
+}
+
+func (store *SQLiteStore) SetSearchStateStore(state searchStateStore) {
+	store.searchState = state
 }
 
 func (store *SQLiteStore) beginWriteTx(ctx context.Context) (*sql.Tx, func(), error) {

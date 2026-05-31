@@ -186,7 +186,7 @@ What this enables:
 - Agents can ask local MCP tools for configured integration status, trigger a one-shot provider poll, search locally ingested Jira/Confluence chunks, and read bounded Jira issue or Confluence page content without calling Atlassian during search/read.
 - Agents can use MCP/REST for governed git status/diff and exact current-file edits on opted-in workspaces; shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
-- Local state can persist per project when `graph_storage = "persistent"`, or stay process-local with `graph_storage = "in_memory"`.
+- Local graph/search state persists per project when `graph_storage = "persistent"` using `<ladybug_path parent>/projects/<project-id>/mivialabs.lbug` and `<ladybug_path parent>/projects/<project-id>/mivialabs-search.sqlite`, or stays process-local/shared fallback with `graph_storage = "in_memory"`.
 - The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, AI provider calls, embeddings, vectors, arbitrary shell, raw patches, git commit/push/reset/checkout tools, skipped sensitive content, secrets, raw prompts, and raw provider payload blobs. Approved Jira/Confluence rich content and possible PII are limited to ignored local stores and bounded local MCP responses.
 
 ## Agent Reliability Model
@@ -277,7 +277,7 @@ sequenceDiagram
 - Module strategy: one root `go.mod`; add `go.work` only if independent module release boundaries become real.
 - Server: `cmd/mivia-server`
 - Local project config: optional, local-only TOML loaded from `configs/mivia-server.local.toml` or explicit `MIVIA_CONFIG_PATH`; committed example is `configs/mivia-server.example.toml`.
-- Persistence: LadybugDB graph abstraction for graph data; SQLite via `modernc.org/sqlite` for local app configuration. Project graph storage is selectable per project with `graph_storage = "persistent"` or `graph_storage = "in_memory"`.
+- Persistence: LadybugDB graph abstraction for graph data; SQLite via `modernc.org/sqlite` for local app configuration and FTS search. Project graph/search storage is selectable per project with `graph_storage = "persistent"` or `graph_storage = "in_memory"`; persistent project stores derive from `storage.ladybug_path` as `<parent>/projects/<project-id>/mivialabs.lbug` and `<parent>/projects/<project-id>/mivialabs-search.sqlite`.
 - Interfaces: REST under `/api/v1`; MCP Streamable HTTP under `/mcp`.
 
 ## Layout
@@ -377,6 +377,8 @@ Default container data paths are:
 MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug
 MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite
 ```
+
+Persistent project graph/search files live under `/var/lib/mivia/projects/<project-id>/`; agent and research metadata remain separate from project graph storage.
 
 Override `MIVIA_HOST_BIND`, `MIVIA_HOST_PORT`, and feature flags from the host environment when needed. Compose loads `configs/mivia-server.compose.toml`, which mirrors the local global runtime defaults without project roots, project names, Jira/Confluence URLs, or credential refs. It enables content graph ingestion, live updates, diagnostics, runtime metrics, and the global workspace gate by default. Per-project `workspace_mode` still controls whether a configured project exposes workspace tools. Mount ignored local configs or secrets only in an ignored `.docker-compose.local.yml` override when needed.
 

@@ -11,10 +11,24 @@ import (
 )
 
 type ProjectGraphRouter struct {
-	registry    *Registry
-	memory      ladybug.Graph
-	persistent  ladybug.Graph
-	allBackends []ladybug.Graph
+	registry            *Registry
+	memory              ladybug.Graph
+	persistent          ladybug.Graph
+	persistentByProject map[string]ladybug.Graph
+	storageKeyByProject map[string]string
+	allBackends         []ladybug.Graph
+}
+
+type ProjectGraphBackend struct {
+	ProjectID  string
+	Graph      ladybug.Graph
+	StorageKey string
+}
+
+type GraphStorageDiagnostic struct {
+	ProjectID  string `json:"project_id"`
+	Backend    string `json:"backend"`
+	StorageKey string `json:"storage_key,omitempty"`
 }
 
 func NewProjectGraphRouter(registry *Registry, memory ladybug.Graph, persistent ladybug.Graph) *ProjectGraphRouter {
@@ -31,6 +45,38 @@ func NewProjectGraphRouter(registry *Registry, memory ladybug.Graph, persistent 
 		persistent:  persistent,
 		allBackends: backends,
 	}
+}
+
+func NewProjectScopedGraphRouter(registry *Registry, memory ladybug.Graph, persistentBackends []ProjectGraphBackend) *ProjectGraphRouter {
+	backends := make([]ladybug.Graph, 0, 1+len(persistentBackends))
+	if memory != nil {
+		backends = append(backends, memory)
+	}
+	router := &ProjectGraphRouter{
+		registry:            registry,
+		memory:              memory,
+		persistentByProject: make(map[string]ladybug.Graph, len(persistentBackends)),
+		storageKeyByProject: make(map[string]string, len(persistentBackends)),
+		allBackends:         backends,
+	}
+	seen := make(map[ladybug.Graph]struct{}, len(persistentBackends))
+	if memory != nil {
+		seen[memory] = struct{}{}
+	}
+	for _, backend := range persistentBackends {
+		projectID := strings.TrimSpace(backend.ProjectID)
+		if projectID == "" || backend.Graph == nil {
+			continue
+		}
+		router.persistentByProject[projectID] = backend.Graph
+		router.storageKeyByProject[projectID] = strings.TrimSpace(backend.StorageKey)
+		if _, ok := seen[backend.Graph]; ok {
+			continue
+		}
+		seen[backend.Graph] = struct{}{}
+		router.allBackends = append(router.allBackends, backend.Graph)
+	}
+	return router
 }
 
 func (router *ProjectGraphRouter) Bootstrap(ctx context.Context, graphSchema schema.GraphSchema) error {
@@ -147,6 +193,9 @@ func (router *ProjectGraphRouter) Batch(ctx context.Context, fn func(ladybug.Gra
 	if fn == nil {
 		return nil
 	}
+	if len(router.persistentByProject) > 0 {
+		return fn(router)
+	}
 	batcher, ok := router.persistent.(ladybug.BatchGraph)
 	if !ok {
 		return fn(router)
@@ -184,6 +233,15 @@ func (router *ProjectGraphRouter) backendForProjectID(projectID string) (ladybug
 		}
 		return router.memory, nil
 	case GraphStoragePersistent:
+		if !project.Enabled || project.DigestMode != DigestModeContentGraph {
+			if router.memory == nil {
+				return nil, fmt.Errorf("project graph memory backend is required")
+			}
+			return router.memory, nil
+		}
+		if backend := router.persistentByProject[project.ID]; backend != nil {
+			return backend, nil
+		}
 		if router.persistent == nil {
 			return nil, fmt.Errorf("project graph persistent backend is required")
 		}
@@ -216,4 +274,27 @@ func projectIDForNode(node ladybug.Node) string {
 		return node.ID
 	}
 	return strings.TrimSpace(node.Properties["project_id"])
+}
+
+func (router *ProjectGraphRouter) GraphStorageDiagnostics() []GraphStorageDiagnostic {
+	if router == nil || router.registry == nil {
+		return nil
+	}
+	diagnostics := make([]GraphStorageDiagnostic, 0, len(router.registry.projects))
+	for _, project := range router.registry.projects {
+		diagnostic := GraphStorageDiagnostic{
+			ProjectID: project.ID,
+			Backend:   "in_memory_shared",
+		}
+		if project.Enabled && project.DigestMode == DigestModeContentGraph && project.GraphStorage == GraphStoragePersistent {
+			if storageKey := strings.TrimSpace(router.storageKeyByProject[project.ID]); storageKey != "" {
+				diagnostic.Backend = "persistent_project"
+				diagnostic.StorageKey = storageKey
+			} else if router.persistent != nil {
+				diagnostic.Backend = "persistent_shared"
+			}
+		}
+		diagnostics = append(diagnostics, diagnostic)
+	}
+	return diagnostics
 }

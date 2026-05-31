@@ -25,7 +25,7 @@ Critical review and implementation rule:
 Mandatory MCP-first surfaces:
 
 - Project discovery, enabled state, digest mode, update policy, workspace mode, and graph storage.
-- Ingestion run state, live/manual freshness, skipped reason counts, search-index degradation, repair status, and redacted ingestion diagnostics.
+- Ingestion run state, live/manual freshness, skipped reason counts, search-index degradation, repair status, and redacted ingestion diagnostics, including project-scoped storage keys but not raw datastore paths.
 - Indexed file discovery, opaque file IDs, file metadata, outlines, headings, symbols, references, call sites, and bounded chunks.
 - Governed workspace git status/diff, current eligible file reads, and token-guarded exact edits when `[workspace].enabled = true` and the project is opted in.
 - Context health, deterministic changed-path impact analysis, and selected stable-doc stale-claim checks.

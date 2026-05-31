@@ -376,6 +376,14 @@ func (store *SQLiteStore) DeleteSearchProject(ctx context.Context, projectID str
 }
 
 func (store *SQLiteStore) ReconcileSearchIndex(ctx context.Context, project projectregistry.Project) ([]FileState, error) {
+	var states []FileState
+	if store.searchState != nil {
+		var err error
+		states, err = store.searchRepairEligibleStates(ctx, nil, project)
+		if err != nil {
+			return nil, err
+		}
+	}
 	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return nil, err
@@ -383,9 +391,11 @@ func (store *SQLiteStore) ReconcileSearchIndex(ctx context.Context, project proj
 	defer unlock()
 	defer tx.Rollback()
 
-	states, err := searchRepairEligibleStates(ctx, tx, project)
-	if err != nil {
-		return nil, err
+	if store.searchState == nil {
+		states, err = store.searchRepairEligibleStates(ctx, tx, project)
+		if err != nil {
+			return nil, err
+		}
 	}
 	eligibleByFileID := make(map[string]FileState, len(states))
 	for _, state := range states {
@@ -504,14 +514,24 @@ func (store *SQLiteStore) CountSearchChunks(ctx context.Context, project project
 }
 
 func (store *SQLiteStore) searchIndexHasDrift(ctx context.Context, project projectregistry.Project) (bool, error) {
+	var states []FileState
+	if store.searchState != nil {
+		var err error
+		states, err = store.searchRepairEligibleStates(ctx, nil, project)
+		if err != nil {
+			return false, sanitizeSearchError(err)
+		}
+	}
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, sanitizeSearchError(err)
 	}
 	defer tx.Rollback()
-	states, err := searchRepairEligibleStates(ctx, tx, project)
-	if err != nil {
-		return false, sanitizeSearchError(err)
+	if store.searchState == nil {
+		states, err = store.searchRepairEligibleStates(ctx, tx, project)
+		if err != nil {
+			return false, sanitizeSearchError(err)
+		}
 	}
 	counts, err := searchFileCountsByID(ctx, tx, project.ID)
 	if err != nil {
@@ -596,7 +616,24 @@ func markSearchIndexDegradedTx(ctx context.Context, tx *sql.Tx, projectID string
 	return err
 }
 
-func searchRepairEligibleStates(ctx context.Context, tx *sql.Tx, project projectregistry.Project) ([]FileState, error) {
+func (store *SQLiteStore) searchRepairEligibleStates(ctx context.Context, tx *sql.Tx, project projectregistry.Project) ([]FileState, error) {
+	if store.searchState != nil {
+		present := true
+		states, err := store.searchState.ListFileStates(ctx, project.ID, FileStateFilter{
+			Status:  FileStatusEligible,
+			Present: &present,
+		})
+		if err != nil {
+			return nil, err
+		}
+		eligible := make([]FileState, 0, len(states))
+		for _, state := range states {
+			if state.RelativePathSafe && state.ContentSHA256 != "" {
+				eligible = append(eligible, state)
+			}
+		}
+		return eligible, nil
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT
 		relative_path_hash, relative_path, content_sha256, size_bytes, modified_at, last_event_at, last_ingested_at
 		FROM project_file_ingestion_state

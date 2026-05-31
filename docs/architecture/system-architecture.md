@@ -174,7 +174,7 @@ sequenceDiagram
 
   Client->>Server: Manual ingest, repair, latest status, file list, outline, chunk list, FTS search, AST search, symbol source, references, calls, or call graph
   Server->>Registry: Resolve enabled content_graph project
-  Registry-->>Server: Project with graph_storage setting
+  Registry-->>Server: Project with graph_storage setting and derived project graph/search paths
   Server->>Scheduler: Submit manual ingestion or search-index repair asynchronously
   Server->>SQLite: Read latest run status or bounded query metadata
   Watcher->>Scheduler: Submit live path event or overflow rescan
@@ -182,8 +182,9 @@ sequenceDiagram
   Ingestion->>Workers: Enumerate safely and dispatch eligible regular files
   Workers->>Workers: Apply size, binary, UTF-8, sensitive-marker gates, chunking, and promoted extraction
   Workers-->>Ingestion: Return prepared file metadata only
-  Ingestion->>Graph: Serially store eligible file versions, chunks, symbols, references, calls, headings, and run metadata
-  Ingestion->>SQLite: Store run, file state, extractor cache metadata, FTS search rows, and periodic running counters
+  Ingestion->>Graph: Serially store eligible file versions, chunks, symbols, references, calls, headings, and run metadata in the project-scoped graph
+  Ingestion->>SQLite: Store run, file state, extractor cache metadata, and periodic running counters
+  Ingestion->>ProjectSQLite: Store FTS search rows in the project-scoped search store
   Ingestion->>Ingestion: Tombstone stale files only after enumeration and workers drain
   Ingestion-->>Server: Run metadata with stable run ID
   Server-->>Client: JSON without roots, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, provider payloads, content hashes, raw SQLite/FTS errors, or raw parser details

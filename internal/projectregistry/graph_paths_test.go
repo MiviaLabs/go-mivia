@@ -1,0 +1,36 @@
+package projectregistry
+
+import (
+	"path/filepath"
+	"testing"
+)
+
+func TestProjectGraphPath_DerivesScopedPathUnderBaseParent(t *testing.T) {
+	path, err := ProjectGraphPath(filepath.Join("data", "mivialabs.lbug"), "mass-monorepo")
+	if err != nil {
+		t.Fatalf("derive project graph path: %v", err)
+	}
+	expected := filepath.Join("data", "projects", "mass-monorepo", "mivialabs.lbug")
+	if path != expected {
+		t.Fatalf("expected %q, got %q", expected, path)
+	}
+}
+
+func TestProjectSearchPath_DerivesScopedPathUnderBaseParent(t *testing.T) {
+	path, err := ProjectSearchPath(filepath.Join("data", "mivialabs.lbug"), "mass-monorepo")
+	if err != nil {
+		t.Fatalf("derive project search path: %v", err)
+	}
+	expected := filepath.Join("data", "projects", "mass-monorepo", "mivialabs-search.sqlite")
+	if path != expected {
+		t.Fatalf("expected %q, got %q", expected, path)
+	}
+}
+
+func TestProjectGraphPath_RejectsUnsafeProjectID(t *testing.T) {
+	for _, projectID := range []string{"", "../mass", "Mass", "mass.monorepo", "mass/monorepo"} {
+		if _, err := ProjectGraphPath(filepath.Join("data", "mivialabs.lbug"), projectID); err == nil {
+			t.Fatalf("expected unsafe project id %q to fail", projectID)
+		}
+	}
+}

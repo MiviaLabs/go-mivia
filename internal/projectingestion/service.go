@@ -104,6 +104,7 @@ type Service struct {
 	registry              *projectregistry.Registry
 	graph                 *GraphStore
 	state                 stateStore
+	search                any
 	extractors            *ExtractorRegistry
 	extractorCacheEnabled bool
 	fullScanBatchSize     int
@@ -125,6 +126,7 @@ func NewService(registry *projectregistry.Registry, graph *GraphStore, state sta
 		registry:              registry,
 		graph:                 graph,
 		state:                 state,
+		search:                state,
 		extractors:            NewDefaultExtractorRegistry(),
 		extractorCacheEnabled: true,
 		fullScanBatchSize:     500,
@@ -134,6 +136,22 @@ func NewService(registry *projectregistry.Registry, graph *GraphStore, state sta
 		now:                   func() time.Time { return time.Now().UTC() },
 		newID:                 defaultRunID,
 	}
+}
+
+func (svc *Service) SetSearchStore(search any) {
+	if search != nil {
+		svc.search = search
+	}
+}
+
+func (svc *Service) searchStore() any {
+	if svc == nil {
+		return nil
+	}
+	if svc.search == nil {
+		return svc.state
+	}
+	return svc.search
 }
 
 func (svc *Service) Diagnostics() map[string]StageDiagnostic {
@@ -240,6 +258,7 @@ func (svc *Service) withGraphBatch(ctx context.Context, fn func(*Service) (Run, 
 			registry:              svc.registry,
 			graph:                 graph,
 			state:                 svc.state,
+			search:                svc.search,
 			extractors:            svc.extractors,
 			extractorCacheEnabled: svc.extractorCacheEnabled,
 			fullScanBatchSize:     svc.fullScanBatchSize,
@@ -347,7 +366,7 @@ func (svc *Service) ExecutePreparedSearchIndexRebuild(ctx context.Context, run R
 }
 
 func (svc *Service) executeSearchIndexRebuild(ctx context.Context, project projectregistry.Project, run Run) (Run, error) {
-	search, ok := svc.state.(searchRepairStore)
+	search, ok := svc.searchStore().(searchRepairStore)
 	if !ok {
 		run.Status = RunStatusFailed
 		run.ErrorCategory = "search_index_rebuild_failed"
@@ -441,7 +460,7 @@ func (svc *Service) repairAbsentSearchIndexFile(ctx context.Context, project pro
 	if err := svc.graph.putFileState(ctx, project, run, state); err != nil {
 		return err
 	}
-	if search, ok := svc.state.(searchMutationStore); ok {
+	if search, ok := svc.searchStore().(searchMutationStore); ok {
 		if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
 			_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
 			return err
@@ -654,7 +673,7 @@ func (svc *Service) IndexedSymbolCount(ctx context.Context, projectID string) (i
 	if err != nil {
 		return 0, err
 	}
-	if counter, ok := svc.state.(searchCounter); ok {
+	if counter, ok := svc.searchStore().(searchCounter); ok {
 		return counter.CountSearchSymbols(ctx, project)
 	}
 	total := 0
@@ -677,7 +696,7 @@ func (svc *Service) IndexedChunkCount(ctx context.Context, projectID string) (in
 	if err != nil {
 		return 0, err
 	}
-	if counter, ok := svc.state.(searchCounter); ok {
+	if counter, ok := svc.searchStore().(searchCounter); ok {
 		return counter.CountSearchChunks(ctx, project)
 	}
 	run, err := svc.LatestRunMetadata(ctx, project.ID)
@@ -695,7 +714,7 @@ func (svc *Service) ContextSearchIndexHealth(ctx context.Context, projectID stri
 	if err != nil {
 		return SearchIndexHealth{}, err
 	}
-	if counter, ok := svc.state.(searchCounter); ok {
+	if counter, ok := svc.searchStore().(searchCounter); ok {
 		return counter.ContextSearchIndexHealth(ctx, project)
 	}
 	return SearchIndexHealth{}, nil
@@ -1121,7 +1140,7 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 		if err := svc.graph.PutFileState(ctx, project, run, state); err != nil {
 			return run, err
 		}
-		if search, ok := svc.state.(searchMutationStore); ok {
+		if search, ok := svc.searchStore().(searchMutationStore); ok {
 			if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
 				_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
 				return run, err
@@ -1408,7 +1427,7 @@ func (svc *Service) SearchFiles(ctx context.Context, projectID string, options F
 	if err != nil {
 		return FileList{}, err
 	}
-	if search, ok := svc.state.(searchQueryStore); ok {
+	if search, ok := svc.searchStore().(searchQueryStore); ok {
 		files, err := search.SearchFiles(ctx, project, normalized)
 		if err != nil {
 			return FileList{}, err
@@ -1786,7 +1805,7 @@ func (svc *Service) SearchIndexHealth(ctx context.Context, projectID string) (Se
 	if err != nil {
 		return SearchIndexHealth{}, err
 	}
-	search, ok := svc.state.(searchQueryStore)
+	search, ok := svc.searchStore().(searchQueryStore)
 	if !ok {
 		return SearchIndexHealth{}, nil
 	}
@@ -1794,13 +1813,13 @@ func (svc *Service) SearchIndexHealth(ctx context.Context, projectID string) (Se
 }
 
 func (svc *Service) withSearchIndexHealth(ctx context.Context, project projectregistry.Project, metadata SearchIndexMetadata) SearchIndexMetadata {
-	search, ok := svc.state.(searchQueryStore)
+	search, ok := svc.searchStore().(searchQueryStore)
 	if !ok {
 		return metadata
 	}
 	var health SearchIndexHealth
 	var err error
-	if counter, ok := svc.state.(searchCounter); ok {
+	if counter, ok := svc.searchStore().(searchCounter); ok {
 		health, err = counter.ContextSearchIndexHealth(ctx, project)
 	} else {
 		health, err = search.SearchIndexHealth(ctx, project)
@@ -1814,7 +1833,7 @@ func (svc *Service) withSearchIndexHealth(ctx context.Context, project projectre
 }
 
 func (svc *Service) searchBackend() searchQueryStore {
-	if search, ok := svc.state.(searchQueryStore); ok {
+	if search, ok := svc.searchStore().(searchQueryStore); ok {
 		return search
 	}
 	return graphSearchAdapter{graph: svc.graph}
@@ -2162,7 +2181,7 @@ func (svc *Service) metadataUnchangedFile(ctx context.Context, project projectre
 	if err != nil || !graphOK {
 		return FileState{}, false, err
 	}
-	if search, ok := svc.state.(searchMutationStore); ok {
+	if search, ok := svc.searchStore().(searchMutationStore); ok {
 		searchOK, err := search.HasSearchFileVersion(ctx, project, state)
 		if err != nil || !searchOK {
 			return FileState{}, false, err
@@ -2199,7 +2218,7 @@ func (svc *Service) fileVersionUnchanged(ctx context.Context, project projectreg
 	if err != nil || !graphOK {
 		return false, err
 	}
-	if search, ok := svc.state.(searchMutationStore); ok {
+	if search, ok := svc.searchStore().(searchMutationStore); ok {
 		searchOK, err := search.HasSearchFileVersion(ctx, project, state)
 		if err != nil || !searchOK {
 			return false, err
@@ -2221,7 +2240,7 @@ func (svc *Service) saveUnchangedPreparedFile(ctx context.Context, project proje
 		return err
 	}
 	svc.recordStage("storage.graph_write", graphStartedAt, nil)
-	if search, ok := svc.state.(searchMutationStore); ok {
+	if search, ok := svc.searchStore().(searchMutationStore); ok {
 		searchStartedAt := time.Now()
 		if err := search.UpdateSearchFileMetadata(ctx, project, result.state); err != nil {
 			_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_write_failed")
@@ -2246,7 +2265,7 @@ func (svc *Service) saveEligiblePreparedFile(ctx context.Context, project projec
 		return err
 	}
 	svc.recordStage("storage.graph_write", graphStartedAt, nil)
-	if search, ok := svc.state.(searchMutationStore); ok {
+	if search, ok := svc.searchStore().(searchMutationStore); ok {
 		searchStartedAt := time.Now()
 		if err := search.UpsertSearchFile(ctx, project, result.state, result.chunks, result.symbols, result.references, result.calls); err != nil {
 			_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_write_failed")
@@ -2297,17 +2316,17 @@ func (svc *Service) saveFullScanPreparedBatch(ctx context.Context, project proje
 	}
 	svc.recordStage("storage.graph_write", graphStartedAt, nil)
 
-	if search, ok := svc.state.(searchBatchMutationStore); ok {
+	if search, ok := svc.searchStore().(searchBatchMutationStore); ok {
 		searchStartedAt := time.Now()
 		if err := search.ApplySearchFileBatch(ctx, project, results); err != nil {
-			if marker, ok := svc.state.(searchMutationStore); ok {
+			if marker, ok := svc.searchStore().(searchMutationStore); ok {
 				_ = marker.MarkSearchIndexDegraded(ctx, project.ID, "search_index_write_failed")
 			}
 			svc.recordStage("storage.search_write", searchStartedAt, err)
 			return err
 		}
 		svc.recordStage("storage.search_write", searchStartedAt, nil)
-	} else if search, ok := svc.state.(searchMutationStore); ok {
+	} else if search, ok := svc.searchStore().(searchMutationStore); ok {
 		searchStartedAt := time.Now()
 		for _, result := range results {
 			var err error
@@ -2395,7 +2414,7 @@ func (svc *Service) saveSkipped(ctx context.Context, project projectregistry.Pro
 		return err
 	}
 	svc.recordStage("storage.graph_write", graphStartedAt, nil)
-	if search, ok := svc.state.(searchMutationStore); ok {
+	if search, ok := svc.searchStore().(searchMutationStore); ok {
 		searchStartedAt := time.Now()
 		if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
 			_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
@@ -2443,7 +2462,7 @@ func (svc *Service) tombstoneMissingFiles(ctx context.Context, project projectre
 			if err := svc.graph.putFileState(ctx, project, run, state); err != nil {
 				return err
 			}
-			if search, ok := svc.state.(searchMutationStore); ok {
+			if search, ok := svc.searchStore().(searchMutationStore); ok {
 				if err := search.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)); err != nil {
 					_ = search.MarkSearchIndexDegraded(ctx, project.ID, "search_index_delete_failed")
 					return err
