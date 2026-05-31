@@ -101,6 +101,14 @@ func (router *ProjectGraphRouter) DeleteNodes(ctx context.Context, label string,
 	return nil
 }
 
+func (router *ProjectGraphRouter) DeleteDerivedFileNodes(ctx context.Context, projectID string, repoFileID string) error {
+	backend, err := router.backendForProjectID(projectID)
+	if err != nil {
+		return err
+	}
+	return backend.DeleteDerivedFileNodes(ctx, projectID, repoFileID)
+}
+
 func (router *ProjectGraphRouter) PutRelationship(ctx context.Context, relationship ladybug.Relationship) error {
 	projectID := strings.TrimSpace(relationship.Properties["project_id"])
 	if projectID == "" {

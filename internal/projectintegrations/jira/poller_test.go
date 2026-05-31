@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +75,127 @@ func TestPoller_PollJiraPaginatesWithinPlannerBoundsAndExtractsMetadata(t *testi
 	}
 	if len(result.RichContent) != 0 {
 		t.Fatalf("metadata-only poll should not emit rich content: %#v", result.RichContent)
+	}
+}
+
+func TestPoller_PollJiraDefaultsToUnlimitedWithPageSize100(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		var request SearchRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.MaxResults != 100 {
+			t.Fatalf("expected default page size 100, got %#v", request)
+		}
+		switch requests {
+		case 0:
+			if request.NextPageToken != "" {
+				t.Fatalf("unexpected first token: %#v", request)
+			}
+			_, _ = w.Write([]byte(`{"issues":[` + strings.Join(jiraIssueJSON(100, 0), ",") + `],"nextPageToken":"page-2"}`))
+		case 1:
+			if request.NextPageToken != "page-2" {
+				t.Fatalf("unexpected second token: %#v", request)
+			}
+			_, _ = w.Write([]byte(`{"issues":[` + strings.Join(jiraIssueJSON(5, 100), ",") + `]}`))
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+		requests++
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollJira(context.Background(), testCredentials(), projectintegrations.JiraQueryPlan{
+		ProjectID: "project-1",
+		Provider:  projectintegrations.ProviderJira,
+		JQL:       "project in (ACME)",
+	})
+	if err != nil {
+		t.Fatalf("poll jira: %v", err)
+	}
+	if requests != 2 || len(result.Items) != 105 {
+		t.Fatalf("unexpected default-unlimited result: requests=%d items=%d", requests, len(result.Items))
+	}
+}
+
+func TestPoller_PollJiraStopsOnRepeatedNextPageToken(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		requests++
+		_, _ = w.Write([]byte(`{"issues":[` + strings.Join(jiraIssueJSON(1, requests), ",") + `],"nextPageToken":"same-token"}`))
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollJira(context.Background(), testCredentials(), projectintegrations.JiraQueryPlan{
+		ProjectID: "project-1",
+		Provider:  projectintegrations.ProviderJira,
+		JQL:       "project in (ACME)",
+		PageSize:  1,
+	})
+	if err != nil {
+		t.Fatalf("poll jira: %v", err)
+	}
+	if requests != 2 || len(result.Items) != 2 {
+		t.Fatalf("expected repeated token stop after second page, requests=%d items=%d", requests, len(result.Items))
+	}
+}
+
+func TestPoller_PollJiraStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		requests++
+		cancel()
+		_, _ = w.Write([]byte(`{"issues":[` + strings.Join(jiraIssueJSON(1, 0), ",") + `],"nextPageToken":"page-2"}`))
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	_, err := poller.PollJira(ctx, testCredentials(), projectintegrations.JiraQueryPlan{
+		ProjectID: "project-1",
+		Provider:  projectintegrations.ProviderJira,
+		JQL:       "project in (ACME)",
+		PageSize:  1,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected one request before cancellation, got %d", requests)
+	}
+}
+
+func TestPoller_PollJiraRetriesRetryAfterRateLimit(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		requests++
+		if requests == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"issues":[` + strings.Join(jiraIssueJSON(1, 0), ",") + `]}`))
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollJira(context.Background(), testCredentials(), projectintegrations.JiraQueryPlan{
+		ProjectID: "project-1",
+		Provider:  projectintegrations.ProviderJira,
+		JQL:       "project in (ACME)",
+	})
+	if err != nil {
+		t.Fatalf("poll jira: %v", err)
+	}
+	if requests != 2 || len(result.Items) != 1 {
+		t.Fatalf("expected retry success, requests=%d items=%d", requests, len(result.Items))
 	}
 }
 
@@ -193,4 +315,13 @@ func renderPollChunks(chunks []projectintegrations.RichContentChunk) string {
 		builder.WriteByte('\n')
 	}
 	return builder.String()
+}
+
+func jiraIssueJSON(count int, offset int) []string {
+	issues := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		n := offset + i + 1
+		issues = append(issues, `{"id":"`+strconv.Itoa(10000+n)+`","key":"ACME-`+strconv.Itoa(n)+`","fields":{"updated":"2026-05-31T10:00:00Z","status":{"name":"Open"},"issuetype":{"name":"Task"}}}`)
+	}
+	return issues
 }

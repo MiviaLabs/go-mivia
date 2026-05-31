@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -60,5 +61,67 @@ func TestOpen_SerializesConcurrentWrites(t *testing.T) {
 		if err != nil {
 			t.Fatalf("concurrent write failed: %v", err)
 		}
+	}
+}
+
+func TestOpen_FileBackedDefaultsToWAL(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "mivia.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	var journalMode string
+	if err := db.SQLDB().QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("read journal mode: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("expected wal journal mode, got %q", journalMode)
+	}
+	var busyTimeout int
+	if err := db.SQLDB().QueryRowContext(context.Background(), `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatalf("read busy timeout: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Fatalf("expected 5000ms busy timeout, got %d", busyTimeout)
+	}
+	if err := db.Checkpoint(context.Background()); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+}
+
+func TestOpen_InMemoryDisablesWAL(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	var journalMode string
+	if err := db.SQLDB().QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("read journal mode: %v", err)
+	}
+	if journalMode == "wal" {
+		t.Fatalf("expected in-memory sqlite not to use wal")
+	}
+}
+
+func TestOpenWithOptions_DisablesWALRollback(t *testing.T) {
+	db, err := OpenWithOptions(filepath.Join(t.TempDir(), "mivia.sqlite"), Options{
+		WALEnabled:  false,
+		BusyTimeout: time.Second,
+		Synchronous: "FULL",
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	var journalMode string
+	if err := db.SQLDB().QueryRowContext(context.Background(), `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("read journal mode: %v", err)
+	}
+	if journalMode == "wal" {
+		t.Fatalf("expected wal rollback option to disable wal")
 	}
 }

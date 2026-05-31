@@ -47,6 +47,29 @@ type Orchestrator struct {
 	states  map[string]WatchState
 }
 
+type DiagnosticsSource struct {
+	Scheduler    *Scheduler
+	Orchestrator *Orchestrator
+	Service      *Service
+}
+
+func (source DiagnosticsSource) IngestionDiagnostics() DiagnosticsSnapshot {
+	var snapshot DiagnosticsSnapshot
+	if source.Scheduler != nil {
+		snapshot.Scheduler = source.Scheduler.Diagnostics()
+	}
+	if source.Orchestrator != nil {
+		snapshot.Watchers = source.Orchestrator.WatchStates()
+	}
+	if source.Service != nil {
+		snapshot.Stages = source.Service.Diagnostics()
+	}
+	if snapshot.Stages == nil {
+		snapshot.Stages = map[string]StageDiagnostic{}
+	}
+	return snapshot
+}
+
 type WatchState struct {
 	ProjectID             string
 	Status                string

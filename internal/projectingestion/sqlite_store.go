@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -323,6 +324,31 @@ func (store *SQLiteStore) loadRunReasonCounts(ctx context.Context, projectID str
 }
 
 func (store *SQLiteStore) SaveFileState(ctx context.Context, state FileState) error {
+	return saveFileState(ctx, store.db, state)
+}
+
+func (store *SQLiteStore) SaveFileStatesBatch(ctx context.Context, states []FileState) error {
+	if len(states) == 0 {
+		return nil
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, state := range states {
+		if err := saveFileState(ctx, tx, state); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+type fileStateExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func saveFileState(ctx context.Context, exec fileStateExecutor, state FileState) error {
 	relativePath := state.RelativePath
 	contentSHA256 := state.ContentSHA256
 	if !state.RelativePathSafe {
@@ -332,7 +358,8 @@ func (store *SQLiteStore) SaveFileState(ctx context.Context, state FileState) er
 	if state.Status != FileStatusEligible {
 		contentSHA256 = ""
 	}
-	_, err := store.db.ExecContext(ctx, `INSERT INTO project_file_ingestion_state (
+	extension := strings.ToLower(path.Ext(relativePath))
+	_, err := exec.ExecContext(ctx, `INSERT INTO project_file_ingestion_state (
 		project_id,
 		relative_path_hash,
 		relative_path,
@@ -340,18 +367,20 @@ func (store *SQLiteStore) SaveFileState(ctx context.Context, state FileState) er
 		status,
 		present,
 		content_sha256,
+		extension,
 		size_bytes,
 		modified_at,
 		last_event_at,
 		last_ingested_at,
 		skipped_reason
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(project_id, relative_path_hash) DO UPDATE SET
 		relative_path = excluded.relative_path,
 		relative_path_safe = excluded.relative_path_safe,
 		status = excluded.status,
 		present = excluded.present,
 		content_sha256 = excluded.content_sha256,
+		extension = excluded.extension,
 		size_bytes = excluded.size_bytes,
 		modified_at = excluded.modified_at,
 		last_event_at = excluded.last_event_at,
@@ -364,6 +393,7 @@ func (store *SQLiteStore) SaveFileState(ctx context.Context, state FileState) er
 		string(state.Status),
 		boolToInt(state.Present),
 		contentSHA256,
+		extension,
 		state.SizeBytes,
 		formatTime(state.ModifiedAt),
 		formatTime(state.LastEventAt),
@@ -484,6 +514,7 @@ func (store *SQLiteStore) GetFileStateByHash(ctx context.Context, projectID stri
 		status,
 		present,
 		content_sha256,
+		extension,
 		size_bytes,
 		modified_at,
 		last_event_at,
@@ -538,6 +569,7 @@ func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string,
 		status,
 		present,
 		content_sha256,
+		extension,
 		size_bytes,
 		modified_at,
 		last_event_at,
@@ -551,8 +583,8 @@ func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string,
 		args = append(args, string(filter.Status))
 	}
 	if filter.Extension != "" {
-		query += ` AND lower(relative_path) LIKE ?`
-		args = append(args, "%"+strings.ToLower(filter.Extension))
+		query += ` AND extension = ?`
+		args = append(args, strings.ToLower(filter.Extension))
 	}
 	if filter.PathPrefix != "" {
 		query += ` AND relative_path_safe = 1 AND relative_path LIKE ?`
@@ -657,6 +689,7 @@ func scanFileState(scanner fileStateScanner) (FileState, error) {
 	var relativePathSafe int
 	var present int
 	var status string
+	var extension string
 	var modifiedAt string
 	var lastEventAt string
 	var lastIngestedAt string
@@ -669,6 +702,7 @@ func scanFileState(scanner fileStateScanner) (FileState, error) {
 		&status,
 		&present,
 		&state.ContentSHA256,
+		&extension,
 		&state.SizeBytes,
 		&modifiedAt,
 		&lastEventAt,

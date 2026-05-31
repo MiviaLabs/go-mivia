@@ -3,12 +3,15 @@ package confluence
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 )
+
+const defaultPageSize = 50
 
 type Poller struct {
 	Client Client
@@ -26,16 +29,23 @@ func (poller Poller) PollConfluenceWithProgress(ctx context.Context, credentials
 	if plan.Provider != projectintegrations.ProviderConfluence || strings.TrimSpace(plan.CQL) == "" {
 		return projectintegrations.PollResult{}, projectintegrations.ErrInvalidInput
 	}
-	limit, maxResults := boundedRequest(plan.PageSize, plan.MaxResults)
-	if limit > maxResults {
-		limit = maxResults
+	limit, unlimited, maxResults := boundedRequest(plan.PageSize, plan.MaxResults)
+	initialCapacity := limit
+	if !unlimited {
+		initialCapacity = minInt(limit, maxResults)
 	}
-	items := make([]projectintegrations.PollItem, 0, minInt(limit, maxResults))
-	richContent := make([]projectintegrations.RichContentPayload, 0, minInt(limit, maxResults))
+	items := make([]projectintegrations.PollItem, 0, initialCapacity)
+	richContent := make([]projectintegrations.RichContentPayload, 0, initialCapacity)
 	cursor := ""
-	for len(items) < maxResults {
-		pageLimit := minInt(limit, maxResults-len(items))
-		response, err := poller.Client.SearchPages(ctx, credentials, plan.CQL, pageLimit, cursor)
+	for unlimited || len(items) < maxResults {
+		if err := ctx.Err(); err != nil {
+			return projectintegrations.PollResult{}, err
+		}
+		pageLimit := limit
+		if !unlimited {
+			pageLimit = minInt(limit, maxResults-len(items))
+		}
+		response, err := poller.searchPagesWithRetry(ctx, credentials, plan.CQL, pageLimit, cursor)
 		if err != nil {
 			return projectintegrations.PollResult{}, err
 		}
@@ -43,7 +53,7 @@ func (poller Poller) PollConfluenceWithProgress(ctx context.Context, credentials
 			break
 		}
 		for _, raw := range response.Results {
-			if len(items) >= maxResults {
+			if !unlimited && len(items) >= maxResults {
 				break
 			}
 			item, err := pollItemFromSearchResult(raw)
@@ -57,7 +67,7 @@ func (poller Poller) PollConfluenceWithProgress(ctx context.Context, credentials
 				}
 			}
 			if shouldExtractRichContent(plan) {
-				payload, err := poller.richContentForPage(ctx, credentials, plan, item.ID)
+				payload, err := poller.richContentForPageWithRetry(ctx, credentials, plan, item.ID)
 				if err != nil {
 					return projectintegrations.PollResult{}, err
 				}
@@ -71,6 +81,36 @@ func (poller Poller) PollConfluenceWithProgress(ctx context.Context, credentials
 		cursor = nextCursor
 	}
 	return projectintegrations.PollResult{Items: items, RichContent: richContent}, nil
+}
+
+func (poller Poller) searchPagesWithRetry(ctx context.Context, credentials projectintegrations.Credentials, cql string, limit int, cursor string) (SearchResponse, error) {
+	for {
+		response, err := poller.Client.SearchPages(ctx, credentials, cql, limit, cursor)
+		if !shouldRetryProviderError(err) {
+			if err != nil && ctx.Err() != nil {
+				return SearchResponse{}, ctx.Err()
+			}
+			return response, err
+		}
+		if err := sleepRetryAfter(ctx, retryAfter(err)); err != nil {
+			return SearchResponse{}, err
+		}
+	}
+}
+
+func (poller Poller) richContentForPageWithRetry(ctx context.Context, credentials projectintegrations.Credentials, plan projectintegrations.ConfluenceQueryPlan, pageID string) (projectintegrations.RichContentPayload, error) {
+	for {
+		payload, err := poller.richContentForPage(ctx, credentials, plan, pageID)
+		if !shouldRetryProviderError(err) {
+			if err != nil && ctx.Err() != nil {
+				return projectintegrations.RichContentPayload{}, ctx.Err()
+			}
+			return payload, err
+		}
+		if err := sleepRetryAfter(ctx, retryAfter(err)); err != nil {
+			return projectintegrations.RichContentPayload{}, err
+		}
+	}
 }
 
 type searchResultMetadata struct {
@@ -156,14 +196,44 @@ func providerVersion(value int) string {
 	return strconv.Itoa(value)
 }
 
-func boundedRequest(pageSize int, maxResults int) (int, int) {
-	if maxResults <= 0 {
-		maxResults = 100
+func boundedRequest(pageSize int, maxResults int) (int, bool, int) {
+	unlimited := maxResults <= 0
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
 	}
-	if pageSize <= 0 || pageSize > maxResults {
+	if !unlimited && pageSize > maxResults {
 		pageSize = maxResults
 	}
-	return pageSize, maxResults
+	return pageSize, unlimited, maxResults
+}
+
+func shouldRetryProviderError(err error) bool {
+	var providerErr *projectintegrations.ProviderError
+	return errors.As(err, &providerErr) &&
+		providerErr.Category == projectintegrations.ErrorCategoryRateLimited &&
+		providerErr.RetryAfter > 0
+}
+
+func retryAfter(err error) time.Duration {
+	var providerErr *projectintegrations.ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.RetryAfter
+	}
+	return 0
+}
+
+func sleepRetryAfter(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func minInt(left int, right int) int {

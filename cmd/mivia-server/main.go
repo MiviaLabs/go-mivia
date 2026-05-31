@@ -15,6 +15,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/platform/health"
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
@@ -63,7 +64,12 @@ func run() error {
 	logger.Info("runtime CPU configuration applied", slog.Int("cpu_count", cfg.CPUCount), slog.Int("previous_gomaxprocs", previousMaxProcs))
 	ctx := context.Background()
 
-	sqliteDB, err := sqliteplatform.Open(cfg.SQLitePath)
+	sqliteDB, err := sqliteplatform.OpenWithOptions(cfg.SQLitePath, sqliteplatform.Options{
+		WALEnabled:               cfg.SQLite.WALEnabled,
+		BusyTimeout:              cfg.SQLite.BusyTimeout,
+		Synchronous:              cfg.SQLite.Synchronous,
+		CheckpointAfterIngestion: cfg.SQLite.CheckpointAfterIngestion,
+	})
 	if err != nil {
 		return err
 	}
@@ -109,6 +115,9 @@ func run() error {
 	projectIngestionService.SetFullScanBatchSize(cfg.Ingestion.FullScanBatchSize)
 	projectIngestionService.SetFullScanWorkerLimits(cfg.Ingestion.GlobalWorkerCount, cfg.Ingestion.PerProjectWorkerLimit)
 	projectIngestionService.SetExtractorCacheEnabled(cfg.Ingestion.ExtractorCacheEnabled)
+	if cfg.SQLite.CheckpointAfterIngestion {
+		projectIngestionService.SetCheckpointFunc(sqliteDB.Checkpoint)
+	}
 	projectIntegrationStore := projectintegrations.NewSQLiteStore(sqliteDB.SQLDB())
 	projectIntegrationRunner, err := projectintegrations.NewRunner(projectintegrations.RunnerOptions{
 		Projects:           cfg.Projects,
@@ -214,7 +223,16 @@ func run() error {
 	httpapi.RegisterRoutes(mux, agentService)
 	researchhttpapi.RegisterRoutes(mux, researchService)
 	projecthttpapi.RegisterRoutesWithWorkspace(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService)
-	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsIngestionWorkspaceAndIntegrations(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, logger))
+	var diagnosticsService *diagnostics.Service
+	if diagnostics.Enabled(cfg.Debug.Enabled, cfg.HTTPAddr) {
+		diagnosticsService = diagnostics.NewService(projectingestion.DiagnosticsSource{
+			Scheduler:    projectIngestionScheduler,
+			Orchestrator: projectIngestionOrchestrator,
+			Service:      projectIngestionService,
+		}, diagnostics.RuntimeOptions{Enabled: cfg.Debug.RuntimeMetricsEnabled})
+		diagnostics.RegisterRoutes(mux, diagnosticsService)
+	}
+	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsIngestionWorkspaceIntegrationsAndDiagnostics(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, diagnosticsService, logger))
 
 	handler := httpserver.Chain(
 		mux,

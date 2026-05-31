@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"path"
 	"sort"
 	"strconv"
@@ -21,6 +22,7 @@ type graphBackend interface {
 	GetNode(context.Context, string, string) (ladybug.Node, error)
 	ListNodes(context.Context, string, map[string]string) ([]ladybug.Node, error)
 	DeleteNodes(context.Context, string, map[string]string) error
+	DeleteDerivedFileNodes(context.Context, string, string) error
 	PutRelationship(context.Context, ladybug.Relationship) error
 	ListRelationships(context.Context, string, ladybug.RelationshipFilter) ([]ladybug.Relationship, error)
 }
@@ -29,14 +31,83 @@ type GraphStore struct {
 	graph graphBackend
 }
 
+type PreparedGraphFile struct {
+	State      FileState
+	Unchanged  bool
+	Chunks     []Chunk
+	Symbols    []Symbol
+	References []Reference
+	Calls      []Call
+	Headings   []Heading
+}
+
 func NewGraphStore(graph graphBackend) *GraphStore {
 	return &GraphStore{graph: graph}
 }
 
 func (store *GraphStore) PutEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, headings []Heading) error {
 	return store.withBatch(ctx, func(store *GraphStore) error {
+		if err := store.putProjectAndRun(ctx, project, run); err != nil {
+			return err
+		}
 		return store.putEligibleFile(ctx, project, run, state, chunks, symbols, references, calls, headings)
 	})
+}
+
+func (store *GraphStore) PutPreparedFilesBatch(ctx context.Context, project projectregistry.Project, run Run, files any) error {
+	prepared, err := normalizePreparedGraphFiles(files)
+	if err != nil {
+		return err
+	}
+	if len(prepared) == 0 {
+		return nil
+	}
+	return store.withBatch(ctx, func(store *GraphStore) error {
+		if err := store.putProjectAndRun(ctx, project, run); err != nil {
+			return err
+		}
+		for index, file := range prepared {
+			if file.State.RelativePathHash == "" {
+				return batchGraphFileError(index, "missing_relative_path_hash")
+			}
+			var err error
+			switch {
+			case file.Unchanged:
+				err = store.putUnchangedFile(ctx, project, run, file.State)
+			case file.State.Status == FileStatusEligible:
+				err = store.putEligibleFile(ctx, project, run, file.State, file.Chunks, file.Symbols, file.References, file.Calls, file.Headings)
+			default:
+				err = store.putSkippedFile(ctx, project, run, file.State)
+			}
+			if err != nil {
+				return batchGraphFileError(index, err.Error())
+			}
+		}
+		return nil
+	})
+}
+
+func normalizePreparedGraphFiles(files any) ([]PreparedGraphFile, error) {
+	switch typed := files.(type) {
+	case []PreparedGraphFile:
+		return typed, nil
+	case []fullScanFileResult:
+		out := make([]PreparedGraphFile, 0, len(typed))
+		for _, result := range typed {
+			out = append(out, PreparedGraphFile{
+				State:      result.state,
+				Unchanged:  result.unchanged,
+				Chunks:     result.chunks,
+				Symbols:    result.symbols,
+				References: result.references,
+				Calls:      result.calls,
+				Headings:   result.headings,
+			})
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("graph batch files have unsupported type %T", files)
+	}
 }
 
 func (store *GraphStore) HasFileVersion(ctx context.Context, project projectregistry.Project, state FileState) (bool, error) {
@@ -71,46 +142,41 @@ func (store *GraphStore) HasFileVersion(ctx context.Context, project projectregi
 
 func (store *GraphStore) PutUnchangedFile(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
 	return store.withBatch(ctx, func(store *GraphStore) error {
-		if err := store.putProject(ctx, project); err != nil {
+		if err := store.putProjectAndRun(ctx, project, run); err != nil {
 			return err
 		}
-		if err := store.putRun(ctx, run); err != nil {
-			return err
-		}
-		repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
-		if err := store.putRepoFile(ctx, project, repoFileID, state, true); err != nil {
-			return err
-		}
-		if err := store.putRelationship(ctx, "PROJECT_HAS_REPO_FILE", "Project", project.ID, "RepoFile", repoFileID, project.ID); err != nil {
-			return err
-		}
-		if err := store.putRelationship(ctx, "INGESTION_RUN_TOUCHED_FILE", "IngestionRun", run.ID, "RepoFile", repoFileID, project.ID); err != nil {
-			return err
-		}
-		versionID := fileVersionID(repoFileID, state.ContentSHA256)
-		return store.graph.PutNode(ctx, ladybug.Node{
-			Label: "FileVersion",
-			ID:    versionID,
-			Properties: map[string]string{
-				"id":             versionID,
-				"project_id":     project.ID,
-				"repo_file_id":   repoFileID,
-				"content_sha256": state.ContentSHA256,
-				"size_bytes":     strconv.FormatInt(state.SizeBytes, 10),
-				"modified_at":    formatTime(state.ModifiedAt),
-				"present":        strconv.FormatBool(state.Present),
-			},
-		})
+		return store.putUnchangedFile(ctx, project, run, state)
+	})
+}
+
+func (store *GraphStore) putUnchangedFile(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
+	repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+	if err := store.putRepoFile(ctx, project, repoFileID, state, true); err != nil {
+		return err
+	}
+	if err := store.putRelationship(ctx, "PROJECT_HAS_REPO_FILE", "Project", project.ID, "RepoFile", repoFileID, project.ID); err != nil {
+		return err
+	}
+	if err := store.putRelationship(ctx, "INGESTION_RUN_TOUCHED_FILE", "IngestionRun", run.ID, "RepoFile", repoFileID, project.ID); err != nil {
+		return err
+	}
+	versionID := fileVersionID(repoFileID, state.ContentSHA256)
+	return store.graph.PutNode(ctx, ladybug.Node{
+		Label: "FileVersion",
+		ID:    versionID,
+		Properties: map[string]string{
+			"id":             versionID,
+			"project_id":     project.ID,
+			"repo_file_id":   repoFileID,
+			"content_sha256": state.ContentSHA256,
+			"size_bytes":     strconv.FormatInt(state.SizeBytes, 10),
+			"modified_at":    formatTime(state.ModifiedAt),
+			"present":        strconv.FormatBool(state.Present),
+		},
 	})
 }
 
 func (store *GraphStore) putEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, headings []Heading) error {
-	if err := store.putProject(ctx, project); err != nil {
-		return err
-	}
-	if err := store.putRun(ctx, run); err != nil {
-		return err
-	}
 	repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
 	if err := store.deleteDerivedFileNodes(ctx, project.ID, repoFileID); err != nil {
 		return err
@@ -237,17 +303,14 @@ func (store *GraphStore) putEligibleFile(ctx context.Context, project projectreg
 
 func (store *GraphStore) PutSkippedFile(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
 	return store.withBatch(ctx, func(store *GraphStore) error {
+		if err := store.putProjectAndRun(ctx, project, run); err != nil {
+			return err
+		}
 		return store.putSkippedFile(ctx, project, run, state)
 	})
 }
 
 func (store *GraphStore) putSkippedFile(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
-	if err := store.putProject(ctx, project); err != nil {
-		return err
-	}
-	if err := store.putRun(ctx, run); err != nil {
-		return err
-	}
 	repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
 	if err := store.deleteDerivedFileNodes(ctx, project.ID, repoFileID); err != nil {
 		return err
@@ -260,17 +323,14 @@ func (store *GraphStore) putSkippedFile(ctx context.Context, project projectregi
 
 func (store *GraphStore) PutFileState(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
 	return store.withBatch(ctx, func(store *GraphStore) error {
+		if err := store.putProjectAndRun(ctx, project, run); err != nil {
+			return err
+		}
 		return store.putFileState(ctx, project, run, state)
 	})
 }
 
 func (store *GraphStore) putFileState(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
-	if err := store.putProject(ctx, project); err != nil {
-		return err
-	}
-	if err := store.putRun(ctx, run); err != nil {
-		return err
-	}
 	repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
 	if err := store.deleteDerivedFileNodes(ctx, project.ID, repoFileID); err != nil {
 		return err
@@ -291,6 +351,10 @@ func (store *GraphStore) PutRun(ctx context.Context, project projectregistry.Pro
 }
 
 func (store *GraphStore) putRunWithProject(ctx context.Context, project projectregistry.Project, run Run) error {
+	return store.putProjectAndRun(ctx, project, run)
+}
+
+func (store *GraphStore) putProjectAndRun(ctx context.Context, project projectregistry.Project, run Run) error {
 	if err := store.putProject(ctx, project); err != nil {
 		return err
 	}
@@ -1158,13 +1222,11 @@ func (store *GraphStore) putRepoFile(ctx context.Context, project projectregistr
 }
 
 func (store *GraphStore) deleteDerivedFileNodes(ctx context.Context, projectID string, repoFileID string) error {
-	filter := map[string]string{"project_id": projectID, "repo_file_id": repoFileID}
-	for _, label := range []string{"CodeReference", "CodeCall", "CodeSymbol", "DocumentHeading", "ContentChunk", "FileVersion"} {
-		if err := store.graph.DeleteNodes(ctx, label, filter); err != nil {
-			return err
-		}
-	}
-	return nil
+	return store.graph.DeleteDerivedFileNodes(ctx, projectID, repoFileID)
+}
+
+func batchGraphFileError(index int, reason string) error {
+	return fmt.Errorf("graph batch file %d failed: %s", index, reason)
 }
 
 func (store *GraphStore) putRelationship(ctx context.Context, relType string, fromLabel string, fromID string, toLabel string, toID string, projectID string) error {

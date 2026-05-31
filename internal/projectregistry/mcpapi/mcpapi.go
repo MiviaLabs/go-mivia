@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
@@ -24,6 +25,10 @@ func ToolDefinitionsWithIngestion(includeIngestion bool) []map[string]any {
 }
 
 func ToolDefinitionsWithWorkspace(includeIngestion bool, includeWorkspace bool) []map[string]any {
+	return ToolDefinitionsWithWorkspaceAndDiagnostics(includeIngestion, includeWorkspace, false)
+}
+
+func ToolDefinitionsWithWorkspaceAndDiagnostics(includeIngestion bool, includeWorkspace bool, includeDiagnostics bool) []map[string]any {
 	tools := []map[string]any{
 		{
 			"name":        "projects.list",
@@ -54,6 +59,9 @@ func ToolDefinitionsWithWorkspace(includeIngestion bool, includeWorkspace bool) 
 	}
 	if includeWorkspace {
 		tools = append(tools, workspaceToolDefinitions()...)
+	}
+	if includeDiagnostics {
+		tools = append(tools, diagnosticsToolDefinitions()...)
 	}
 	return tools
 }
@@ -94,6 +102,10 @@ func CallToolWithIngestion(ctx context.Context, registry *projectregistry.Regist
 }
 
 func CallToolWithWorkspace(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, workspace projectworkspace.API, name string, arguments json.RawMessage) (map[string]any, error) {
+	return CallToolWithWorkspaceAndDiagnostics(ctx, registry, digest, ingestion, workspace, nil, name, arguments)
+}
+
+func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, workspace projectworkspace.API, diagnosticsService *diagnostics.Service, name string, arguments json.RawMessage) (map[string]any, error) {
 	switch name {
 	case "projects.list", "projects_list":
 		var input struct {
@@ -608,6 +620,17 @@ func CallToolWithWorkspace(ctx context.Context, registry *projectregistry.Regist
 			MaxChunkBytes:    input.MaxChunkBytes,
 		})
 		return toolResult(outline), err
+	case "projects.diagnostics.ingestion", "projects_diagnostics_ingestion":
+		var input struct {
+			Meta json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeOptionalRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid diagnostics arguments", projectregistry.ErrInvalidInput)
+		}
+		if diagnosticsService == nil {
+			return nil, fmt.Errorf("%w: diagnostics are not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		return toolResult(diagnosticsService.Snapshot()), nil
 	case "projects.workspace.git_status", "projects_workspace_git_status":
 		var input struct {
 			ID               string          `json:"id"`
@@ -1163,6 +1186,17 @@ func fileFilter(rawStatus string, rawExtension string, rawPathPrefix string, raw
 		filter.ModifiedSince = parsed.UTC()
 	}
 	return filter, nil
+}
+
+func diagnosticsToolDefinitions() []map[string]any {
+	return []map[string]any{
+		{
+			"name":        "projects.diagnostics.ingestion",
+			"title":       "Get Ingestion Diagnostics",
+			"description": "Return safe redacted ingestion scheduler, watcher, runtime, and storage-stage diagnostics without roots, paths, env vars, source, prompts, tokens, credentials, provider payloads, or personal data.",
+			"inputSchema": objectSchema(map[string]any{}, []string{}),
+		},
+	}
 }
 
 func mergeProperties(base map[string]any, extra map[string]any) map[string]any {

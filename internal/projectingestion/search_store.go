@@ -15,12 +15,18 @@ import (
 
 type searchMutationStore interface {
 	UpsertSearchFile(context.Context, projectregistry.Project, FileState, []Chunk, []Symbol, []Reference, []Call) error
+	UpsertSearchFilesBatch(context.Context, projectregistry.Project, []PreparedSearchFile) error
 	DeleteSearchFile(context.Context, string, string) error
 	DeleteSearchProject(context.Context, string) error
 	MarkSearchIndexDegraded(context.Context, string, string) error
 	ClearSearchIndexDegraded(context.Context, string) error
 	HasSearchFileVersion(context.Context, projectregistry.Project, FileState) (bool, error)
 	UpdateSearchFileMetadata(context.Context, projectregistry.Project, FileState) error
+	UpdateSearchFileMetadataBatch(context.Context, projectregistry.Project, []FileState) error
+}
+
+type searchBatchMutationStore interface {
+	ApplySearchFileBatch(context.Context, projectregistry.Project, []fullScanFileResult) error
 }
 
 type searchRepairStore interface {
@@ -40,6 +46,14 @@ type searchQueryStore interface {
 type SearchIndexHealth struct {
 	Degraded bool
 	Reason   string
+}
+
+type PreparedSearchFile struct {
+	State      FileState
+	Chunks     []Chunk
+	Symbols    []Symbol
+	References []Reference
+	Calls      []Call
 }
 
 type graphSearchAdapter struct {
@@ -71,20 +85,74 @@ func (adapter graphSearchAdapter) SearchIndexHealth(context.Context, projectregi
 }
 
 func (store *SQLiteStore) UpsertSearchFile(ctx context.Context, project projectregistry.Project, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call) error {
+	return store.UpsertSearchFilesBatch(ctx, project, []PreparedSearchFile{{
+		State:      state,
+		Chunks:     chunks,
+		Symbols:    symbols,
+		References: references,
+		Calls:      calls,
+	}})
+}
+
+func (store *SQLiteStore) UpsertSearchFilesBatch(ctx context.Context, project projectregistry.Project, files []PreparedSearchFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return sanitizeSearchError(err)
+	}
+	defer tx.Rollback()
+	for _, file := range files {
+		if err := upsertSearchFileTx(ctx, tx, project, file.State, file.Chunks, file.Symbols, file.References, file.Calls); err != nil {
+			_ = tx.Rollback()
+			_ = store.MarkSearchIndexDegraded(ctx, project.ID, "search_index_write_failed")
+			return sanitizeSearchError(err)
+		}
+	}
+	return sanitizeSearchError(tx.Commit())
+}
+
+func (store *SQLiteStore) ApplySearchFileBatch(ctx context.Context, project projectregistry.Project, results []fullScanFileResult) error {
+	if len(results) == 0 {
+		return nil
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return sanitizeSearchError(err)
+	}
+	defer tx.Rollback()
+	for _, result := range results {
+		switch {
+		case result.unchanged:
+			if err := updateSearchFileMetadataTx(ctx, tx, project, result.state); err != nil {
+				return sanitizeSearchError(err)
+			}
+		case result.state.Status == FileStatusEligible:
+			if err := upsertSearchFileTx(ctx, tx, project, result.state, result.chunks, result.symbols, result.references, result.calls); err != nil {
+				return sanitizeSearchError(err)
+			}
+		default:
+			if err := deleteSearchFileTx(ctx, tx, project.ID, repoFileID(project.GraphNamespace, result.state.RelativePathHash)); err != nil {
+				return sanitizeSearchError(err)
+			}
+		}
+	}
+	return sanitizeSearchError(tx.Commit())
+}
+
+func upsertSearchFileTx(ctx context.Context, tx *sql.Tx, project projectregistry.Project, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call) error {
 	if state.Status != FileStatusEligible || !state.Present || !state.RelativePathSafe || state.ContentSHA256 == "" {
-		return store.DeleteSearchFile(ctx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash))
+		return deleteSearchFileTx(ctx, tx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash))
 	}
 	fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
 	versionID := fileVersionID(fileID, state.ContentSHA256)
 	extension := strings.ToLower(path.Ext(state.RelativePath))
 	symbolIDs := symbolIDIndex(fileID, symbols)
-
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
+	if err := deleteSearchFileTx(ctx, tx, project.ID, fileID); err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if err := deleteSearchFileTx(ctx, tx, project.ID, fileID); err != nil {
+	if err := upsertSearchFileVersionTx(ctx, tx, project.ID, fileID, state); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO project_search_files_fts (
@@ -168,11 +236,26 @@ func (store *SQLiteStore) UpsertSearchFile(ctx context.Context, project projectr
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (store *SQLiteStore) HasSearchFileVersion(ctx context.Context, project projectregistry.Project, state FileState) (bool, error) {
 	if state.Status != FileStatusEligible || !state.Present || !state.RelativePathSafe || state.ContentSHA256 == "" {
+		return false, nil
+	}
+	fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+	var contentSHA256, status string
+	var present int
+	err := store.db.QueryRowContext(ctx, `SELECT content_sha256, status, present
+		FROM project_search_file_versions
+		WHERE project_id = ? AND file_id = ?`, project.ID, fileID).Scan(&contentSHA256, &status, &present)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, sanitizeSearchError(err)
+	}
+	if contentSHA256 != state.ContentSHA256 || status != string(FileStatusEligible) || present != 1 {
 		return false, nil
 	}
 	tx, err := store.db.BeginTx(ctx, nil)
@@ -180,12 +263,11 @@ func (store *SQLiteStore) HasSearchFileVersion(ctx context.Context, project proj
 		return false, sanitizeSearchError(err)
 	}
 	defer tx.Rollback()
-	fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
-	fileCounts, err := searchFileCountsByID(ctx, tx, project.ID)
-	if err != nil {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_search_files_fts WHERE project_id = ? AND file_id = ?`, project.ID, fileID).Scan(&count); err != nil {
 		return false, sanitizeSearchError(err)
 	}
-	if fileCounts[fileID] != 1 {
+	if count != 1 {
 		return false, nil
 	}
 	needsRepair, err := searchFileNeedsRepair(ctx, tx, project.ID, fileID, state)
@@ -196,14 +278,38 @@ func (store *SQLiteStore) HasSearchFileVersion(ctx context.Context, project proj
 }
 
 func (store *SQLiteStore) UpdateSearchFileMetadata(ctx context.Context, project projectregistry.Project, state FileState) error {
-	fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
-	extension := strings.ToLower(path.Ext(state.RelativePath))
-	modifiedAt := formatTime(state.ModifiedAt)
+	return store.UpdateSearchFileMetadataBatch(ctx, project, []FileState{state})
+}
+
+func (store *SQLiteStore) UpdateSearchFileMetadataBatch(ctx context.Context, project projectregistry.Project, states []FileState) error {
+	if len(states) == 0 {
+		return nil
+	}
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return sanitizeSearchError(err)
 	}
 	defer tx.Rollback()
+	for _, state := range states {
+		if err := updateSearchFileMetadataTx(ctx, tx, project, state); err != nil {
+			_ = tx.Rollback()
+			_ = store.MarkSearchIndexDegraded(ctx, project.ID, "search_index_write_failed")
+			return sanitizeSearchError(err)
+		}
+	}
+	return sanitizeSearchError(tx.Commit())
+}
+
+func updateSearchFileMetadataTx(ctx context.Context, tx *sql.Tx, project projectregistry.Project, state FileState) error {
+	fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+	extension := strings.ToLower(path.Ext(state.RelativePath))
+	modifiedAt := formatTime(state.ModifiedAt)
+	if state.Status != FileStatusEligible || !state.Present || !state.RelativePathSafe || state.ContentSHA256 == "" {
+		return deleteSearchFileTx(ctx, tx, project.ID, fileID)
+	}
+	if err := upsertSearchFileVersionTx(ctx, tx, project.ID, fileID, state); err != nil {
+		return err
+	}
 	for _, table := range []string{"project_search_files_fts", "project_search_chunks_fts"} {
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s
 			SET relative_path = ?, extension = ?, size_bytes = ?, modified_at = ?
@@ -230,7 +336,7 @@ func (store *SQLiteStore) UpdateSearchFileMetadata(ctx context.Context, project 
 			return sanitizeSearchError(err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (store *SQLiteStore) DeleteSearchFile(ctx context.Context, projectID string, fileID string) error {
@@ -255,6 +361,9 @@ func (store *SQLiteStore) DeleteSearchProject(ctx context.Context, projectID str
 		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE project_id = ?", projectID); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_search_file_versions WHERE project_id = ?`, projectID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -407,7 +516,48 @@ func deleteSearchFileTx(ctx context.Context, tx *sql.Tx, projectID string, fileI
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_search_file_versions WHERE project_id = ? AND file_id = ?`, projectID, fileID); err != nil {
+		return err
+	}
 	return nil
+}
+
+func upsertSearchFileVersionTx(ctx context.Context, tx *sql.Tx, projectID string, fileID string, state FileState) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO project_search_file_versions (
+		project_id, file_id, content_sha256, relative_path, extension, status, present, size_bytes, modified_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	ON CONFLICT(project_id, file_id) DO UPDATE SET
+		content_sha256 = excluded.content_sha256,
+		relative_path = excluded.relative_path,
+		extension = excluded.extension,
+		status = excluded.status,
+		present = excluded.present,
+		size_bytes = excluded.size_bytes,
+		modified_at = excluded.modified_at,
+		updated_at = excluded.updated_at`,
+		projectID,
+		fileID,
+		state.ContentSHA256,
+		state.RelativePath,
+		strings.ToLower(path.Ext(state.RelativePath)),
+		string(state.Status),
+		boolToInt(state.Present),
+		state.SizeBytes,
+		formatTime(state.ModifiedAt),
+	)
+	return err
+}
+
+func markSearchIndexDegradedTx(ctx context.Context, tx *sql.Tx, projectID string, reason string) error {
+	reason = safeSearchIndexReason(reason)
+	_, err := tx.ExecContext(ctx, `INSERT INTO project_search_index_state (
+		project_id, status, degraded_reason, updated_at
+	) VALUES (?, 'degraded', ?, CURRENT_TIMESTAMP)
+	ON CONFLICT(project_id) DO UPDATE SET
+		status = excluded.status,
+		degraded_reason = excluded.degraded_reason,
+		updated_at = excluded.updated_at`, projectID, reason)
+	return err
 }
 
 func searchRepairEligibleStates(ctx context.Context, tx *sql.Tx, project projectregistry.Project) ([]FileState, error) {

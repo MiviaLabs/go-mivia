@@ -70,7 +70,6 @@ type SafetyResult struct {
 
 func DefaultSafetyOptions() SafetyOptions {
 	return SafetyOptions{
-		MaxFileBytes:          1 << 20,
 		MaxChunkBytes:         16 << 10,
 		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
 	}
@@ -88,7 +87,7 @@ func EvaluateSafety(relativePath string, content []byte, options SafetyOptions) 
 	if options.SensitiveMarkerPolicy != SensitiveMarkerPolicySkipFile {
 		return skipped(SkipReasonUnsupportedPolicy, normalizedPath, true, len(content))
 	}
-	if int64(len(content)) > options.MaxFileBytes {
+	if options.MaxFileBytes > 0 && int64(len(content)) > options.MaxFileBytes {
 		return skipped(SkipReasonFileTooLarge, normalizedPath, true, len(content))
 	}
 	if bytes.IndexByte(content, 0) >= 0 {
@@ -122,9 +121,6 @@ func EligibleContentSHA256(result SafetyResult, content []byte) (string, error) 
 
 func normalizeSafetyOptions(options SafetyOptions) SafetyOptions {
 	defaults := DefaultSafetyOptions()
-	if options.MaxFileBytes <= 0 {
-		options.MaxFileBytes = defaults.MaxFileBytes
-	}
 	if options.MaxChunkBytes <= 0 {
 		options.MaxChunkBytes = defaults.MaxChunkBytes
 	}

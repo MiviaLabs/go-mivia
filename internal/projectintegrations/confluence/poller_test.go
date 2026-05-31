@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,123 @@ func TestPoller_PollConfluenceBoundsRequestAndExtractsMetadata(t *testing.T) {
 	}
 	if len(result.RichContent) != 0 {
 		t.Fatalf("metadata-only poll should not emit rich content: %#v", result.RichContent)
+	}
+}
+
+func TestPoller_PollConfluenceDefaultsToUnlimitedWithPageSize50(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		if r.URL.Query().Get("limit") != "50" {
+			t.Fatalf("expected default page size 50, got %s", r.URL.RawQuery)
+		}
+		switch requests {
+		case 0:
+			if r.URL.Query().Get("cursor") != "" {
+				t.Fatalf("unexpected first cursor: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"results":[` + strings.Join(confluencePageJSON(50, 0), ",") + `],"_links":{"next":"/wiki/rest/api/search?cursor=page-2"}}`))
+		case 1:
+			if r.URL.Query().Get("cursor") != "page-2" {
+				t.Fatalf("unexpected second cursor: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"results":[` + strings.Join(confluencePageJSON(55, 50), ",") + `]}`))
+		default:
+			t.Fatalf("unexpected extra request")
+		}
+		requests++
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollConfluence(context.Background(), testCredentials(), projectintegrations.ConfluenceQueryPlan{
+		ProjectID: "project-1",
+		Provider:  projectintegrations.ProviderConfluence,
+		CQL:       `space in ("ENG") and type=page`,
+	})
+	if err != nil {
+		t.Fatalf("poll confluence: %v", err)
+	}
+	if requests != 2 || len(result.Items) != 105 {
+		t.Fatalf("unexpected default-unlimited result: requests=%d items=%d", requests, len(result.Items))
+	}
+}
+
+func TestPoller_PollConfluenceStopsOnRepeatedCursor(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		requests++
+		_, _ = w.Write([]byte(`{"results":[` + strings.Join(confluencePageJSON(1, requests), ",") + `],"_links":{"next":"/wiki/rest/api/search?cursor=same-cursor"}}`))
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollConfluence(context.Background(), testCredentials(), projectintegrations.ConfluenceQueryPlan{
+		ProjectID: "project-1",
+		Provider:  projectintegrations.ProviderConfluence,
+		CQL:       `space in ("ENG") and type=page`,
+		PageSize:  1,
+	})
+	if err != nil {
+		t.Fatalf("poll confluence: %v", err)
+	}
+	if requests != 2 || len(result.Items) != 2 {
+		t.Fatalf("expected repeated cursor stop after second page, requests=%d items=%d", requests, len(result.Items))
+	}
+}
+
+func TestPoller_PollConfluenceStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		requests++
+		cancel()
+		_, _ = w.Write([]byte(`{"results":[` + strings.Join(confluencePageJSON(1, 0), ",") + `],"_links":{"next":"/wiki/rest/api/search?cursor=page-2"}}`))
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	_, err := poller.PollConfluence(ctx, testCredentials(), projectintegrations.ConfluenceQueryPlan{
+		ProjectID: "project-1",
+		Provider:  projectintegrations.ProviderConfluence,
+		CQL:       `space in ("ENG") and type=page`,
+		PageSize:  1,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected one request before cancellation, got %d", requests)
+	}
+}
+
+func TestPoller_PollConfluenceRetriesRetryAfterRateLimit(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBasicAuth(t, r)
+		requests++
+		if requests == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"results":[` + strings.Join(confluencePageJSON(1, 0), ",") + `]}`))
+	}))
+	defer server.Close()
+
+	poller := NewPoller(NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()}))
+	result, err := poller.PollConfluence(context.Background(), testCredentials(), projectintegrations.ConfluenceQueryPlan{
+		ProjectID: "project-1",
+		Provider:  projectintegrations.ProviderConfluence,
+		CQL:       `space in ("ENG") and type=page`,
+	})
+	if err != nil {
+		t.Fatalf("poll confluence: %v", err)
+	}
+	if requests != 2 || len(result.Items) != 1 {
+		t.Fatalf("expected retry success, requests=%d items=%d", requests, len(result.Items))
 	}
 }
 
@@ -243,4 +361,13 @@ func renderPollChunks(chunks []projectintegrations.RichContentChunk) string {
 		builder.WriteByte('\n')
 	}
 	return builder.String()
+}
+
+func confluencePageJSON(count int, offset int) []string {
+	pages := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		n := offset + i + 1
+		pages = append(pages, `{"content":{"id":"`+strconv.Itoa(20000+n)+`","type":"page","status":"current","version":{"when":"2026-05-31T10:00:00Z"}}}`)
+	}
+	return pages
 }

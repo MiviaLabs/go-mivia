@@ -172,3 +172,19 @@ type Finding struct {
 	Code     SkipReason
 	Category string
 }
+
+type DiagnosticsSnapshot struct {
+	Scheduler SchedulerDiagnostics       `json:"scheduler"`
+	Watchers  []WatchState               `json:"watchers"`
+	Stages    map[string]StageDiagnostic `json:"stages"`
+}
+
+type StageDiagnostic struct {
+	Count         int64 `json:"count"`
+	TotalMillis   int64 `json:"total_ms"`
+	MaxMillis     int64 `json:"max_ms"`
+	LastMillis    int64 `json:"last_ms"`
+	LastSeenUnix  int64 `json:"last_seen_unix,omitempty"`
+	ErrorCount    int64 `json:"error_count,omitempty"`
+	LastErrorUnix int64 `json:"last_error_unix,omitempty"`
+}

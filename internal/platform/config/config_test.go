@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +98,16 @@ shutdown_timeout = "12s"
 ladybug_path = "data/from-file.lbug"
 sqlite_path = "data/from-file.sqlite"
 
+[sqlite]
+wal_enabled = true
+busy_timeout = "6s"
+synchronous = "FULL"
+checkpoint_after_ingestion = false
+
+[debug]
+enabled = true
+runtime_metrics_enabled = true
+
 [logging]
 file_enabled = true
 file_path = "data/from-file.log"
@@ -166,6 +177,12 @@ sensitive_marker_policy = "skip_file"
 	if cfg.SQLitePath != "data/from-file.sqlite" {
 		t.Fatalf("expected file SQLite path, got %q", cfg.SQLitePath)
 	}
+	if !cfg.Debug.Enabled || !cfg.Debug.RuntimeMetricsEnabled {
+		t.Fatalf("expected file debug config, got %+v", cfg.Debug)
+	}
+	if !cfg.SQLite.WALEnabled || cfg.SQLite.BusyTimeout != 6*time.Second || cfg.SQLite.Synchronous != "FULL" || cfg.SQLite.CheckpointAfterIngestion {
+		t.Fatalf("expected file SQLite pragmas, got %+v", cfg.SQLite)
+	}
 	if cfg.Logging.FileEnabled || cfg.Logging.FilePath != "data/from-env.log" {
 		t.Fatalf("expected env logging overrides, got %+v", cfg.Logging)
 	}
@@ -223,9 +240,17 @@ func TestLoad_EnvOverridesIngestion_ReturnsMergedConfig(t *testing.T) {
 	t.Setenv("MIVIA_INGESTION_LIVE_PATH_PRIORITY", "true")
 	t.Setenv("MIVIA_INGESTION_MAX_WATCHED_DIRECTORY_COUNT", "9")
 	t.Setenv("MIVIA_INGESTION_TASK_WARN_AFTER", "7s")
-	t.Setenv("MIVIA_INGESTION_FULL_SCAN_BATCH_SIZE", "100")
+	t.Setenv("MIVIA_INGESTION_FULL_SCAN_BATCH_SIZE", "20000")
 	t.Setenv("MIVIA_INGESTION_INITIAL_SCAN_ON_START", "true")
 	t.Setenv("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY", "skip_file")
+	t.Setenv("MIVIA_DEBUG_ENABLED", "true")
+	t.Setenv("MIVIA_DEBUG_PPROF_ENABLED", "true")
+	t.Setenv("MIVIA_DEBUG_EXPVAR_ENABLED", "true")
+	t.Setenv("MIVIA_DEBUG_RUNTIME_METRICS_ENABLED", "true")
+	t.Setenv("MIVIA_SQLITE_WAL_ENABLED", "false")
+	t.Setenv("MIVIA_SQLITE_BUSY_TIMEOUT", "8s")
+	t.Setenv("MIVIA_SQLITE_SYNCHRONOUS", "NORMAL")
+	t.Setenv("MIVIA_SQLITE_CHECKPOINT_AFTER_INGESTION", "false")
 
 	cfg, err := Load()
 	if err != nil {
@@ -247,11 +272,54 @@ func TestLoad_EnvOverridesIngestion_ReturnsMergedConfig(t *testing.T) {
 	if cfg.Ingestion.MaxWatchedDirectoryCount != 9 || cfg.Ingestion.TaskWarnAfter != 7*time.Second {
 		t.Fatalf("expected watcher/task env overrides: %+v", cfg.Ingestion)
 	}
-	if cfg.Ingestion.FullScanBatchSize != 100 {
+	if cfg.Ingestion.FullScanBatchSize != 20000 {
 		t.Fatalf("expected full scan batch size override, got %d", cfg.Ingestion.FullScanBatchSize)
+	}
+	if !cfg.Debug.Enabled || !cfg.Debug.PprofEnabled || !cfg.Debug.ExpvarEnabled || !cfg.Debug.RuntimeMetricsEnabled {
+		t.Fatalf("expected debug env overrides: %+v", cfg.Debug)
+	}
+	if cfg.SQLite.WALEnabled || cfg.SQLite.BusyTimeout != 8*time.Second || cfg.SQLite.Synchronous != "NORMAL" || cfg.SQLite.CheckpointAfterIngestion {
+		t.Fatalf("expected SQLite env overrides: %+v", cfg.SQLite)
 	}
 	if !cfg.Ingestion.InitialScanOnStart {
 		t.Fatal("expected initial scan override")
+	}
+}
+
+func TestLoad_DefaultIngestionCoverageCapsAreUnlimited(t *testing.T) {
+	chdir(t, t.TempDir())
+	clearConfigEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected defaults to load: %v", err)
+	}
+	if cfg.Ingestion.MaxFileBytes != 0 {
+		t.Fatalf("expected default max file bytes to be unlimited, got %d", cfg.Ingestion.MaxFileBytes)
+	}
+}
+
+func TestConfigValidate_FullScanBatchSizeAllowsLargePositiveValues(t *testing.T) {
+	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
+	cfg.Ingestion.FullScanBatchSize = 20000
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected large positive full scan batch size to be valid: %v", err)
+	}
+}
+
+func TestConfigValidate_FullScanBatchSizeRejectsNonPositiveValues(t *testing.T) {
+	for _, value := range []int{0, -1} {
+		t.Run(strconv.Itoa(value), func(t *testing.T) {
+			cfg := defaultConfig("test.toml")
+			cfg.resolveAutoSettings(runtime.NumCPU())
+			cfg.Ingestion.FullScanBatchSize = value
+
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "FULL_SCAN_BATCH_SIZE") {
+				t.Fatalf("expected full scan batch size validation error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -391,6 +459,14 @@ func clearConfigEnv(t *testing.T) {
 		"MIVIA_HTTP_ADDR",
 		"MIVIA_LADYBUG_PATH",
 		"MIVIA_SQLITE_PATH",
+		"MIVIA_SQLITE_WAL_ENABLED",
+		"MIVIA_SQLITE_BUSY_TIMEOUT",
+		"MIVIA_SQLITE_SYNCHRONOUS",
+		"MIVIA_SQLITE_CHECKPOINT_AFTER_INGESTION",
+		"MIVIA_DEBUG_ENABLED",
+		"MIVIA_DEBUG_PPROF_ENABLED",
+		"MIVIA_DEBUG_EXPVAR_ENABLED",
+		"MIVIA_DEBUG_RUNTIME_METRICS_ENABLED",
 		"MIVIA_LOG_FILE_ENABLED",
 		"MIVIA_LOG_FILE_PATH",
 		"MIVIA_MAX_REQUEST_BYTES",

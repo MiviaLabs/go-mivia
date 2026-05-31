@@ -17,6 +17,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 	ladybugschema "github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
 	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
@@ -34,6 +35,40 @@ func TestToolsList_ReturnsTaskAndResearchTools(t *testing.T) {
 	}
 	if !bytes.Contains(res.Body.Bytes(), []byte(`"tasks.create"`)) || !bytes.Contains(res.Body.Bytes(), []byte(`"research_runs.create"`)) {
 		t.Fatalf("expected tool discovery response, got %s", res.Body.String())
+	}
+}
+
+func TestToolsListAndCall_IngestionDiagnosticsWhenConfigured(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	registry, err := projectregistry.NewRegistry(nil, projectregistry.Options{})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(t.Context(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	digest := projectregistry.NewDigestService(registry, graph)
+	diagnosticsService := diagnostics.NewService(fakeDiagnosticsSnapshotter{snapshot: projectingestion.DiagnosticsSnapshot{
+		Stages: map[string]projectingestion.StageDiagnostic{
+			"storage.search_write": {Count: 1, TotalMillis: 2, MaxMillis: 2, LastMillis: 2},
+		},
+	}}, diagnostics.RuntimeOptions{})
+	handler := mcpapi.NewHandlerWithResearchProjectsIngestionWorkspaceIntegrationsAndDiagnostics(svc, nil, registry, digest, nil, nil, nil, diagnosticsService, slog.Default())
+
+	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.diagnostics.ingestion"`)) {
+		t.Fatalf("expected diagnostics tool, got %s", list.Body.String())
+	}
+	call := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.diagnostics.ingestion","arguments":{}}}`)
+	if bytes.Contains(call.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(call.Body.Bytes(), []byte("storage.search_write")) {
+		t.Fatalf("unexpected diagnostics call response: %s", call.Body.String())
+	}
+	for _, forbidden := range [][]byte{[]byte("/home/mac"), []byte(`C:\`), []byte("MIVIA_"), []byte("token"), []byte("credential"), []byte("package main")} {
+		if bytes.Contains(call.Body.Bytes(), forbidden) {
+			t.Fatalf("diagnostics leaked %q: %s", forbidden, call.Body.String())
+		}
 	}
 }
 
@@ -703,4 +738,12 @@ func postMCP(t *testing.T, handler http.Handler, body string) *httptest.Response
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	return res
+}
+
+type fakeDiagnosticsSnapshotter struct {
+	snapshot projectingestion.DiagnosticsSnapshot
+}
+
+func (fake fakeDiagnosticsSnapshotter) IngestionDiagnostics() projectingestion.DiagnosticsSnapshot {
+	return fake.snapshot
 }

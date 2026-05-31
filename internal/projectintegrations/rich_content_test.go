@@ -160,6 +160,59 @@ func TestChunkRichContentItemBoundsDeterministicallyAndSuppressesForbiddenMateri
 	assertRichMissing(t, rendered, "Bearer", "secret-token", "/home/mac")
 }
 
+func TestChunkRichContentItemDefaultsToNoItemTextCap(t *testing.T) {
+	largeText := strings.Repeat("a", 300*1024)
+	item := RichContentItem{
+		ProjectID: "example-service",
+		Provider:  ProviderJira,
+		ItemID:    "10001",
+		Fields: []RichContentField{
+			{Name: "description", Text: largeText},
+		},
+	}
+
+	chunks, err := ChunkRichContentItem(item, RichContentOptions{})
+	if err != nil {
+		t.Fatalf("chunk content: %v", err)
+	}
+	var total int
+	for _, chunk := range chunks {
+		total += len([]byte(chunk.Text))
+		if len([]byte(chunk.Text)) > defaultRichContentMaxChunkBytes {
+			t.Fatalf("chunk exceeds default chunk cap: %d", len([]byte(chunk.Text)))
+		}
+	}
+	if total != len(largeText) {
+		t.Fatalf("expected no default item truncation, got %d want %d", total, len(largeText))
+	}
+}
+
+func TestChunkRichContentItemHonorsExplicitItemTextCap(t *testing.T) {
+	item := RichContentItem{
+		ProjectID: "example-service",
+		Provider:  ProviderConfluence,
+		ItemID:    "20001",
+		Fields: []RichContentField{
+			{Name: "body", Text: strings.Repeat("b", 4096)},
+		},
+	}
+
+	chunks, err := ChunkRichContentItem(item, RichContentOptions{MaxItemTextBytes: 1024, MaxChunkBytes: 256})
+	if err != nil {
+		t.Fatalf("chunk content: %v", err)
+	}
+	var total int
+	for _, chunk := range chunks {
+		total += len([]byte(chunk.Text))
+		if len([]byte(chunk.Text)) > 256 {
+			t.Fatalf("chunk exceeds explicit chunk cap: %d", len([]byte(chunk.Text)))
+		}
+	}
+	if total != 1024 {
+		t.Fatalf("expected explicit item cap, got %d", total)
+	}
+}
+
 func TestExtractRichContentErrorsAreRedacted(t *testing.T) {
 	_, _, err := ExtractJiraRichContent(JiraQueryPlan{ProjectID: "example-service", Provider: ProviderJira}, json.RawMessage(`{"id":`), RichContentOptions{})
 	if err == nil {

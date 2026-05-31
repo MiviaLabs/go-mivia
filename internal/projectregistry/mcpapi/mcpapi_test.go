@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 	ladybugschema "github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
 	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
@@ -31,6 +32,29 @@ func TestCallTool_ListProjectsRedactsRootPath(t *testing.T) {
 	for _, forbidden := range []string{"root_path", "canonical", "package main"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("projects.list leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestCallTool_DiagnosticsIngestionIsRedacted(t *testing.T) {
+	svc := diagnostics.NewService(fakeDiagnosticsSnapshotter{snapshot: projectingestion.DiagnosticsSnapshot{
+		Scheduler: projectingestion.SchedulerDiagnostics{QueueDepth: 1},
+		Stages: map[string]projectingestion.StageDiagnostic{
+			"storage.graph_write": {Count: 1, TotalMillis: 5, MaxMillis: 5, LastMillis: 5},
+		},
+	}}, diagnostics.RuntimeOptions{})
+
+	result, err := mcpapi.CallToolWithWorkspaceAndDiagnostics(context.Background(), nil, nil, nil, nil, svc, "projects.diagnostics.ingestion", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("call diagnostics tool: %v", err)
+	}
+	body := marshalResult(t, result)
+	if !strings.Contains(body, "storage.graph_write") {
+		t.Fatalf("expected stage metrics, got %s", body)
+	}
+	for _, forbidden := range []string{"/home/mac", `C:\`, "MIVIA_", "token", "credential", "password", "package main", "prompt"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("diagnostics leaked %q: %s", forbidden, body)
 		}
 	}
 }
@@ -669,6 +693,14 @@ const testShortTimeout = 100 * time.Millisecond
 type blockingAsyncRunner struct {
 	executeStarted chan struct{}
 	release        chan struct{}
+}
+
+type fakeDiagnosticsSnapshotter struct {
+	snapshot projectingestion.DiagnosticsSnapshot
+}
+
+func (fake fakeDiagnosticsSnapshotter) IngestionDiagnostics() projectingestion.DiagnosticsSnapshot {
+	return fake.snapshot
 }
 
 func newBlockingAsyncRunner() *blockingAsyncRunner {

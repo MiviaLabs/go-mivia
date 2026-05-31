@@ -34,6 +34,8 @@ type persistentOperation struct {
 	Node         *Node              `json:"node,omitempty"`
 	Label        string             `json:"label,omitempty"`
 	Filter       map[string]string  `json:"filter,omitempty"`
+	ProjectID    string             `json:"project_id,omitempty"`
+	RepoFileID   string             `json:"repo_file_id,omitempty"`
 	Relationship *Relationship      `json:"relationship,omitempty"`
 }
 
@@ -94,6 +96,19 @@ func (graph *PersistentGraph) DeleteNodes(ctx context.Context, label string, fil
 		Op:     "delete_nodes",
 		Label:  label,
 		Filter: copyProperties(filter),
+	}})
+}
+
+func (graph *PersistentGraph) DeleteDerivedFileNodes(ctx context.Context, projectID string, repoFileID string) error {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	if err := graph.graph.DeleteDerivedFileNodes(ctx, projectID, repoFileID); err != nil {
+		return err
+	}
+	return graph.appendOperationsLocked([]persistentOperation{{
+		Op:         "delete_derived_file_nodes",
+		ProjectID:  projectID,
+		RepoFileID: repoFileID,
 	}})
 }
 
@@ -243,6 +258,8 @@ func (replay *journalReplay) applyOperation(operation persistentOperation) error
 	case "delete_nodes":
 		replay.deleteNodes(operation.Label, operation.Filter)
 		return nil
+	case "delete_derived_file_nodes":
+		return replay.graph.DeleteDerivedFileNodes(context.Background(), operation.ProjectID, operation.RepoFileID)
 	case "put_relationship":
 		if operation.Relationship == nil {
 			return fmt.Errorf("decode ladybug graph journal: put_relationship missing relationship")
@@ -272,6 +289,7 @@ func (replay *journalReplay) putNodeLocked(node Node) {
 	}
 	replay.graph.nodes[key] = copied
 	replay.indexNodeLocked(key, copied)
+	replay.graph.indexNodeLocked(key, copied)
 }
 
 func (replay *journalReplay) deleteNodes(label string, filter map[string]string) {
@@ -287,6 +305,7 @@ func (replay *journalReplay) deleteNodes(label string, filter map[string]string)
 		}
 		delete(replay.graph.nodes, key)
 		replay.unindexNodeLocked(key, node)
+		replay.graph.unindexNodeLocked(key, node)
 		deleted[key] = struct{}{}
 	}
 	for nodeKey := range deleted {
@@ -294,6 +313,7 @@ func (replay *journalReplay) deleteNodes(label string, filter map[string]string)
 			relationship, ok := replay.graph.relationships[relKey]
 			if ok {
 				replay.unindexRelationshipLocked(relKey, relationship)
+				replay.graph.unindexRelationshipLocked(relKey, relationship)
 			}
 			delete(replay.graph.relationships, relKey)
 		}
@@ -338,6 +358,7 @@ func (replay *journalReplay) putRelationshipLocked(relationship Relationship) {
 	}
 	replay.graph.relationships[key] = copied
 	replay.indexRelationshipLocked(key, copied)
+	replay.graph.indexRelationshipLocked(key, copied)
 }
 
 func (replay *journalReplay) indexNodeLocked(key string, node Node) {
@@ -423,6 +444,8 @@ func (graph *PersistentGraph) applyOperation(operation persistentOperation) erro
 		return graph.graph.PutNode(context.Background(), *operation.Node)
 	case "delete_nodes":
 		return graph.graph.DeleteNodes(context.Background(), operation.Label, operation.Filter)
+	case "delete_derived_file_nodes":
+		return graph.graph.DeleteDerivedFileNodes(context.Background(), operation.ProjectID, operation.RepoFileID)
 	case "put_relationship":
 		if operation.Relationship == nil {
 			return fmt.Errorf("decode ladybug graph journal: put_relationship missing relationship")
@@ -545,6 +568,18 @@ func (graph *recordingGraph) DeleteNodes(ctx context.Context, label string, filt
 		Op:     "delete_nodes",
 		Label:  label,
 		Filter: copyProperties(filter),
+	})
+	return nil
+}
+
+func (graph *recordingGraph) DeleteDerivedFileNodes(ctx context.Context, projectID string, repoFileID string) error {
+	if err := graph.graph.DeleteDerivedFileNodes(ctx, projectID, repoFileID); err != nil {
+		return err
+	}
+	graph.operations = append(graph.operations, persistentOperation{
+		Op:         "delete_derived_file_nodes",
+		ProjectID:  projectID,
+		RepoFileID: repoFileID,
 	})
 	return nil
 }

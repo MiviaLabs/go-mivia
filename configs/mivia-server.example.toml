@@ -18,6 +18,22 @@ shutdown_timeout = "10s"
 ladybug_path = "data/mivialabs.lbug"
 sqlite_path = "data/mivialabs-config.sqlite"
 
+[sqlite]
+# WAL is enabled for local file-backed SQLite by default. Set false to roll back
+# on unsupported filesystems. The process disables WAL for sqlite_path = ":memory:".
+wal_enabled = true
+busy_timeout = "5s"
+synchronous = "NORMAL"
+checkpoint_after_ingestion = true
+
+[debug]
+# Diagnostics are opt-in and must stay loopback-only. Do not expose roots, env,
+# raw source, prompts, tokens, credentials, provider payloads, or personal data.
+enabled = false
+pprof_enabled = false
+expvar_enabled = false
+runtime_metrics_enabled = false
+
 [logging]
 # Logs go to stdout by default. File logging is opt-in only.
 file_enabled = false
@@ -31,7 +47,9 @@ live_updates_enabled = false
 ast_extraction_enabled = true
 extractor_cache_enabled = true
 debounce_interval = "2s"
-max_file_bytes = 1048576
+# 0 means unlimited source-ingestion coverage. Positive values explicitly cap
+# indexed file bytes; max_chunk_bytes only sizes chunks.
+max_file_bytes = 0
 max_chunk_bytes = 16384
 queue_depth = 128
 # "auto" follows server.cpu_count. Set positive integers here only when this
@@ -77,7 +95,8 @@ exclude = [
   "lib-ladybug/**",
 ]
 follow_symlinks = false
-max_file_bytes = 1048576
+# 0 inherits unlimited coverage unless an explicit positive project cap is set.
+max_file_bytes = 0
 max_chunk_bytes = 16384
 sensitive_marker_policy = "skip_file"
 
@@ -101,7 +120,7 @@ sensitive_marker_policy = "skip_file"
 # overlap_window = "2m"
 # initial_page_size = 100
 # incremental_page_size = 100
-# max_results = 1000
+# max_results = 0 # unlimited total ingestion; positive values explicitly cap a run
 # default_fields = ["summary", "status", "updated", "issuetype", "project"]
 # allowed_fields = ["description", "comment"]
 # include_rich_fields = true
@@ -120,9 +139,9 @@ sensitive_marker_policy = "skip_file"
 # empty_poll_sleep = "10m"
 # max_idle_sleep = "30m"
 # overlap_window = "2m"
-# initial_page_size = 100
-# incremental_page_size = 100
-# max_results = 1000
+# initial_page_size = 50
+# incremental_page_size = 50
+# max_results = 0 # unlimited total ingestion; positive values explicitly cap a run
 # body_representation = "storage"
 # include_body = true
 # include_comments = true
@@ -153,6 +172,6 @@ exclude = [
   "lib-ladybug/**",
 ]
 follow_symlinks = false
-max_file_bytes = 1048576
+max_file_bytes = 0
 max_chunk_bytes = 16384
 sensitive_marker_policy = "skip_file"

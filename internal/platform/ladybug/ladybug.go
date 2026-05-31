@@ -48,6 +48,7 @@ type Graph interface {
 	GetNode(context.Context, string, string) (Node, error)
 	ListNodes(context.Context, string, map[string]string) ([]Node, error)
 	DeleteNodes(context.Context, string, map[string]string) error
+	DeleteDerivedFileNodes(context.Context, string, string) error
 	PutRelationship(context.Context, Relationship) error
 	ListRelationships(context.Context, string, RelationshipFilter) ([]Relationship, error)
 }
@@ -62,6 +63,8 @@ type MemoryGraph struct {
 	relationshipSchemas map[string]schema.Relationship
 	nodes               map[string]Node
 	relationships       map[string]Relationship
+	nodesByLabelFileID  map[string]map[string]map[string]struct{}
+	relationshipsByNode map[string]map[string]struct{}
 }
 
 func NewMemoryGraph() *MemoryGraph {
@@ -70,6 +73,8 @@ func NewMemoryGraph() *MemoryGraph {
 		relationshipSchemas: make(map[string]schema.Relationship),
 		nodes:               make(map[string]Node),
 		relationships:       make(map[string]Relationship),
+		nodesByLabelFileID:  make(map[string]map[string]map[string]struct{}),
+		relationshipsByNode: make(map[string]map[string]struct{}),
 	}
 }
 
@@ -93,7 +98,12 @@ func (graph *MemoryGraph) PutNode(_ context.Context, node Node) error {
 		ID:         node.ID,
 		Properties: copyProperties(node.Properties),
 	}
-	graph.nodes[nodeKey(node.Label, node.ID)] = copied
+	key := nodeKey(node.Label, node.ID)
+	if existing, ok := graph.nodes[key]; ok {
+		graph.unindexNodeLocked(key, existing)
+	}
+	graph.nodes[key] = copied
+	graph.indexNodeLocked(key, copied)
 	return nil
 }
 
@@ -143,17 +153,29 @@ func (graph *MemoryGraph) DeleteNodes(_ context.Context, label string, filter ma
 			continue
 		}
 		delete(graph.nodes, key)
+		graph.unindexNodeLocked(key, node)
 		deleted[key] = struct{}{}
 	}
-	for key, relationship := range graph.relationships {
-		if _, ok := deleted[nodeKey(relationship.From.Label, relationship.From.ID)]; ok {
-			delete(graph.relationships, key)
-			continue
-		}
-		if _, ok := deleted[nodeKey(relationship.To.Label, relationship.To.ID)]; ok {
-			delete(graph.relationships, key)
+	graph.deleteAttachedRelationshipsLocked(deleted)
+	return nil
+}
+
+func (graph *MemoryGraph) DeleteDerivedFileNodes(_ context.Context, projectID string, repoFileID string) error {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	deleted := make(map[string]struct{})
+	for _, label := range derivedFileNodeLabels() {
+		for key := range graph.fileNodeCandidatesLocked(label, repoFileID) {
+			node, ok := graph.nodes[key]
+			if !ok || node.Label != label || node.Properties["project_id"] != projectID || node.Properties["repo_file_id"] != repoFileID {
+				continue
+			}
+			delete(graph.nodes, key)
+			graph.unindexNodeLocked(key, node)
+			deleted[key] = struct{}{}
 		}
 	}
+	graph.deleteAttachedRelationshipsLocked(deleted)
 	return nil
 }
 
@@ -166,7 +188,12 @@ func (graph *MemoryGraph) PutRelationship(_ context.Context, relationship Relati
 		To:         relationship.To,
 		Properties: copyProperties(relationship.Properties),
 	}
-	graph.relationships[relationshipKey(relationship.Type, relationship.From, relationship.To)] = copied
+	key := relationshipKey(relationship.Type, relationship.From, relationship.To)
+	if existing, ok := graph.relationships[key]; ok {
+		graph.unindexRelationshipLocked(key, existing)
+	}
+	graph.relationships[key] = copied
+	graph.indexRelationshipLocked(key, copied)
 	return nil
 }
 
@@ -234,6 +261,98 @@ func nodeKey(label string, id string) string {
 
 func relationshipKey(relationshipType string, from NodeRef, to NodeRef) string {
 	return relationshipType + ":" + nodeKey(from.Label, from.ID) + "->" + nodeKey(to.Label, to.ID)
+}
+
+func derivedFileNodeLabels() []string {
+	return []string{"CodeReference", "CodeCall", "CodeSymbol", "DocumentHeading", "ContentChunk", "FileVersion"}
+}
+
+func (graph *MemoryGraph) fileNodeCandidatesLocked(label string, repoFileID string) map[string]struct{} {
+	if repoFileID == "" {
+		return map[string]struct{}{}
+	}
+	byFileID := graph.nodesByLabelFileID[label]
+	if byFileID == nil {
+		return map[string]struct{}{}
+	}
+	return copySet(byFileID[repoFileID])
+}
+
+func (graph *MemoryGraph) deleteAttachedRelationshipsLocked(deleted map[string]struct{}) {
+	for nodeKey := range deleted {
+		for relKey := range graph.relationshipsByNode[nodeKey] {
+			relationship, ok := graph.relationships[relKey]
+			if ok {
+				graph.unindexRelationshipLocked(relKey, relationship)
+			}
+			delete(graph.relationships, relKey)
+		}
+		delete(graph.relationshipsByNode, nodeKey)
+	}
+}
+
+func (graph *MemoryGraph) indexNodeLocked(key string, node Node) {
+	repoFileID := node.Properties["repo_file_id"]
+	if repoFileID == "" {
+		return
+	}
+	byFileID := graph.nodesByLabelFileID[node.Label]
+	if byFileID == nil {
+		byFileID = make(map[string]map[string]struct{})
+		graph.nodesByLabelFileID[node.Label] = byFileID
+	}
+	keys := byFileID[repoFileID]
+	if keys == nil {
+		keys = make(map[string]struct{})
+		byFileID[repoFileID] = keys
+	}
+	keys[key] = struct{}{}
+}
+
+func (graph *MemoryGraph) unindexNodeLocked(key string, node Node) {
+	repoFileID := node.Properties["repo_file_id"]
+	if repoFileID == "" {
+		return
+	}
+	byFileID := graph.nodesByLabelFileID[node.Label]
+	if byFileID == nil {
+		return
+	}
+	keys := byFileID[repoFileID]
+	delete(keys, key)
+	if len(keys) == 0 {
+		delete(byFileID, repoFileID)
+	}
+	if len(byFileID) == 0 {
+		delete(graph.nodesByLabelFileID, node.Label)
+	}
+}
+
+func (graph *MemoryGraph) indexRelationshipLocked(key string, relationship Relationship) {
+	graph.addRelationshipNodeIndexLocked(nodeKey(relationship.From.Label, relationship.From.ID), key)
+	graph.addRelationshipNodeIndexLocked(nodeKey(relationship.To.Label, relationship.To.ID), key)
+}
+
+func (graph *MemoryGraph) addRelationshipNodeIndexLocked(node string, relationship string) {
+	relationships := graph.relationshipsByNode[node]
+	if relationships == nil {
+		relationships = make(map[string]struct{})
+		graph.relationshipsByNode[node] = relationships
+	}
+	relationships[relationship] = struct{}{}
+}
+
+func (graph *MemoryGraph) unindexRelationshipLocked(key string, relationship Relationship) {
+	graph.removeRelationshipNodeIndexLocked(nodeKey(relationship.From.Label, relationship.From.ID), key)
+	graph.removeRelationshipNodeIndexLocked(nodeKey(relationship.To.Label, relationship.To.ID), key)
+}
+
+func (graph *MemoryGraph) removeRelationshipNodeIndexLocked(node string, relationship string) {
+	relationships := graph.relationshipsByNode[node]
+	delete(relationships, relationship)
+	if len(relationships) == 0 {
+		delete(graph.relationshipsByNode, node)
+	}
 }
 
 func copyProperties(in map[string]string) map[string]string {

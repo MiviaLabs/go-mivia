@@ -3,11 +3,14 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 )
+
+const defaultPageSize = 100
 
 type Poller struct {
 	Client Client
@@ -25,17 +28,21 @@ func (poller Poller) PollJiraWithProgress(ctx context.Context, credentials proje
 	if plan.Provider != projectintegrations.ProviderJira || strings.TrimSpace(plan.JQL) == "" {
 		return projectintegrations.PollResult{}, projectintegrations.ErrInvalidInput
 	}
-	pageSize, maxResults := boundedRequest(plan.PageSize, plan.MaxResults)
+	pageSize, unlimited, maxResults := boundedRequest(plan.PageSize, plan.MaxResults)
 	var items []projectintegrations.PollItem
 	var richContent []projectintegrations.RichContentPayload
 	var nextPageToken string
-	for len(items) < maxResults {
-		remaining := maxResults - len(items)
+	seenTokens := map[string]struct{}{}
+	for unlimited || len(items) < maxResults {
+		if err := ctx.Err(); err != nil {
+			return projectintegrations.PollResult{}, err
+		}
 		limit := pageSize
-		if remaining < limit {
+		if !unlimited && maxResults-len(items) < limit {
+			remaining := maxResults - len(items)
 			limit = remaining
 		}
-		response, err := poller.Client.SearchIssues(ctx, credentials, SearchRequest{
+		response, err := poller.searchIssuesWithRetry(ctx, credentials, SearchRequest{
 			JQL:           plan.JQL,
 			Fields:        append([]string(nil), plan.Fields...),
 			MaxResults:    limit,
@@ -62,16 +69,35 @@ func (poller Poller) PollJiraWithProgress(ctx context.Context, credentials proje
 				}
 				richContent = append(richContent, payload)
 			}
-			if len(items) >= maxResults {
+			if !unlimited && len(items) >= maxResults {
 				break
 			}
 		}
 		if response.NextPageToken == "" || len(response.Issues) == 0 {
 			break
 		}
+		if _, ok := seenTokens[response.NextPageToken]; ok {
+			break
+		}
+		seenTokens[response.NextPageToken] = struct{}{}
 		nextPageToken = response.NextPageToken
 	}
 	return projectintegrations.PollResult{Items: items, RichContent: richContent}, nil
+}
+
+func (poller Poller) searchIssuesWithRetry(ctx context.Context, credentials projectintegrations.Credentials, request SearchRequest) (SearchResponse, error) {
+	for {
+		response, err := poller.Client.SearchIssues(ctx, credentials, request)
+		if !shouldRetryProviderError(err) {
+			if err != nil && ctx.Err() != nil {
+				return SearchResponse{}, ctx.Err()
+			}
+			return response, err
+		}
+		if err := sleepRetryAfter(ctx, retryAfter(err)); err != nil {
+			return SearchResponse{}, err
+		}
+	}
 }
 
 type issueMetadata struct {
@@ -126,14 +152,44 @@ func richContentFromIssue(plan projectintegrations.JiraQueryPlan, raw json.RawMe
 	return projectintegrations.RichContentPayload{Item: item, Chunks: chunks}, nil
 }
 
-func boundedRequest(pageSize int, maxResults int) (int, int) {
-	if maxResults <= 0 {
-		maxResults = 100
+func boundedRequest(pageSize int, maxResults int) (int, bool, int) {
+	unlimited := maxResults <= 0
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
 	}
-	if pageSize <= 0 || pageSize > maxResults {
+	if !unlimited && pageSize > maxResults {
 		pageSize = maxResults
 	}
-	return pageSize, maxResults
+	return pageSize, unlimited, maxResults
+}
+
+func shouldRetryProviderError(err error) bool {
+	var providerErr *projectintegrations.ProviderError
+	return errors.As(err, &providerErr) &&
+		providerErr.Category == projectintegrations.ErrorCategoryRateLimited &&
+		providerErr.RetryAfter > 0
+}
+
+func retryAfter(err error) time.Duration {
+	var providerErr *projectintegrations.ProviderError
+	if errors.As(err, &providerErr) {
+		return providerErr.RetryAfter
+	}
+	return 0
+}
+
+func sleepRetryAfter(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func parseProviderTime(value string) (time.Time, error) {

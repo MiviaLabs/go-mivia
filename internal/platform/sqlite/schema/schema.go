@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 14
+const Version = 15
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -91,6 +91,7 @@ var statements = []string{
 		status TEXT NOT NULL,
 		present INTEGER NOT NULL CHECK (present IN (0, 1)),
 		content_sha256 TEXT NOT NULL DEFAULT '',
+		extension TEXT NOT NULL DEFAULT '',
 		size_bytes INTEGER NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
 		modified_at TEXT NOT NULL DEFAULT '',
 		last_event_at TEXT NOT NULL DEFAULT '',
@@ -243,6 +244,24 @@ var statements = []string{
 		updated_at TEXT NOT NULL,
 		FOREIGN KEY(project_id) REFERENCES configured_projects(id)
 	)`,
+	`CREATE TABLE IF NOT EXISTS project_search_file_versions (
+		project_id TEXT NOT NULL,
+		file_id TEXT NOT NULL,
+		content_sha256 TEXT NOT NULL DEFAULT '',
+		relative_path TEXT NOT NULL DEFAULT '',
+		extension TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT '',
+		present INTEGER NOT NULL DEFAULT 0 CHECK (present IN (0, 1)),
+		size_bytes INTEGER NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
+		modified_at TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(project_id, file_id),
+		FOREIGN KEY(project_id) REFERENCES configured_projects(id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_search_file_versions_project_extension
+		ON project_search_file_versions(project_id, extension, file_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_project_search_file_versions_project_status_present
+		ON project_search_file_versions(project_id, status, present, file_id)`,
 	`CREATE VIRTUAL TABLE IF NOT EXISTS project_search_chunks_fts USING fts5(
 		project_id UNINDEXED,
 		file_id UNINDEXED,
@@ -389,6 +408,18 @@ var ingestionRunColumns = []columnDefinition{
 	},
 }
 
+var fileIngestionStateColumns = []columnDefinition{
+	{
+		Name:       "extension",
+		Definition: "extension TEXT NOT NULL DEFAULT ''",
+	},
+}
+
+var postColumnStatements = []string{
+	`CREATE INDEX IF NOT EXISTS idx_project_file_ingestion_state_project_extension
+		ON project_file_ingestion_state(project_id, extension, relative_path_hash)`,
+}
+
 var integrationSyncStateColumns = []columnDefinition{
 	{
 		Name:       "cursor",
@@ -458,6 +489,9 @@ func Bootstrap(ctx context.Context, db *sql.DB) error {
 	if err := ensureColumns(ctx, db, "project_ingestion_runs", ingestionRunColumns); err != nil {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
 	}
+	if err := ensureColumns(ctx, db, "project_file_ingestion_state", fileIngestionStateColumns); err != nil {
+		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
+	}
 	if err := ensureColumns(ctx, db, "project_integration_sync_state", integrationSyncStateColumns); err != nil {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
 	}
@@ -466,6 +500,11 @@ func Bootstrap(ctx context.Context, db *sql.DB) error {
 	}
 	if err := ensureColumns(ctx, db, "project_integration_items", integrationItemColumns); err != nil {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
+	}
+	for _, stmt := range postColumnStatements {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
+		}
 	}
 	if _, err := db.ExecContext(ctx, versionStatement, Component, Version); err != nil {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)

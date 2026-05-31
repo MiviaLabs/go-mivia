@@ -35,6 +35,14 @@ Environment variables remain final overrides over file values:
 - `MIVIA_HTTP_ADDR`
 - `MIVIA_LADYBUG_PATH`
 - `MIVIA_SQLITE_PATH`
+- `MIVIA_SQLITE_WAL_ENABLED`
+- `MIVIA_SQLITE_BUSY_TIMEOUT`
+- `MIVIA_SQLITE_SYNCHRONOUS`
+- `MIVIA_SQLITE_CHECKPOINT_AFTER_INGESTION`
+- `MIVIA_DEBUG_ENABLED`
+- `MIVIA_DEBUG_PPROF_ENABLED`
+- `MIVIA_DEBUG_EXPVAR_ENABLED`
+- `MIVIA_DEBUG_RUNTIME_METRICS_ENABLED`
 - `MIVIA_LOG_FILE_ENABLED`
 - `MIVIA_LOG_FILE_PATH`
 - `MIVIA_MAX_REQUEST_BYTES`
@@ -67,6 +75,14 @@ Environment variables remain final overrides over file values:
 | `server.shutdown_timeout` | No | Go duration string, for example `10s`. |
 | `storage.ladybug_path` | No | Local ignored graph datastore path; defaults to `data/mivialabs.lbug`. |
 | `storage.sqlite_path` | No | Local ignored app-config datastore path; defaults to `data/mivialabs-config.sqlite`. |
+| `sqlite.wal_enabled` | No | Enables WAL for file-backed local SQLite paths; default `true`, forced off for `sqlite_path = ":memory:"`. Set `false` as the rollback switch on unsupported filesystems. |
+| `sqlite.busy_timeout` | No | Positive Go duration for SQLite lock waits; default `5s`. |
+| `sqlite.synchronous` | No | SQLite synchronous mode: `OFF`, `NORMAL`, `FULL`, or `EXTRA`; default `NORMAL`. |
+| `sqlite.checkpoint_after_ingestion` | No | Allows checkpointing after ingestion work when storage code supports it; default `true`. |
+| `debug.enabled` | No | Master switch for local diagnostics; default `false`. Debug routes must stay loopback-only and redacted. |
+| `debug.pprof_enabled` | No | Opt-in pprof diagnostics; requires `debug.enabled = true`; default `false`. |
+| `debug.expvar_enabled` | No | Opt-in expvar diagnostics; requires `debug.enabled = true`; default `false`. |
+| `debug.runtime_metrics_enabled` | No | Opt-in runtime metric sampling; requires `debug.enabled = true`; default `false`. |
 | `logging.file_enabled` | No | Opts into writing JSON logs to `logging.file_path` as well as stdout; default `false`. |
 | `logging.file_path` | When file logging enabled | Ignored local log path. Required only when `logging.file_enabled = true`. |
 | `ingestion.content_graph_enabled` | No | Global content graph gate; default `false`. |
@@ -74,14 +90,14 @@ Environment variables remain final overrides over file values:
 | `ingestion.ast_extraction_enabled` | No | Must remain `true` when content graph is enabled; default `true`. |
 | `ingestion.extractor_cache_enabled` | No | Must remain `true` when AST extraction is enabled; default `true`. |
 | `ingestion.debounce_interval` | No | Go duration for live event coalescing; default `2s`. |
-| `ingestion.max_file_bytes` | No | Global source file cap for ingestion; project value can override. |
+| `ingestion.max_file_bytes` | No | Global source ingestion coverage cap. Unset or `0` means unlimited; positive values explicitly cap indexed file bytes. Project value can override. |
 | `ingestion.max_chunk_bytes` | No | Global chunk cap for ingestion and query responses; project value can override. |
 | `ingestion.queue_depth` | No | Positive live update queue size. |
 | `ingestion.worker_count` | No | `"auto"` or a positive integer; backward-compatible live submitter worker count. |
 | `ingestion.global_worker_count` | No | `"auto"` or a positive integer; default `"auto"` follows `server.cpu_count` and caps scheduler workers plus full-scan file workers globally. |
 | `ingestion.per_project_worker_limit` | No | `"auto"` or a positive integer no larger than global worker count; default `"auto"` follows `ingestion.global_worker_count` and caps full-scan/path workers per project. |
 | `ingestion.live_path_priority` | No | Must remain `true` while live updates are enabled; default `true`. |
-| `ingestion.full_scan_batch_size` | No | Positive full-scan graph write batch size up to `5000`; default `500`. |
+| `ingestion.full_scan_batch_size` | No | Positive full-scan batch size; default `500`. Large values such as `20000` are valid but can increase memory during later batched-write phases. |
 | `ingestion.max_watched_directory_count` | No | Optional watched-directory cap per project; `0` means unlimited. |
 | `ingestion.task_warn_after` | No | Positive duration before slow live ingestion task warning; default `30s`. |
 | `ingestion.initial_scan_on_start` | No | Optional startup rescan for live projects; default `false`. |
@@ -103,7 +119,7 @@ Persisted ingestion runs in `pending` or `running` state are local in-memory que
 | `projects.include` | No | Root-relative include patterns. |
 | `projects.exclude` | No | Root-relative exclude patterns. |
 | `projects.follow_symlinks` | No | Keep `false`; symlink traversal is not approved. |
-| `projects.max_file_bytes` | No | Per-project file cap for content graph ingestion. |
+| `projects.max_file_bytes` | No | Per-project file cap for content graph ingestion. Unset or `0` means unlimited; positive values explicitly cap indexed file bytes. |
 | `projects.max_chunk_bytes` | No | Per-project chunk cap for storage and response truncation. |
 | `projects.sensitive_marker_policy` | No | Only `skip_file` is accepted. |
 
@@ -122,6 +138,8 @@ Credentials are references only. Use either `credentials_file`, or exactly one e
 - `api_token_file`
 
 Do not put raw email addresses, API tokens, passwords, Basic auth values, or real Atlassian content in TOML, examples, fixtures, logs, SQLite, LadybugDB, or MCP status responses. `credentials_file` points to an ignored local JSON file and its path/content must not be exposed in MCP/status/errors.
+
+Provider page size controls request chunking, not total coverage. Jira defaults to page size `100`; Confluence defaults to page size `50`. `max_results = 0` means unlimited local ingestion coverage and provider polling should continue until provider exhaustion, repeated cursor/token, context cancellation, or provider backoff/stop conditions. Positive `max_results` values are explicit operator caps. Provider clients should respect `Retry-After` when rate-limited.
 
 ### Configure Jira And Confluence For A Project
 
@@ -152,7 +170,7 @@ max_idle_sleep = "30m"
 overlap_window = "2m"
 initial_page_size = 100
 incremental_page_size = 100
-max_results = 1000
+max_results = 0
 default_fields = ["summary", "status", "updated", "issuetype", "project"]
 allowed_fields = ["description", "comment"]
 include_rich_fields = true
@@ -170,9 +188,9 @@ incremental_interval = "1m"
 empty_poll_sleep = "10m"
 max_idle_sleep = "30m"
 overlap_window = "2m"
-initial_page_size = 100
-incremental_page_size = 100
-max_results = 1000
+initial_page_size = 50
+incremental_page_size = 50
+max_results = 0
 body_representation = "storage"
 include_body = true
 include_comments = true
@@ -198,7 +216,7 @@ include_properties = true
 | `projects.integrations.jira.overlap_window` | No | Incremental overlap window; default `2m`. |
 | `projects.integrations.jira.initial_page_size` | No | Initial full-sync page size; default `100`. |
 | `projects.integrations.jira.incremental_page_size` | No | Incremental page size; default `100`. |
-| `projects.integrations.jira.max_results` | No | Per-run result cap; default `100`. |
+| `projects.integrations.jira.max_results` | No | Per-run result cap. Unset or `0` means poll until provider exhaustion, repeated cursor/token, context cancellation, or provider stop; positive values explicitly cap a run. |
 | `projects.integrations.jira.default_fields` | No | Base Jira fields; defaults include summary/status/updated/type/project. |
 | `projects.integrations.jira.allowed_fields` | No | Explicit rich/custom fields eligible for local ingestion. Include `comment` to ingest comments. |
 | `projects.integrations.jira.include_rich_fields` | No | Ingest configured `allowed_fields`; default `false`. |
@@ -218,9 +236,9 @@ include_properties = true
 | `projects.integrations.confluence.empty_poll_sleep` | No | Idle sleep after empty incremental polls; default `10m`. |
 | `projects.integrations.confluence.max_idle_sleep` | No | Upper bound for empty-poll sleep; default `30m`. |
 | `projects.integrations.confluence.overlap_window` | No | Incremental overlap window; default `2m`. |
-| `projects.integrations.confluence.initial_page_size` | No | Initial full-sync page size; default `100`. |
-| `projects.integrations.confluence.incremental_page_size` | No | Incremental page size; default `100`. |
-| `projects.integrations.confluence.max_results` | No | Per-run result cap; default `100`. |
+| `projects.integrations.confluence.initial_page_size` | No | Initial full-sync page size; default `50`. |
+| `projects.integrations.confluence.incremental_page_size` | No | Incremental page size; default `50`. |
+| `projects.integrations.confluence.max_results` | No | Per-run result cap. Unset or `0` means poll until provider exhaustion, repeated cursor/token, context cancellation, or provider stop; positive values explicitly cap a run. |
 | `projects.integrations.confluence.body_representation` | No | Page body representation flag passed to the provider client; default `storage`. |
 | `projects.integrations.confluence.include_body` | No | Ingest configured page body text; default `false`. |
 | `projects.integrations.confluence.include_comments` | No | Ingest comments; default `false`. |
@@ -258,6 +276,10 @@ Current validation rejects:
 - invalid Go duration strings
 - non-loopback `server.http_addr`
 - non-positive timeout and request-size values
+- negative source/provider coverage caps
+- non-positive full scan batch size
+- debug subfeatures enabled while `debug.enabled = false`
+- invalid SQLite busy timeout or synchronous mode
 - missing enabled project roots
 - non-directory enabled project roots
 - raw credential-like fields in integration config

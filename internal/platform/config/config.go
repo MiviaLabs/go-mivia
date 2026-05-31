@@ -22,7 +22,6 @@ const (
 	defaultReadHeaderTimeout          = 5 * time.Second
 	defaultShutdownTimeout            = 10 * time.Second
 	defaultIngestionDebounceInterval  = 2 * time.Second
-	defaultIngestionMaxFileBytes      = int64(1 << 20)
 	defaultIngestionMaxChunkBytes     = 16 * 1024
 	defaultIngestionQueueDepth        = 10000
 	defaultIngestionFullScanBatchSize = 500
@@ -33,7 +32,10 @@ const (
 	defaultIntegrationOverlapWindow   = 2 * time.Minute
 	defaultIntegrationReadTimeout     = 10 * time.Second
 	defaultIntegrationPageSize        = 100
-	defaultIntegrationMaxResults      = 100
+	defaultConfluencePageSize         = 50
+	defaultIntegrationMaxResults      = 0
+	defaultSQLiteBusyTimeout          = 5 * time.Second
+	defaultSQLiteSynchronous          = "NORMAL"
 	defaultSensitiveMarkerPolicy      = "skip_file"
 	sensitiveMarkerPolicySkipFile     = "skip_file"
 )
@@ -44,6 +46,8 @@ type Config struct {
 	HTTPAddr          string
 	LadybugPath       string
 	SQLitePath        string
+	SQLite            SQLite
+	Debug             Debug
 	Logging           Logging
 	MaxRequestBytes   int64
 	RequestTimeout    time.Duration
@@ -57,6 +61,20 @@ type Config struct {
 type Logging struct {
 	FileEnabled bool
 	FilePath    string
+}
+
+type Debug struct {
+	Enabled               bool
+	PprofEnabled          bool
+	ExpvarEnabled         bool
+	RuntimeMetricsEnabled bool
+}
+
+type SQLite struct {
+	WALEnabled               bool
+	BusyTimeout              time.Duration
+	Synchronous              string
+	CheckpointAfterIngestion bool
 }
 
 type Workspace struct {
@@ -200,11 +218,18 @@ func Load() (Config, error) {
 
 func defaultConfig(configPath string) Config {
 	return Config{
-		ConfigPath:        configPath,
-		CPUCount:          0,
-		HTTPAddr:          defaultHTTPAddr,
-		LadybugPath:       defaultLadybugPath,
-		SQLitePath:        defaultSQLitePath,
+		ConfigPath:  configPath,
+		CPUCount:    0,
+		HTTPAddr:    defaultHTTPAddr,
+		LadybugPath: defaultLadybugPath,
+		SQLitePath:  defaultSQLitePath,
+		SQLite: SQLite{
+			WALEnabled:               true,
+			BusyTimeout:              defaultSQLiteBusyTimeout,
+			Synchronous:              defaultSQLiteSynchronous,
+			CheckpointAfterIngestion: true,
+		},
+		Debug:             Debug{},
 		Logging:           Logging{},
 		MaxRequestBytes:   defaultMaxRequestBytes,
 		RequestTimeout:    defaultRequestTimeout,
@@ -223,7 +248,7 @@ func defaultIngestion() Ingestion {
 		ASTExtractionEnabled:     true,
 		ExtractorCacheEnabled:    true,
 		DebounceInterval:         defaultIngestionDebounceInterval,
-		MaxFileBytes:             defaultIngestionMaxFileBytes,
+		MaxFileBytes:             0,
 		MaxChunkBytes:            defaultIngestionMaxChunkBytes,
 		QueueDepth:               defaultIngestionQueueDepth,
 		WorkerCount:              0,
@@ -246,6 +271,28 @@ func applyEnvOverrides(cfg *Config) error {
 	}
 	cfg.LadybugPath = getenv("MIVIA_LADYBUG_PATH", cfg.LadybugPath)
 	cfg.SQLitePath = getenv("MIVIA_SQLITE_PATH", cfg.SQLitePath)
+	if cfg.Debug.Enabled, err = getenvBool("MIVIA_DEBUG_ENABLED", cfg.Debug.Enabled); err != nil {
+		return err
+	}
+	if cfg.Debug.PprofEnabled, err = getenvBool("MIVIA_DEBUG_PPROF_ENABLED", cfg.Debug.PprofEnabled); err != nil {
+		return err
+	}
+	if cfg.Debug.ExpvarEnabled, err = getenvBool("MIVIA_DEBUG_EXPVAR_ENABLED", cfg.Debug.ExpvarEnabled); err != nil {
+		return err
+	}
+	if cfg.Debug.RuntimeMetricsEnabled, err = getenvBool("MIVIA_DEBUG_RUNTIME_METRICS_ENABLED", cfg.Debug.RuntimeMetricsEnabled); err != nil {
+		return err
+	}
+	if cfg.SQLite.WALEnabled, err = getenvBool("MIVIA_SQLITE_WAL_ENABLED", cfg.SQLite.WALEnabled); err != nil {
+		return err
+	}
+	if cfg.SQLite.BusyTimeout, err = getenvDuration("MIVIA_SQLITE_BUSY_TIMEOUT", cfg.SQLite.BusyTimeout); err != nil {
+		return err
+	}
+	cfg.SQLite.Synchronous = getenv("MIVIA_SQLITE_SYNCHRONOUS", cfg.SQLite.Synchronous)
+	if cfg.SQLite.CheckpointAfterIngestion, err = getenvBool("MIVIA_SQLITE_CHECKPOINT_AFTER_INGESTION", cfg.SQLite.CheckpointAfterIngestion); err != nil {
+		return err
+	}
 	if cfg.Logging.FileEnabled, err = getenvBool("MIVIA_LOG_FILE_ENABLED", cfg.Logging.FileEnabled); err != nil {
 		return err
 	}
@@ -338,6 +385,9 @@ func (cfg *Config) resolveAutoSettings(maxCPU int) {
 	if cfg.Ingestion.PerProjectWorkerLimit <= 0 {
 		cfg.Ingestion.PerProjectWorkerLimit = cfg.Ingestion.GlobalWorkerCount
 	}
+	if cfg.SQLitePath == ":memory:" {
+		cfg.SQLite.WALEnabled = false
+	}
 }
 
 func (cfg Config) Validate() error {
@@ -355,6 +405,12 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.SQLitePath == "" {
 		return errors.New("MIVIA_SQLITE_PATH must not be empty")
+	}
+	if err := cfg.Debug.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.SQLite.Validate(); err != nil {
+		return err
 	}
 	if err := cfg.Logging.Validate(); err != nil {
 		return err
@@ -384,6 +440,25 @@ func (logging Logging) Validate() error {
 	return nil
 }
 
+func (debug Debug) Validate() error {
+	if !debug.Enabled && (debug.PprofEnabled || debug.ExpvarEnabled || debug.RuntimeMetricsEnabled) {
+		return errors.New("MIVIA_DEBUG_ENABLED must be true before enabling debug diagnostics")
+	}
+	return nil
+}
+
+func (sqlite SQLite) Validate() error {
+	if sqlite.BusyTimeout <= 0 {
+		return errors.New("MIVIA_SQLITE_BUSY_TIMEOUT must be positive")
+	}
+	switch strings.ToUpper(strings.TrimSpace(sqlite.Synchronous)) {
+	case "OFF", "NORMAL", "FULL", "EXTRA":
+	default:
+		return errors.New("MIVIA_SQLITE_SYNCHRONOUS must be OFF, NORMAL, FULL, or EXTRA")
+	}
+	return nil
+}
+
 func (ingestion Ingestion) Validate() error {
 	if ingestion.LiveUpdatesEnabled && !ingestion.ContentGraphEnabled {
 		return errors.New("MIVIA_INGESTION_LIVE_UPDATES_ENABLED requires MIVIA_INGESTION_CONTENT_GRAPH_ENABLED")
@@ -397,8 +472,8 @@ func (ingestion Ingestion) Validate() error {
 	if ingestion.DebounceInterval <= 0 {
 		return errors.New("MIVIA_INGESTION_DEBOUNCE_INTERVAL must be positive")
 	}
-	if ingestion.MaxFileBytes <= 0 {
-		return errors.New("MIVIA_INGESTION_MAX_FILE_BYTES must be positive")
+	if ingestion.MaxFileBytes < 0 {
+		return errors.New("MIVIA_INGESTION_MAX_FILE_BYTES must be non-negative")
 	}
 	if ingestion.MaxChunkBytes <= 0 {
 		return errors.New("MIVIA_INGESTION_MAX_CHUNK_BYTES must be positive")
@@ -424,8 +499,8 @@ func (ingestion Ingestion) Validate() error {
 	if ingestion.TaskWarnAfter <= 0 {
 		return errors.New("MIVIA_INGESTION_TASK_WARN_AFTER must be positive")
 	}
-	if ingestion.FullScanBatchSize <= 0 || ingestion.FullScanBatchSize > 5000 {
-		return errors.New("MIVIA_INGESTION_FULL_SCAN_BATCH_SIZE must be positive and <= 5000")
+	if ingestion.FullScanBatchSize <= 0 {
+		return errors.New("MIVIA_INGESTION_FULL_SCAN_BATCH_SIZE must be positive")
 	}
 	if ingestion.SensitiveMarkerPolicy != sensitiveMarkerPolicySkipFile {
 		return fmt.Errorf("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY must be %q", sensitiveMarkerPolicySkipFile)

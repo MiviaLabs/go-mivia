@@ -125,7 +125,7 @@ digest_mode = "content_graph"
 update_policy = "live"
 graph_storage = "in_memory"
 workspace_mode = "edit"
-max_file_bytes = 1024
+max_file_bytes = 0
 max_chunk_bytes = 512
 sensitive_marker_policy = "skip_file"
 `)
@@ -148,8 +148,106 @@ sensitive_marker_policy = "skip_file"
 	if !merged.Workspace.Enabled || project.WorkspaceMode != "edit" {
 		t.Fatalf("unexpected workspace config: %+v", merged)
 	}
-	if project.MaxFileBytes != 1024 || project.MaxChunkBytes != 512 {
+	if project.MaxFileBytes != 0 || project.MaxChunkBytes != 512 {
 		t.Fatalf("unexpected project caps: %+v", project)
+	}
+}
+
+func TestLoadFileConfig_AcceptsLargeFullScanBatchSize(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[ingestion]
+full_scan_batch_size = 20000
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected config to apply: %v", err)
+	}
+	if merged.Ingestion.FullScanBatchSize != 20000 {
+		t.Fatalf("expected full scan batch size 20000, got %d", merged.Ingestion.FullScanBatchSize)
+	}
+}
+
+func TestLoadFileConfig_AcceptsZeroCoverageCapsAsUnlimited(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[ingestion]
+max_file_bytes = 0
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+max_file_bytes = 0
+
+[projects.integrations.jira]
+max_results = 0
+
+[projects.integrations.confluence]
+max_results = 0
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected zero coverage caps to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected zero coverage caps to apply: %v", err)
+	}
+	project := merged.Projects[0]
+	if merged.Ingestion.MaxFileBytes != 0 || project.MaxFileBytes != 0 {
+		t.Fatalf("expected source file caps to be unlimited, got global=%d project=%d", merged.Ingestion.MaxFileBytes, project.MaxFileBytes)
+	}
+	if project.Integrations.Jira == nil || project.Integrations.Jira.MaxResults != 0 {
+		t.Fatalf("expected Jira max results to be unlimited, got %+v", project.Integrations.Jira)
+	}
+	if project.Integrations.Confluence == nil || project.Integrations.Confluence.MaxResults != 0 {
+		t.Fatalf("expected Confluence max results to be unlimited, got %+v", project.Integrations.Confluence)
+	}
+}
+
+func TestLoadFileConfig_IntegrationDefaultsAreUnlimitedWithProviderPageSizes(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "example"
+display_name = "Example"
+root_path = "/absolute/path/to/project"
+
+[projects.integrations.jira]
+project_keys = ["ABC"]
+
+[projects.integrations.confluence]
+space_keys = ["ENG"]
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected integration defaults to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected integration defaults to apply: %v", err)
+	}
+	jira := merged.Projects[0].Integrations.Jira
+	confluence := merged.Projects[0].Integrations.Confluence
+	if jira.MaxResults != 0 || confluence.MaxResults != 0 {
+		t.Fatalf("expected unlimited provider max results, got jira=%d confluence=%d", jira.MaxResults, confluence.MaxResults)
+	}
+	if jira.Polling.InitialPageSize != 100 || jira.Polling.IncrementalPageSize != 100 {
+		t.Fatalf("expected Jira page size defaults 100, got %+v", jira.Polling)
+	}
+	if confluence.Polling.InitialPageSize != 50 || confluence.Polling.IncrementalPageSize != 50 {
+		t.Fatalf("expected Confluence page size defaults 50, got %+v", confluence.Polling)
 	}
 }
 
@@ -615,7 +713,7 @@ func TestLoadFileConfig_RejectsInvalidIngestionValues(t *testing.T) {
 version = 1
 
 [ingestion]
-max_file_bytes = 0
+max_file_bytes = -1
 `,
 			message: "max_file_bytes",
 		},

@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	defaultRichContentMaxItemBytes  = 256 * 1024
 	defaultRichContentMaxChunkBytes = 16 * 1024
 )
 
@@ -230,7 +229,16 @@ func appendTextField(fields []RichContentField, name, label, text string) []Rich
 
 func boundRichFields(fields []RichContentField, maxItemBytes int) []RichContentField {
 	if maxItemBytes <= 0 {
-		maxItemBytes = defaultRichContentMaxItemBytes
+		bounded := make([]RichContentField, 0, len(fields))
+		for _, field := range fields {
+			text := sanitizeRichText(field.Text)
+			if text == "" {
+				continue
+			}
+			field.Text = text
+			bounded = append(bounded, field)
+		}
+		return bounded
 	}
 	remaining := maxItemBytes
 	bounded := make([]RichContentField, 0, len(fields))
@@ -281,13 +289,10 @@ func splitRichText(text string, maxChunkBytes int) ([]string, error) {
 }
 
 func normalizeRichContentOptions(options RichContentOptions) RichContentOptions {
-	if options.MaxItemTextBytes <= 0 {
-		options.MaxItemTextBytes = defaultRichContentMaxItemBytes
-	}
 	if options.MaxChunkBytes <= 0 {
 		options.MaxChunkBytes = defaultRichContentMaxChunkBytes
 	}
-	if options.MaxChunkBytes > options.MaxItemTextBytes {
+	if options.MaxItemTextBytes > 0 && options.MaxChunkBytes > options.MaxItemTextBytes {
 		options.MaxChunkBytes = options.MaxItemTextBytes
 	}
 	return options

@@ -15,6 +15,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
+	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
@@ -37,6 +38,7 @@ type Handler struct {
 	projectIngest projectingestion.API
 	projectWork   projectworkspace.API
 	integrations  *projectintegrations.Service
+	diagnostics   *diagnostics.Service
 	logger        *slog.Logger
 }
 
@@ -68,6 +70,10 @@ func NewHandlerWithResearchProjectsIngestionAndWorkspace(service *service.Servic
 }
 
 func NewHandlerWithResearchProjectsIngestionWorkspaceAndIntegrations(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, integrations *projectintegrations.Service, logger *slog.Logger) http.Handler {
+	return NewHandlerWithResearchProjectsIngestionWorkspaceIntegrationsAndDiagnostics(service, research, projects, projectDigest, projectIngest, projectWork, integrations, nil, logger)
+}
+
+func NewHandlerWithResearchProjectsIngestionWorkspaceIntegrationsAndDiagnostics(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:       service,
 		research:      research,
@@ -76,6 +82,7 @@ func NewHandlerWithResearchProjectsIngestionWorkspaceAndIntegrations(service *se
 		projectIngest: projectIngest,
 		projectWork:   projectWork,
 		integrations:  integrations,
+		diagnostics:   diagnosticsService,
 		logger:        logger,
 	}
 }
@@ -243,11 +250,12 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		"projects.workspace.git_status", "projects_workspace_git_status",
 		"projects.workspace.git_diff", "projects_workspace_git_diff",
 		"projects.workspace.file_read", "projects_workspace_file_read",
-		"projects.workspace.file_edit", "projects_workspace_file_edit":
+		"projects.workspace.file_edit", "projects_workspace_file_edit",
+		"projects.diagnostics.ingestion", "projects_diagnostics_ingestion":
 		if handler.projects == nil {
 			return nil, projectregistry.ErrProjectNotFound
 		}
-		return projectmcpapi.CallToolWithWorkspace(r.Context(), handler.projects, handler.projectDigest, handler.projectIngest, handler.projectWork, params.Name, params.Arguments)
+		return projectmcpapi.CallToolWithWorkspaceAndDiagnostics(r.Context(), handler.projects, handler.projectDigest, handler.projectIngest, handler.projectWork, handler.diagnostics, params.Name, params.Arguments)
 	case "projects.integrations.list", "projects_integrations_list",
 		"projects.integrations.status", "projects_integrations_status",
 		"projects.integrations.poll", "projects_integrations_poll",
@@ -412,7 +420,7 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 		},
 	}
 	if handler.projects != nil {
-		tools = append(tools, projectmcpapi.ToolDefinitionsWithWorkspace(handler.projectIngest != nil, handler.projectWork != nil)...)
+		tools = append(tools, projectmcpapi.ToolDefinitionsWithWorkspaceAndDiagnostics(handler.projectIngest != nil, handler.projectWork != nil, handler.diagnostics != nil)...)
 	}
 	if handler.integrations != nil {
 		tools = append(tools, integrationmcpapi.ToolDefinitions()...)

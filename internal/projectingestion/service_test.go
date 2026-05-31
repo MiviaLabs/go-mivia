@@ -1046,11 +1046,8 @@ func TestIngestProjectBatchesGraphWrites(t *testing.T) {
 	if run.FilesIngested != 3 {
 		t.Fatalf("expected three ingested files, got %#v", run)
 	}
-	if counter.batchCalls < 3 {
-		t.Fatalf("expected per-file graph batches, got %d", counter.batchCalls)
-	}
-	if counter.maxRepoFileNodesPerBatch > 1 {
-		t.Fatalf("full scan graph batch included too many repo files: %d", counter.maxRepoFileNodesPerBatch)
+	if counter.maxRepoFileNodesPerBatch > 2 {
+		t.Fatalf("full scan graph batch exceeded configured size: %d", counter.maxRepoFileNodesPerBatch)
 	}
 }
 

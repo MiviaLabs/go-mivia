@@ -49,6 +49,8 @@ type fileConfig struct {
 	Version   int                  `toml:"version"`
 	Server    *fileServerConfig    `toml:"server"`
 	Storage   *fileStorageConfig   `toml:"storage"`
+	SQLite    *fileSQLiteConfig    `toml:"sqlite"`
+	Debug     *fileDebugConfig     `toml:"debug"`
 	Logging   *fileLoggingConfig   `toml:"logging"`
 	Ingestion *fileIngestionConfig `toml:"ingestion"`
 	Workspace *fileWorkspaceConfig `toml:"workspace"`
@@ -72,6 +74,20 @@ type fileStorageConfig struct {
 type fileLoggingConfig struct {
 	FileEnabled *bool   `toml:"file_enabled"`
 	FilePath    *string `toml:"file_path"`
+}
+
+type fileDebugConfig struct {
+	Enabled               *bool `toml:"enabled"`
+	PprofEnabled          *bool `toml:"pprof_enabled"`
+	ExpvarEnabled         *bool `toml:"expvar_enabled"`
+	RuntimeMetricsEnabled *bool `toml:"runtime_metrics_enabled"`
+}
+
+type fileSQLiteConfig struct {
+	WALEnabled               *bool   `toml:"wal_enabled"`
+	BusyTimeout              *string `toml:"busy_timeout"`
+	Synchronous              *string `toml:"synchronous"`
+	CheckpointAfterIngestion *bool   `toml:"checkpoint_after_ingestion"`
 }
 
 type fileWorkspaceConfig struct {
@@ -219,8 +235,8 @@ func (cfg fileConfig) validate() error {
 		if (project.WorkspaceMode == "read_only" || project.WorkspaceMode == "edit") && project.DigestMode != digestModeContentGraph {
 			return fmt.Errorf("projects[%d].workspace_mode %q requires digest_mode %q", i, project.WorkspaceMode, digestModeContentGraph)
 		}
-		if project.MaxFileBytes != nil && *project.MaxFileBytes <= 0 {
-			return fmt.Errorf("projects[%d].max_file_bytes must be positive", i)
+		if project.MaxFileBytes != nil && *project.MaxFileBytes < 0 {
+			return fmt.Errorf("projects[%d].max_file_bytes must be non-negative", i)
 		}
 		if project.MaxChunkBytes != nil && *project.MaxChunkBytes <= 0 {
 			return fmt.Errorf("projects[%d].max_chunk_bytes must be positive", i)
@@ -321,8 +337,8 @@ func (cfg fileAtlassianIntegrationConfig) validate(prefix string) error {
 	if cfg.IncrementalPageSize != nil && *cfg.IncrementalPageSize <= 0 {
 		return fmt.Errorf("%s.incremental_page_size must be positive", prefix)
 	}
-	if cfg.MaxResults != nil && *cfg.MaxResults <= 0 {
-		return fmt.Errorf("%s.max_results must be positive", prefix)
+	if cfg.MaxResults != nil && *cfg.MaxResults < 0 {
+		return fmt.Errorf("%s.max_results must be non-negative", prefix)
 	}
 	if cfg.Enabled {
 		if err := validateAtlassianSiteURL(prefix+".site_url", cfg.SiteURL); err != nil {
@@ -396,8 +412,8 @@ func validateCredentialRefPair(name, envRef, fileRef string) error {
 }
 
 func (cfg fileIngestionConfig) validate() error {
-	if cfg.MaxFileBytes != nil && *cfg.MaxFileBytes <= 0 {
-		return fmt.Errorf("ingestion.max_file_bytes must be positive")
+	if cfg.MaxFileBytes != nil && *cfg.MaxFileBytes < 0 {
+		return fmt.Errorf("ingestion.max_file_bytes must be non-negative")
 	}
 	if cfg.MaxChunkBytes != nil && *cfg.MaxChunkBytes <= 0 {
 		return fmt.Errorf("ingestion.max_chunk_bytes must be positive")
@@ -413,8 +429,8 @@ func (cfg fileIngestionConfig) validate() error {
 			return fmt.Errorf("ingestion.task_warn_after must be a valid duration")
 		}
 	}
-	if cfg.FullScanBatchSize != nil && (*cfg.FullScanBatchSize <= 0 || *cfg.FullScanBatchSize > 5000) {
-		return fmt.Errorf("ingestion.full_scan_batch_size must be positive and <= 5000")
+	if cfg.FullScanBatchSize != nil && *cfg.FullScanBatchSize <= 0 {
+		return fmt.Errorf("ingestion.full_scan_batch_size must be positive")
 	}
 	if cfg.SensitiveMarkerPolicy != "" && cfg.SensitiveMarkerPolicy != sensitiveMarkerPolicySkipFile {
 		return fmt.Errorf("ingestion.sensitive_marker_policy must be %q", sensitiveMarkerPolicySkipFile)
@@ -455,6 +471,40 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		}
 		if cfg.Storage.SQLitePath != nil {
 			base.SQLitePath = *cfg.Storage.SQLitePath
+		}
+	}
+
+	if cfg.SQLite != nil {
+		if cfg.SQLite.WALEnabled != nil {
+			base.SQLite.WALEnabled = *cfg.SQLite.WALEnabled
+		}
+		if cfg.SQLite.BusyTimeout != nil {
+			var err error
+			base.SQLite.BusyTimeout, err = applyDuration("sqlite.busy_timeout", cfg.SQLite.BusyTimeout, base.SQLite.BusyTimeout)
+			if err != nil {
+				return Config{}, err
+			}
+		}
+		if cfg.SQLite.Synchronous != nil {
+			base.SQLite.Synchronous = strings.ToUpper(strings.TrimSpace(*cfg.SQLite.Synchronous))
+		}
+		if cfg.SQLite.CheckpointAfterIngestion != nil {
+			base.SQLite.CheckpointAfterIngestion = *cfg.SQLite.CheckpointAfterIngestion
+		}
+	}
+
+	if cfg.Debug != nil {
+		if cfg.Debug.Enabled != nil {
+			base.Debug.Enabled = *cfg.Debug.Enabled
+		}
+		if cfg.Debug.PprofEnabled != nil {
+			base.Debug.PprofEnabled = *cfg.Debug.PprofEnabled
+		}
+		if cfg.Debug.ExpvarEnabled != nil {
+			base.Debug.ExpvarEnabled = *cfg.Debug.ExpvarEnabled
+		}
+		if cfg.Debug.RuntimeMetricsEnabled != nil {
+			base.Debug.RuntimeMetricsEnabled = *cfg.Debug.RuntimeMetricsEnabled
 		}
 	}
 
@@ -631,7 +681,7 @@ func (cfg fileJiraIntegrationConfig) toJiraIntegration() JiraIntegration {
 		CredentialRefs:    cfg.toCredentialRefs(),
 		ReadTimeout:       cfg.readTimeout(),
 		MaxResults:        intDefault(cfg.MaxResults, defaultIntegrationMaxResults),
-		Polling:           cfg.toPolling(),
+		Polling:           cfg.toPolling(defaultIntegrationPageSize),
 		ProjectKeys:       normalizeJiraProjectKeys(cfg.ProjectKeys),
 		DefaultFields:     trimStrings(cfg.DefaultFields),
 		AllowedFields:     trimStrings(cfg.AllowedFields),
@@ -650,7 +700,7 @@ func (cfg fileConfluenceIntegrationConfig) toConfluenceIntegration() ConfluenceI
 		CredentialRefs:     cfg.toCredentialRefs(),
 		ReadTimeout:        cfg.readTimeout(),
 		MaxResults:         intDefault(cfg.MaxResults, defaultIntegrationMaxResults),
-		Polling:            cfg.toPolling(),
+		Polling:            cfg.toPolling(defaultConfluencePageSize),
 		SpaceKeys:          trimStrings(cfg.SpaceKeys),
 		BodyRepresentation: defaultString(strings.TrimSpace(cfg.BodyRepresentation), "storage"),
 		IncludeBody:        cfg.IncludeBody,
@@ -672,7 +722,7 @@ func (cfg fileAtlassianIntegrationConfig) toCredentialRefs() AtlassianCredential
 	}
 }
 
-func (cfg fileAtlassianIntegrationConfig) toPolling() IntegrationPolling {
+func (cfg fileAtlassianIntegrationConfig) toPolling(defaultPageSize int) IntegrationPolling {
 	return IntegrationPolling{
 		IngestionEnabled:    cfg.IngestionEnabled,
 		InitialFullSync:     defaultString(strings.TrimSpace(cfg.InitialFullSync), initialFullSyncManual),
@@ -680,8 +730,8 @@ func (cfg fileAtlassianIntegrationConfig) toPolling() IntegrationPolling {
 		EmptyPollSleep:      durationDefault(cfg.EmptyPollSleep, defaultIntegrationEmptyPollSleep),
 		MaxIdleSleep:        durationDefault(cfg.MaxIdleSleep, defaultIntegrationMaxIdleSleep),
 		OverlapWindow:       durationDefault(cfg.OverlapWindow, defaultIntegrationOverlapWindow),
-		InitialPageSize:     intDefault(cfg.InitialPageSize, defaultIntegrationPageSize),
-		IncrementalPageSize: intDefault(cfg.IncrementalPageSize, defaultIntegrationPageSize),
+		InitialPageSize:     intDefault(cfg.InitialPageSize, defaultPageSize),
+		IncrementalPageSize: intDefault(cfg.IncrementalPageSize, defaultPageSize),
 	}
 }
 

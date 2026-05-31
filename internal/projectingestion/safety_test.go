@@ -146,6 +146,14 @@ func TestEvaluateSafety_RejectsBinaryInvalidUTF8AndOversizedContent(t *testing.T
 	}
 }
 
+func TestEvaluateSafety_DefaultMaxFileBytesIsUnlimited(t *testing.T) {
+	content := []byte(strings.Repeat("a", 2<<20))
+	result := EvaluateSafety("src/large.txt", content, DefaultSafetyOptions())
+	if !result.Eligible {
+		t.Fatalf("expected default max_file_bytes to be unlimited, got %#v", result)
+	}
+}
+
 func TestEvaluateSafety_RejectsUnsupportedSensitiveMarkerPolicy(t *testing.T) {
 	result := EvaluateSafety("src/synthetic.txt", []byte("plain\n"), SafetyOptions{
 		SensitiveMarkerPolicy: "store_marker",
