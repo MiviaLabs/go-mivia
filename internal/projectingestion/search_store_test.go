@@ -3,6 +3,7 @@ package projectingestion
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
@@ -78,6 +79,41 @@ func TestSQLiteStore_UpdateSearchFileMetadataBatch(t *testing.T) {
 	}
 	if len(files.Files) != 1 || files.Files[0].RelativePath != "internal/main.go" {
 		t.Fatalf("expected updated path, got %#v", files.Files)
+	}
+}
+
+func TestSQLiteStore_ApplySearchFileBatchDoesNotRewriteFTSForUnchangedFiles(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	state := testSearchFileState("project-1", "cmd/main.go", "sha256:main")
+	if err := store.UpsertSearchFile(ctx, project, state, []Chunk{{Index: 0, Text: "body"}}, nil, nil, nil); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	updated := state
+	updated.ModifiedAt = state.ModifiedAt.Add(time.Hour)
+	if err := store.ApplySearchFileBatch(ctx, project, []fullScanFileResult{{state: updated, unchanged: true}}); err != nil {
+		t.Fatalf("apply unchanged batch: %v", err)
+	}
+
+	var versionModifiedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT modified_at
+		FROM project_search_file_versions
+		WHERE project_id = ? AND file_id = ?`, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)).Scan(&versionModifiedAt); err != nil {
+		t.Fatalf("query version modified_at: %v", err)
+	}
+	if versionModifiedAt != formatTime(updated.ModifiedAt) {
+		t.Fatalf("expected version metadata update, got %q", versionModifiedAt)
+	}
+	var ftsModifiedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT modified_at
+		FROM project_search_chunks_fts
+		WHERE project_id = ? AND file_id = ?`, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)).Scan(&ftsModifiedAt); err != nil {
+		t.Fatalf("query fts modified_at: %v", err)
+	}
+	if ftsModifiedAt != formatTime(state.ModifiedAt) {
+		t.Fatalf("expected unchanged FTS metadata, got %q", ftsModifiedAt)
 	}
 }
 

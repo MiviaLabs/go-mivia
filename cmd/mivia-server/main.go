@@ -181,6 +181,10 @@ func run() error {
 			logger.Info("enqueued restart recovery ingestion scan", slog.String("project_id", project.ID))
 		}
 	}
+	initialScanOnStart := effectiveInitialScanOnStart(cfg.Ingestion.InitialScanOnStart, interruptedIngestionRuns)
+	if cfg.Ingestion.InitialScanOnStart && !initialScanOnStart {
+		logger.Info("skipping live initial ingestion scans because restart recovery scans were queued")
+	}
 	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
 	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
 		return err
@@ -193,7 +197,7 @@ func run() error {
 		GlobalWorkerCount:        cfg.Ingestion.GlobalWorkerCount,
 		PerProjectWorkerLimit:    cfg.Ingestion.PerProjectWorkerLimit,
 		LivePathPriority:         cfg.Ingestion.LivePathPriority,
-		InitialScanOnStart:       cfg.Ingestion.InitialScanOnStart,
+		InitialScanOnStart:       initialScanOnStart,
 		MaxWatchedDirectoryCount: cfg.Ingestion.MaxWatchedDirectoryCount,
 		TaskWarnAfter:            cfg.Ingestion.TaskWarnAfter,
 		Logger:                   logger,
@@ -346,4 +350,11 @@ func (poller confluencePollerByProject) PollConfluence(ctx context.Context, cred
 		return projectintegrations.PollResult{}, projectintegrations.ErrNotFound
 	}
 	return projectPoller.PollConfluence(ctx, credentials, plan)
+}
+
+func effectiveInitialScanOnStart(configured bool, interruptedIngestionRuns int) bool {
+	if interruptedIngestionRuns > 0 {
+		return false
+	}
+	return configured
 }

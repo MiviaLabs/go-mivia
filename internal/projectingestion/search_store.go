@@ -128,7 +128,7 @@ func (store *SQLiteStore) ApplySearchFileBatch(ctx context.Context, project proj
 	for _, result := range results {
 		switch {
 		case result.unchanged:
-			if err := updateSearchFileMetadataTx(ctx, tx, project, result.state); err != nil {
+			if err := upsertSearchFileVersionTx(ctx, tx, project.ID, repoFileID(project.GraphNamespace, result.state.RelativePathHash), result.state); err != nil {
 				return sanitizeSearchError(err)
 			}
 		case result.state.Status == FileStatusEligible:
