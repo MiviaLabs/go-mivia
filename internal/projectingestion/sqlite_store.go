@@ -59,12 +59,16 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		files_seen,
 		files_ingested,
 		files_skipped,
+		files_unchanged,
 		chunks_stored,
 		symbols_stored,
 		error_category,
+		current_phase,
 		started_at,
-		finished_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		finished_at,
+		heartbeat_at,
+		last_progress_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(run_id) DO UPDATE SET
 		project_id = excluded.project_id,
 		trigger = excluded.trigger,
@@ -73,11 +77,15 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		files_seen = excluded.files_seen,
 		files_ingested = excluded.files_ingested,
 		files_skipped = excluded.files_skipped,
+		files_unchanged = excluded.files_unchanged,
 		chunks_stored = excluded.chunks_stored,
 		symbols_stored = excluded.symbols_stored,
 		error_category = excluded.error_category,
+		current_phase = excluded.current_phase,
 		started_at = excluded.started_at,
-		finished_at = excluded.finished_at`,
+		finished_at = excluded.finished_at,
+		heartbeat_at = excluded.heartbeat_at,
+		last_progress_at = excluded.last_progress_at`,
 		run.ID,
 		run.ProjectID,
 		string(run.Trigger),
@@ -86,11 +94,15 @@ func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
 		run.FilesSeen,
 		run.FilesIngested,
 		run.FilesSkipped,
+		run.FilesUnchanged,
 		run.ChunksStored,
 		run.SymbolsStored,
 		run.ErrorCategory,
+		run.CurrentPhase,
 		formatTime(run.StartedAt),
 		formatTime(run.FinishedAt),
+		formatTime(run.HeartbeatAt),
+		formatTime(run.LastProgressAt),
 	); err != nil {
 		return err
 	}
@@ -123,11 +135,15 @@ func (store *SQLiteStore) GetRun(ctx context.Context, projectID string, runID st
 		files_seen,
 		files_ingested,
 		files_skipped,
+		files_unchanged,
 		chunks_stored,
 		symbols_stored,
 		error_category,
+		current_phase,
 		started_at,
-		finished_at
+		finished_at,
+		heartbeat_at,
+		last_progress_at
 	FROM project_ingestion_runs
 	WHERE project_id = ? AND run_id = ?`, projectID, runID)
 	run, err := scanRun(row)
@@ -158,11 +174,15 @@ func (store *SQLiteStore) ListLatestRuns(ctx context.Context, projectID string, 
 		files_seen,
 		files_ingested,
 		files_skipped,
+		files_unchanged,
 		chunks_stored,
 		symbols_stored,
 		error_category,
+		current_phase,
 		started_at,
-		finished_at
+		finished_at,
+		heartbeat_at,
+		last_progress_at
 	FROM project_ingestion_runs
 	WHERE project_id = ?
 	ORDER BY started_at DESC, run_id DESC
@@ -193,6 +213,84 @@ func (store *SQLiteStore) ListLatestRuns(ctx context.Context, projectID string, 
 		runs[i].ReasonCounts = counts
 	}
 	return runs, nil
+}
+
+func (store *SQLiteStore) ListActiveRuns(ctx context.Context, projectID string) ([]Run, error) {
+	rows, err := store.db.QueryContext(ctx, `SELECT
+		run_id,
+		project_id,
+		trigger,
+		mode,
+		status,
+		files_seen,
+		files_ingested,
+		files_skipped,
+		files_unchanged,
+		chunks_stored,
+		symbols_stored,
+		error_category,
+		current_phase,
+		started_at,
+		finished_at,
+		heartbeat_at,
+		last_progress_at
+	FROM project_ingestion_runs
+	WHERE project_id = ?
+		AND status IN (?, ?)
+	ORDER BY started_at ASC, run_id ASC`, projectID, string(RunStatusPending), string(RunStatusRunning))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var runs []Run
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range runs {
+		counts, err := store.loadRunReasonCounts(ctx, projectID, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		runs[i].ReasonCounts = counts
+	}
+	return runs, nil
+}
+
+func (store *SQLiteStore) FailActiveRuns(ctx context.Context, projectID string, errorCategory string, finishedAt time.Time) (int, error) {
+	result, err := store.db.ExecContext(ctx, `UPDATE project_ingestion_runs
+	SET status = ?,
+		error_category = ?,
+		current_phase = ?,
+		finished_at = ?,
+		heartbeat_at = ?,
+		last_progress_at = ?
+	WHERE project_id = ?
+		AND status IN (?, ?)`,
+		string(RunStatusFailed),
+		errorCategory,
+		"interrupted",
+		formatTime(finishedAt),
+		formatTime(finishedAt),
+		formatTime(finishedAt),
+		projectID,
+		string(RunStatusPending),
+		string(RunStatusRunning),
+	)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(rows), nil
 }
 
 func (store *SQLiteStore) loadRunReasonCounts(ctx context.Context, projectID string, runID string) (map[string]int, error) {
@@ -505,6 +603,8 @@ func scanRun(scanner runScanner) (Run, error) {
 	var status string
 	var startedAt string
 	var finishedAt string
+	var heartbeatAt string
+	var lastProgressAt string
 	err := scanner.Scan(
 		&run.ID,
 		&run.ProjectID,
@@ -514,11 +614,15 @@ func scanRun(scanner runScanner) (Run, error) {
 		&run.FilesSeen,
 		&run.FilesIngested,
 		&run.FilesSkipped,
+		&run.FilesUnchanged,
 		&run.ChunksStored,
 		&run.SymbolsStored,
 		&run.ErrorCategory,
+		&run.CurrentPhase,
 		&startedAt,
 		&finishedAt,
+		&heartbeatAt,
+		&lastProgressAt,
 	)
 	if err != nil {
 		return Run{}, err
@@ -530,6 +634,14 @@ func scanRun(scanner runScanner) (Run, error) {
 		return Run{}, err
 	}
 	run.FinishedAt, err = parseOptionalTime(finishedAt)
+	if err != nil {
+		return Run{}, err
+	}
+	run.HeartbeatAt, err = parseOptionalTime(heartbeatAt)
+	if err != nil {
+		return Run{}, err
+	}
+	run.LastProgressAt, err = parseOptionalTime(lastProgressAt)
 	if err != nil {
 		return Run{}, err
 	}

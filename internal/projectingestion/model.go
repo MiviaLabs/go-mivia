@@ -19,20 +19,24 @@ const (
 )
 
 type Run struct {
-	ID            string
-	ProjectID     string
-	Trigger       Trigger
-	Mode          string
-	Status        RunStatus
-	FilesSeen     int
-	FilesIngested int
-	FilesSkipped  int
-	ChunksStored  int
-	SymbolsStored int
-	ErrorCategory string
-	ReasonCounts  map[string]int
-	StartedAt     time.Time
-	FinishedAt    time.Time
+	ID             string
+	ProjectID      string
+	Trigger        Trigger
+	Mode           string
+	Status         RunStatus
+	FilesSeen      int
+	FilesIngested  int
+	FilesSkipped   int
+	FilesUnchanged int
+	ChunksStored   int
+	SymbolsStored  int
+	ErrorCategory  string
+	ReasonCounts   map[string]int
+	CurrentPhase   string
+	StartedAt      time.Time
+	FinishedAt     time.Time
+	HeartbeatAt    time.Time
+	LastProgressAt time.Time
 }
 
 type FileStatus string

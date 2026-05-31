@@ -36,16 +36,24 @@ func TestExtractorCache(t *testing.T) {
 		t.Fatalf("unexpected cache payload: %#v", entry)
 	}
 
-	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+	secondRun, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
 		t.Fatalf("second ingest: %v", err)
+	}
+	if secondRun.FilesUnchanged != 1 || secondRun.FilesIngested != 0 {
+		t.Fatalf("expected unchanged second ingest, got %#v", secondRun)
 	}
 	if extractor.calls != 1 {
 		t.Fatalf("expected cache hit to avoid parse, got %d calls", extractor.calls)
 	}
 
 	extractor.version = "2"
-	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+	versionRun, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
 		t.Fatalf("version-changed ingest: %v", err)
+	}
+	if versionRun.FilesIngested != 1 || versionRun.FilesUnchanged != 0 {
+		t.Fatalf("expected extractor version change to reingest, got %#v", versionRun)
 	}
 	if extractor.calls != 2 {
 		t.Fatalf("expected version change to reparse, got %d calls", extractor.calls)

@@ -39,6 +39,71 @@ func (store *GraphStore) PutEligibleFile(ctx context.Context, project projectreg
 	})
 }
 
+func (store *GraphStore) HasFileVersion(ctx context.Context, project projectregistry.Project, state FileState) (bool, error) {
+	if store == nil || store.graph == nil || state.ContentSHA256 == "" {
+		return false, nil
+	}
+	repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+	versionID := fileVersionID(repoFileID, state.ContentSHA256)
+	node, err := store.graph.GetNode(ctx, "FileVersion", versionID)
+	if errors.Is(err, ladybug.ErrNodeNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if node.Properties["project_id"] != project.ID || node.Properties["repo_file_id"] != repoFileID {
+		return false, nil
+	}
+	if state.SizeBytes == 0 {
+		return true, nil
+	}
+	chunks, err := store.graph.ListNodes(ctx, "ContentChunk", map[string]string{
+		"project_id":      project.ID,
+		"repo_file_id":    repoFileID,
+		"file_version_id": versionID,
+	})
+	if err != nil {
+		return false, err
+	}
+	return len(chunks) > 0, nil
+}
+
+func (store *GraphStore) PutUnchangedFile(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
+	return store.withBatch(ctx, func(store *GraphStore) error {
+		if err := store.putProject(ctx, project); err != nil {
+			return err
+		}
+		if err := store.putRun(ctx, run); err != nil {
+			return err
+		}
+		repoFileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+		if err := store.putRepoFile(ctx, project, repoFileID, state, true); err != nil {
+			return err
+		}
+		if err := store.putRelationship(ctx, "PROJECT_HAS_REPO_FILE", "Project", project.ID, "RepoFile", repoFileID, project.ID); err != nil {
+			return err
+		}
+		if err := store.putRelationship(ctx, "INGESTION_RUN_TOUCHED_FILE", "IngestionRun", run.ID, "RepoFile", repoFileID, project.ID); err != nil {
+			return err
+		}
+		versionID := fileVersionID(repoFileID, state.ContentSHA256)
+		return store.graph.PutNode(ctx, ladybug.Node{
+			Label: "FileVersion",
+			ID:    versionID,
+			Properties: map[string]string{
+				"id":             versionID,
+				"project_id":     project.ID,
+				"repo_file_id":   repoFileID,
+				"content_sha256": state.ContentSHA256,
+				"size_bytes":     strconv.FormatInt(state.SizeBytes, 10),
+				"modified_at":    formatTime(state.ModifiedAt),
+				"present":        strconv.FormatBool(state.Present),
+			},
+		})
+	})
+}
+
 func (store *GraphStore) putEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, headings []Heading) error {
 	if err := store.putProject(ctx, project); err != nil {
 		return err
@@ -1051,19 +1116,23 @@ func (store *GraphStore) putRun(ctx context.Context, run Run) error {
 		Label: "IngestionRun",
 		ID:    run.ID,
 		Properties: map[string]string{
-			"id":             run.ID,
-			"project_id":     run.ProjectID,
-			"trigger":        string(run.Trigger),
-			"mode":           run.Mode,
-			"status":         string(run.Status),
-			"files_seen":     strconv.Itoa(run.FilesSeen),
-			"files_ingested": strconv.Itoa(run.FilesIngested),
-			"files_skipped":  strconv.Itoa(run.FilesSkipped),
-			"chunks_stored":  strconv.Itoa(run.ChunksStored),
-			"symbols_stored": strconv.Itoa(run.SymbolsStored),
-			"error_category": run.ErrorCategory,
-			"started_at":     formatTime(run.StartedAt),
-			"finished_at":    formatTime(run.FinishedAt),
+			"id":               run.ID,
+			"project_id":       run.ProjectID,
+			"trigger":          string(run.Trigger),
+			"mode":             run.Mode,
+			"status":           string(run.Status),
+			"files_seen":       strconv.Itoa(run.FilesSeen),
+			"files_ingested":   strconv.Itoa(run.FilesIngested),
+			"files_skipped":    strconv.Itoa(run.FilesSkipped),
+			"files_unchanged":  strconv.Itoa(run.FilesUnchanged),
+			"chunks_stored":    strconv.Itoa(run.ChunksStored),
+			"symbols_stored":   strconv.Itoa(run.SymbolsStored),
+			"error_category":   run.ErrorCategory,
+			"current_phase":    run.CurrentPhase,
+			"started_at":       formatTime(run.StartedAt),
+			"finished_at":      formatTime(run.FinishedAt),
+			"heartbeat_at":     formatTime(run.HeartbeatAt),
+			"last_progress_at": formatTime(run.LastProgressAt),
 		},
 	})
 }

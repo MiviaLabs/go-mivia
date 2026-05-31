@@ -136,12 +136,16 @@ func (store *SQLiteStore) CreateSyncRun(ctx context.Context, run SyncRun) error 
 		status,
 		items_seen,
 		items_upserted,
+		items_changed,
+		items_unchanged,
+		rich_content_changed,
+		rich_content_unchanged,
 		empty_poll,
 		idle_sleep_ms,
 		error_category,
 		started_at,
 		finished_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.ID,
 		run.ProjectID,
 		string(run.Provider),
@@ -149,6 +153,10 @@ func (store *SQLiteStore) CreateSyncRun(ctx context.Context, run SyncRun) error 
 		string(run.Status),
 		run.ItemsSeen,
 		run.ItemsUpserted,
+		run.ItemsChanged,
+		run.ItemsUnchanged,
+		run.RichContentChanged,
+		run.RichContentUnchanged,
 		boolToInt(run.EmptyPoll),
 		durationMillis(run.IdleSleep),
 		run.ErrorCategory,
@@ -167,6 +175,10 @@ func (store *SQLiteStore) UpdateSyncRun(ctx context.Context, run SyncRun) error 
 	SET status = ?,
 		items_seen = ?,
 		items_upserted = ?,
+		items_changed = ?,
+		items_unchanged = ?,
+		rich_content_changed = ?,
+		rich_content_unchanged = ?,
 		empty_poll = ?,
 		idle_sleep_ms = ?,
 		error_category = ?,
@@ -175,6 +187,10 @@ func (store *SQLiteStore) UpdateSyncRun(ctx context.Context, run SyncRun) error 
 		string(run.Status),
 		run.ItemsSeen,
 		run.ItemsUpserted,
+		run.ItemsChanged,
+		run.ItemsUnchanged,
+		run.RichContentChanged,
+		run.RichContentUnchanged,
 		boolToInt(run.EmptyPoll),
 		durationMillis(run.IdleSleep),
 		run.ErrorCategory,
@@ -205,6 +221,10 @@ func (store *SQLiteStore) GetSyncRun(ctx context.Context, projectID string, prov
 		status,
 		items_seen,
 		items_upserted,
+		items_changed,
+		items_unchanged,
+		rich_content_changed,
+		rich_content_unchanged,
 		empty_poll,
 		idle_sleep_ms,
 		error_category,
@@ -228,6 +248,10 @@ func (store *SQLiteStore) GetActiveSyncRun(ctx context.Context, projectID string
 		status,
 		items_seen,
 		items_upserted,
+		items_changed,
+		items_unchanged,
+		rich_content_changed,
+		rich_content_unchanged,
 		empty_poll,
 		idle_sleep_ms,
 		error_category,
@@ -325,6 +349,14 @@ func (store *SQLiteStore) UpsertItem(ctx context.Context, input ItemMetadataInpu
 	if err != nil {
 		return ItemMetadata{}, err
 	}
+	var previousContentSHA string
+	err = store.db.QueryRowContext(ctx, `SELECT content_sha256
+	FROM project_integration_items
+	WHERE project_id = ? AND provider = ? AND item_id_hash = ?`, item.ProjectID, string(item.Provider), item.ItemIDHash).Scan(&previousContentSHA)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ItemMetadata{}, err
+	}
+	item.Changed = errors.Is(err, sql.ErrNoRows) || previousContentSHA != item.ContentSHA256
 	_, err = store.db.ExecContext(ctx, `INSERT INTO project_integration_items (
 		project_id,
 		provider,
@@ -335,10 +367,13 @@ func (store *SQLiteStore) UpsertItem(ctx context.Context, input ItemMetadataInpu
 		item_type,
 		item_status,
 		item_updated_at,
+		content_sha256,
+		provider_version,
+		provider_etag,
 		first_seen_at,
 		last_seen_at,
 		last_run_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(project_id, provider, item_id_hash) DO UPDATE SET
 		item_id = excluded.item_id,
 		item_key = excluded.item_key,
@@ -346,6 +381,9 @@ func (store *SQLiteStore) UpsertItem(ctx context.Context, input ItemMetadataInpu
 		item_type = excluded.item_type,
 		item_status = excluded.item_status,
 		item_updated_at = excluded.item_updated_at,
+		content_sha256 = excluded.content_sha256,
+		provider_version = excluded.provider_version,
+		provider_etag = excluded.provider_etag,
 		last_seen_at = excluded.last_seen_at,
 		last_run_id = excluded.last_run_id`,
 		item.ProjectID,
@@ -357,6 +395,9 @@ func (store *SQLiteStore) UpsertItem(ctx context.Context, input ItemMetadataInpu
 		item.ItemType,
 		item.ItemStatus,
 		formatTime(item.ItemUpdatedAt),
+		item.ContentSHA256,
+		item.ProviderVersion,
+		item.ProviderETag,
 		formatTime(item.FirstSeenAt),
 		formatTime(item.LastSeenAt),
 		item.LastRunID,
@@ -378,6 +419,9 @@ func (store *SQLiteStore) ListItems(ctx context.Context, projectID string, provi
 		item_type,
 		item_status,
 		item_updated_at,
+		content_sha256,
+		provider_version,
+		provider_etag,
 		first_seen_at,
 		last_seen_at,
 		last_run_id
@@ -446,7 +490,7 @@ func normalizeRun(run SyncRun) (SyncRun, error) {
 	default:
 		return SyncRun{}, ErrInvalidInput
 	}
-	if run.ItemsSeen < 0 || run.ItemsUpserted < 0 || run.IdleSleep < 0 {
+	if run.ItemsSeen < 0 || run.ItemsUpserted < 0 || run.ItemsChanged < 0 || run.ItemsUnchanged < 0 || run.RichContentChanged < 0 || run.RichContentUnchanged < 0 || run.IdleSleep < 0 {
 		return SyncRun{}, ErrInvalidInput
 	}
 	run.ID = strings.TrimSpace(run.ID)
@@ -482,20 +526,24 @@ func itemFromInput(input ItemMetadataInput) (ItemMetadata, error) {
 	if strings.TrimSpace(input.ProjectID) == "" || !validProvider(input.Provider) || strings.TrimSpace(input.ItemID) == "" || strings.TrimSpace(input.ItemType) == "" {
 		return ItemMetadata{}, ErrInvalidInput
 	}
-	return ItemMetadata{
-		ProjectID:     strings.TrimSpace(input.ProjectID),
-		Provider:      input.Provider,
-		ItemID:        strings.TrimSpace(input.ItemID),
-		ItemKey:       strings.TrimSpace(input.ItemKey),
-		ItemIDHash:    optionalHash("item_id", input.ItemID),
-		ItemKeyHash:   optionalHash("item_key", input.ItemKey),
-		ItemType:      strings.TrimSpace(input.ItemType),
-		ItemStatus:    strings.TrimSpace(input.ItemStatus),
-		ItemUpdatedAt: input.ItemUpdatedAt.UTC(),
-		FirstSeenAt:   input.FirstSeenAt.UTC(),
-		LastSeenAt:    input.LastSeenAt.UTC(),
-		LastRunID:     strings.TrimSpace(input.LastRunID),
-	}, nil
+	item := ItemMetadata{
+		ProjectID:       strings.TrimSpace(input.ProjectID),
+		Provider:        input.Provider,
+		ItemID:          strings.TrimSpace(input.ItemID),
+		ItemKey:         strings.TrimSpace(input.ItemKey),
+		ItemIDHash:      optionalHash("item_id", input.ItemID),
+		ItemKeyHash:     optionalHash("item_key", input.ItemKey),
+		ItemType:        strings.TrimSpace(input.ItemType),
+		ItemStatus:      strings.TrimSpace(input.ItemStatus),
+		ItemUpdatedAt:   input.ItemUpdatedAt.UTC(),
+		ProviderVersion: strings.TrimSpace(input.ProviderVersion),
+		ProviderETag:    strings.TrimSpace(input.ProviderETag),
+		FirstSeenAt:     input.FirstSeenAt.UTC(),
+		LastSeenAt:      input.LastSeenAt.UTC(),
+		LastRunID:       strings.TrimSpace(input.LastRunID),
+	}
+	item.ContentSHA256 = itemContentSHA256(item)
+	return item, nil
 }
 
 type scanner interface {
@@ -564,6 +612,10 @@ func scanRun(rows scanner) (SyncRun, error) {
 		&status,
 		&run.ItemsSeen,
 		&run.ItemsUpserted,
+		&run.ItemsChanged,
+		&run.ItemsUnchanged,
+		&run.RichContentChanged,
+		&run.RichContentUnchanged,
 		&emptyPoll,
 		&idleSleepMS,
 		&run.ErrorCategory,
@@ -654,6 +706,9 @@ func scanItem(rows scanner) (ItemMetadata, error) {
 		&item.ItemType,
 		&item.ItemStatus,
 		&itemUpdatedAt,
+		&item.ContentSHA256,
+		&item.ProviderVersion,
+		&item.ProviderETag,
 		&firstSeenAt,
 		&lastSeenAt,
 		&item.LastRunID,
@@ -707,6 +762,28 @@ func optionalHash(kind string, value string) string {
 		return ""
 	}
 	return hashValue(kind, value)
+}
+
+func itemContentSHA256(item ItemMetadata) string {
+	var builder strings.Builder
+	builder.WriteString(item.ProjectID)
+	builder.WriteByte(0)
+	builder.WriteString(string(item.Provider))
+	builder.WriteByte(0)
+	builder.WriteString(item.ItemID)
+	builder.WriteByte(0)
+	builder.WriteString(item.ItemKey)
+	builder.WriteByte(0)
+	builder.WriteString(item.ItemType)
+	builder.WriteByte(0)
+	builder.WriteString(item.ItemStatus)
+	builder.WriteByte(0)
+	builder.WriteString(formatTime(item.ItemUpdatedAt))
+	builder.WriteByte(0)
+	builder.WriteString(item.ProviderVersion)
+	builder.WriteByte(0)
+	builder.WriteString(item.ProviderETag)
+	return hashValue("integration_item_content", builder.String())
 }
 
 func hashValue(kind string, value string) string {

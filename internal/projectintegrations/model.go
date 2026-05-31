@@ -72,18 +72,22 @@ type SourceMetadata struct {
 }
 
 type SyncRun struct {
-	ID            string
-	ProjectID     string
-	Provider      Provider
-	Kind          SyncKind
-	Status        SyncRunStatus
-	ItemsSeen     int
-	ItemsUpserted int
-	EmptyPoll     bool
-	IdleSleep     time.Duration
-	ErrorCategory string
-	StartedAt     time.Time
-	FinishedAt    time.Time
+	ID                   string
+	ProjectID            string
+	Provider             Provider
+	Kind                 SyncKind
+	Status               SyncRunStatus
+	ItemsSeen            int
+	ItemsUpserted        int
+	ItemsChanged         int
+	ItemsUnchanged       int
+	RichContentChanged   int
+	RichContentUnchanged int
+	EmptyPoll            bool
+	IdleSleep            time.Duration
+	ErrorCategory        string
+	StartedAt            time.Time
+	FinishedAt           time.Time
 }
 
 type SyncStateInput struct {
@@ -118,31 +122,37 @@ type SyncState struct {
 }
 
 type ItemMetadataInput struct {
-	ProjectID     string
-	Provider      Provider
-	ItemID        string
-	ItemKey       string
-	ItemType      string
-	ItemStatus    string
-	ItemUpdatedAt time.Time
-	FirstSeenAt   time.Time
-	LastSeenAt    time.Time
-	LastRunID     string
+	ProjectID       string
+	Provider        Provider
+	ItemID          string
+	ItemKey         string
+	ItemType        string
+	ItemStatus      string
+	ItemUpdatedAt   time.Time
+	ProviderVersion string
+	ProviderETag    string
+	FirstSeenAt     time.Time
+	LastSeenAt      time.Time
+	LastRunID       string
 }
 
 type ItemMetadata struct {
-	ProjectID     string
-	Provider      Provider
-	ItemID        string
-	ItemKey       string
-	ItemIDHash    string
-	ItemKeyHash   string
-	ItemType      string
-	ItemStatus    string
-	ItemUpdatedAt time.Time
-	FirstSeenAt   time.Time
-	LastSeenAt    time.Time
-	LastRunID     string
+	ProjectID       string
+	Provider        Provider
+	ItemID          string
+	ItemKey         string
+	ItemIDHash      string
+	ItemKeyHash     string
+	ItemType        string
+	ItemStatus      string
+	ItemUpdatedAt   time.Time
+	ContentSHA256   string
+	ProviderVersion string
+	ProviderETag    string
+	FirstSeenAt     time.Time
+	LastSeenAt      time.Time
+	LastRunID       string
+	Changed         bool
 }
 
 type RichContentPayload struct {

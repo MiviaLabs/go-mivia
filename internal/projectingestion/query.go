@@ -113,20 +113,24 @@ type CallGraphOptions struct {
 }
 
 type RunMetadata struct {
-	ID            string         `json:"id"`
-	ProjectID     string         `json:"project_id"`
-	Trigger       string         `json:"trigger"`
-	Mode          string         `json:"mode"`
-	Status        string         `json:"status"`
-	FilesSeen     int            `json:"files_seen"`
-	FilesIngested int            `json:"files_ingested"`
-	FilesSkipped  int            `json:"files_skipped"`
-	ChunksStored  int            `json:"chunks_stored"`
-	SymbolsStored int            `json:"symbols_stored"`
-	ErrorCategory string         `json:"error_category,omitempty"`
-	ReasonCounts  map[string]int `json:"reason_counts,omitempty"`
-	StartedAt     time.Time      `json:"started_at"`
-	FinishedAt    time.Time      `json:"finished_at"`
+	ID             string         `json:"id"`
+	ProjectID      string         `json:"project_id"`
+	Trigger        string         `json:"trigger"`
+	Mode           string         `json:"mode"`
+	Status         string         `json:"status"`
+	FilesSeen      int            `json:"files_seen"`
+	FilesIngested  int            `json:"files_ingested"`
+	FilesSkipped   int            `json:"files_skipped"`
+	FilesUnchanged int            `json:"files_unchanged"`
+	ChunksStored   int            `json:"chunks_stored"`
+	SymbolsStored  int            `json:"symbols_stored"`
+	ErrorCategory  string         `json:"error_category,omitempty"`
+	ReasonCounts   map[string]int `json:"reason_counts,omitempty"`
+	CurrentPhase   string         `json:"current_phase,omitempty"`
+	StartedAt      time.Time      `json:"started_at"`
+	FinishedAt     time.Time      `json:"finished_at"`
+	HeartbeatAt    time.Time      `json:"heartbeat_at,omitempty"`
+	LastProgressAt time.Time      `json:"last_progress_at,omitempty"`
 }
 
 type FileMetadata struct {
@@ -372,20 +376,24 @@ type FileOutline struct {
 
 func MetadataForRun(run Run) RunMetadata {
 	return RunMetadata{
-		ID:            run.ID,
-		ProjectID:     run.ProjectID,
-		Trigger:       string(run.Trigger),
-		Mode:          run.Mode,
-		Status:        string(run.Status),
-		FilesSeen:     run.FilesSeen,
-		FilesIngested: run.FilesIngested,
-		FilesSkipped:  run.FilesSkipped,
-		ChunksStored:  run.ChunksStored,
-		SymbolsStored: run.SymbolsStored,
-		ErrorCategory: run.ErrorCategory,
-		ReasonCounts:  copyReasonCounts(run.ReasonCounts),
-		StartedAt:     run.StartedAt,
-		FinishedAt:    run.FinishedAt,
+		ID:             run.ID,
+		ProjectID:      run.ProjectID,
+		Trigger:        string(run.Trigger),
+		Mode:           run.Mode,
+		Status:         string(run.Status),
+		FilesSeen:      run.FilesSeen,
+		FilesIngested:  run.FilesIngested,
+		FilesSkipped:   run.FilesSkipped,
+		FilesUnchanged: run.FilesUnchanged,
+		ChunksStored:   run.ChunksStored,
+		SymbolsStored:  run.SymbolsStored,
+		ErrorCategory:  run.ErrorCategory,
+		ReasonCounts:   copyReasonCounts(run.ReasonCounts),
+		CurrentPhase:   run.CurrentPhase,
+		StartedAt:      run.StartedAt,
+		FinishedAt:     run.FinishedAt,
+		HeartbeatAt:    run.HeartbeatAt,
+		LastProgressAt: run.LastProgressAt,
 	}
 }
 

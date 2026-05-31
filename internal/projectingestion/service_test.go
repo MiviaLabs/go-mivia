@@ -1643,11 +1643,17 @@ func TestService_FailInterruptedRunsMarksPendingAndRunningFailed(t *testing.T) {
 	svc, _, _ := newTestService(t, root)
 	project := svc.registry.List()[0]
 	startedAt := time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC)
-	for _, run := range []Run{
-		{ID: "pending", ProjectID: project.ID, Trigger: TriggerManual, Mode: project.DigestMode, Status: RunStatusPending, StartedAt: startedAt},
-		{ID: "running", ProjectID: project.ID, Trigger: TriggerManual, Mode: project.DigestMode, Status: RunStatusRunning, StartedAt: startedAt.Add(time.Minute)},
-		{ID: "completed", ProjectID: project.ID, Trigger: TriggerManual, Mode: project.DigestMode, Status: RunStatusCompleted, StartedAt: startedAt.Add(2 * time.Minute), FinishedAt: startedAt.Add(3 * time.Minute)},
-	} {
+	runs := []Run{
+		{ID: "completed", ProjectID: project.ID, Trigger: TriggerManual, Mode: project.DigestMode, Status: RunStatusCompleted, StartedAt: startedAt.Add(40 * time.Minute), FinishedAt: startedAt.Add(41 * time.Minute)},
+	}
+	for i := 0; i < 30; i++ {
+		status := RunStatusPending
+		if i%2 == 1 {
+			status = RunStatusRunning
+		}
+		runs = append(runs, Run{ID: fmt.Sprintf("active-%02d", i), ProjectID: project.ID, Trigger: TriggerManual, Mode: project.DigestMode, Status: status, StartedAt: startedAt.Add(time.Duration(i) * time.Minute)})
+	}
+	for _, run := range runs {
 		if err := svc.persistRun(ctx, project, run); err != nil {
 			t.Fatalf("persist run %s: %v", run.ID, err)
 		}
@@ -1657,10 +1663,11 @@ func TestService_FailInterruptedRunsMarksPendingAndRunningFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fail interrupted runs: %v", err)
 	}
-	if failed != 2 {
-		t.Fatalf("expected two interrupted runs failed, got %d", failed)
+	if failed != 30 {
+		t.Fatalf("expected thirty interrupted runs failed, got %d", failed)
 	}
-	for _, id := range []string{"pending", "running"} {
+	for i := 0; i < 30; i++ {
+		id := fmt.Sprintf("active-%02d", i)
 		run, err := svc.GetRun(ctx, project.ID, id)
 		if err != nil {
 			t.Fatalf("get run %s: %v", id, err)

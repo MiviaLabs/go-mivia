@@ -98,16 +98,20 @@ type SyncStateStatus struct {
 }
 
 type SyncRunStatusView struct {
-	ID            string
-	Kind          SyncKind
-	Status        SyncRunStatus
-	ItemsSeen     int
-	ItemsUpserted int
-	EmptyPoll     bool
-	IdleSleep     time.Duration
-	ErrorCategory string
-	StartedAt     time.Time
-	FinishedAt    time.Time
+	ID                   string
+	Kind                 SyncKind
+	Status               SyncRunStatus
+	ItemsSeen            int
+	ItemsUpserted        int
+	ItemsChanged         int
+	ItemsUnchanged       int
+	RichContentChanged   int
+	RichContentUnchanged int
+	EmptyPoll            bool
+	IdleSleep            time.Duration
+	ErrorCategory        string
+	StartedAt            time.Time
+	FinishedAt           time.Time
 }
 
 type ProviderPollStatus struct {
@@ -464,16 +468,20 @@ func syncStateStatus(state SyncState) SyncStateStatus {
 
 func syncRunStatusView(run SyncRun) SyncRunStatusView {
 	return SyncRunStatusView{
-		ID:            run.ID,
-		Kind:          run.Kind,
-		Status:        run.Status,
-		ItemsSeen:     run.ItemsSeen,
-		ItemsUpserted: run.ItemsUpserted,
-		EmptyPoll:     run.EmptyPoll,
-		IdleSleep:     run.IdleSleep,
-		ErrorCategory: run.ErrorCategory,
-		StartedAt:     run.StartedAt,
-		FinishedAt:    run.FinishedAt,
+		ID:                   run.ID,
+		Kind:                 run.Kind,
+		Status:               run.Status,
+		ItemsSeen:            run.ItemsSeen,
+		ItemsUpserted:        run.ItemsUpserted,
+		ItemsChanged:         run.ItemsChanged,
+		ItemsUnchanged:       run.ItemsUnchanged,
+		RichContentChanged:   run.RichContentChanged,
+		RichContentUnchanged: run.RichContentUnchanged,
+		EmptyPoll:            run.EmptyPoll,
+		IdleSleep:            run.IdleSleep,
+		ErrorCategory:        run.ErrorCategory,
+		StartedAt:            run.StartedAt,
+		FinishedAt:           run.FinishedAt,
 	}
 }
 

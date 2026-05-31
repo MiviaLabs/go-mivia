@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -39,6 +40,77 @@ func TestLadybugMetadataStore_DeduplicatesByHash(t *testing.T) {
 
 	if second.ID != first.ID {
 		t.Fatalf("expected duplicate hash to return existing source, got %s want %s", second.ID, first.ID)
+	}
+}
+
+func TestLadybugMetadataStore_DeduplicatesByHashAfterStoreRebuild(t *testing.T) {
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(context.Background(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	firstStore := store.NewLadybugMetadataStore(graph)
+	source := provider.SourceMetadata{
+		ID:            "source_one",
+		ResearchRunID: "research_run_test",
+		ArtifactRef:   "fixture://source",
+		SourceType:    "web_fixture",
+		Summary:       "Redacted summary",
+		ContentHash:   "sha256:rebuilt",
+		RetrievedAt:   time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
+	}
+	first, err := firstStore.SaveSource(context.Background(), source)
+	if err != nil {
+		t.Fatalf("save source: %v", err)
+	}
+
+	restartedStore := store.NewLadybugMetadataStore(graph)
+	source.ID = "source_two"
+	second, err := restartedStore.SaveSource(context.Background(), source)
+	if err != nil {
+		t.Fatalf("save duplicate source after rebuild: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected rebuilt hash index to return existing source, got %s want %s", second.ID, first.ID)
+	}
+}
+
+func TestLadybugMetadataStore_DeduplicatesByHashAfterPersistentGraphReopen(t *testing.T) {
+	ctx := context.Background()
+	graphPath := filepath.Join(t.TempDir(), "graph.lbug")
+	graph, err := ladybug.OpenPersistentGraph(graphPath)
+	if err != nil {
+		t.Fatalf("open graph: %v", err)
+	}
+	if err := graph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	firstStore := store.NewLadybugMetadataStore(graph)
+	source := provider.SourceMetadata{
+		ID:            "source_one",
+		ResearchRunID: "research_run_test",
+		ArtifactRef:   "fixture://source",
+		SourceType:    "web_fixture",
+		Summary:       "Redacted summary",
+		ContentHash:   "sha256:persistent",
+		RetrievedAt:   time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
+	}
+	first, err := firstStore.SaveSource(ctx, source)
+	if err != nil {
+		t.Fatalf("save source: %v", err)
+	}
+
+	reopened, err := ladybug.OpenPersistentGraph(graphPath)
+	if err != nil {
+		t.Fatalf("reopen graph: %v", err)
+	}
+	restartedStore := store.NewLadybugMetadataStore(reopened)
+	source.ID = "source_two"
+	second, err := restartedStore.SaveSource(ctx, source)
+	if err != nil {
+		t.Fatalf("save duplicate source after persistent reopen: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected persistent hash index to return existing source, got %s want %s", second.ID, first.ID)
 	}
 }
 

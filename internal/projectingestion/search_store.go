@@ -19,6 +19,8 @@ type searchMutationStore interface {
 	DeleteSearchProject(context.Context, string) error
 	MarkSearchIndexDegraded(context.Context, string, string) error
 	ClearSearchIndexDegraded(context.Context, string) error
+	HasSearchFileVersion(context.Context, projectregistry.Project, FileState) (bool, error)
+	UpdateSearchFileMetadata(context.Context, projectregistry.Project, FileState) error
 }
 
 type searchRepairStore interface {
@@ -164,6 +166,68 @@ func (store *SQLiteStore) UpsertSearchFile(ctx context.Context, project projectr
 			strconv.Itoa(call.StartByte), strconv.Itoa(call.EndByte), strconv.Itoa(call.StartColumn), strconv.Itoa(call.EndColumn),
 			status, confidence); err != nil {
 			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (store *SQLiteStore) HasSearchFileVersion(ctx context.Context, project projectregistry.Project, state FileState) (bool, error) {
+	if state.Status != FileStatusEligible || !state.Present || !state.RelativePathSafe || state.ContentSHA256 == "" {
+		return false, nil
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, sanitizeSearchError(err)
+	}
+	defer tx.Rollback()
+	fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+	fileCounts, err := searchFileCountsByID(ctx, tx, project.ID)
+	if err != nil {
+		return false, sanitizeSearchError(err)
+	}
+	if fileCounts[fileID] != 1 {
+		return false, nil
+	}
+	needsRepair, err := searchFileNeedsRepair(ctx, tx, project.ID, fileID, state)
+	if err != nil {
+		return false, sanitizeSearchError(err)
+	}
+	return !needsRepair, nil
+}
+
+func (store *SQLiteStore) UpdateSearchFileMetadata(ctx context.Context, project projectregistry.Project, state FileState) error {
+	fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
+	extension := strings.ToLower(path.Ext(state.RelativePath))
+	modifiedAt := formatTime(state.ModifiedAt)
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return sanitizeSearchError(err)
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"project_search_files_fts", "project_search_chunks_fts"} {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s
+			SET relative_path = ?, extension = ?, size_bytes = ?, modified_at = ?
+			WHERE project_id = ? AND file_id = ?`, table),
+			state.RelativePath,
+			extension,
+			strconv.FormatInt(state.SizeBytes, 10),
+			modifiedAt,
+			project.ID,
+			fileID,
+		); err != nil {
+			return sanitizeSearchError(err)
+		}
+	}
+	for _, table := range []string{"project_search_symbols_fts", "project_search_references_fts", "project_search_calls_fts"} {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s
+			SET relative_path = ?, extension = ?
+			WHERE project_id = ? AND file_id = ?`, table),
+			state.RelativePath,
+			extension,
+			project.ID,
+			fileID,
+		); err != nil {
+			return sanitizeSearchError(err)
 		}
 	}
 	return tx.Commit()

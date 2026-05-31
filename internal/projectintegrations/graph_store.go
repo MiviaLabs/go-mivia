@@ -30,6 +30,7 @@ type RichContentGraphResult struct {
 	ArtifactID    string
 	ChunksWritten int
 	ContentSHA256 string
+	Changed       bool
 }
 
 type RichContentReadOptions struct {
@@ -107,6 +108,21 @@ func (store *RichContentGraphStore) PutRichContentItem(ctx context.Context, item
 		ArtifactID:    artifactID,
 		ChunksWritten: len(graphChunks),
 		ContentSHA256: contentSHA,
+		Changed:       true,
+	}
+	existing, err := store.graph.GetNode(ctx, "IntegrationArtifact", artifactID)
+	if err == nil && existing.Properties["content_sha256"] == contentSHA {
+		if err := store.withBatch(ctx, func(store *RichContentGraphStore) error {
+			return store.putRichContentArtifactMetadata(ctx, artifactID, contentSHA, item, len(graphChunks))
+		}); err != nil {
+			return RichContentGraphResult{}, err
+		}
+		result.ChunksWritten = 0
+		result.Changed = false
+		return result, nil
+	}
+	if err != nil && !errors.Is(err, ladybug.ErrNodeNotFound) {
+		return RichContentGraphResult{}, err
 	}
 	if err := store.withBatch(ctx, func(store *RichContentGraphStore) error {
 		return store.putRichContentItem(ctx, artifactID, contentSHA, item, graphChunks)
@@ -255,25 +271,7 @@ func (store *RichContentGraphStore) putRichContentItem(ctx context.Context, arti
 	}); err != nil {
 		return err
 	}
-	if err := store.graph.PutNode(ctx, ladybug.Node{
-		Label: "IntegrationArtifact",
-		ID:    artifactID,
-		Properties: map[string]string{
-			"id":             artifactID,
-			"project_id":     item.ProjectID,
-			"provider":       string(item.Provider),
-			"item_id":        item.ItemID,
-			"item_key":       item.ItemKey,
-			"item_type":      item.ItemType,
-			"field_count":    strconv.Itoa(len(item.Fields)),
-			"chunk_count":    strconv.Itoa(len(chunks)),
-			"content_sha256": contentSHA,
-			"updated_at":     formatIntegrationGraphTime(item.UpdatedAt),
-		},
-	}); err != nil {
-		return err
-	}
-	if err := store.putRelationship(ctx, "PROJECT_HAS_INTEGRATION_ARTIFACT", "Project", item.ProjectID, "IntegrationArtifact", artifactID, item.ProjectID); err != nil {
+	if err := store.putRichContentArtifactMetadata(ctx, artifactID, contentSHA, item, len(chunks)); err != nil {
 		return err
 	}
 	for index, chunk := range chunks {
@@ -309,6 +307,28 @@ func (store *RichContentGraphStore) putRichContentItem(ctx context.Context, arti
 		}
 	}
 	return nil
+}
+
+func (store *RichContentGraphStore) putRichContentArtifactMetadata(ctx context.Context, artifactID string, contentSHA string, item RichContentItem, chunkCount int) error {
+	if err := store.graph.PutNode(ctx, ladybug.Node{
+		Label: "IntegrationArtifact",
+		ID:    artifactID,
+		Properties: map[string]string{
+			"id":             artifactID,
+			"project_id":     item.ProjectID,
+			"provider":       string(item.Provider),
+			"item_id":        item.ItemID,
+			"item_key":       item.ItemKey,
+			"item_type":      item.ItemType,
+			"field_count":    strconv.Itoa(len(item.Fields)),
+			"chunk_count":    strconv.Itoa(chunkCount),
+			"content_sha256": contentSHA,
+			"updated_at":     formatIntegrationGraphTime(item.UpdatedAt),
+		},
+	}); err != nil {
+		return err
+	}
+	return store.putRelationship(ctx, "PROJECT_HAS_INTEGRATION_ARTIFACT", "Project", item.ProjectID, "IntegrationArtifact", artifactID, item.ProjectID)
 }
 
 func (store *RichContentGraphStore) putRelationship(ctx context.Context, relType string, fromLabel string, fromID string, toLabel string, toID string, projectID string) error {

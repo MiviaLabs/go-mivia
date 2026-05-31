@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 12
+const Version = 14
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -64,11 +64,15 @@ var statements = []string{
 		files_seen INTEGER NOT NULL DEFAULT 0 CHECK (files_seen >= 0),
 		files_ingested INTEGER NOT NULL DEFAULT 0 CHECK (files_ingested >= 0),
 		files_skipped INTEGER NOT NULL DEFAULT 0 CHECK (files_skipped >= 0),
+		files_unchanged INTEGER NOT NULL DEFAULT 0 CHECK (files_unchanged >= 0),
 		chunks_stored INTEGER NOT NULL DEFAULT 0 CHECK (chunks_stored >= 0),
 		symbols_stored INTEGER NOT NULL DEFAULT 0 CHECK (symbols_stored >= 0),
 		error_category TEXT NOT NULL,
+		current_phase TEXT NOT NULL DEFAULT '',
 		started_at TEXT NOT NULL,
 		finished_at TEXT NOT NULL,
+		heartbeat_at TEXT NOT NULL DEFAULT '',
+		last_progress_at TEXT NOT NULL DEFAULT '',
 		FOREIGN KEY(project_id) REFERENCES configured_projects(id)
 	)`,
 	`CREATE TABLE IF NOT EXISTS project_ingestion_run_reason_counts (
@@ -170,6 +174,10 @@ var statements = []string{
 		status TEXT NOT NULL,
 		items_seen INTEGER NOT NULL DEFAULT 0 CHECK (items_seen >= 0),
 		items_upserted INTEGER NOT NULL DEFAULT 0 CHECK (items_upserted >= 0),
+		items_changed INTEGER NOT NULL DEFAULT 0 CHECK (items_changed >= 0),
+		items_unchanged INTEGER NOT NULL DEFAULT 0 CHECK (items_unchanged >= 0),
+		rich_content_changed INTEGER NOT NULL DEFAULT 0 CHECK (rich_content_changed >= 0),
+		rich_content_unchanged INTEGER NOT NULL DEFAULT 0 CHECK (rich_content_unchanged >= 0),
 		empty_poll INTEGER NOT NULL DEFAULT 0 CHECK (empty_poll IN (0, 1)),
 		idle_sleep_ms INTEGER NOT NULL DEFAULT 0 CHECK (idle_sleep_ms >= 0),
 		error_category TEXT NOT NULL DEFAULT '',
@@ -209,6 +217,9 @@ var statements = []string{
 		item_type TEXT NOT NULL,
 		item_status TEXT NOT NULL DEFAULT '',
 		item_updated_at TEXT NOT NULL DEFAULT '',
+		content_sha256 TEXT NOT NULL DEFAULT '',
+		provider_version TEXT NOT NULL DEFAULT '',
+		provider_etag TEXT NOT NULL DEFAULT '',
 		first_seen_at TEXT NOT NULL,
 		last_seen_at TEXT NOT NULL,
 		last_run_id TEXT NOT NULL DEFAULT '',
@@ -216,7 +227,8 @@ var statements = []string{
 		FOREIGN KEY(project_id, provider) REFERENCES project_integration_sources(project_id, provider),
 		CHECK (provider IN ('jira', 'confluence')),
 		CHECK (item_id_hash LIKE 'sha256:%'),
-		CHECK (item_key_hash = '' OR item_key_hash LIKE 'sha256:%')
+		CHECK (item_key_hash = '' OR item_key_hash LIKE 'sha256:%'),
+		CHECK (content_sha256 = '' OR content_sha256 LIKE 'sha256:%')
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_project_integration_sources_project_provider
 		ON project_integration_sources(project_id, provider)`,
@@ -358,6 +370,25 @@ var extractorCacheColumns = []columnDefinition{
 	},
 }
 
+var ingestionRunColumns = []columnDefinition{
+	{
+		Name:       "files_unchanged",
+		Definition: "files_unchanged INTEGER NOT NULL DEFAULT 0 CHECK (files_unchanged >= 0)",
+	},
+	{
+		Name:       "current_phase",
+		Definition: "current_phase TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "heartbeat_at",
+		Definition: "heartbeat_at TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "last_progress_at",
+		Definition: "last_progress_at TEXT NOT NULL DEFAULT ''",
+	},
+}
+
 var integrationSyncStateColumns = []columnDefinition{
 	{
 		Name:       "cursor",
@@ -373,6 +404,37 @@ var integrationItemColumns = []columnDefinition{
 	{
 		Name:       "item_key",
 		Definition: "item_key TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "content_sha256",
+		Definition: "content_sha256 TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "provider_version",
+		Definition: "provider_version TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "provider_etag",
+		Definition: "provider_etag TEXT NOT NULL DEFAULT ''",
+	},
+}
+
+var integrationSyncRunColumns = []columnDefinition{
+	{
+		Name:       "items_changed",
+		Definition: "items_changed INTEGER NOT NULL DEFAULT 0 CHECK (items_changed >= 0)",
+	},
+	{
+		Name:       "items_unchanged",
+		Definition: "items_unchanged INTEGER NOT NULL DEFAULT 0 CHECK (items_unchanged >= 0)",
+	},
+	{
+		Name:       "rich_content_changed",
+		Definition: "rich_content_changed INTEGER NOT NULL DEFAULT 0 CHECK (rich_content_changed >= 0)",
+	},
+	{
+		Name:       "rich_content_unchanged",
+		Definition: "rich_content_unchanged INTEGER NOT NULL DEFAULT 0 CHECK (rich_content_unchanged >= 0)",
 	},
 }
 
@@ -393,7 +455,13 @@ func Bootstrap(ctx context.Context, db *sql.DB) error {
 	if err := ensureColumns(ctx, db, "project_extractor_cache", extractorCacheColumns); err != nil {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
 	}
+	if err := ensureColumns(ctx, db, "project_ingestion_runs", ingestionRunColumns); err != nil {
+		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
+	}
 	if err := ensureColumns(ctx, db, "project_integration_sync_state", integrationSyncStateColumns); err != nil {
+		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
+	}
+	if err := ensureColumns(ctx, db, "project_integration_sync_runs", integrationSyncRunColumns); err != nil {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
 	}
 	if err := ensureColumns(ctx, db, "project_integration_items", integrationItemColumns); err != nil {

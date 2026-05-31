@@ -140,10 +140,29 @@ func TestBootstrap_ProjectIntegrationTablesDoNotExposeCredentialOrContentColumns
 			"label",
 			"property",
 			"payload",
-			"content",
 			"root",
 		)
 	}
+}
+
+func TestBootstrap_ProjectIntegrationUnchangedSkipColumnsExist(t *testing.T) {
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := schema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+
+	assertColumn(t, db.SQLDB(), "project_integration_sync_runs", "items_changed")
+	assertColumn(t, db.SQLDB(), "project_integration_sync_runs", "items_unchanged")
+	assertColumn(t, db.SQLDB(), "project_integration_sync_runs", "rich_content_changed")
+	assertColumn(t, db.SQLDB(), "project_integration_sync_runs", "rich_content_unchanged")
+	assertColumn(t, db.SQLDB(), "project_integration_items", "content_sha256")
+	assertColumn(t, db.SQLDB(), "project_integration_items", "provider_version")
+	assertColumn(t, db.SQLDB(), "project_integration_items", "provider_etag")
 }
 
 func TestBootstrap_ConfiguredProjectIngestionColumnsExist(t *testing.T) {

@@ -37,7 +37,7 @@ func TestRunner_RunProviderPollCompletesAndStoresApprovedProviderIdentifiers(t *
 	if err != nil {
 		t.Fatalf("run poll: %v", err)
 	}
-	if result.Run.Status != SyncRunStatusCompleted || result.Run.ItemsSeen != 2 || result.Run.ItemsUpserted != 2 || result.Run.EmptyPoll {
+	if result.Run.Status != SyncRunStatusCompleted || result.Run.ItemsSeen != 2 || result.Run.ItemsUpserted != 2 || result.Run.ItemsChanged != 2 || result.Run.ItemsUnchanged != 0 || result.Run.EmptyPoll {
 		t.Fatalf("unexpected run: %#v", result.Run)
 	}
 	if result.State.LastFullSyncAt.IsZero() || result.State.EmptyPollCount != 0 || result.State.CurrentIdleSleep != 0 {
@@ -59,6 +59,36 @@ func TestRunner_RunProviderPollCompletesAndStoresApprovedProviderIdentifiers(t *
 	assertTableOmits(t, db, "project_integration_sources", "https://example.atlassian.net", "ACME", "ENG")
 	assertTableOmits(t, db, "project_integration_items", "FORBIDDEN_REMOTE_BODY_MARKER", "page body", "comment text", testEmailValue, testAPIValue)
 	assertNoSensitiveText(t, fmt.Sprintf("%#v", result), testEmailValue, testAPIValue, "10001", "ACME-1", "FORBIDDEN_REMOTE_BODY_MARKER")
+}
+
+func TestRunner_RunProviderPollCountsUnchangedOverlapItems(t *testing.T) {
+	ctx := context.Background()
+	recorder, _ := newRecordingSQLiteStore(t)
+	items := []PollItem{
+		{ID: "10001", Key: "ACME-1", Type: "issue", Status: "updated", UpdatedAt: testTime()},
+		{ID: "10002", Key: "ACME-2", Type: "issue", Status: "updated", UpdatedAt: testTime()},
+	}
+	runner := newTestRunner(t, recorder, runnerTestProject(), RunnerOptions{
+		JiraClient: &fakeJiraPoller{result: PollResult{Items: items}},
+		Now:        newStepClock(testTime()).Now,
+		NewRunID:   fixedRunID("run-first"),
+	})
+	first, err := runner.RunProviderPoll(ctx, "project-1", ProviderJira, SyncKindInitialFull)
+	if err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+	if first.Run.ItemsChanged != 2 || first.Run.ItemsUnchanged != 0 {
+		t.Fatalf("unexpected first counters: %#v", first.Run)
+	}
+
+	runner.newRunID = fixedRunID("run-second")
+	second, err := runner.RunProviderPoll(ctx, "project-1", ProviderJira, SyncKindIncremental)
+	if err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+	if second.Run.ItemsSeen != 2 || second.Run.ItemsUpserted != 0 || second.Run.ItemsChanged != 0 || second.Run.ItemsUnchanged != 2 {
+		t.Fatalf("unexpected unchanged counters: %#v", second.Run)
+	}
 }
 
 func TestRunner_RunProviderPollPersistsApprovedCursor(t *testing.T) {
@@ -110,6 +140,9 @@ func TestRunner_RunProviderPollWritesRichContentToGraphStore(t *testing.T) {
 	}
 	if result.Run.Status != SyncRunStatusCompleted || len(richStore.items) != 1 {
 		t.Fatalf("expected completed run with rich content write, run=%#v writes=%#v", result.Run, richStore.items)
+	}
+	if result.Run.RichContentChanged != 1 || result.Run.RichContentUnchanged != 0 {
+		t.Fatalf("unexpected rich content counters: %#v", result.Run)
 	}
 	if richStore.items[0].ItemID != "10001" || richStore.chunks[0][0].Text != "Safe summary" {
 		t.Fatalf("unexpected rich content write: items=%#v chunks=%#v", richStore.items, richStore.chunks)
@@ -378,7 +411,7 @@ func (store *fakeRichContentStore) PutRichContentItem(_ context.Context, item Ri
 	}
 	store.items = append(store.items, item)
 	store.chunks = append(store.chunks, append([]RichContentChunk(nil), chunks...))
-	return RichContentGraphResult{ArtifactID: "artifact-" + item.ItemID, ChunksWritten: len(chunks), ContentSHA256: "sha256:test"}, nil
+	return RichContentGraphResult{ArtifactID: "artifact-" + item.ItemID, ChunksWritten: len(chunks), ContentSHA256: "sha256:test", Changed: true}, nil
 }
 
 type stepClock struct {

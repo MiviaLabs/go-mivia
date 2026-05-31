@@ -100,7 +100,7 @@ func run() error {
 		return err
 	}
 	agentStore := store.NewLadybugStore(graph)
-	researchService := research.NewService(researchstore.NewLadybugMetadataStore(graph))
+	researchService := research.NewService(researchstore.NewLadybugMetadataStore(projectPersistentGraph))
 	projectDigestService := projectregistry.NewDigestService(projectRegistry, projectGraph)
 	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(projectGraph), projectingestion.NewSQLiteStore(sqliteDB.SQLDB()))
 	projectIngestionService.SetFullScanBatchSize(cfg.Ingestion.FullScanBatchSize)
@@ -133,9 +133,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	interruptedIngestionRuns := 0
 	if failed, err := projectIngestionService.FailInterruptedRuns(ctx, "server_restarted"); err != nil {
 		return err
 	} else if failed > 0 {
+		interruptedIngestionRuns = failed
 		logger.Warn("failed interrupted ingestion runs after server restart", slog.Int("run_count", failed))
 	}
 	projectIngestionScheduler := projectingestion.NewScheduler(projectIngestionService, projectingestion.SchedulerOptions{
@@ -146,6 +148,18 @@ func run() error {
 	})
 	if err := projectIngestionScheduler.Start(ctx); err != nil {
 		return err
+	}
+	if interruptedIngestionRuns > 0 {
+		for _, project := range projectRegistry.List() {
+			if !project.Enabled || project.DigestMode != projectregistry.DigestModeContentGraph {
+				continue
+			}
+			if _, err := projectIngestionScheduler.SubmitFullScanAsync(ctx, project.ID, projectingestion.TriggerManual); err != nil {
+				logger.Warn("failed to enqueue restart recovery ingestion scan", slog.String("project_id", project.ID), slog.String("error_category", "restart_recovery_enqueue_failed"))
+				continue
+			}
+			logger.Info("enqueued restart recovery ingestion scan", slog.String("project_id", project.ID))
+		}
 	}
 	configStore := store.NewSQLiteConfigStore(sqliteDB.SQLDB())
 	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {

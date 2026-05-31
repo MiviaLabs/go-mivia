@@ -62,6 +62,10 @@ func TestSQLiteStore_SyncRunLifecycle(t *testing.T) {
 	run.Status = SyncRunStatusNoOp
 	run.EmptyPoll = true
 	run.IdleSleep = 2 * time.Minute
+	run.ItemsChanged = 1
+	run.ItemsUnchanged = 2
+	run.RichContentChanged = 3
+	run.RichContentUnchanged = 4
 	run.FinishedAt = testTime().Add(time.Minute)
 	if err := store.UpdateSyncRun(ctx, run); err != nil {
 		t.Fatalf("update run: %v", err)
@@ -71,7 +75,7 @@ func TestSQLiteStore_SyncRunLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
-	if got.Status != SyncRunStatusNoOp || !got.EmptyPoll || got.IdleSleep != 2*time.Minute {
+	if got.Status != SyncRunStatusNoOp || !got.EmptyPoll || got.IdleSleep != 2*time.Minute || got.ItemsChanged != 1 || got.ItemsUnchanged != 2 || got.RichContentChanged != 3 || got.RichContentUnchanged != 4 {
 		t.Fatalf("unexpected run: %#v", got)
 	}
 	if _, err := store.GetSyncRun(ctx, "project-1", ProviderJira, "missing"); !errors.Is(err, ErrNotFound) {
@@ -170,10 +174,58 @@ func TestSQLiteStore_UpsertItemStoresApprovedRawIDsAndHashesWithoutRichContent(t
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}
-	if len(items) != 1 || items[0].ItemID != "10001" || items[0].ItemKey != "ACME-123" || items[0].ItemIDHash != item.ItemIDHash || items[0].ItemType != "issue" {
+	if len(items) != 1 || items[0].ItemID != "10001" || items[0].ItemKey != "ACME-123" || items[0].ItemIDHash != item.ItemIDHash || items[0].ItemType != "issue" || items[0].ContentSHA256 == "" {
 		t.Fatalf("unexpected items: %#v", items)
 	}
 	assertTableOmits(t, db, "project_integration_items", "page body", "comment text", "MIVIA_ATLASSIAN", "/home/mac/secret", "api-token")
+}
+
+func TestSQLiteStore_UpsertItemReportsUnchangedContent(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t)
+	if _, err := store.UpsertSource(ctx, testSourceInput()); err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	input := ItemMetadataInput{
+		ProjectID:       "project-1",
+		Provider:        ProviderJira,
+		ItemID:          "10001",
+		ItemKey:         "ACME-123",
+		ItemType:        "issue",
+		ItemStatus:      "updated",
+		ItemUpdatedAt:   testTime(),
+		ProviderVersion: "7",
+		ProviderETag:    "etag-1",
+		FirstSeenAt:     testTime(),
+		LastSeenAt:      testTime(),
+		LastRunID:       "run-1",
+	}
+	first, err := store.UpsertItem(ctx, input)
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if !first.Changed || first.ContentSHA256 == "" {
+		t.Fatalf("expected first upsert to be changed: %#v", first)
+	}
+
+	input.LastSeenAt = testTime().Add(time.Minute)
+	input.LastRunID = "run-2"
+	second, err := store.UpsertItem(ctx, input)
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if second.Changed || second.ContentSHA256 != first.ContentSHA256 {
+		t.Fatalf("expected unchanged content hash: first=%#v second=%#v", first, second)
+	}
+
+	input.ItemStatus = "done"
+	third, err := store.UpsertItem(ctx, input)
+	if err != nil {
+		t.Fatalf("third upsert: %v", err)
+	}
+	if !third.Changed || third.ContentSHA256 == first.ContentSHA256 {
+		t.Fatalf("expected status change to change content hash: first=%#v third=%#v", first, third)
+	}
 }
 
 func TestSQLiteStore_RejectsInvalidInputs(t *testing.T) {

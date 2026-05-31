@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ type LadybugMetadataStore struct {
 	graph  ladybug.Graph
 	mu     sync.RWMutex
 	hashes map[string]string
+	loaded bool
 }
 
 func NewLadybugMetadataStore(graph ladybug.Graph) *LadybugMetadataStore {
@@ -35,6 +37,9 @@ func NewLadybugMetadataStore(graph ladybug.Graph) *LadybugMetadataStore {
 func (store *LadybugMetadataStore) SaveSource(ctx context.Context, source provider.SourceMetadata) (provider.SourceMetadata, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := store.loadHashesLocked(ctx); err != nil {
+		return provider.SourceMetadata{}, err
+	}
 	policyMetadata, err := json.Marshal(source.PolicyMetadata)
 	if err != nil {
 		return provider.SourceMetadata{}, err
@@ -69,13 +74,47 @@ func (store *LadybugMetadataStore) GetSource(ctx context.Context, id string) (pr
 }
 
 func (store *LadybugMetadataStore) FindSourceByHash(ctx context.Context, hash string) (provider.SourceMetadata, error) {
-	store.mu.RLock()
-	defer store.mu.RUnlock()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.loadHashesLocked(ctx); err != nil {
+		return provider.SourceMetadata{}, err
+	}
 	id, ok := store.hashes[hash]
 	if !ok {
 		return provider.SourceMetadata{}, ErrNotFound
 	}
 	return store.getSourceLocked(ctx, id)
+}
+
+func (store *LadybugMetadataStore) loadHashesLocked(ctx context.Context) error {
+	if store.loaded {
+		return nil
+	}
+	nodes, err := store.graph.ListNodes(ctx, "Source", nil)
+	if err != nil {
+		return err
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].ID < nodes[j].ID
+	})
+	for _, node := range nodes {
+		contentHash := node.Properties["content_hash"]
+		if contentHash == "" {
+			continue
+		}
+		id := node.Properties["id"]
+		if id == "" {
+			id = node.ID
+		}
+		if id == "" {
+			continue
+		}
+		if _, exists := store.hashes[contentHash]; !exists {
+			store.hashes[contentHash] = id
+		}
+	}
+	store.loaded = true
+	return nil
 }
 
 func (store *LadybugMetadataStore) getSourceLocked(ctx context.Context, id string) (provider.SourceMetadata, error) {

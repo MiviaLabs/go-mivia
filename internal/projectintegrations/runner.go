@@ -71,11 +71,13 @@ type Runner struct {
 }
 
 type PollItem struct {
-	ID        string
-	Key       string
-	Type      string
-	Status    string
-	UpdatedAt time.Time
+	ID              string
+	Key             string
+	Type            string
+	Status          string
+	UpdatedAt       time.Time
+	ProviderVersion string
+	ProviderETag    string
 }
 
 type PollProgress struct {
@@ -228,7 +230,7 @@ func (runner *Runner) ExecutePreparedProviderPoll(ctx context.Context, run SyncR
 		return PollRunResult{Run: run}, redactedPollError(run.Provider, run.ErrorCategory)
 	}
 	run.ItemsSeen = len(result.Items)
-	upserted, err := runner.upsertItems(ctx, &run, result.Items, finishedAt)
+	itemsChanged, itemsUnchanged, err := runner.upsertItems(ctx, &run, result.Items, finishedAt)
 	if err != nil {
 		run.Status = SyncRunStatusFailed
 		run.ErrorCategory = string(ErrorCategoryRequestFailed)
@@ -236,8 +238,10 @@ func (runner *Runner) ExecutePreparedProviderPoll(ctx context.Context, run SyncR
 		_ = runner.store.UpdateSyncRun(ctx, run)
 		return PollRunResult{Run: run}, redactedPollError(run.Provider, run.ErrorCategory)
 	}
-	run.ItemsUpserted = upserted
-	if err := runner.putRichContent(ctx, result.RichContent); err != nil {
+	run.ItemsChanged = itemsChanged
+	run.ItemsUnchanged = itemsUnchanged
+	run.ItemsUpserted = itemsChanged
+	if err := runner.putRichContent(ctx, &run, result.RichContent); err != nil {
 		run.Status = SyncRunStatusFailed
 		run.ErrorCategory = string(ErrorCategoryRequestFailed)
 		run.FinishedAt = finishedAt
@@ -283,12 +287,21 @@ func (runner *Runner) FailPreparedProviderPoll(ctx context.Context, run SyncRun,
 	return run, nil
 }
 
-func (runner *Runner) putRichContent(ctx context.Context, payloads []RichContentPayload) error {
+func (runner *Runner) putRichContent(ctx context.Context, run *SyncRun, payloads []RichContentPayload) error {
 	if runner.richContentStore == nil || len(payloads) == 0 {
 		return nil
 	}
 	for _, payload := range payloads {
-		if _, err := runner.richContentStore.PutRichContentItem(ctx, payload.Item, payload.Chunks); err != nil {
+		result, err := runner.richContentStore.PutRichContentItem(ctx, payload.Item, payload.Chunks)
+		if err != nil {
+			return err
+		}
+		if result.Changed {
+			run.RichContentChanged++
+		} else {
+			run.RichContentUnchanged++
+		}
+		if err := runner.store.UpdateSyncRun(ctx, *run); err != nil {
 			return err
 		}
 	}
@@ -342,31 +355,41 @@ func (runner *Runner) pollProvider(ctx context.Context, project config.Project, 
 	}
 }
 
-func (runner *Runner) upsertItems(ctx context.Context, run *SyncRun, items []PollItem, seenAt time.Time) (int, error) {
-	upserted := 0
-	for _, item := range items {
-		if _, err := runner.store.UpsertItem(ctx, ItemMetadataInput{
-			ProjectID:     run.ProjectID,
-			Provider:      run.Provider,
-			ItemID:        item.ID,
-			ItemKey:       item.Key,
-			ItemType:      item.Type,
-			ItemStatus:    item.Status,
-			ItemUpdatedAt: item.UpdatedAt,
-			FirstSeenAt:   seenAt,
-			LastSeenAt:    seenAt,
-			LastRunID:     run.ID,
-		}); err != nil {
-			return upserted, err
+func (runner *Runner) upsertItems(ctx context.Context, run *SyncRun, items []PollItem, seenAt time.Time) (int, int, error) {
+	changed := 0
+	unchanged := 0
+	for index, item := range items {
+		metadata, err := runner.store.UpsertItem(ctx, ItemMetadataInput{
+			ProjectID:       run.ProjectID,
+			Provider:        run.Provider,
+			ItemID:          item.ID,
+			ItemKey:         item.Key,
+			ItemType:        item.Type,
+			ItemStatus:      item.Status,
+			ItemUpdatedAt:   item.UpdatedAt,
+			ProviderVersion: item.ProviderVersion,
+			ProviderETag:    item.ProviderETag,
+			FirstSeenAt:     seenAt,
+			LastSeenAt:      seenAt,
+			LastRunID:       run.ID,
+		})
+		if err != nil {
+			return changed, unchanged, err
 		}
-		upserted++
-		run.ItemsSeen = upserted
-		run.ItemsUpserted = upserted
+		if metadata.Changed {
+			changed++
+		} else {
+			unchanged++
+		}
+		run.ItemsSeen = index + 1
+		run.ItemsChanged = changed
+		run.ItemsUnchanged = unchanged
+		run.ItemsUpserted = changed
 		if err := runner.store.UpdateSyncRun(ctx, *run); err != nil {
-			return upserted, err
+			return changed, unchanged, err
 		}
 	}
-	return upserted, nil
+	return changed, unchanged, nil
 }
 
 func syncStateInputForRun(previous SyncState, run SyncRun, cursor string, now time.Time) SyncStateInput {

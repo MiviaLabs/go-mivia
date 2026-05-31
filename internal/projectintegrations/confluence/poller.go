@@ -3,6 +3,7 @@ package confluence
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,7 +83,8 @@ type searchResultMetadata struct {
 		Type    string `json:"type"`
 		Status  string `json:"status"`
 		Version struct {
-			When string `json:"when"`
+			Number int    `json:"number"`
+			When   string `json:"when"`
 		} `json:"version"`
 		History struct {
 			LastUpdated struct {
@@ -114,10 +116,11 @@ func pollItemFromSearchResult(raw json.RawMessage) (projectintegrations.PollItem
 		return projectintegrations.PollItem{}, err
 	}
 	return projectintegrations.PollItem{
-		ID:        id,
-		Type:      itemType,
-		Status:    firstNonEmpty(result.Content.Status, result.Status),
-		UpdatedAt: updatedAt,
+		ID:              id,
+		Type:            itemType,
+		Status:          firstNonEmpty(result.Content.Status, result.Status),
+		UpdatedAt:       updatedAt,
+		ProviderVersion: providerVersion(result.Content.Version.Number),
 	}, nil
 }
 
@@ -144,6 +147,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func providerVersion(value int) string {
+	if value <= 0 {
+		return ""
+	}
+	return strconv.Itoa(value)
 }
 
 func boundedRequest(pageSize int, maxResults int) (int, int) {

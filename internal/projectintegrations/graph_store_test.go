@@ -42,6 +42,9 @@ func TestRichContentGraphStore_PutRichContentItemWritesArtifactAndChunks(t *test
 	if result.ArtifactID == "" || result.ChunksWritten != len(chunks) || result.ContentSHA256 == "" {
 		t.Fatalf("unexpected graph result: %#v", result)
 	}
+	if !result.Changed {
+		t.Fatalf("expected first write to be changed: %#v", result)
+	}
 	artifact, err := graph.GetNode(ctx, "IntegrationArtifact", result.ArtifactID)
 	if err != nil {
 		t.Fatalf("get artifact: %v", err)
@@ -71,6 +74,45 @@ func TestRichContentGraphStore_PutRichContentItemWritesArtifactAndChunks(t *test
 	}
 	if len(relationships) != 2 {
 		t.Fatalf("expected chunk relationships, got %#v", relationships)
+	}
+}
+
+func TestRichContentGraphStore_SkipsUnchangedContentRewrite(t *testing.T) {
+	ctx := context.Background()
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(ctx, schema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	store := NewRichContentGraphStore(graph)
+	item := RichContentItem{
+		ProjectID: "example-service",
+		Provider:  ProviderJira,
+		ItemID:    "10001",
+		ItemKey:   "ACME-1",
+		ItemType:  "Task",
+		Fields:    []RichContentField{{Name: "summary", Text: "Stable summary"}},
+	}
+	chunks, err := ChunkRichContentItem(item, RichContentOptions{MaxItemTextBytes: 1024, MaxChunkBytes: 64})
+	if err != nil {
+		t.Fatalf("chunk content: %v", err)
+	}
+	first, err := store.PutRichContentItem(ctx, item, chunks)
+	if err != nil {
+		t.Fatalf("put first content: %v", err)
+	}
+	second, err := store.PutRichContentItem(ctx, item, chunks)
+	if err != nil {
+		t.Fatalf("put second content: %v", err)
+	}
+	if !first.Changed || second.Changed || second.ChunksWritten != 0 || second.ContentSHA256 != first.ContentSHA256 {
+		t.Fatalf("unexpected unchanged result: first=%#v second=%#v", first, second)
+	}
+	graphChunks, err := graph.ListNodes(ctx, "IntegrationContentChunk", map[string]string{"project_id": "example-service", "artifact_id": first.ArtifactID})
+	if err != nil {
+		t.Fatalf("list chunks: %v", err)
+	}
+	if len(graphChunks) != len(chunks) {
+		t.Fatalf("unchanged write should preserve existing chunks, got %#v", graphChunks)
 	}
 }
 
