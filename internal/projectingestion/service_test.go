@@ -127,6 +127,25 @@ func TestIngestProject_ProcessesFilesConcurrentlyWithinFullScan(t *testing.T) {
 	}
 }
 
+func TestIngestProject_RecordsWalkSubstageDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "main.go"), "package main\n\nfunc Run() {}\n")
+	writeFile(t, filepath.Join(root, "docs", "guide.md"), "# Guide\n")
+
+	svc, _, _ := newTestService(t, root)
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+
+	diagnostics := svc.Diagnostics()
+	for _, stage := range []string{"walk", "walk.stat", "walk.filter", "walk.enqueue_wait"} {
+		if diagnostics[stage].Count == 0 {
+			t.Fatalf("expected %s diagnostics, got %#v", stage, diagnostics)
+		}
+	}
+}
+
 func TestNewServiceDefaultsFullScanWorkerCountToRuntimeCPUCount(t *testing.T) {
 	root := t.TempDir()
 	svc, _, _ := newTestService(t, root)

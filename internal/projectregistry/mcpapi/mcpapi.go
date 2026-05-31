@@ -165,7 +165,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		}
 		run, err := ingestion.SubmitIngestProject(ctx, strings.TrimSpace(input.ID), projectingestion.TriggerManual)
 		return toolResult(projectingestion.MetadataForRun(run)), err
-	case "projects.context_health", "projects_context_health":
+	case "projects.context_health", "projects_context_health", "projects.graph_status", "projects_graph_status":
 		var input struct {
 			ID   string          `json:"id"`
 			Meta json.RawMessage `json:"_meta,omitempty"`
@@ -917,7 +917,15 @@ func ingestionToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.context_health",
 			"title":       "Get Project Context Health",
-			"description": "Return bounded readiness metadata for an opted-in local project without roots, source text, hashes, raw errors, secrets, or personal data.",
+			"description": "Return authoritative bounded graph readiness, sync status, last-run context, indexed file/symbol/chunk counts, search-index state, and workspace metadata without roots, source text, hashes, raw errors, secrets, or personal data. A syncing status with indexed_content_available=true means agents can still use indexed MCP tools while ingestion catches up.",
+			"inputSchema": objectSchema(map[string]any{
+				"id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id"}),
+		},
+		{
+			"name":        "projects.graph_status",
+			"title":       "Get Project Graph Status",
+			"description": "Authoritative graph inventory and sync-state alias for projects.context_health. Prefer this over projects.ingestion_status_latest when deciding whether indexed MCP context is usable.",
 			"inputSchema": objectSchema(map[string]any{
 				"id": map[string]any{"type": "string", "minLength": 1},
 			}, []string{"id"}),

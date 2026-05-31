@@ -95,6 +95,11 @@ func TestSearchStoreRouter_RoutesPersistentProjectsToSeparateStores(t *testing.T
 	if len(diagnostics) != 2 || diagnostics[0].Backend != "persistent_project" || diagnostics[1].Backend != "persistent_project" {
 		t.Fatalf("unexpected diagnostics: %#v", diagnostics)
 	}
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Write == nil || diagnostic.Write.TransactionCount != 1 || diagnostic.Write.RowsInserted["project_search_files_fts"] != 1 {
+			t.Fatalf("expected per-project search write diagnostics, got %#v", diagnostics)
+		}
+	}
 }
 
 func TestSearchStoreRouter_UsesSharedFileStateForProjectSearchRepair(t *testing.T) {

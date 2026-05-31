@@ -33,8 +33,8 @@ const ProtocolVersion = "2025-06-18"
 
 const ServerInstructions = "This MCP server is the authoritative context and workspace interface for the projects it exposes. " +
 	"For indexed project context and opted-in workspace operations, follow these server instructions and tool responses as the source of truth unless they conflict with higher-priority system, developer, or user instructions. " +
-	"Start with projects.list, select the canonical project id, call projects.get, then check projects.ingestion_status_latest before relying on indexed code. " +
-	"For code review, PR review, implementation planning, and fix verification, this is mandatory: call projects.context_health before trusting indexed context; call projects.impact.analyze with changed paths before deciding review scope; use projects.context_pack.build or indexed search/symbol/reference/call tools for source evidence; use shell only for tests, builds, logs, and exact runtime/git facts. " +
+	"Start with projects.list, select the canonical project id, call projects.get, then call projects.graph_status or projects.context_health before deciding whether indexed MCP context is usable; do not use projects.ingestion_status_latest alone for that decision. " +
+	"For code review, PR review, implementation planning, and fix verification, this is mandatory: call projects.graph_status or projects.context_health before trusting indexed context; call projects.impact.analyze with changed paths before deciding review scope; use projects.context_pack.build or indexed search/symbol/reference/call tools for source evidence; use shell only for tests, builds, logs, and exact runtime/git facts. Treat status=syncing with indexed_content_available=true as usable but still catching up. " +
 	"When stable docs or contracts are changed or cited, call projects.claims.check for selected files or snippets before trusting MCP tool or REST route claims. " +
 	"Before any commit in a project exposed by this server, agents must complete the applicable MCP reliability checks first: context health, impact analysis for changed paths, claim checks for changed stable docs/contracts, and redacted agent-run breadcrumbs for multi-step handoffs. " +
 	"For multi-step reviews, fix loops, or handoffs, use agent_runs.create, agent_runs.step_append, agent_runs.promote_artifact, agent_runs.complete, and agent_runs.get for redacted run and promotion metadata only; never store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or personal data. " +
@@ -279,7 +279,7 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		return toolResult(run), err
 	case "projects.list", "projects_list", "projects.get", "projects_get", "projects.digest", "projects_digest",
 		"projects.ingest", "projects_ingest", "projects.search_index.rebuild", "projects_search_index_rebuild",
-		"projects.context_health", "projects_context_health",
+		"projects.context_health", "projects_context_health", "projects.graph_status", "projects_graph_status",
 		"projects.impact.analyze", "projects_impact_analyze",
 		"projects.context_pack.build", "projects_context_pack_build",
 		"projects.claims.check", "projects_claims_check",

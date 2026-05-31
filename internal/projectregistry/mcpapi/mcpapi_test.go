@@ -213,17 +213,18 @@ func TestCallToolWithIngestion_ContextHealthIsSafe(t *testing.T) {
 		t.Fatalf("ingest project: %v", err)
 	}
 
-	if !hasToolDefinition(mcpapi.ToolDefinitionsWithIngestion(true), "projects.context_health") {
-		t.Fatalf("expected projects.context_health tool definition")
+	if !hasToolDefinition(mcpapi.ToolDefinitionsWithIngestion(true), "projects.context_health") ||
+		!hasToolDefinition(mcpapi.ToolDefinitionsWithIngestion(true), "projects.graph_status") {
+		t.Fatalf("expected context health and graph status tool definitions")
 	}
 
-	for _, name := range []string{"projects.context_health", "projects_context_health"} {
+	for _, name := range []string{"projects.context_health", "projects_context_health", "projects.graph_status", "projects_graph_status"} {
 		result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, name, json.RawMessage(`{"id":"example-service"}`))
 		if err != nil {
 			t.Fatalf("call %s: %v", name, err)
 		}
 		body := marshalResult(t, result)
-		if !strings.Contains(body, `"status":"ready"`) || !strings.Contains(body, `"project_id":"example-service"`) {
+		if !strings.Contains(body, `"status":"ready"`) || !strings.Contains(body, `"project_id":"example-service"`) || !strings.Contains(body, `"indexed_content_available":true`) {
 			t.Fatalf("expected ready health response, got %s", body)
 		}
 		for _, forbidden := range []string{"cmd/main.go", "package main", "content_sha256", "root_path"} {

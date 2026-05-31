@@ -4,14 +4,14 @@
 # to `devcontainer.json` `dockerComposeFile`, and adjust the project volume and
 # config path. This assumes the first package-registry release has published:
 #
-#   ghcr.io/mivialabs/go-mivia:0.1.4
+#   ghcr.io/mivialabs/go-mivia:0.1.5
 #
 # Keep real credentials, local paths, and project allowlists in ignored local
 # config files. Do not commit real `.env`, token, or credential files.
 
 services:
   mivia-server:
-    image: ghcr.io/mivialabs/go-mivia:0.1.4
+    image: ghcr.io/mivialabs/go-mivia:0.1.5
     init: true
     pull_policy: missing
     ports:
@@ -23,7 +23,7 @@ services:
       # Persistent project graph/search stores derive from this parent:
       # /var/lib/mivia/projects/<project-id>/mivialabs.lbug
       # /var/lib/mivia/projects/<project-id>/mivialabs-search.sqlite
-      # v0.1.4 bounds heavy per-project graph/search flushes during ingestion.
+      # v0.1.5 bounds heavy per-project graph/search flushes during ingestion.
       # Keep full_scan_batch_size in the mounted TOML as the hard file-count cap.
       MIVIA_LADYBUG_PATH: /var/lib/mivia/mivialabs.lbug
       MIVIA_SQLITE_PATH: /var/lib/mivia/mivialabs-config.sqlite

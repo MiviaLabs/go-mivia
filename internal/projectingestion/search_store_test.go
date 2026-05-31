@@ -82,6 +82,33 @@ func TestSQLiteStore_UpdateSearchFileMetadataBatch(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_UpdateSearchFileMetadataBatchDiagnosticsTrackDeletes(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	state := testSearchFileState("project-1", "cmd/main.go", "sha256:main")
+	if err := store.UpsertSearchFile(ctx, project, state, []Chunk{{Index: 0, Text: "body"}}, nil, nil, nil); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	skipped := state
+	skipped.Status = FileStatusSkipped
+	skipped.ContentSHA256 = ""
+	if err := store.UpdateSearchFileMetadataBatch(ctx, project, []FileState{skipped}); err != nil {
+		t.Fatalf("batch metadata delete: %v", err)
+	}
+
+	diagnostics := store.SearchWriteDiagnostics(project.ID)
+	if diagnostics.TransactionCount != 2 {
+		t.Fatalf("expected upsert plus metadata update transactions, got %#v", diagnostics)
+	}
+	if diagnostics.DeleteStatements["project_search_files_fts"] != 2 ||
+		diagnostics.DeleteStatements["project_search_chunks_fts"] != 2 ||
+		diagnostics.DeleteStatements["project_search_symbols_fts"] != 2 {
+		t.Fatalf("expected delete diagnostics for upsert and non-eligible metadata update, got %#v", diagnostics.DeleteStatements)
+	}
+}
+
 func TestSQLiteStore_ApplySearchFileBatchDoesNotRewriteFTSForUnchangedFiles(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)
@@ -183,6 +210,46 @@ func TestSQLiteStore_ApplySearchFileBatchSearchResultsSurviveSplitWrites(t *test
 	}
 	if len(symbols.Symbols) != 1 || symbols.Symbols[0].Name != "LightSymbol" {
 		t.Fatalf("expected light symbol after split write, got %#v", symbols.Symbols)
+	}
+}
+
+func TestSQLiteStore_SearchWriteDiagnosticsTrackFTSBatchShape(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	results := []fullScanFileResult{
+		testSearchFileResult("cmd/main.go", "sha256:main", []Chunk{{Index: 0, Text: "alpha body"}}, []Symbol{{Kind: SymbolKindFunction, Name: "MainSymbol"}}),
+		{state: testSearchFileState("project-1", "cmd/unchanged.go", "sha256:unchanged"), unchanged: true},
+		{state: testFileState("project-1", "secrets/token.go", FileStatusSkipped)},
+	}
+	results[0].headings = []Heading{{Level: 1, Text: "Title"}}
+	results[0].implementations = []Implementation{{Kind: "implements", ImplementerName: "Impl", ImplementedName: "Iface"}}
+
+	if err := store.ApplySearchFileBatch(ctx, project, results); err != nil {
+		t.Fatalf("apply batch: %v", err)
+	}
+
+	diagnostics := store.SearchWriteDiagnostics(project.ID)
+	if diagnostics.TransactionCount != 1 {
+		t.Fatalf("expected one transaction, got %#v", diagnostics)
+	}
+	if diagnostics.MaxWriteWeight != 5 {
+		t.Fatalf("unexpected write weight: %#v", diagnostics)
+	}
+	if diagnostics.RowsInserted["project_search_files_fts"] != 1 ||
+		diagnostics.RowsInserted["project_search_chunks_fts"] != 1 ||
+		diagnostics.RowsInserted["project_search_symbols_fts"] != 1 {
+		t.Fatalf("unexpected inserted row diagnostics: %#v", diagnostics.RowsInserted)
+	}
+	if diagnostics.DeleteStatements["project_search_files_fts"] != 2 ||
+		diagnostics.DeleteStatements["project_search_chunks_fts"] != 2 ||
+		diagnostics.DeleteStatements["project_search_symbols_fts"] != 2 {
+		t.Fatalf("unexpected delete diagnostics: %#v", diagnostics.DeleteStatements)
+	}
+
+	diagnostics.RowsInserted["project_search_files_fts"] = 99
+	if cloned := store.SearchWriteDiagnostics(project.ID); cloned.RowsInserted["project_search_files_fts"] != 1 {
+		t.Fatalf("expected diagnostics copy, got %#v", cloned.RowsInserted)
 	}
 }
 

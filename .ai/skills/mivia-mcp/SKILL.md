@@ -13,8 +13,8 @@ When a Mivia MCP server is available for the target project, agents must use it 
 
 Critical review and implementation rule:
 
-- For code review, PR review, implementation planning, and fix verification, agents must start with `projects.list` -> `projects.get` -> `projects.ingestion_status_latest` -> `projects.context_health`.
-- If `projects.context_health.status` is not `ready`, agents must state the status and freshness gap before relying on indexed context. Treat `syncing` as normal active indexing, not corruption; wait/poll, request or run ingestion when appropriate, or fall back to shell/Serena with the gap explicit.
+- For code review, PR review, implementation planning, and fix verification, agents must start with `projects.list` -> `projects.get` -> `projects.graph_status` or `projects.context_health`. Do not use `projects.ingestion_status_latest` alone to decide whether indexed MCP context is usable; it is one run record, not the authoritative graph inventory.
+- If `projects.graph_status.status` / `projects.context_health.status` is not `ready`, agents must state the status and freshness gap before relying on indexed context. Treat `syncing` as normal active indexing, not corruption. If `indexed_content_available=true`, indexed MCP tools remain usable while ingestion catches up; prefer bounded MCP search/symbol/file tools and state the active-sync caveat.
 - For any changed-path review, agents must call `projects.impact.analyze` with the changed paths before deciding review scope. Use its affected domains, routes, tools, security flags, and source anchors to decide which code, contracts, docs, and tests need inspection. If the result is partial with `index_syncing`, treat it as active indexing and fall back to focused source inspection for the current task rather than treating the index as degraded.
 - For source evidence, agents must use indexed MCP search/navigation first when available: `projects.context_pack.build`, `projects.search.*`, `projects.symbols.list`, `projects.symbol.source`, `projects.symbol.references`, callers/callees, call graph, headings, outlines, and bounded chunks.
 - For actual runtime proof, agents must use shell: tests, builds, logs, process control, generated files, and exact git/runtime facts.
@@ -48,6 +48,7 @@ Know or discover:
 - MCP endpoint, default `http://127.0.0.1:8080/mcp`.
 - Project ID, from the user or `projects.list`. Project-scoped tools also accept safe aliases returned by `projects.list` / `projects.get`, including configured repo/module aliases and auto-discovered Go module paths.
 - Host repository rules, tests, and privacy/security boundaries.
+- Release examples in docs, Docker Compose, and devcontainer snippets must stay on the current public release pair: Go module tag `v0.1.5` and container tag `0.1.5`.
 
 Do not assume the current repository is the server repo. Do not assume any specific language or directory layout.
 
@@ -83,9 +84,9 @@ Use the smallest sequence that answers the task. Do not call every tool by defau
 1. Confirm the MCP endpoint is localhost or loopback.
 2. Call `tools/list`.
 3. Call `projects.list` to discover visible project IDs and aliases. If the user supplies a repo identity such as a Go module path, try it as a project ID/alias, then call `projects.get` and use the returned canonical `id` for follow-up calls. If the expected alias is missing, report that the server config should set the project's `aliases` list. Confirm `enabled`, `digest_mode`, `update_policy`, `workspace_mode`, `graph_storage`, and `validation_status`.
-4. Call `projects.ingestion_status_latest` before relying on indexed code/content if the answer depends on freshness. If the latest run is missing, failed, stale for the task, or older than current disk changes, call `projects.ingest`.
+4. Call `projects.graph_status` or `projects.context_health` before relying on indexed code/content if the answer depends on freshness. Use the returned status, `indexed_content_available`, indexed file/symbol/chunk counts, search-index state, latest run, and active run metadata as the authoritative graph inventory. Use `projects.ingestion_status_latest` only when you need the latest run record specifically.
 5. Call `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, or `projects.search.ast` for routine indexed discovery before broad text scans.
-6. Call `projects.context_health` before relying on indexed context when the task depends on freshness or readiness. If the status is not `ready`, state the status and either wait/poll, run ingestion when appropriate, or fall back with the freshness gap explicit. Status `syncing` means normal active indexing or a bounded probe under load, not a degraded index.
+6. Call `projects.graph_status` or `projects.context_health` before relying on indexed context when the task depends on freshness or readiness. If the status is not `ready`, state the status and either use MCP with the active-sync caveat when `indexed_content_available=true`, wait/poll, run ingestion when appropriate, or fall back with the freshness gap explicit. Status `syncing` means normal active indexing or a bounded probe under load, not a degraded index.
 7. Use `projects.impact.analyze` before reviewing or explaining a changed path set when the blast radius is not obvious. Prefer explicit `changed_paths`; use governed workspace diff mode only when the workspace is opted in and you need metadata from current changes. If it returns partial `index_syncing`, state that graph fanout is temporarily skipped under active ingestion and inspect the changed source directly.
 8. Use `projects.context_pack.build` when one bounded response should combine search snippets, indexed file metadata, symbol metadata, and optional impact analysis. It does not persist context packs, call providers, return raw diffs, or include full chunk text.
 9. Use `projects.claims.check` before trusting selected stable docs/contracts that name MCP tools or REST routes. It is for selected files or pasted snippets, not broad crawling or LLM judgment.
@@ -114,7 +115,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Research metadata only | `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get` |
 | Agent run metadata only | `agent_runs.create`, `agent_runs.step_append`, `agent_runs.promote_artifact`, `agent_runs.complete`, `agent_runs.get` |
 | Project registry | `projects.list`, `projects.get` |
-| Metadata digest and reliability | `projects.digest`, `projects.context_health`, `projects.impact.analyze`, `projects.context_pack.build`, `projects.claims.check` |
+| Metadata digest and reliability | `projects.digest`, `projects.graph_status`, `projects.context_health`, `projects.impact.analyze`, `projects.context_pack.build`, `projects.claims.check` |
 | Content graph | `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline` |
 | Governed workspace | `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit` plus underscore aliases |
 | Diagnostics | `projects.diagnostics.ingestion` |
@@ -129,14 +130,15 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 - `projects.list`: first project-discovery call. Returns configured project metadata without root paths, including safe lookup aliases when available.
 - `projects.get`: use before project-specific work to confirm the selected project is enabled and validate content/workspace modes. The returned `id` is canonical; use it for follow-up calls even when you started from an alias.
 - `projects.digest`: metadata-only digest for projects that support digest mode. Content-graph projects may reject this as unsupported; use ingestion/search tools instead.
-- `projects.context_health`: readiness/freshness summary for one configured project using safe config, ingestion, search-index, and workspace-git metadata.
+- `projects.graph_status`: authoritative graph inventory and sync-state summary for one configured project. Prefer this over `projects.ingestion_status_latest` when deciding if indexed MCP tools are usable.
+- `projects.context_health`: readiness/freshness summary for one configured project using safe config, ingestion, search-index, indexed file/symbol/chunk counts, active/latest run metadata, and workspace-git metadata. A `syncing` response with `indexed_content_available=true` means MCP indexed tools can still be used with the active-sync caveat.
 - `projects.impact.analyze`: deterministic changed-path impact analysis. It may use governed workspace diff file metadata but must not return raw diff content. During active ingestion it may return partial `index_syncing` metadata instead of waiting behind busy graph/search stores.
 - `projects.context_pack.build`: bounded context package from existing indexed search, file metadata, symbol metadata, and optional impact analysis. It does not create storage, call providers, return roots, return raw diffs, or include full chunk text.
 - `projects.claims.check`: deterministic stale-claim check for selected stable docs/contracts. It does not use LLM judgment, broad crawling, or document-content echoing.
 - `projects.ingest`: queue bounded content-graph ingestion. Always poll with `projects.ingestion_status`.
 - `projects.search_index.rebuild`: repair degraded local search index only when asked or when degradation blocks the task. Always poll with `projects.ingestion_status`.
 - `projects.ingestion_status`: read one ingestion/rebuild run by `run_id`.
-- `projects.ingestion_status_latest`: freshness check before relying on indexed data.
+- `projects.ingestion_status_latest`: latest run metadata only. Do not use it alone as a graph-readiness or MCP-usability decision.
 - `projects.files.list`: discover eligible indexed files with filters such as path/status/extension and a small `page_size`.
 - `projects.files.get`: fetch one file metadata record by opaque `file_id`.
 - `projects.file.chunks`: page bounded chunk text for one eligible file. Keep `max_chunk_bytes` small.

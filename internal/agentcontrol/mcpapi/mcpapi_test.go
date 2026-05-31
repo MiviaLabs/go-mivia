@@ -45,7 +45,9 @@ func TestInitialize_ReturnsServerInstructions(t *testing.T) {
 	}
 	if !bytes.Contains(res.Body.Bytes(), []byte(`"instructions"`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`authoritative context and workspace interface`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`projects.graph_status`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`projects.ingestion_status_latest`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`do not use projects.ingestion_status_latest alone`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`For code review, PR review, implementation planning, and fix verification, this is mandatory`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`Before any commit in a project exposed by this server`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`projects.impact.analyze with changed paths`)) ||
@@ -356,7 +358,7 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	handler, root := newHandlerWithProjectIngestion(t)
 
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.context_health"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.impact.analyze"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.claims.check"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search_index.rebuild"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.context_health"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.graph_status"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.impact.analyze"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.claims.check"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search_index.rebuild"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
 		t.Fatalf("expected ingestion tools, got %s", list.Body.String())
 	}
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.text"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.calls"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.ast.queries"`)) {
@@ -395,6 +397,10 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	}
 	if !bytes.Contains(health.Body.Bytes(), []byte(`"status":"ready"`)) || bytes.Contains(health.Body.Bytes(), []byte(root)) || bytes.Contains(health.Body.Bytes(), []byte("content_sha256")) || bytes.Contains(health.Body.Bytes(), []byte("package main")) {
 		t.Fatalf("unexpected context health response: %s", health.Body.String())
+	}
+	graphStatus := postMCP(t, handler, `{"jsonrpc":"2.0","id":331,"method":"tools/call","params":{"name":"projects.graph_status","arguments":{"id":"example-service"}}}`)
+	if bytes.Contains(graphStatus.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(graphStatus.Body.Bytes(), []byte(`"indexed_content_available":true`)) || bytes.Contains(graphStatus.Body.Bytes(), []byte(root)) || bytes.Contains(graphStatus.Body.Bytes(), []byte("content_sha256")) {
+		t.Fatalf("unexpected graph status response: %s", graphStatus.Body.String())
 	}
 
 	impact := postMCP(t, handler, `{"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"projects.impact.analyze","arguments":{"id":"example-service","changed_paths":["internal/agentcontrol/mcpapi/mcpapi.go"]}}}`)

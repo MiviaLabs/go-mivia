@@ -98,6 +98,7 @@ func (store *SQLiteStore) UpsertSearchFilesBatch(ctx context.Context, project pr
 	if len(files) == 0 {
 		return nil
 	}
+	weight, insertedRows, deleteStatements := preparedSearchFilesWritePlan(project, files)
 	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return sanitizeSearchError(err)
@@ -112,6 +113,9 @@ func (store *SQLiteStore) UpsertSearchFilesBatch(ctx context.Context, project pr
 	}
 	err = tx.Commit()
 	unlock()
+	if err == nil {
+		store.recordSearchWrite(project.ID, weight, insertedRows, deleteStatements)
+	}
 	return sanitizeSearchError(err)
 }
 
@@ -147,10 +151,90 @@ func forEachFullScanResultBatchByWeight(results []fullScanFileResult, maxWeight 
 	return fn(results[batchStart:])
 }
 
+func preparedSearchFilesWritePlan(project projectregistry.Project, files []PreparedSearchFile) (int, map[string]int64, map[string]int64) {
+	weight := 0
+	insertedRows := make(map[string]int64)
+	deleteStatements := make(map[string]int64)
+	for _, file := range files {
+		weight += preparedSearchFileWriteWeight(file)
+		addPreparedSearchFileWritePlan(file, insertedRows, deleteStatements)
+	}
+	return weight, emptyNilInt64Map(insertedRows), emptyNilInt64Map(deleteStatements)
+}
+
+func preparedSearchFileWriteWeight(file PreparedSearchFile) int {
+	weight := 1
+	if file.State.Status != FileStatusEligible || !file.State.Present || !file.State.RelativePathSafe || file.State.ContentSHA256 == "" {
+		return weight
+	}
+	weight += len(file.Chunks)
+	weight += len(file.Symbols)
+	weight += len(file.References)
+	weight += len(file.Calls)
+	return weight
+}
+
+func fullScanResultsWritePlan(project projectregistry.Project, results []fullScanFileResult) (int, map[string]int64, map[string]int64) {
+	weight := 0
+	insertedRows := make(map[string]int64)
+	deleteStatements := make(map[string]int64)
+	for _, result := range results {
+		if result.unchanged {
+			weight++
+			continue
+		}
+		file := PreparedSearchFile{
+			State:      result.state,
+			Chunks:     result.chunks,
+			Symbols:    result.symbols,
+			References: result.references,
+			Calls:      result.calls,
+		}
+		weight += preparedSearchFileWriteWeight(file)
+		addPreparedSearchFileWritePlan(file, insertedRows, deleteStatements)
+	}
+	return weight, emptyNilInt64Map(insertedRows), emptyNilInt64Map(deleteStatements)
+}
+
+func addPreparedSearchFileWritePlan(file PreparedSearchFile, insertedRows map[string]int64, deleteStatements map[string]int64) {
+	if file.State.Status != FileStatusEligible || !file.State.Present || !file.State.RelativePathSafe || file.State.ContentSHA256 == "" {
+		addSearchFTSDeletePlan(deleteStatements)
+		return
+	}
+	addSearchFTSDeletePlan(deleteStatements)
+	insertedRows["project_search_files_fts"]++
+	insertedRows["project_search_chunks_fts"] += int64(len(file.Chunks))
+	insertedRows["project_search_symbols_fts"] += int64(len(file.Symbols))
+	insertedRows["project_search_references_fts"] += int64(len(file.References))
+	insertedRows["project_search_calls_fts"] += int64(len(file.Calls))
+}
+
+func searchFTSDeletePlan() map[string]int64 {
+	deleteStatements := make(map[string]int64)
+	addSearchFTSDeletePlan(deleteStatements)
+	return deleteStatements
+}
+
+func addSearchFTSDeletePlan(deleteStatements map[string]int64) {
+	for _, table := range searchFTSTables() {
+		deleteStatements[table]++
+	}
+}
+
+func emptyNilInt64Map(values map[string]int64) map[string]int64 {
+	for _, value := range values {
+		if value != 0 {
+			return values
+		}
+	}
+	return nil
+}
+
 func (store *SQLiteStore) applySearchFileBatchTx(ctx context.Context, project projectregistry.Project, results []fullScanFileResult) error {
 	if len(results) == 0 {
 		return nil
 	}
+	weight, insertedRows, deleteStatements := fullScanResultsWritePlan(project, results)
 	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return sanitizeSearchError(err)
@@ -173,7 +257,11 @@ func (store *SQLiteStore) applySearchFileBatchTx(ctx context.Context, project pr
 			}
 		}
 	}
-	return sanitizeSearchError(tx.Commit())
+	if err := tx.Commit(); err != nil {
+		return sanitizeSearchError(err)
+	}
+	store.recordSearchWrite(project.ID, weight, insertedRows, deleteStatements)
+	return nil
 }
 
 func upsertSearchFileTx(ctx context.Context, tx *sql.Tx, project projectregistry.Project, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call) error {
@@ -320,6 +408,7 @@ func (store *SQLiteStore) UpdateSearchFileMetadataBatch(ctx context.Context, pro
 	if len(states) == 0 {
 		return nil
 	}
+	weight, deleteStatements := searchMetadataUpdateWritePlan(states)
 	tx, unlock, err := store.beginWriteTx(ctx)
 	if err != nil {
 		return sanitizeSearchError(err)
@@ -334,7 +423,20 @@ func (store *SQLiteStore) UpdateSearchFileMetadataBatch(ctx context.Context, pro
 	}
 	err = tx.Commit()
 	unlock()
+	if err == nil {
+		store.recordSearchWrite(project.ID, weight, nil, deleteStatements)
+	}
 	return sanitizeSearchError(err)
+}
+
+func searchMetadataUpdateWritePlan(states []FileState) (int, map[string]int64) {
+	deleteStatements := make(map[string]int64)
+	for _, state := range states {
+		if state.Status != FileStatusEligible || !state.Present || !state.RelativePathSafe || state.ContentSHA256 == "" {
+			addSearchFTSDeletePlan(deleteStatements)
+		}
+	}
+	return len(states), emptyNilInt64Map(deleteStatements)
 }
 
 func updateSearchFileMetadataTx(ctx context.Context, tx *sql.Tx, project projectregistry.Project, state FileState) error {
@@ -386,7 +488,11 @@ func (store *SQLiteStore) DeleteSearchFile(ctx context.Context, projectID string
 	if err := deleteSearchFileTx(ctx, tx, projectID, fileID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	store.recordSearchWrite(projectID, 1, nil, searchFTSDeletePlan())
+	return nil
 }
 
 func (store *SQLiteStore) DeleteSearchProject(ctx context.Context, projectID string) error {
@@ -404,7 +510,11 @@ func (store *SQLiteStore) DeleteSearchProject(ctx context.Context, projectID str
 	if _, err := tx.ExecContext(ctx, `DELETE FROM project_search_file_versions WHERE project_id = ?`, projectID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	store.recordSearchWrite(projectID, 1, nil, searchFTSDeletePlan())
+	return nil
 }
 
 func (store *SQLiteStore) ReconcileSearchIndex(ctx context.Context, project projectregistry.Project) ([]FileState, error) {

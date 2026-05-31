@@ -25,13 +25,15 @@ type FileStateFilter struct {
 }
 
 type SQLiteStore struct {
-	db          *sql.DB
-	writeMu     sync.Mutex
-	searchState searchStateStore
+	db              *sql.DB
+	writeMu         sync.Mutex
+	searchState     searchStateStore
+	searchMetricsMu sync.Mutex
+	searchMetrics   map[string]SearchWriteDiagnostic
 }
 
 func NewSQLiteStore(db *sql.DB) *SQLiteStore {
-	return &SQLiteStore{db: db}
+	return &SQLiteStore{db: db, searchMetrics: make(map[string]SearchWriteDiagnostic)}
 }
 
 type searchStateStore interface {
@@ -50,6 +52,64 @@ func (store *SQLiteStore) beginWriteTx(ctx context.Context) (*sql.Tx, func(), er
 		return nil, nil, err
 	}
 	return tx, store.writeMu.Unlock, nil
+}
+
+func (store *SQLiteStore) recordSearchWrite(projectID string, weight int, insertedRows map[string]int64, deleteStatements map[string]int64) {
+	if store == nil || projectID == "" {
+		return
+	}
+	store.searchMetricsMu.Lock()
+	defer store.searchMetricsMu.Unlock()
+	if store.searchMetrics == nil {
+		store.searchMetrics = make(map[string]SearchWriteDiagnostic)
+	}
+	diagnostic := store.searchMetrics[projectID]
+	diagnostic.TransactionCount++
+	if weight > diagnostic.MaxWriteWeight {
+		diagnostic.MaxWriteWeight = weight
+	}
+	diagnostic.RowsInserted = mergeInt64Maps(diagnostic.RowsInserted, insertedRows)
+	diagnostic.DeleteStatements = mergeInt64Maps(diagnostic.DeleteStatements, deleteStatements)
+	store.searchMetrics[projectID] = diagnostic
+}
+
+func (store *SQLiteStore) SearchWriteDiagnostics(projectID string) SearchWriteDiagnostic {
+	if store == nil || projectID == "" {
+		return SearchWriteDiagnostic{}
+	}
+	store.searchMetricsMu.Lock()
+	defer store.searchMetricsMu.Unlock()
+	return cloneSearchWriteDiagnostic(store.searchMetrics[projectID])
+}
+
+func cloneSearchWriteDiagnostic(diagnostic SearchWriteDiagnostic) SearchWriteDiagnostic {
+	diagnostic.RowsInserted = cloneInt64Map(diagnostic.RowsInserted)
+	diagnostic.DeleteStatements = cloneInt64Map(diagnostic.DeleteStatements)
+	return diagnostic
+}
+
+func mergeInt64Maps(left map[string]int64, right map[string]int64) map[string]int64 {
+	if len(right) == 0 {
+		return left
+	}
+	if left == nil {
+		left = make(map[string]int64, len(right))
+	}
+	for key, value := range right {
+		left[key] += value
+	}
+	return left
+}
+
+func cloneInt64Map(values map[string]int64) map[string]int64 {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]int64, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 type ExtractorCacheEntry struct {

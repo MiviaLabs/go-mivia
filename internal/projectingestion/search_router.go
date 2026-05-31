@@ -15,9 +15,17 @@ type SearchStoreBackend struct {
 }
 
 type SearchStorageDiagnostic struct {
-	ProjectID  string `json:"project_id"`
-	Backend    string `json:"backend"`
-	StorageKey string `json:"storage_key,omitempty"`
+	ProjectID  string                 `json:"project_id"`
+	Backend    string                 `json:"backend"`
+	StorageKey string                 `json:"storage_key,omitempty"`
+	Write      *SearchWriteDiagnostic `json:"write,omitempty"`
+}
+
+type SearchWriteDiagnostic struct {
+	TransactionCount int64            `json:"transaction_count"`
+	MaxWriteWeight   int              `json:"max_write_weight,omitempty"`
+	RowsInserted     map[string]int64 `json:"rows_inserted,omitempty"`
+	DeleteStatements map[string]int64 `json:"delete_statements,omitempty"`
 }
 
 type SearchStoreRouter struct {
@@ -216,9 +224,27 @@ func (router *SearchStoreRouter) SearchStorageDiagnostics() []SearchStorageDiagn
 			diagnostic.Backend = "persistent_project"
 			diagnostic.StorageKey = storageKey
 		}
+		if provider, ok := router.storeForProjectOrFallback(project.ID).(interface {
+			SearchWriteDiagnostics(string) SearchWriteDiagnostic
+		}); ok {
+			write := provider.SearchWriteDiagnostics(project.ID)
+			if write.TransactionCount > 0 {
+				diagnostic.Write = &write
+			}
+		}
 		diagnostics = append(diagnostics, diagnostic)
 	}
 	return diagnostics
+}
+
+func (router *SearchStoreRouter) storeForProjectOrFallback(projectID string) any {
+	if router == nil {
+		return nil
+	}
+	if store := router.storeByProject[projectID]; store != nil {
+		return store
+	}
+	return router.fallback
 }
 
 func (router *SearchStoreRouter) mutationStore(projectID string) (searchMutationStore, error) {

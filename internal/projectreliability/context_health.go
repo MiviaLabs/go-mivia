@@ -17,24 +17,25 @@ const (
 )
 
 type ContextHealth struct {
-	ProjectID             string              `json:"project_id"`
-	Status                ContextHealthStatus `json:"status"`
-	Enabled               bool                `json:"enabled"`
-	DigestMode            string              `json:"digest_mode"`
-	UpdatePolicy          string              `json:"update_policy"`
-	WorkspaceMode         string              `json:"workspace_mode"`
-	GraphStorage          string              `json:"graph_storage"`
-	ValidationStatus      string              `json:"validation_status"`
-	StatusReason          string              `json:"status_reason,omitempty"`
-	LatestRun             *RunSummary         `json:"latest_run,omitempty"`
-	ActiveRunID           string              `json:"active_run_id,omitempty"`
-	EligibleFileCount     int                 `json:"eligible_file_count"`
-	IndexedSymbolCount    int                 `json:"indexed_symbol_count"`
-	IndexedChunkCount     int                 `json:"indexed_chunk_count"`
-	SearchIndex           SearchIndexHealth   `json:"search_index"`
-	WorkspaceGitAvailable bool                `json:"workspace_git_available"`
-	ReasonCounts          map[string]int      `json:"reason_counts,omitempty"`
-	CheckedAt             time.Time           `json:"checked_at"`
+	ProjectID               string              `json:"project_id"`
+	Status                  ContextHealthStatus `json:"status"`
+	Enabled                 bool                `json:"enabled"`
+	DigestMode              string              `json:"digest_mode"`
+	UpdatePolicy            string              `json:"update_policy"`
+	WorkspaceMode           string              `json:"workspace_mode"`
+	GraphStorage            string              `json:"graph_storage"`
+	ValidationStatus        string              `json:"validation_status"`
+	StatusReason            string              `json:"status_reason,omitempty"`
+	LatestRun               *RunSummary         `json:"latest_run,omitempty"`
+	ActiveRunID             string              `json:"active_run_id,omitempty"`
+	IndexedContentAvailable bool                `json:"indexed_content_available"`
+	EligibleFileCount       int                 `json:"eligible_file_count"`
+	IndexedSymbolCount      int                 `json:"indexed_symbol_count"`
+	IndexedChunkCount       int                 `json:"indexed_chunk_count"`
+	SearchIndex             SearchIndexHealth   `json:"search_index"`
+	WorkspaceGitAvailable   bool                `json:"workspace_git_available"`
+	ReasonCounts            map[string]int      `json:"reason_counts,omitempty"`
+	CheckedAt               time.Time           `json:"checked_at"`
 }
 
 type RunSummary struct {

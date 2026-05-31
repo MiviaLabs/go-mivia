@@ -904,15 +904,21 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 			return err
 		}
 		if entry.IsDir() {
-			if projectregistry.ProjectExcludesRelativePath(project, relative) {
+			filterStartedAt := time.Now()
+			excluded := projectregistry.ProjectExcludesRelativePath(project, relative)
+			mayInclude := !excluded && projectregistry.ProjectMayIncludeRelativePath(project, relative)
+			svc.recordStage("walk.filter", filterStartedAt, nil)
+			if excluded {
 				return filepath.SkipDir
 			}
-			if !projectregistry.ProjectMayIncludeRelativePath(project, relative) {
+			if !mayInclude {
 				return filepath.SkipDir
 			}
 			return nil
 		}
+		statStartedAt := time.Now()
 		info, err := entry.Info()
+		svc.recordStage("walk.stat", statStartedAt, err)
 		if err != nil {
 			state := svc.skippedState(project, relative, SkipReasonStatError, 0, time.Time{}, true, run.StartedAt)
 			if err := svc.saveSkipped(ctx, project, progress.currentRun(), state, false); err != nil {
@@ -929,7 +935,10 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 			progress.record(state, false, 0, 0, false)
 			return progress.flush(ctx, svc, project, false)
 		}
-		if !projectregistry.ProjectIncludesRelativePath(project, relative) {
+		filterStartedAt := time.Now()
+		included := projectregistry.ProjectIncludesRelativePath(project, relative)
+		svc.recordStage("walk.filter", filterStartedAt, nil)
+		if !included {
 			state := svc.skippedState(project, relative, SkipReasonDeniedPath, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
 			if err := svc.saveSkipped(ctx, project, progress.currentRun(), state, false); err != nil {
 				return err
@@ -937,10 +946,13 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 			progress.record(state, false, 0, 0, false)
 			return progress.flush(ctx, svc, project, false)
 		}
+		enqueueStartedAt := time.Now()
 		select {
 		case jobs <- fullScanFileJob{relative: relative, fullPath: filePath, info: info}:
+			svc.recordStage("walk.enqueue_wait", enqueueStartedAt, nil)
 			return nil
 		case <-runCtx.Done():
+			svc.recordStage("walk.enqueue_wait", enqueueStartedAt, runCtx.Err())
 			return runCtx.Err()
 		}
 	})

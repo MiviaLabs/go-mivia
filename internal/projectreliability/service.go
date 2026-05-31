@@ -131,21 +131,22 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		health.StatusReason = "context_provider_unavailable"
 		return health, nil
 	}
-	if provider, ok := svc.context.(activeSyncProvider); ok && provider.ActiveSync(project.ID) {
-		health.Status = ContextHealthSyncing
-		health.StatusReason = "ingestion_active"
-		health.SearchIndex = SearchIndexHealth{Status: "unknown"}
-		return health, nil
+	activeSync := false
+	if provider, ok := svc.context.(activeSyncProvider); ok {
+		activeSync = provider.ActiveSync(project.ID)
 	}
 
 	var probeIssue string
 	var probeTimedOut bool
+	var latest RunSummary
+	var hasLatest bool
+	var activeRuns []RunSummary
 	latestResult, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (latestRunResult, error) {
 		latest, hasLatest, err := svc.latestRun(probeCtx, project.ID)
 		return latestRunResult{run: latest, ok: hasLatest}, err
 	})
-	latest := latestResult.run
-	hasLatest := latestResult.ok
+	latest = latestResult.run
+	hasLatest = latestResult.ok
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "latest_run_unknown")
 		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
@@ -154,7 +155,7 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		health.ReasonCounts = copyPositiveCounts(latest.ReasonCounts)
 	}
 
-	activeRuns, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) ([]RunSummary, error) {
+	activeRuns, err = contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) ([]RunSummary, error) {
 		return svc.context.ActiveRuns(probeCtx, project.ID)
 	})
 	if err != nil {
@@ -186,6 +187,7 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		probeIssue = firstNonEmpty(probeIssue, "indexed_chunk_count_unknown")
 		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
 	}
+	health.IndexedContentAvailable = health.EligibleFileCount > 0 || health.IndexedSymbolCount > 0 || health.IndexedChunkCount > 0
 
 	searchIndex, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (SearchIndexHealth, error) {
 		return svc.context.SearchIndexHealth(probeCtx, project.ID)
@@ -208,13 +210,21 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 	}
 
 	health.Status, health.StatusReason = classifyHealth(project, latest, hasLatest, activeRuns, health, checkedAt, svc.staleAfter)
+	if activeSync && health.Status != ContextHealthDegraded {
+		health.Status = ContextHealthSyncing
+		health.StatusReason = "ingestion_active"
+	}
 	if probeIssue != "" && health.Status != ContextHealthDegraded {
-		if probeTimedOut {
+		if activeSync {
 			health.Status = ContextHealthSyncing
+			health.StatusReason = "ingestion_active"
+		} else if probeTimedOut {
+			health.Status = ContextHealthSyncing
+			health.StatusReason = probeIssue
 		} else {
 			health.Status = ContextHealthDegraded
+			health.StatusReason = probeIssue
 		}
-		health.StatusReason = probeIssue
 	}
 	return health, nil
 }
@@ -229,7 +239,22 @@ func contextHealthProbe[T any](parent context.Context, timeout time.Duration, fn
 	}
 	probeCtx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	return fn(probeCtx)
+	type result struct {
+		value T
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		value, err := fn(probeCtx)
+		done <- result{value: value, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.value, result.err
+	case <-probeCtx.Done():
+		var zero T
+		return zero, probeCtx.Err()
+	}
 }
 
 func (svc *Service) latestRun(ctx context.Context, projectID string) (RunSummary, bool, error) {

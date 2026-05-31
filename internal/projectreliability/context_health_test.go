@@ -36,6 +36,9 @@ func TestContextHealth_ReadyCompletedContentGraph(t *testing.T) {
 	if health.LatestRun == nil || health.LatestRun.ID != "run-1" {
 		t.Fatalf("expected latest run summary, got %#v", health.LatestRun)
 	}
+	if !health.IndexedContentAvailable {
+		t.Fatalf("expected indexed content availability, got %#v", health)
+	}
 }
 
 func TestContextHealth_DegradedSearchWinsOverRunning(t *testing.T) {
@@ -197,7 +200,7 @@ func TestContextHealth_StaleLiveProject(t *testing.T) {
 
 var testNow = time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
 
-func newTestService(contextProvider ContextProviderFunc) *Service {
+func newTestService(contextProvider ContextProvider) *Service {
 	return NewService(
 		ProjectProviderFunc(func(context.Context, string) (projectregistry.Project, error) {
 			return testProject(), nil
@@ -321,7 +324,35 @@ func TestContextHealth_BoundsSlowProvider(t *testing.T) {
 	}
 }
 
-func TestContextHealth_ActiveSyncSkipsBlockingProvider(t *testing.T) {
+func TestContextHealth_ActiveSyncStillReportsGraphInventory(t *testing.T) {
+	svc := newTestService(activeSyncContextProvider{ContextProviderFunc: ContextProviderFunc{
+		latest: RunSummary{
+			ID:             "run-1",
+			Status:         runStatusCompleted,
+			LastProgressAt: testNow.Add(-time.Hour),
+		},
+		eligible: 42,
+		symbols:  100,
+		chunks:   60,
+		index:    SearchIndexHealth{Status: "completed"},
+	}})
+
+	health, err := svc.ContextHealth(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("context health: %v", err)
+	}
+	if health.Status != ContextHealthSyncing || health.StatusReason != "ingestion_active" {
+		t.Fatalf("expected active sync status, got %#v", health)
+	}
+	if !health.IndexedContentAvailable || health.EligibleFileCount != 42 || health.IndexedSymbolCount != 100 || health.IndexedChunkCount != 60 {
+		t.Fatalf("expected active sync to keep graph inventory, got %#v", health)
+	}
+	if health.LatestRun == nil || health.LatestRun.ID != "run-1" {
+		t.Fatalf("expected active sync to keep latest run context, got %#v", health)
+	}
+}
+
+func TestContextHealth_ActiveSyncBoundsBlockingProvider(t *testing.T) {
 	block := make(chan struct{})
 	svc := NewService(
 		ProjectProviderFunc(func(context.Context, string) (projectregistry.Project, error) {
@@ -364,6 +395,14 @@ func TestProjectHasActiveSyncTreatsGlobalIngestionAsIndexingWindow(t *testing.T)
 }
 
 type slowContextProvider struct{}
+
+type activeSyncContextProvider struct {
+	ContextProviderFunc
+}
+
+func (activeSyncContextProvider) ActiveSync(string) bool {
+	return true
+}
 
 func (slowContextProvider) LatestRun(ctx context.Context, _ string) (RunSummary, error) {
 	<-ctx.Done()
