@@ -17,11 +17,7 @@ func RegisterRoutes(mux *http.ServeMux) {
 	}
 	files := http.FileServer(http.FS(sub))
 
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
 	})
 	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {

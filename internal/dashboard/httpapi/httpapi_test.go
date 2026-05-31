@@ -64,3 +64,19 @@ func TestRoutes_UnknownRootSubpathNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", res.Code)
 	}
 }
+
+func TestRoutes_CanCoexistWithMethodlessMCPRoute(t *testing.T) {
+	mux := http.NewServeMux()
+	RegisterRoutes(mux)
+
+	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/mcp", nil))
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected MCP route to remain reachable, got %d", res.Code)
+	}
+}
