@@ -1,6 +1,10 @@
 package projectingestion
 
-import "time"
+import (
+	"time"
+
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+)
 
 type Trigger string
 
@@ -200,9 +204,11 @@ type Finding struct {
 }
 
 type DiagnosticsSnapshot struct {
-	Scheduler SchedulerDiagnostics       `json:"scheduler"`
-	Watchers  []WatchState               `json:"watchers"`
-	Stages    map[string]StageDiagnostic `json:"stages"`
+	Scheduler     SchedulerDiagnostics                     `json:"scheduler"`
+	Watchers      []WatchState                             `json:"watchers"`
+	Stages        map[string]StageDiagnostic               `json:"stages"`
+	GraphStorage  []projectregistry.GraphStorageDiagnostic `json:"graph_storage,omitempty"`
+	SearchStorage []SearchStorageDiagnostic                `json:"search_storage,omitempty"`
 }
 
 type StageDiagnostic struct {

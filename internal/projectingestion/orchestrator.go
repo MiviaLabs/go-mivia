@@ -52,6 +52,12 @@ type DiagnosticsSource struct {
 	Scheduler    *Scheduler
 	Orchestrator *Orchestrator
 	Service      *Service
+	GraphStorage interface {
+		GraphStorageDiagnostics() []projectregistry.GraphStorageDiagnostic
+	}
+	SearchStorage interface {
+		SearchStorageDiagnostics() []SearchStorageDiagnostic
+	}
 }
 
 func (source DiagnosticsSource) IngestionDiagnostics() DiagnosticsSnapshot {
@@ -64,6 +70,12 @@ func (source DiagnosticsSource) IngestionDiagnostics() DiagnosticsSnapshot {
 	}
 	if source.Service != nil {
 		snapshot.Stages = source.Service.Diagnostics()
+	}
+	if source.GraphStorage != nil {
+		snapshot.GraphStorage = source.GraphStorage.GraphStorageDiagnostics()
+	}
+	if source.SearchStorage != nil {
+		snapshot.SearchStorage = source.SearchStorage.SearchStorageDiagnostics()
 	}
 	if snapshot.Stages == nil {
 		snapshot.Stages = map[string]StageDiagnostic{}

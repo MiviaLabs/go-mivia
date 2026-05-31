@@ -14,6 +14,10 @@ read_header_timeout = "5s"
 shutdown_timeout = "10s"
 
 [storage]
+# Persistent project graph/search stores use:
+# /var/lib/mivia/projects/<project-id>/mivialabs.lbug
+# /var/lib/mivia/projects/<project-id>/mivialabs-search.sqlite
+# Agent and research metadata stay separate at the configured Ladybug path plus ".metadata".
 ladybug_path = "/var/lib/mivia/mivialabs.lbug"
 sqlite_path = "/var/lib/mivia/mivialabs-config.sqlite"
 

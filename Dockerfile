@@ -3,13 +3,10 @@ FROM golang:1.26.3-bookworm AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+RUN go mod download
 
 COPY . .
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-server ./cmd/mivia-server
+RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-server ./cmd/mivia-server
 
 FROM debian:bookworm-20260518-slim AS runtime
 
@@ -18,7 +15,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin mivia \
-    && mkdir -p /var/lib/mivia /app \
+    && mkdir -p /var/lib/mivia/projects /app \
     && chown -R mivia:mivia /var/lib/mivia /app
 
 COPY --from=build /out/mivia-server /usr/local/bin/mivia-server

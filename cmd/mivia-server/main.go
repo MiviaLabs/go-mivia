@@ -98,15 +98,15 @@ func run() error {
 			return err
 		}
 	}
-	projectPersistentGraph, err := ladybug.OpenPersistentGraph(cfg.LadybugPath)
-	if err != nil {
-		return err
-	}
 	metadataPersistentGraph, err := ladybug.OpenPersistentGraph(cfg.LadybugPath + ".metadata")
 	if err != nil {
 		return err
 	}
-	projectGraph := projectregistry.NewProjectGraphRouter(projectRegistry, ladybug.NewMemoryGraph(), projectPersistentGraph)
+	projectPersistentGraphs, err := openProjectPersistentGraphs(projectRegistry, cfg.LadybugPath)
+	if err != nil {
+		return err
+	}
+	projectGraph := projectregistry.NewProjectScopedGraphRouter(projectRegistry, ladybug.NewMemoryGraph(), projectPersistentGraphs)
 	if err := projectGraph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
 		return err
 	}
@@ -116,7 +116,15 @@ func run() error {
 	agentStore := store.NewLadybugStore(metadataPersistentGraph)
 	researchService := research.NewService(researchstore.NewLadybugMetadataStore(metadataPersistentGraph))
 	projectDigestService := projectregistry.NewDigestService(projectRegistry, projectGraph)
-	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(projectGraph), projectingestion.NewSQLiteStore(sqliteDB.SQLDB()))
+	projectIngestionStateStore := projectingestion.NewSQLiteStore(sqliteDB.SQLDB())
+	projectSearchBackends, closeProjectSearchStores, err := openProjectSearchStores(projectRegistry, cfg.LadybugPath, cfg.SQLite, projectIngestionStateStore)
+	if err != nil {
+		return err
+	}
+	defer closeProjectSearchStores()
+	projectSearchStore := projectingestion.NewProjectScopedSearchStoreRouter(projectRegistry, projectIngestionStateStore, projectSearchBackends)
+	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(projectGraph), projectIngestionStateStore)
+	projectIngestionService.SetSearchStore(projectSearchStore)
 	projectIngestionService.SetFullScanBatchSize(cfg.Ingestion.FullScanBatchSize)
 	projectIngestionService.SetFullScanWorkerLimits(cfg.Ingestion.GlobalWorkerCount, cfg.Ingestion.PerProjectWorkerLimit)
 	projectIngestionService.SetExtractorCacheEnabled(cfg.Ingestion.ExtractorCacheEnabled)
@@ -243,9 +251,11 @@ func run() error {
 	var diagnosticsService *diagnostics.Service
 	if diagnostics.Enabled(cfg.Debug.Enabled, cfg.HTTPAddr) {
 		diagnosticsService = diagnostics.NewService(projectingestion.DiagnosticsSource{
-			Scheduler:    projectIngestionScheduler,
-			Orchestrator: projectIngestionOrchestrator,
-			Service:      projectIngestionService,
+			Scheduler:     projectIngestionScheduler,
+			Orchestrator:  projectIngestionOrchestrator,
+			Service:       projectIngestionService,
+			GraphStorage:  projectGraph,
+			SearchStorage: projectSearchStore,
 		}, diagnostics.RuntimeOptions{Enabled: cfg.Debug.RuntimeMetricsEnabled})
 		diagnostics.RegisterRoutes(mux, diagnosticsService)
 	}
@@ -299,6 +309,82 @@ func run() error {
 		}
 		return err
 	}
+}
+
+func openProjectPersistentGraphs(registry *projectregistry.Registry, baseLadybugPath string) ([]projectregistry.ProjectGraphBackend, error) {
+	backends := make([]projectregistry.ProjectGraphBackend, 0)
+	for _, project := range registry.List() {
+		if !project.Enabled || project.DigestMode != projectregistry.DigestModeContentGraph || project.GraphStorage != projectregistry.GraphStoragePersistent {
+			continue
+		}
+		path, err := projectregistry.ProjectGraphPath(baseLadybugPath, project.ID)
+		if err != nil {
+			return nil, err
+		}
+		storageKey, err := projectregistry.ProjectGraphStorageKey(project.ID)
+		if err != nil {
+			return nil, err
+		}
+		graph, err := ladybug.OpenPersistentGraph(path)
+		if err != nil {
+			return nil, err
+		}
+		backends = append(backends, projectregistry.ProjectGraphBackend{
+			ProjectID:  project.ID,
+			Graph:      graph,
+			StorageKey: storageKey,
+		})
+	}
+	return backends, nil
+}
+
+func openProjectSearchStores(registry *projectregistry.Registry, baseLadybugPath string, sqliteCfg config.SQLite, stateStore *projectingestion.SQLiteStore) ([]projectingestion.SearchStoreBackend, func(), error) {
+	backends := make([]projectingestion.SearchStoreBackend, 0)
+	closers := make([]func() error, 0)
+	closeStores := func() {
+		for index := len(closers) - 1; index >= 0; index-- {
+			_ = closers[index]()
+		}
+	}
+	options := sqliteplatform.Options{
+		WALEnabled:               sqliteCfg.WALEnabled,
+		BusyTimeout:              sqliteCfg.BusyTimeout,
+		Synchronous:              sqliteCfg.Synchronous,
+		CheckpointAfterIngestion: sqliteCfg.CheckpointAfterIngestion,
+	}
+	for _, project := range registry.List() {
+		if !project.Enabled || project.DigestMode != projectregistry.DigestModeContentGraph || project.GraphStorage != projectregistry.GraphStoragePersistent {
+			continue
+		}
+		path, err := projectregistry.ProjectSearchPath(baseLadybugPath, project.ID)
+		if err != nil {
+			closeStores()
+			return nil, nil, err
+		}
+		storageKey, err := projectregistry.ProjectGraphStorageKey(project.ID)
+		if err != nil {
+			closeStores()
+			return nil, nil, err
+		}
+		db, err := sqliteplatform.OpenWithOptions(path, options)
+		if err != nil {
+			closeStores()
+			return nil, nil, err
+		}
+		closers = append(closers, db.Close)
+		if err := sqliteschema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+			closeStores()
+			return nil, nil, err
+		}
+		searchStore := projectingestion.NewSQLiteStore(db.SQLDB())
+		searchStore.SetSearchStateStore(stateStore)
+		backends = append(backends, projectingestion.SearchStoreBackend{
+			ProjectID:  project.ID,
+			Store:      searchStore,
+			StorageKey: storageKey,
+		})
+	}
+	return backends, closeStores, nil
 }
 
 type jiraPollerByProject struct {

@@ -4,14 +4,14 @@
 # to `devcontainer.json` `dockerComposeFile`, and adjust the project volume and
 # config path. This assumes the first package-registry release has published:
 #
-#   ghcr.io/mivialabs/go-mivia:0.1.2
+#   ghcr.io/mivialabs/go-mivia:0.1.3
 #
 # Keep real credentials, local paths, and project allowlists in ignored local
 # config files. Do not commit real `.env`, token, or credential files.
 
 services:
   mivia-server:
-    image: ghcr.io/mivialabs/go-mivia:0.1.2
+    image: ghcr.io/mivialabs/go-mivia:0.1.3
     init: true
     pull_policy: missing
     ports:
@@ -20,6 +20,9 @@ services:
       MIVIA_CONFIG_PATH: /app/configs/mivia-server.local.toml
       MIVIA_INTERNAL_ADDR: 127.0.0.1:18080
       MIVIA_PUBLIC_PORT: "8080"
+      # Persistent project graph/search stores derive from this parent:
+      # /var/lib/mivia/projects/<project-id>/mivialabs.lbug
+      # /var/lib/mivia/projects/<project-id>/mivialabs-search.sqlite
       MIVIA_LADYBUG_PATH: /var/lib/mivia/mivialabs.lbug
       MIVIA_SQLITE_PATH: /var/lib/mivia/mivialabs-config.sqlite
     volumes:

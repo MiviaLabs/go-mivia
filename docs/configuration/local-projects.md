@@ -100,7 +100,7 @@ Do not treat that as a Go module proxy path. Go module publication uses reposito
 | `server.request_timeout` | No | Go duration string, for example `10s`. |
 | `server.read_header_timeout` | No | Go duration string, for example `5s`. |
 | `server.shutdown_timeout` | No | Go duration string, for example `10s`. |
-| `storage.ladybug_path` | No | Local ignored graph datastore path; defaults to `data/mivialabs.lbug`. |
+| `storage.ladybug_path` | No | Local ignored Ladybug metadata path and parent for project graph/search stores; defaults to `data/mivialabs.lbug`. Persistent project stores derive as `<parent>/projects/<project-id>/mivialabs.lbug` and `<parent>/projects/<project-id>/mivialabs-search.sqlite`. |
 | `storage.sqlite_path` | No | Local ignored app-config datastore path; defaults to `data/mivialabs-config.sqlite`. |
 | `sqlite.wal_enabled` | No | Enables WAL for file-backed local SQLite paths; default `true`, forced off for `sqlite_path = ":memory:"`. Set `false` as the rollback switch on unsupported filesystems. |
 | `sqlite.busy_timeout` | No | Positive Go duration for SQLite lock waits; default `5s`. |
@@ -139,7 +139,7 @@ Persisted ingestion runs in `pending` or `running` state are local in-memory que
 | `projects.enabled` | Yes | `true` only for projects allowed by the local developer. |
 | `projects.classification` | No | Use `internal` unless an approved policy says otherwise. |
 | `projects.graph_namespace` | No | Stable graph namespace; defaults to project ID. |
-| `projects.graph_storage` | No | `persistent` or `in_memory`; default `persistent`. |
+| `projects.graph_storage` | No | `persistent` or `in_memory`; default `persistent`. Persistent content-graph projects use derived project graph/search stores under the `storage.ladybug_path` parent. |
 | `projects.digest_mode` | No | `metadata_only` or `content_graph`; content graph requires global gate and ADR approval. |
 | `projects.update_policy` | No | `manual` or `live`; live requires `content_graph` plus global live gate. |
 | `projects.workspace_mode` | No | `disabled`, `read_only`, or `edit`; `read_only` and `edit` require `digest_mode = "content_graph"`. |

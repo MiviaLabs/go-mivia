@@ -60,10 +60,10 @@ Official setup reference: [Docker Desktop WSL 2 backend](https://docs.docker.com
 The default Compose file builds from this checkout. After the first public image is published, the Compose file includes a commented pull example:
 
 ```yaml
-# image: ghcr.io/mivialabs/go-mivia:0.1.1
+# image: ghcr.io/mivialabs/go-mivia:0.1.3
 ```
 
-Go module releases and container images are versioned in different registries. The Go module release tag should be `v0.1.1`; the container image tag can be `0.1.1` when the release workflow publishes it that way.
+Go module releases and container images are versioned in different registries. The Go module release tag should be `v0.1.3`; the container image tag can be `0.1.3` when the release workflow publishes it that way.
 
 Defaults:
 
@@ -72,7 +72,7 @@ Defaults:
 - Content graph ingestion: `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true`
 - Live updates: `MIVIA_INGESTION_LIVE_UPDATES_ENABLED=true`
 - Global workspace gate: `MIVIA_WORKSPACE_ENABLED=true`
-- Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`
+- Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`; persistent project graph/search stores live under `/var/lib/mivia/projects/<project-id>/`
 - Container storage: named Compose volume `mivia-data`
 - Config file: `configs/mivia-server.compose.toml`
 
@@ -368,7 +368,7 @@ Do not commit `lib-ladybug/` or local database files.
 - `MIVIA_HTTP_ADDR` rejected: use `127.0.0.1` or `localhost`.
 - `MIVIA_CONFIG_PATH` missing or invalid: copy `configs/mivia-server.example.toml` to an ignored local config and replace placeholder roots with absolute local Linux or WSL paths.
 - SQLite open failure: check the configured directory is writable or use `MIVIA_SQLITE_PATH=:memory:`.
-- Persistent graph open failure: check the `storage.ladybug_path` directory is writable, local, ignored, and not inside an included project path unless excluded.
+- Persistent graph/search open failure: check the `storage.ladybug_path` parent and derived `projects/<project-id>/` directories are writable, local, ignored, and not inside an included project path unless excluded.
 - Live watcher misses events: run manual ingestion and check whether the project is on a network, mounted, or special filesystem.
 - Live watcher reports `no space left on device` or `too many open files`: reduce included directories or increase OS watch limits.
 - Tree-sitter build fails under WSL: verify CGO-capable toolchain support and the pinned Tree-sitter module versions, then rerun the package tests. Do not fall back to regex extraction for promoted languages.
