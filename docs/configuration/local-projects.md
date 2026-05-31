@@ -31,6 +31,7 @@ MIVIA_CONFIG_PATH=configs/mivia-server.local.toml go run ./cmd/mivia-server
 
 Environment variables remain final overrides over file values:
 
+- `MIVIA_CPU_COUNT`
 - `MIVIA_HTTP_ADDR`
 - `MIVIA_LADYBUG_PATH`
 - `MIVIA_SQLITE_PATH`
@@ -47,6 +48,8 @@ Environment variables remain final overrides over file values:
 - `MIVIA_INGESTION_MAX_CHUNK_BYTES`
 - `MIVIA_INGESTION_QUEUE_DEPTH`
 - `MIVIA_INGESTION_WORKER_COUNT`
+- `MIVIA_INGESTION_GLOBAL_WORKER_COUNT`
+- `MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT`
 - `MIVIA_INGESTION_INITIAL_SCAN_ON_START`
 - `MIVIA_INGESTION_SENSITIVE_MARKER_POLICY`
 - `MIVIA_WORKSPACE_ENABLED`
@@ -57,6 +60,7 @@ Environment variables remain final overrides over file values:
 | --- | --- | --- |
 | `version` | Yes | Must be `1`. |
 | `server.http_addr` | No | Defaults to `127.0.0.1:8080`; must stay loopback. |
+| `server.cpu_count` | No | `"auto"` or a positive integer; default `"auto"` uses every logical CPU visible to the process and is applied to Go `GOMAXPROCS`. |
 | `server.max_request_bytes` | No | Positive integer; defaults to `1048576`. |
 | `server.request_timeout` | No | Go duration string, for example `10s`. |
 | `server.read_header_timeout` | No | Go duration string, for example `5s`. |
@@ -73,9 +77,9 @@ Environment variables remain final overrides over file values:
 | `ingestion.max_file_bytes` | No | Global source file cap for ingestion; project value can override. |
 | `ingestion.max_chunk_bytes` | No | Global chunk cap for ingestion and query responses; project value can override. |
 | `ingestion.queue_depth` | No | Positive live update queue size. |
-| `ingestion.worker_count` | No | Backward-compatible live submitter worker count. |
-| `ingestion.global_worker_count` | No | Positive global scheduler worker count; default `10`. |
-| `ingestion.per_project_worker_limit` | No | Positive per-project scheduler limit and full-scan file worker cap, no larger than global worker count; default `2`. |
+| `ingestion.worker_count` | No | `"auto"` or a positive integer; backward-compatible live submitter worker count. |
+| `ingestion.global_worker_count` | No | `"auto"` or a positive integer; default `"auto"` follows `server.cpu_count`. |
+| `ingestion.per_project_worker_limit` | No | `"auto"` or a positive integer no larger than global worker count; default `"auto"` follows `ingestion.global_worker_count`. |
 | `ingestion.live_path_priority` | No | Must remain `true` while live updates are enabled; default `true`. |
 | `ingestion.full_scan_batch_size` | No | Positive full-scan graph write batch size up to `5000`; default `500`. |
 | `ingestion.max_watched_directory_count` | No | Optional watched-directory cap per project; `0` means unlimited. |

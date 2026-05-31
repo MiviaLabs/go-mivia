@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -96,6 +97,10 @@ type Service struct {
 }
 
 func NewService(registry *projectregistry.Registry, graph *GraphStore, state stateStore) *Service {
+	defaultWorkerCount := runtime.NumCPU()
+	if defaultWorkerCount <= 0 {
+		defaultWorkerCount = 1
+	}
 	return &Service{
 		registry:              registry,
 		graph:                 graph,
@@ -103,7 +108,7 @@ func NewService(registry *projectregistry.Registry, graph *GraphStore, state sta
 		extractors:            NewDefaultExtractorRegistry(),
 		extractorCacheEnabled: true,
 		fullScanBatchSize:     500,
-		fullScanWorkerCount:   1,
+		fullScanWorkerCount:   defaultWorkerCount,
 		now:                   func() time.Time { return time.Now().UTC() },
 		newID:                 defaultRunID,
 	}

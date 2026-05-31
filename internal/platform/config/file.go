@@ -26,6 +26,25 @@ const (
 
 var jiraProjectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
 
+func parseAutoIntValue(value any) (int, error) {
+	switch typed := value.(type) {
+	case string:
+		return parseAutoIntString("auto integer setting", typed)
+	case int64:
+		if typed <= 0 {
+			return 0, fmt.Errorf("auto integer setting must be %q or a positive integer", "auto")
+		}
+		return int(typed), nil
+	case int:
+		if typed <= 0 {
+			return 0, fmt.Errorf("auto integer setting must be %q or a positive integer", "auto")
+		}
+		return typed, nil
+	default:
+		return 0, fmt.Errorf("auto integer setting must be %q or a positive integer", "auto")
+	}
+}
+
 type fileConfig struct {
 	Version   int                  `toml:"version"`
 	Server    *fileServerConfig    `toml:"server"`
@@ -38,6 +57,7 @@ type fileConfig struct {
 
 type fileServerConfig struct {
 	HTTPAddr          *string `toml:"http_addr"`
+	CPUCount          any     `toml:"cpu_count"`
 	MaxRequestBytes   *int64  `toml:"max_request_bytes"`
 	RequestTimeout    *string `toml:"request_timeout"`
 	ReadHeaderTimeout *string `toml:"read_header_timeout"`
@@ -67,9 +87,9 @@ type fileIngestionConfig struct {
 	MaxFileBytes             *int64  `toml:"max_file_bytes"`
 	MaxChunkBytes            *int    `toml:"max_chunk_bytes"`
 	QueueDepth               *int    `toml:"queue_depth"`
-	WorkerCount              *int    `toml:"worker_count"`
-	GlobalWorkerCount        *int    `toml:"global_worker_count"`
-	PerProjectWorkerLimit    *int    `toml:"per_project_worker_limit"`
+	WorkerCount              any     `toml:"worker_count"`
+	GlobalWorkerCount        any     `toml:"global_worker_count"`
+	PerProjectWorkerLimit    any     `toml:"per_project_worker_limit"`
 	LivePathPriority         *bool   `toml:"live_path_priority"`
 	MaxWatchedDirectoryCount *int    `toml:"max_watched_directory_count"`
 	TaskWarnAfter            *string `toml:"task_warn_after"`
@@ -385,15 +405,6 @@ func (cfg fileIngestionConfig) validate() error {
 	if cfg.QueueDepth != nil && *cfg.QueueDepth <= 0 {
 		return fmt.Errorf("ingestion.queue_depth must be positive")
 	}
-	if cfg.WorkerCount != nil && *cfg.WorkerCount <= 0 {
-		return fmt.Errorf("ingestion.worker_count must be positive")
-	}
-	if cfg.GlobalWorkerCount != nil && *cfg.GlobalWorkerCount <= 0 {
-		return fmt.Errorf("ingestion.global_worker_count must be positive")
-	}
-	if cfg.PerProjectWorkerLimit != nil && *cfg.PerProjectWorkerLimit <= 0 {
-		return fmt.Errorf("ingestion.per_project_worker_limit must be positive")
-	}
 	if cfg.MaxWatchedDirectoryCount != nil && *cfg.MaxWatchedDirectoryCount < 0 {
 		return fmt.Errorf("ingestion.max_watched_directory_count must be non-negative")
 	}
@@ -415,6 +426,13 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 	if cfg.Server != nil {
 		if cfg.Server.HTTPAddr != nil {
 			base.HTTPAddr = *cfg.Server.HTTPAddr
+		}
+		if cfg.Server.CPUCount != nil {
+			value, err := parseAutoIntValue(cfg.Server.CPUCount)
+			if err != nil {
+				return Config{}, fmt.Errorf("server.cpu_count: %w", err)
+			}
+			base.CPUCount = value
 		}
 		if cfg.Server.MaxRequestBytes != nil {
 			base.MaxRequestBytes = *cfg.Server.MaxRequestBytes
@@ -476,15 +494,31 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 			base.Ingestion.QueueDepth = *cfg.Ingestion.QueueDepth
 		}
 		if cfg.Ingestion.WorkerCount != nil {
-			base.Ingestion.WorkerCount = *cfg.Ingestion.WorkerCount
+			value, err := parseAutoIntValue(cfg.Ingestion.WorkerCount)
+			if err != nil {
+				return Config{}, fmt.Errorf("ingestion.worker_count: %w", err)
+			}
+			base.Ingestion.WorkerCount = value
 		}
 		if cfg.Ingestion.GlobalWorkerCount != nil {
-			base.Ingestion.GlobalWorkerCount = *cfg.Ingestion.GlobalWorkerCount
+			value, err := parseAutoIntValue(cfg.Ingestion.GlobalWorkerCount)
+			if err != nil {
+				return Config{}, fmt.Errorf("ingestion.global_worker_count: %w", err)
+			}
+			base.Ingestion.GlobalWorkerCount = value
 		} else if cfg.Ingestion.WorkerCount != nil {
-			base.Ingestion.GlobalWorkerCount = *cfg.Ingestion.WorkerCount
+			value, err := parseAutoIntValue(cfg.Ingestion.WorkerCount)
+			if err != nil {
+				return Config{}, fmt.Errorf("ingestion.worker_count: %w", err)
+			}
+			base.Ingestion.GlobalWorkerCount = value
 		}
 		if cfg.Ingestion.PerProjectWorkerLimit != nil {
-			base.Ingestion.PerProjectWorkerLimit = *cfg.Ingestion.PerProjectWorkerLimit
+			value, err := parseAutoIntValue(cfg.Ingestion.PerProjectWorkerLimit)
+			if err != nil {
+				return Config{}, fmt.Errorf("ingestion.per_project_worker_limit: %w", err)
+			}
+			base.Ingestion.PerProjectWorkerLimit = value
 		}
 		if cfg.Ingestion.LivePathPriority != nil {
 			base.Ingestion.LivePathPriority = *cfg.Ingestion.LivePathPriority

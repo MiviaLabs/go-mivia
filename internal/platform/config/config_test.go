@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 
 func TestConfigValidate_NonLocalBind_ReturnsError(t *testing.T) {
 	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
 	cfg.HTTPAddr = "0.0.0.0:8080"
 
 	if err := cfg.Validate(); err == nil {
@@ -19,6 +21,7 @@ func TestConfigValidate_NonLocalBind_ReturnsError(t *testing.T) {
 
 func TestConfigValidate_LocalBind_ReturnsNil(t *testing.T) {
 	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
 	cfg.HTTPAddr = "127.0.0.1:8080"
 
 	if err := cfg.Validate(); err != nil {
@@ -28,6 +31,7 @@ func TestConfigValidate_LocalBind_ReturnsNil(t *testing.T) {
 
 func TestConfigValidate_LiveUpdatesRequireContentGraph(t *testing.T) {
 	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
 	cfg.Ingestion.LiveUpdatesEnabled = true
 
 	if err := cfg.Validate(); err == nil {
@@ -53,7 +57,10 @@ func TestLoad_DefaultConfigMissing_UsesEnvOnlyDefaults(t *testing.T) {
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("expected no projects when default config is absent, got %d", len(cfg.Projects))
 	}
-	if cfg.Ingestion.GlobalWorkerCount != 10 || cfg.Ingestion.PerProjectWorkerLimit != 2 {
+	if cfg.CPUCount != runtime.NumCPU() {
+		t.Fatalf("expected auto CPU count %d, got %d", runtime.NumCPU(), cfg.CPUCount)
+	}
+	if cfg.Ingestion.WorkerCount != runtime.NumCPU() || cfg.Ingestion.GlobalWorkerCount != runtime.NumCPU() || cfg.Ingestion.PerProjectWorkerLimit != runtime.NumCPU() {
 		t.Fatalf("expected default scheduler worker settings, got %+v", cfg.Ingestion)
 	}
 }
@@ -80,6 +87,7 @@ version = 1
 
 [server]
 http_addr = "127.0.0.1:9090"
+cpu_count = "4"
 max_request_bytes = 2048
 request_timeout = "11s"
 read_header_timeout = "6s"
@@ -148,6 +156,9 @@ sensitive_marker_policy = "skip_file"
 	}
 	if cfg.HTTPAddr != "localhost:8081" {
 		t.Fatalf("expected env HTTP override, got %q", cfg.HTTPAddr)
+	}
+	if cfg.CPUCount != 4 {
+		t.Fatalf("expected file CPU count, got %d", cfg.CPUCount)
 	}
 	if cfg.LadybugPath != "data/from-env.lbug" {
 		t.Fatalf("expected env Ladybug path override, got %q", cfg.LadybugPath)
@@ -244,6 +255,64 @@ func TestLoad_EnvOverridesIngestion_ReturnsMergedConfig(t *testing.T) {
 	}
 }
 
+func TestLoad_CPUCountAutoAndIngestionAutoUseRuntimeCPU(t *testing.T) {
+	clearConfigEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mivia-server.local.toml")
+	writeFile(t, path, `
+version = 1
+
+[server]
+http_addr = "127.0.0.1:9090"
+cpu_count = "auto"
+
+[ingestion]
+worker_count = "auto"
+global_worker_count = "auto"
+per_project_worker_limit = "auto"
+`)
+	t.Setenv("MIVIA_CONFIG_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected auto CPU config to load: %v", err)
+	}
+	if cfg.CPUCount != runtime.NumCPU() {
+		t.Fatalf("expected runtime CPU count %d, got %d", runtime.NumCPU(), cfg.CPUCount)
+	}
+	if cfg.Ingestion.WorkerCount != runtime.NumCPU() || cfg.Ingestion.GlobalWorkerCount != runtime.NumCPU() || cfg.Ingestion.PerProjectWorkerLimit != runtime.NumCPU() {
+		t.Fatalf("expected ingestion auto worker counts to use runtime CPU count, got %+v", cfg.Ingestion)
+	}
+}
+
+func TestLoad_CPUEnvOverrideDrivesAutoIngestionDefaults(t *testing.T) {
+	chdir(t, t.TempDir())
+	clearConfigEnv(t)
+	t.Setenv("MIVIA_CPU_COUNT", "3")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected CPU env override to load: %v", err)
+	}
+	if cfg.CPUCount != 3 {
+		t.Fatalf("expected CPU count override, got %d", cfg.CPUCount)
+	}
+	if cfg.Ingestion.WorkerCount != 3 || cfg.Ingestion.GlobalWorkerCount != 3 || cfg.Ingestion.PerProjectWorkerLimit != 3 {
+		t.Fatalf("expected ingestion defaults to follow CPU count, got %+v", cfg.Ingestion)
+	}
+}
+
+func TestLoad_CPUCountRejectsInvalidValues(t *testing.T) {
+	chdir(t, t.TempDir())
+	clearConfigEnv(t)
+	t.Setenv("MIVIA_CPU_COUNT", "0")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "MIVIA_CPU_COUNT") {
+		t.Fatalf("expected invalid CPU count error, got %v", err)
+	}
+}
+
 func TestLoad_LoggingFileRequiresExplicitOptInAndPath(t *testing.T) {
 	chdir(t, t.TempDir())
 	clearConfigEnv(t)
@@ -318,6 +387,7 @@ func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"MIVIA_CONFIG_PATH",
+		"MIVIA_CPU_COUNT",
 		"MIVIA_HTTP_ADDR",
 		"MIVIA_LADYBUG_PATH",
 		"MIVIA_SQLITE_PATH",

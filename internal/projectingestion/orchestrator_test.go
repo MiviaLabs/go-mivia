@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -188,6 +189,18 @@ func TestOrchestrator_TaskQueueFullDefersSingleRescanWithoutRequeueLoop(t *testi
 	task := <-projectWatcher.tasks
 	if !task.rescan || task.relativePath != "" {
 		t.Fatalf("expected one deferred rescan task, got %#v", task)
+	}
+}
+
+func TestOrchestratorDefaultsUseRuntimeCPUCount(t *testing.T) {
+	registry := newLiveRegistry(t)
+	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{})
+	want := runtime.NumCPU()
+	if want <= 0 {
+		want = 1
+	}
+	if orchestrator.options.WorkerCount != want || orchestrator.options.GlobalWorkerCount != want || orchestrator.options.PerProjectWorkerLimit != want {
+		t.Fatalf("expected orchestrator defaults to use runtime CPU count %d, got %+v", want, orchestrator.options)
 	}
 }
 

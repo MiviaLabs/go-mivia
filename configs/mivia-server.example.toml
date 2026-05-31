@@ -6,6 +6,9 @@ version = 1
 
 [server]
 http_addr = "127.0.0.1:8080"
+# "auto" uses every logical CPU visible to the process. Set a positive integer
+# to cap Go runtime CPU scheduling for this process.
+cpu_count = "auto"
 max_request_bytes = 1048576
 request_timeout = "10s"
 read_header_timeout = "5s"
@@ -31,9 +34,11 @@ debounce_interval = "2s"
 max_file_bytes = 1048576
 max_chunk_bytes = 16384
 queue_depth = 128
-worker_count = 2
-global_worker_count = 10
-per_project_worker_limit = 2
+# "auto" follows server.cpu_count. Set positive integers here only when this
+# process must be capped below the available CPU count.
+worker_count = "auto"
+global_worker_count = "auto"
+per_project_worker_limit = "auto"
 live_path_priority = true
 full_scan_batch_size = 500
 max_watched_directory_count = 0

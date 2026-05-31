@@ -3,6 +3,7 @@ package projectingestion
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 )
 
@@ -77,11 +78,15 @@ func NewScheduler(runner ingestionRunner, options SchedulerOptions) *Scheduler {
 	if options.QueueDepth <= 0 {
 		options.QueueDepth = defaultSchedulerQueueDepth
 	}
+	defaultWorkerCount := runtime.NumCPU()
+	if defaultWorkerCount <= 0 {
+		defaultWorkerCount = 1
+	}
 	if options.GlobalWorkerCount <= 0 {
-		options.GlobalWorkerCount = 2
+		options.GlobalWorkerCount = defaultWorkerCount
 	}
 	if options.PerProjectWorkerLimit <= 0 {
-		options.PerProjectWorkerLimit = 1
+		options.PerProjectWorkerLimit = options.GlobalWorkerCount
 	}
 	if options.PerProjectWorkerLimit > options.GlobalWorkerCount {
 		options.PerProjectWorkerLimit = options.GlobalWorkerCount

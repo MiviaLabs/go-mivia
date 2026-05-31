@@ -69,6 +69,47 @@ unexpected = true
 	}
 }
 
+func TestLoadFileConfig_RejectsInvalidAutoIntegerSettings(t *testing.T) {
+	for name, body := range map[string]string{
+		"server_zero_cpu": `
+version = 1
+
+[server]
+cpu_count = 0
+`,
+		"server_bad_cpu": `
+version = 1
+
+[server]
+cpu_count = "bad"
+`,
+		"ingestion_bad_worker": `
+version = 1
+
+[ingestion]
+worker_count = "bad"
+`,
+		"ingestion_zero_global_worker": `
+version = 1
+
+[ingestion]
+global_worker_count = 0
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeTempConfig(t, body)
+			cfg, err := loadFileConfig(path)
+			if err != nil {
+				t.Fatalf("expected TOML decode to succeed before apply: %v", err)
+			}
+			_, err = cfg.applyTo(defaultConfig(path))
+			if err == nil {
+				t.Fatal("expected invalid auto integer setting to fail")
+			}
+		})
+	}
+}
+
 func TestLoadFileConfig_AcceptsContentGraphAndLiveContractValues(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -123,6 +124,18 @@ func TestIngestProject_ProcessesFilesConcurrentlyWithinFullScan(t *testing.T) {
 	close(release)
 	if err := receiveRunResult(t, done); err != nil {
 		t.Fatalf("ingest project: %v", err)
+	}
+}
+
+func TestNewServiceDefaultsFullScanWorkerCountToRuntimeCPUCount(t *testing.T) {
+	root := t.TempDir()
+	svc, _, _ := newTestService(t, root)
+	want := runtime.NumCPU()
+	if want <= 0 {
+		want = 1
+	}
+	if svc.fullScanWorkerCount != want {
+		t.Fatalf("expected full scan worker default %d, got %d", want, svc.fullScanWorkerCount)
 	}
 }
 

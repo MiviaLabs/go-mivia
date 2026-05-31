@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -24,9 +25,6 @@ const (
 	defaultIngestionMaxFileBytes      = int64(1 << 20)
 	defaultIngestionMaxChunkBytes     = 16 * 1024
 	defaultIngestionQueueDepth        = 10000
-	defaultIngestionWorkerCount       = 2
-	defaultIngestionGlobalWorkerCount = 10
-	defaultIngestionPerProjectLimit   = 2
 	defaultIngestionFullScanBatchSize = 500
 	defaultIngestionTaskWarnAfter     = 30 * time.Second
 	defaultIntegrationIncremental     = time.Minute
@@ -42,6 +40,7 @@ const (
 
 type Config struct {
 	ConfigPath        string
+	CPUCount          int
 	HTTPAddr          string
 	LadybugPath       string
 	SQLitePath        string
@@ -190,6 +189,7 @@ func Load() (Config, error) {
 	if err := applyEnvOverrides(&cfg); err != nil {
 		return Config{}, err
 	}
+	cfg.resolveAutoSettings(runtime.NumCPU())
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -201,6 +201,7 @@ func Load() (Config, error) {
 func defaultConfig(configPath string) Config {
 	return Config{
 		ConfigPath:        configPath,
+		CPUCount:          0,
 		HTTPAddr:          defaultHTTPAddr,
 		LadybugPath:       defaultLadybugPath,
 		SQLitePath:        defaultSQLitePath,
@@ -225,9 +226,9 @@ func defaultIngestion() Ingestion {
 		MaxFileBytes:             defaultIngestionMaxFileBytes,
 		MaxChunkBytes:            defaultIngestionMaxChunkBytes,
 		QueueDepth:               defaultIngestionQueueDepth,
-		WorkerCount:              defaultIngestionWorkerCount,
-		GlobalWorkerCount:        defaultIngestionGlobalWorkerCount,
-		PerProjectWorkerLimit:    defaultIngestionPerProjectLimit,
+		WorkerCount:              0,
+		GlobalWorkerCount:        0,
+		PerProjectWorkerLimit:    0,
 		LivePathPriority:         true,
 		MaxWatchedDirectoryCount: 0,
 		TaskWarnAfter:            defaultIngestionTaskWarnAfter,
@@ -240,6 +241,9 @@ func defaultIngestion() Ingestion {
 func applyEnvOverrides(cfg *Config) error {
 	var err error
 	cfg.HTTPAddr = getenv("MIVIA_HTTP_ADDR", cfg.HTTPAddr)
+	if cfg.CPUCount, err = getenvAutoInt("MIVIA_CPU_COUNT", cfg.CPUCount); err != nil {
+		return err
+	}
 	cfg.LadybugPath = getenv("MIVIA_LADYBUG_PATH", cfg.LadybugPath)
 	cfg.SQLitePath = getenv("MIVIA_SQLITE_PATH", cfg.SQLitePath)
 	if cfg.Logging.FileEnabled, err = getenvBool("MIVIA_LOG_FILE_ENABLED", cfg.Logging.FileEnabled); err != nil {
@@ -283,17 +287,17 @@ func applyEnvOverrides(cfg *Config) error {
 		return err
 	}
 	workerCountOverridden := os.Getenv("MIVIA_INGESTION_WORKER_COUNT") != ""
-	if cfg.Ingestion.WorkerCount, err = getenvInt("MIVIA_INGESTION_WORKER_COUNT", cfg.Ingestion.WorkerCount); err != nil {
+	if cfg.Ingestion.WorkerCount, err = getenvAutoInt("MIVIA_INGESTION_WORKER_COUNT", cfg.Ingestion.WorkerCount); err != nil {
 		return err
 	}
 	globalWorkerCountOverridden := os.Getenv("MIVIA_INGESTION_GLOBAL_WORKER_COUNT") != ""
-	if cfg.Ingestion.GlobalWorkerCount, err = getenvInt("MIVIA_INGESTION_GLOBAL_WORKER_COUNT", cfg.Ingestion.GlobalWorkerCount); err != nil {
+	if cfg.Ingestion.GlobalWorkerCount, err = getenvAutoInt("MIVIA_INGESTION_GLOBAL_WORKER_COUNT", cfg.Ingestion.GlobalWorkerCount); err != nil {
 		return err
 	}
 	if workerCountOverridden && !globalWorkerCountOverridden {
 		cfg.Ingestion.GlobalWorkerCount = cfg.Ingestion.WorkerCount
 	}
-	if cfg.Ingestion.PerProjectWorkerLimit, err = getenvInt("MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT", cfg.Ingestion.PerProjectWorkerLimit); err != nil {
+	if cfg.Ingestion.PerProjectWorkerLimit, err = getenvAutoInt("MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT", cfg.Ingestion.PerProjectWorkerLimit); err != nil {
 		return err
 	}
 	if cfg.Ingestion.LivePathPriority, err = getenvBool("MIVIA_INGESTION_LIVE_PATH_PRIORITY", cfg.Ingestion.LivePathPriority); err != nil {
@@ -318,7 +322,28 @@ func applyEnvOverrides(cfg *Config) error {
 	return nil
 }
 
+func (cfg *Config) resolveAutoSettings(maxCPU int) {
+	if maxCPU <= 0 {
+		maxCPU = 1
+	}
+	if cfg.CPUCount <= 0 {
+		cfg.CPUCount = maxCPU
+	}
+	if cfg.Ingestion.WorkerCount <= 0 {
+		cfg.Ingestion.WorkerCount = cfg.CPUCount
+	}
+	if cfg.Ingestion.GlobalWorkerCount <= 0 {
+		cfg.Ingestion.GlobalWorkerCount = cfg.CPUCount
+	}
+	if cfg.Ingestion.PerProjectWorkerLimit <= 0 {
+		cfg.Ingestion.PerProjectWorkerLimit = cfg.Ingestion.GlobalWorkerCount
+	}
+}
+
 func (cfg Config) Validate() error {
+	if cfg.CPUCount <= 0 {
+		return errors.New("MIVIA_CPU_COUNT must be \"auto\" or a positive integer")
+	}
 	if cfg.HTTPAddr == "" {
 		return errors.New("MIVIA_HTTP_ADDR must not be empty")
 	}
@@ -382,13 +407,13 @@ func (ingestion Ingestion) Validate() error {
 		return errors.New("MIVIA_INGESTION_QUEUE_DEPTH must be positive")
 	}
 	if ingestion.WorkerCount <= 0 {
-		return errors.New("MIVIA_INGESTION_WORKER_COUNT must be positive")
+		return errors.New("MIVIA_INGESTION_WORKER_COUNT must be \"auto\" or a positive integer")
 	}
 	if ingestion.GlobalWorkerCount <= 0 {
-		return errors.New("MIVIA_INGESTION_GLOBAL_WORKER_COUNT must be positive")
+		return errors.New("MIVIA_INGESTION_GLOBAL_WORKER_COUNT must be \"auto\" or a positive integer")
 	}
 	if ingestion.PerProjectWorkerLimit <= 0 || ingestion.PerProjectWorkerLimit > ingestion.GlobalWorkerCount {
-		return errors.New("MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT must be positive and <= MIVIA_INGESTION_GLOBAL_WORKER_COUNT")
+		return errors.New("MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT must be \"auto\" or a positive integer <= MIVIA_INGESTION_GLOBAL_WORKER_COUNT")
 	}
 	if ingestion.LiveUpdatesEnabled && !ingestion.LivePathPriority {
 		return errors.New("MIVIA_INGESTION_LIVE_PATH_PRIORITY must remain true while live updates are enabled")
@@ -446,6 +471,26 @@ func getenvInt(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
 	}
 	return value, nil
+}
+
+func getenvAutoInt(key string, fallback int) (int, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	return parseAutoIntString(key, raw)
+}
+
+func parseAutoIntString(name string, raw string) (int, error) {
+	value := strings.TrimSpace(raw)
+	if strings.EqualFold(value, "auto") {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be %q or a positive integer", name, "auto")
+	}
+	return parsed, nil
 }
 
 func getenvBool(key string, fallback bool) (bool, error) {

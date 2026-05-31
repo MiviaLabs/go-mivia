@@ -2,6 +2,7 @@ package projectingestion
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -35,6 +36,18 @@ func TestSchedulerFullScansBothMakeProgress(t *testing.T) {
 		if err := <-errs; err != nil {
 			t.Fatalf("submit full scan: %v", err)
 		}
+	}
+}
+
+func TestSchedulerDefaultsUseRuntimeCPUCount(t *testing.T) {
+	runner := newBlockingSchedulerRunner()
+	scheduler := NewScheduler(runner, SchedulerOptions{})
+	want := runtime.NumCPU()
+	if want <= 0 {
+		want = 1
+	}
+	if scheduler.options.GlobalWorkerCount != want || scheduler.options.PerProjectWorkerLimit != want {
+		t.Fatalf("expected scheduler defaults to use runtime CPU count %d, got %+v", want, scheduler.options)
 	}
 }
 

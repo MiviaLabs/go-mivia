@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/httpapi"
@@ -49,6 +50,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	previousMaxProcs := runtime.GOMAXPROCS(cfg.CPUCount)
 
 	logger, logCloser, err := logging.NewWithOptions(serviceName, logging.Options{
 		FileEnabled: cfg.Logging.FileEnabled,
@@ -58,6 +60,7 @@ func run() error {
 		return err
 	}
 	defer logCloser.Close()
+	logger.Info("runtime CPU configuration applied", slog.Int("cpu_count", cfg.CPUCount), slog.Int("previous_gomaxprocs", previousMaxProcs))
 	ctx := context.Background()
 
 	sqliteDB, err := sqliteplatform.Open(cfg.SQLitePath)
