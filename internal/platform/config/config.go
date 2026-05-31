@@ -491,9 +491,6 @@ func (ingestion Ingestion) Validate() error {
 	if ingestion.PerProjectWorkerLimit <= 0 || ingestion.PerProjectWorkerLimit > ingestion.GlobalWorkerCount {
 		return errors.New("MIVIA_INGESTION_PER_PROJECT_WORKER_LIMIT must be \"auto\" or a positive integer <= MIVIA_INGESTION_GLOBAL_WORKER_COUNT")
 	}
-	if ingestion.LiveUpdatesEnabled && !ingestion.LivePathPriority {
-		return errors.New("MIVIA_INGESTION_LIVE_PATH_PRIORITY must remain true while live updates are enabled")
-	}
 	if ingestion.MaxWatchedDirectoryCount < 0 {
 		return errors.New("MIVIA_INGESTION_MAX_WATCHED_DIRECTORY_COUNT must be non-negative")
 	}

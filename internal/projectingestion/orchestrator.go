@@ -129,9 +129,6 @@ func NewOrchestrator(registry *projectregistry.Registry, ingestion ingestionRunn
 	if options.PerProjectWorkerLimit <= 0 {
 		options.PerProjectWorkerLimit = options.GlobalWorkerCount
 	}
-	if !options.LivePathPriority {
-		options.LivePathPriority = true
-	}
 	if options.TaskWarnAfter <= 0 {
 		options.TaskWarnAfter = 30 * time.Second
 	}

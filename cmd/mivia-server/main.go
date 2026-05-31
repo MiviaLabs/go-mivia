@@ -15,6 +15,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/mcpapi"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
+	dashboardhttpapi "github.com/MiviaLabs/go-mivia/internal/dashboard/httpapi"
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/platform/health"
@@ -225,6 +226,7 @@ func run() error {
 	)
 
 	mux := http.NewServeMux()
+	dashboardhttpapi.RegisterRoutes(mux)
 	mux.HandleFunc("GET /healthz", health.LivenessHandler)
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
 	httpapi.RegisterRoutes(mux, agentService)
