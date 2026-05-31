@@ -21,6 +21,15 @@ Implementation boundaries:
 - Do not mix infrastructure, service logic, and data-model work before the phase requires it.
 - Use durable files for decisions, handoffs, and task status.
 
+Commit policy:
+
+- Use Conventional Commits for all new commits in this repository.
+- Format: `<type>(<optional-scope>): <imperative summary>`.
+- Allowed common types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`, `chore`, `revert`.
+- Keep the subject concise and aligned with the actual change; do not hide behavioral changes under `chore`.
+- Use `BREAKING CHANGE:` in the commit body when compatibility is intentionally broken.
+- Preserve existing commit messages during history-rewrite or identity-only repair unless the user explicitly asks to rewrite messages.
+
 Verification:
 
 - Run the narrowest meaningful check first.
