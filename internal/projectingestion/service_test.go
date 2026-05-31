@@ -1158,6 +1158,50 @@ func TestIngestProjectBatchesGraphWrites(t *testing.T) {
 	}
 }
 
+func TestIngestProjectFlushesHeavyPreparedBatchBeforeFileLimit(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "a.heavy"), "heavy\n")
+	writeFile(t, filepath.Join(root, "cmd", "b.heavy"), "light\n")
+
+	svc, _, _ := newTestService(t, root)
+	svc.SetFullScanBatchSize(10)
+	svc.SetFullScanWorkerCount(1)
+	search := &capturingSearchBatchStore{}
+	svc.SetSearchStore(search)
+	svc.extractors = NewExtractorRegistry(staticExtractor{
+		name:    "weighted-test",
+		version: "1",
+		supports: func(relative string) bool {
+			return strings.HasSuffix(relative, ".heavy")
+		},
+		parse: func(_ context.Context, relative string, _ []byte) (ExtractorResult, error) {
+			if relative != "cmd/a.heavy" {
+				return ExtractorResult{}, nil
+			}
+			headings := make([]Heading, fullScanPreparedBatchMaxWriteWeight)
+			for i := range headings {
+				headings[i] = Heading{Level: 1, Text: fmt.Sprintf("heavy-%d", i)}
+			}
+			return ExtractorResult{Headings: headings}, nil
+		},
+	})
+
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if run.FilesIngested != 2 {
+		t.Fatalf("expected two ingested files, got %#v", run)
+	}
+	if len(search.batchSizes) < 2 {
+		t.Fatalf("expected heavy result to flush before file-count limit, got batches %#v", search.batchSizes)
+	}
+	if search.batchSizes[0] != 1 {
+		t.Fatalf("expected first weighted flush to contain only the heavy file, got %#v", search.batchSizes)
+	}
+}
+
 func TestIngestProject_InvalidGoSyntaxDoesNotFailFullScan(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -2239,4 +2283,13 @@ func (graph *batchCountingGraph) PutNode(ctx context.Context, node ladybug.Node)
 		graph.currentRepoFileNodes++
 	}
 	return graph.MemoryGraph.PutNode(ctx, node)
+}
+
+type capturingSearchBatchStore struct {
+	batchSizes []int
+}
+
+func (store *capturingSearchBatchStore) ApplySearchFileBatch(_ context.Context, _ projectregistry.Project, results []fullScanFileResult) error {
+	store.batchSizes = append(store.batchSizes, len(results))
+	return nil
 }

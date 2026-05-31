@@ -206,6 +206,21 @@ func (router *ProjectGraphRouter) Batch(ctx context.Context, fn func(ladybug.Gra
 	})
 }
 
+func (router *ProjectGraphRouter) BatchProject(ctx context.Context, projectID string, fn func(ladybug.Graph) error) error {
+	if fn == nil {
+		return nil
+	}
+	backend, err := router.backendForProjectID(projectID)
+	if err != nil {
+		return err
+	}
+	batcher, ok := backend.(ladybug.BatchGraph)
+	if !ok {
+		return fn(backend)
+	}
+	return batcher.Batch(ctx, fn)
+}
+
 func (router *ProjectGraphRouter) backendForNodeRef(label string, id string) (ladybug.Graph, error) {
 	projectID := router.projectIDForRef(label, id)
 	if projectID == "" {

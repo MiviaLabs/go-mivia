@@ -27,6 +27,10 @@ type graphBackend interface {
 	ListRelationships(context.Context, string, ladybug.RelationshipFilter) ([]ladybug.Relationship, error)
 }
 
+type projectBatchGraph interface {
+	BatchProject(context.Context, string, func(ladybug.Graph) error) error
+}
+
 type GraphStore struct {
 	graph graphBackend
 }
@@ -47,7 +51,7 @@ func NewGraphStore(graph graphBackend) *GraphStore {
 }
 
 func (store *GraphStore) PutEligibleFile(ctx context.Context, project projectregistry.Project, run Run, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call, implementations []Implementation, headings []Heading) error {
-	return store.withBatch(ctx, func(store *GraphStore) error {
+	return store.withProjectBatch(ctx, project.ID, func(store *GraphStore) error {
 		if err := store.putProjectAndRun(ctx, project, run); err != nil {
 			return err
 		}
@@ -63,7 +67,7 @@ func (store *GraphStore) PutPreparedFilesBatch(ctx context.Context, project proj
 	if len(prepared) == 0 {
 		return nil
 	}
-	return store.withBatch(ctx, func(store *GraphStore) error {
+	return store.withProjectBatch(ctx, project.ID, func(store *GraphStore) error {
 		if err := store.putProjectAndRun(ctx, project, run); err != nil {
 			return err
 		}
@@ -143,7 +147,7 @@ func (store *GraphStore) HasFileVersion(ctx context.Context, project projectregi
 }
 
 func (store *GraphStore) PutUnchangedFile(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
-	return store.withBatch(ctx, func(store *GraphStore) error {
+	return store.withProjectBatch(ctx, project.ID, func(store *GraphStore) error {
 		if err := store.putProjectAndRun(ctx, project, run); err != nil {
 			return err
 		}
@@ -310,7 +314,7 @@ func (store *GraphStore) putEligibleFile(ctx context.Context, project projectreg
 }
 
 func (store *GraphStore) PutSkippedFile(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
-	return store.withBatch(ctx, func(store *GraphStore) error {
+	return store.withProjectBatch(ctx, project.ID, func(store *GraphStore) error {
 		if err := store.putProjectAndRun(ctx, project, run); err != nil {
 			return err
 		}
@@ -330,7 +334,7 @@ func (store *GraphStore) putSkippedFile(ctx context.Context, project projectregi
 }
 
 func (store *GraphStore) PutFileState(ctx context.Context, project projectregistry.Project, run Run, state FileState) error {
-	return store.withBatch(ctx, func(store *GraphStore) error {
+	return store.withProjectBatch(ctx, project.ID, func(store *GraphStore) error {
 		if err := store.putProjectAndRun(ctx, project, run); err != nil {
 			return err
 		}
@@ -353,7 +357,7 @@ func (store *GraphStore) putFileState(ctx context.Context, project projectregist
 }
 
 func (store *GraphStore) PutRun(ctx context.Context, project projectregistry.Project, run Run) error {
-	return store.withBatch(ctx, func(store *GraphStore) error {
+	return store.withProjectBatch(ctx, project.ID, func(store *GraphStore) error {
 		return store.putRunWithProject(ctx, project, run)
 	})
 }
@@ -373,6 +377,21 @@ func (store *GraphStore) putProjectAndRun(ctx context.Context, project projectre
 }
 
 func (store *GraphStore) WithBatch(ctx context.Context, fn func(*GraphStore) error) error {
+	return store.withBatch(ctx, fn)
+}
+
+func (store *GraphStore) withProjectBatch(ctx context.Context, projectID string, fn func(*GraphStore) error) error {
+	if fn == nil {
+		return nil
+	}
+	if store == nil || store.graph == nil {
+		return fn(store)
+	}
+	if batcher, ok := store.graph.(projectBatchGraph); ok {
+		return batcher.BatchProject(ctx, projectID, func(graph ladybug.Graph) error {
+			return fn(&GraphStore{graph: graph})
+		})
+	}
 	return store.withBatch(ctx, fn)
 }
 

@@ -31,7 +31,7 @@ flowchart LR
   MCP --> Promotion["Promotion gates"]
   MCP --> Server["mivia-server on localhost"]
   Server --> Project["Approved local project"]
-  Server --> Store["Local graph, SQLite, and FTS"]
+  Server --> Store["Project-scoped graph/search plus SQLite state"]
   Store --> MCP
   Indexed --> Agent
   Reliability --> Agent
@@ -130,6 +130,8 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Read one local Confluence page | Not exposed | `projects.confluence.page.get` |
 
 `projects.ingest`, `projects.search_index.rebuild`, `POST /ingestion-runs`, and `POST /search-index/rebuild` are asynchronous submissions. They return queued run metadata with a `run_id`; poll `projects.ingestion_status` or use latest status before trusting indexed content.
+
+For persistent content-graph projects, graph/search storage is project-scoped under the configured storage parent. Full-scan ingestion writes prepared files in bounded windows: `full_scan_batch_size` is the hard file-count cap, and heavy files flush earlier by graph/search write weight. Search writes are split into bounded subtransactions while preserving each file's delete/version/FTS update as one unit.
 
 Project integration polling is also asynchronous. Configure Jira and Confluence under the target project in local TOML, restart the server, check `projects.integrations.status`, queue a provider run with `projects.integrations.poll`, then wait on `projects.integrations.poll_status` before relying on `projects.integrations.search` or provider-specific read tools. Integration search/read uses only the local graph; it does not call Atlassian.
 

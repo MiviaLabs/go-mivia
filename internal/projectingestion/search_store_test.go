@@ -117,6 +117,75 @@ func TestSQLiteStore_ApplySearchFileBatchDoesNotRewriteFTSForUnchangedFiles(t *t
 	}
 }
 
+func TestSQLiteStore_ApplySearchFileBatchBoundsSubBatchesByWriteWeight(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	heavySymbols := make([]Symbol, fullScanPreparedBatchMaxWriteWeight)
+	for i := range heavySymbols {
+		heavySymbols[i] = Symbol{Kind: SymbolKindFunction, Name: "HeavySymbol"}
+	}
+	results := []fullScanFileResult{
+		testSearchFileResult("cmd/heavy.go", "sha256:heavy", []Chunk{{Index: 0, Text: "alpha body"}}, heavySymbols),
+		testSearchFileResult("cmd/light.go", "sha256:light", []Chunk{{Index: 0, Text: "beta body"}}, nil),
+	}
+
+	var subBatches [][]fullScanFileResult
+	if err := forEachFullScanResultBatchByWeight(results, fullScanPreparedBatchMaxWriteWeight, func(batch []fullScanFileResult) error {
+		copied := append([]fullScanFileResult(nil), batch...)
+		subBatches = append(subBatches, copied)
+		return nil
+	}); err != nil {
+		t.Fatalf("split batches: %v", err)
+	}
+	if len(subBatches) != 2 || len(subBatches[0]) != 1 || len(subBatches[1]) != 1 {
+		t.Fatalf("expected bounded sub-batches, got %#v", subBatches)
+	}
+
+	if err := store.ApplySearchFileBatch(ctx, project, results); err != nil {
+		t.Fatalf("apply split search batch: %v", err)
+	}
+}
+
+func TestSQLiteStore_ApplySearchFileBatchSearchResultsSurviveSplitWrites(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	heavySymbols := make([]Symbol, fullScanPreparedBatchMaxWriteWeight)
+	for i := range heavySymbols {
+		heavySymbols[i] = Symbol{Kind: SymbolKindFunction, Name: "HeavySymbol"}
+	}
+	results := []fullScanFileResult{
+		testSearchFileResult("cmd/heavy.go", "sha256:heavy", []Chunk{{Index: 0, Text: "alpha body"}}, heavySymbols),
+		testSearchFileResult("cmd/light.go", "sha256:light", []Chunk{{Index: 0, Text: "beta body"}}, []Symbol{{Kind: SymbolKindFunction, Name: "LightSymbol"}}),
+	}
+	if err := store.ApplySearchFileBatch(ctx, project, results); err != nil {
+		t.Fatalf("apply split search batch: %v", err)
+	}
+
+	alpha, err := store.SearchText(ctx, project, TextSearchOptions{Query: "alpha", MaxMatches: 10})
+	if err != nil {
+		t.Fatalf("search alpha: %v", err)
+	}
+	beta, err := store.SearchText(ctx, project, TextSearchOptions{Query: "beta", MaxMatches: 10})
+	if err != nil {
+		t.Fatalf("search beta: %v", err)
+	}
+	if len(alpha.Results) != 1 || alpha.Results[0].File.RelativePath != "cmd/heavy.go" {
+		t.Fatalf("expected heavy-file alpha result, got %#v", alpha.Results)
+	}
+	if len(beta.Results) != 1 || beta.Results[0].File.RelativePath != "cmd/light.go" {
+		t.Fatalf("expected light-file beta result, got %#v", beta.Results)
+	}
+	symbols, err := store.SearchSymbols(ctx, project, SymbolFilter{NameContains: "LightSymbol"}, Pagination{PageSize: 10})
+	if err != nil {
+		t.Fatalf("search symbols: %v", err)
+	}
+	if len(symbols.Symbols) != 1 || symbols.Symbols[0].Name != "LightSymbol" {
+		t.Fatalf("expected light symbol after split write, got %#v", symbols.Symbols)
+	}
+}
+
 func TestSQLiteStore_CountSearchSymbolsAndChunks(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)
@@ -234,4 +303,14 @@ func testSearchFileState(projectID string, relativePath string, contentSHA256 st
 	state := testFileState(projectID, relativePath, FileStatusEligible)
 	state.ContentSHA256 = contentSHA256
 	return state
+}
+
+func testSearchFileResult(relativePath string, contentSHA256 string, chunks []Chunk, symbols []Symbol) fullScanFileResult {
+	return fullScanFileResult{
+		state:       testSearchFileState("project-1", relativePath, contentSHA256),
+		chunks:      chunks,
+		symbols:     symbols,
+		chunkCount:  len(chunks),
+		symbolCount: len(symbols),
+	}
 }

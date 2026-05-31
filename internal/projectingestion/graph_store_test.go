@@ -75,6 +75,31 @@ func TestGraphStore_PutPreparedFilesBatchWritesProjectAndRunOnce(t *testing.T) {
 	}
 }
 
+func TestGraphStore_PutPreparedFilesBatchUsesProjectBatch(t *testing.T) {
+	ctx := context.Background()
+	graph := &projectBatchCountingGraph{MemoryGraph: ladybug.NewMemoryGraph()}
+	if err := graph.Bootstrap(ctx, schema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	store := NewGraphStore(graph)
+	project := testGraphProject()
+	run := testGraphRun(project.ID)
+
+	err := store.PutPreparedFilesBatch(ctx, project, run, []PreparedGraphFile{{
+		State:  testGraphState("cmd/a.go", "hash-a", "sha256:a"),
+		Chunks: []Chunk{{Index: 0, StartLine: 1, EndLine: 1, Text: "package main", ContentSHA256: "sha256:a"}},
+	}})
+	if err != nil {
+		t.Fatalf("put graph batch: %v", err)
+	}
+	if graph.batchProjectCalls != 1 || graph.lastProjectID != project.ID {
+		t.Fatalf("expected one project batch for %q, got calls=%d project=%q", project.ID, graph.batchProjectCalls, graph.lastProjectID)
+	}
+	if graph.genericBatchCalls != 0 {
+		t.Fatalf("expected project-specific batch instead of generic batch, got %d generic calls", graph.genericBatchCalls)
+	}
+}
+
 func TestGraphStore_ResolvesUnambiguousSamePackageCrossFileCallsAndReferences(t *testing.T) {
 	ctx := context.Background()
 	graph := ladybug.NewMemoryGraph()
@@ -166,6 +191,24 @@ func (graph *putCountingGraph) PutNode(ctx context.Context, node ladybug.Node) e
 		graph.runPuts++
 	}
 	return graph.MemoryGraph.PutNode(ctx, node)
+}
+
+type projectBatchCountingGraph struct {
+	*ladybug.MemoryGraph
+	batchProjectCalls int
+	genericBatchCalls int
+	lastProjectID     string
+}
+
+func (graph *projectBatchCountingGraph) BatchProject(ctx context.Context, projectID string, fn func(ladybug.Graph) error) error {
+	graph.batchProjectCalls++
+	graph.lastProjectID = projectID
+	return fn(graph.MemoryGraph)
+}
+
+func (graph *projectBatchCountingGraph) Batch(ctx context.Context, fn func(ladybug.Graph) error) error {
+	graph.genericBatchCalls++
+	return fn(graph.MemoryGraph)
 }
 
 func testGraphProject() projectregistry.Project {
