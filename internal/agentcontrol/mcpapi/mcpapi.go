@@ -604,7 +604,7 @@ func objectSchema(properties map[string]any, required []string) map[string]any {
 
 func verifierSchema() map[string]any {
 	return objectSchema(map[string]any{
-		"command":     map[string]any{"type": "string", "minLength": 1},
+		"command":     map[string]any{"type": "string", "minLength": 1, "description": "Verifier command metadata. A command plus simple space-separated words is accepted and normalized; prefer the executable in command and flags/paths in args."},
 		"args":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 32},
 		"scope":       map[string]any{"type": "string"},
 		"status":      map[string]any{"type": "string"},

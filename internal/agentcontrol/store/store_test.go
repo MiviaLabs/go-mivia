@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -98,6 +99,43 @@ func TestLadybugStore_AgentRunLifecycle(t *testing.T) {
 	}
 	if fetched.Status != model.AgentRunStatusCompleted || len(fetched.Steps) != 1 || len(fetched.Promotions) != 1 || fetched.ChangedFiles[0] != "internal/agentcontrol/model/model.go" {
 		t.Fatalf("unexpected fetched run: %#v", fetched)
+	}
+}
+
+func TestLadybugStore_AgentRunPersistsAfterGraphReopen(t *testing.T) {
+	ctx := context.Background()
+	graphPath := filepath.Join(t.TempDir(), "agent-metadata.lbug")
+	graph, err := ladybug.OpenPersistentGraph(graphPath)
+	if err != nil {
+		t.Fatalf("open graph: %v", err)
+	}
+	if err := graph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	runStore := store.NewLadybugStore(graph)
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	created, err := runStore.CreateAgentRun(ctx, model.AgentRun{
+		ID:        "agent_run_persistent",
+		ProjectID: "example-service",
+		Status:    model.AgentRunStatusRunning,
+		StartedAt: now,
+		Summary:   "redacted summary",
+	})
+	if err != nil {
+		t.Fatalf("create agent run: %v", err)
+	}
+
+	reopened, err := ladybug.OpenPersistentGraph(graphPath)
+	if err != nil {
+		t.Fatalf("reopen graph: %v", err)
+	}
+	reopenedStore := store.NewLadybugStore(reopened)
+	fetched, err := reopenedStore.GetAgentRun(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get reopened agent run: %v", err)
+	}
+	if fetched.ID != created.ID || fetched.ProjectID != created.ProjectID || fetched.Summary != created.Summary {
+		t.Fatalf("unexpected reopened run: %#v", fetched)
 	}
 }
 

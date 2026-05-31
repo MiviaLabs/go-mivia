@@ -1452,6 +1452,7 @@ components:
       properties:
         command:
           type: string
+          description: Verifier command metadata. Prefer executable-only command plus args; simple space-separated words in command are normalized into args.
         args:
           type: array
           items:

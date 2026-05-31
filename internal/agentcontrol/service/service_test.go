@@ -296,3 +296,30 @@ func TestAgentRunVerifierArgsAllowLoopbackURLsOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentRunVerifierCommandSplitsSimpleWordsIntoArgs(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	run, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+		ProjectID: "example-service",
+		Summary:   "bounded metadata",
+		Verifiers: []model.AgentVerifier{{
+			Command: "go test",
+			Args:    []string{"./internal/agentcontrol/service"},
+			Status:  "passed",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create agent run: %v", err)
+	}
+	if len(run.Verifiers) != 1 {
+		t.Fatalf("expected verifier, got %#v", run.Verifiers)
+	}
+	verifier := run.Verifiers[0]
+	if verifier.Command != "go" {
+		t.Fatalf("expected command to be normalized to go, got %#v", verifier)
+	}
+	if len(verifier.Args) != 2 || verifier.Args[0] != "test" || verifier.Args[1] != "./internal/agentcontrol/service" {
+		t.Fatalf("expected split command args, got %#v", verifier.Args)
+	}
+}

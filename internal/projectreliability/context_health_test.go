@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
@@ -348,6 +349,20 @@ func TestContextHealth_ActiveSyncSkipsBlockingProvider(t *testing.T) {
 	close(block)
 }
 
+func TestProjectHasActiveSyncTreatsGlobalIngestionAsIndexingWindow(t *testing.T) {
+	provider := schedulerDiagnosticsProviderFunc(func() projectingestion.SchedulerDiagnostics {
+		return projectingestion.SchedulerDiagnostics{
+			ActiveTaskCount:             1,
+			ActiveProjectTaskCount:      map[string]int{"other": 1},
+			ProjectWideTaskCount:        map[string]int{},
+			PendingProjectWideTaskCount: map[string]int{},
+		}
+	})
+	if !projectHasActiveSync(provider, "example") {
+		t.Fatalf("expected global active ingestion to count as active sync window")
+	}
+}
+
 type slowContextProvider struct{}
 
 func (slowContextProvider) LatestRun(ctx context.Context, _ string) (RunSummary, error) {
@@ -410,4 +425,10 @@ type activeSyncBlockingContextProvider struct {
 
 func (activeSyncBlockingContextProvider) ActiveSync(string) bool {
 	return true
+}
+
+type schedulerDiagnosticsProviderFunc func() projectingestion.SchedulerDiagnostics
+
+func (fn schedulerDiagnosticsProviderFunc) Diagnostics() projectingestion.SchedulerDiagnostics {
+	return fn()
 }

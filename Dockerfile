@@ -23,6 +23,7 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin mivia \
 
 COPY --from=build /out/mivia-server /usr/local/bin/mivia-server
 COPY docker/entrypoint.sh /usr/local/bin/mivia-entrypoint
+RUN chmod 0755 /usr/local/bin/mivia-entrypoint
 
 USER mivia
 WORKDIR /app

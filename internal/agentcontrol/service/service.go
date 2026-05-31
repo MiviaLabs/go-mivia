@@ -484,11 +484,12 @@ func safeRelativePaths(paths []string) ([]string, error) {
 func safeVerifiers(verifiers []model.AgentVerifier) ([]model.AgentVerifier, error) {
 	out := make([]model.AgentVerifier, 0, len(verifiers))
 	for _, verifier := range verifiers {
-		command, err := safeIdentifier(verifier.Command, "verifier.command")
+		command, commandArgs, err := safeVerifierCommand(verifier.Command)
 		if err != nil {
 			return nil, err
 		}
-		args := make([]string, 0, len(verifier.Args))
+		args := make([]string, 0, len(commandArgs)+len(verifier.Args))
+		args = append(args, commandArgs...)
 		for _, arg := range verifier.Args {
 			clean, err := safeVerifierArg(arg)
 			if err != nil {
@@ -513,6 +514,26 @@ func safeVerifiers(verifiers []model.AgentVerifier) ([]model.AgentVerifier, erro
 		})
 	}
 	return out, nil
+}
+
+func safeVerifierCommand(value string) (string, []string, error) {
+	fields := strings.Fields(strings.TrimSpace(value))
+	if len(fields) == 0 {
+		return "", nil, fmt.Errorf("%w: verifier.command is required", ErrInvalidInput)
+	}
+	command, err := safeIdentifier(fields[0], "verifier.command")
+	if err != nil {
+		return "", nil, err
+	}
+	args := make([]string, 0, len(fields)-1)
+	for _, field := range fields[1:] {
+		arg, err := safeVerifierArg(field)
+		if err != nil {
+			return "", nil, err
+		}
+		args = append(args, arg)
+	}
+	return command, args, nil
 }
 
 func safeVerifierArg(value string) (string, error) {

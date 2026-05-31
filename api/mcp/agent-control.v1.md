@@ -133,7 +133,7 @@ Output: structured redacted `AgentRun` metadata plus a JSON text content block. 
 
 ### `agent_runs.step_append`
 
-Input schema: `run_id`, `status` (`running`, `completed`, or `failed`), and optional `tool_name`, `tool_category`, `failure_category`, redacted `notes`, safe `changed_files`, verifier metadata, and artifact refs.
+Input schema: `run_id`, `status` (`running`, `completed`, or `failed`), and optional `tool_name`, `tool_category`, `failure_category`, redacted `notes`, safe `changed_files`, verifier metadata, and artifact refs. For verifier metadata, prefer `command` as the executable and `args` as flags/paths; simple space-separated words in `command` are normalized into args.
 
 Output: updated structured redacted `AgentRun` metadata plus a JSON text content block.
 

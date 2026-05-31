@@ -302,7 +302,8 @@ func projectHasActiveSync(provider any, projectID string) bool {
 	diagnostics := diagnosticsProvider.Diagnostics()
 	return diagnostics.ActiveProjectTaskCount[projectID] > 0 ||
 		diagnostics.ProjectWideTaskCount[projectID] > 0 ||
-		diagnostics.PendingProjectWideTaskCount[projectID] > 0
+		diagnostics.PendingProjectWideTaskCount[projectID] > 0 ||
+		diagnostics.ActiveTaskCount > 0
 }
 
 func sanitizeRunSummary(run RunSummary) RunSummary {

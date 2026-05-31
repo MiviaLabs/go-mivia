@@ -80,10 +80,6 @@ func run() error {
 		return err
 	}
 
-	graph := ladybug.NewMemoryGraph()
-	if err := graph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
-		return err
-	}
 	projectRegistry, err := projectregistry.NewRegistry(cfg.Projects, projectregistry.Options{
 		LadybugPath:                  cfg.LadybugPath,
 		SQLitePath:                   cfg.SQLitePath,
@@ -106,12 +102,19 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	metadataPersistentGraph, err := ladybug.OpenPersistentGraph(cfg.LadybugPath + ".metadata")
+	if err != nil {
+		return err
+	}
 	projectGraph := projectregistry.NewProjectGraphRouter(projectRegistry, ladybug.NewMemoryGraph(), projectPersistentGraph)
 	if err := projectGraph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
 		return err
 	}
-	agentStore := store.NewLadybugStore(graph)
-	researchService := research.NewService(researchstore.NewLadybugMetadataStore(projectPersistentGraph))
+	if err := metadataPersistentGraph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
+		return err
+	}
+	agentStore := store.NewLadybugStore(metadataPersistentGraph)
+	researchService := research.NewService(researchstore.NewLadybugMetadataStore(metadataPersistentGraph))
 	projectDigestService := projectregistry.NewDigestService(projectRegistry, projectGraph)
 	projectIngestionService := projectingestion.NewService(projectRegistry, projectingestion.NewGraphStore(projectGraph), projectingestion.NewSQLiteStore(sqliteDB.SQLDB()))
 	projectIngestionService.SetFullScanBatchSize(cfg.Ingestion.FullScanBatchSize)
