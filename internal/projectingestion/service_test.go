@@ -139,6 +139,95 @@ func TestNewServiceDefaultsFullScanWorkerCountToRuntimeCPUCount(t *testing.T) {
 	}
 }
 
+func TestIngestProject_GlobalFullScanWorkerLimitCapsConcurrentScans(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	projectOneRoot := filepath.Join(root, "one")
+	projectTwoRoot := filepath.Join(root, "two")
+	writeFile(t, filepath.Join(projectOneRoot, "one-a.slow"), "one-a\n")
+	writeFile(t, filepath.Join(projectOneRoot, "one-b.slow"), "one-b\n")
+	writeFile(t, filepath.Join(projectTwoRoot, "two-a.slow"), "two-a\n")
+	writeFile(t, filepath.Join(projectTwoRoot, "two-b.slow"), "two-b\n")
+
+	registry, err := projectregistry.NewRegistry([]config.Project{
+		testConfigProject("project-one", "project_one", projectOneRoot),
+		testConfigProject("project-two", "project_two", projectTwoRoot),
+	}, projectregistry.Options{
+		ContentGraphEnabled:          true,
+		ContentGraphApprovalAccepted: true,
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := sqliteschema.Bootstrap(ctx, db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+	svc := NewService(registry, NewGraphStore(graph), NewSQLiteStore(db.SQLDB()))
+	svc.SetFullScanWorkerLimits(1, 2)
+	svc.newID = func(project projectregistry.Project, _ time.Time) string { return "ingest_" + project.ID }
+
+	var mu sync.Mutex
+	active := 0
+	maxActive := 0
+	svc.extractors = NewExtractorRegistry(staticExtractor{
+		name:    "global-limit-test",
+		version: "1",
+		supports: func(relative string) bool {
+			return strings.HasSuffix(relative, ".slow")
+		},
+		parse: func(ctx context.Context, _ string, _ []byte) (ExtractorResult, error) {
+			mu.Lock()
+			active++
+			if active > maxActive {
+				maxActive = active
+			}
+			mu.Unlock()
+			select {
+			case <-time.After(10 * time.Millisecond):
+			case <-ctx.Done():
+				return ExtractorResult{}, ctx.Err()
+			}
+			mu.Lock()
+			active--
+			mu.Unlock()
+			return ExtractorResult{}, nil
+		},
+	})
+
+	errs := make(chan error, 2)
+	go func() {
+		run, err := svc.IngestProject(ctx, "project-one", TriggerManual)
+		if err == nil && run.FilesIngested != 2 {
+			err = fmt.Errorf("project-one expected two ingested files, got %#v", run)
+		}
+		errs <- err
+	}()
+	go func() {
+		run, err := svc.IngestProject(ctx, "project-two", TriggerManual)
+		if err == nil && run.FilesIngested != 2 {
+			err = fmt.Errorf("project-two expected two ingested files, got %#v", run)
+		}
+		errs <- err
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("ingest project: %v", err)
+		}
+	}
+	if maxActive != 1 {
+		t.Fatalf("expected global full-scan worker cap of 1, saw %d concurrent file parses", maxActive)
+	}
+}
+
 func TestIngestProject_PersistsRunningProgressDuringFullScan(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -1788,21 +1877,10 @@ func newTestServiceWithMaxChunkBytes(t *testing.T, root string, maxChunkBytes in
 
 func newTestServiceWithOptions(t *testing.T, root string, updatePolicy string, maxChunkBytes int) (*Service, *ladybug.MemoryGraph, *SQLiteStore) {
 	t.Helper()
-	registry, err := projectregistry.NewRegistry([]config.Project{{
-		ID:                    "example-service",
-		DisplayName:           "Example Service",
-		RootPath:              root,
-		Enabled:               true,
-		Classification:        projectregistry.ClassificationInternal,
-		GraphNamespace:        "example_ns",
-		DigestMode:            projectregistry.DigestModeContentGraph,
-		UpdatePolicy:          updatePolicy,
-		Include:               []string{"**/*"},
-		FollowSymlinks:        false,
-		MaxFileBytes:          4096,
-		MaxChunkBytes:         maxChunkBytes,
-		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
-	}}, projectregistry.Options{
+	project := testConfigProject("example-service", "example_ns", root)
+	project.UpdatePolicy = updatePolicy
+	project.MaxChunkBytes = maxChunkBytes
+	registry, err := projectregistry.NewRegistry([]config.Project{project}, projectregistry.Options{
 		ContentGraphEnabled:          true,
 		LiveUpdatesEnabled:           updatePolicy == projectregistry.UpdatePolicyLive,
 		ContentGraphApprovalAccepted: true,
@@ -1828,6 +1906,24 @@ func newTestServiceWithOptions(t *testing.T, root string, updatePolicy string, m
 	svc.now = func() time.Time { return time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC) }
 	svc.newID = func(projectregistry.Project, time.Time) string { return "ingest_run_1" }
 	return svc, graph, state
+}
+
+func testConfigProject(id string, namespace string, root string) config.Project {
+	return config.Project{
+		ID:                    id,
+		DisplayName:           id,
+		RootPath:              root,
+		Enabled:               true,
+		Classification:        projectregistry.ClassificationInternal,
+		GraphNamespace:        namespace,
+		DigestMode:            projectregistry.DigestModeContentGraph,
+		UpdatePolicy:          projectregistry.UpdatePolicyManual,
+		Include:               []string{"**/*"},
+		FollowSymlinks:        false,
+		MaxFileBytes:          4096,
+		MaxChunkBytes:         1024,
+		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
+	}
 }
 
 func findState(t *testing.T, states []FileState, relativePath string) FileState {

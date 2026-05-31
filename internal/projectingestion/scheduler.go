@@ -607,6 +607,9 @@ func (scheduler *Scheduler) canAcquireProjectLocked(state *schedulerProjectState
 	if task.projectWide() {
 		return state.active == 0 && !state.projectWideActive
 	}
+	if state.projectWideActive {
+		return state.active-1 < scheduler.options.PerProjectWorkerLimit
+	}
 	return state.active < scheduler.options.PerProjectWorkerLimit && !state.projectWideActive
 }
 

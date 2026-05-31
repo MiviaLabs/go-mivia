@@ -77,7 +77,7 @@ flowchart TB
 | Local control surface | Health checks, REST `/api/v1`, MCP Streamable HTTP `/mcp` | Localhost-only default; no public/auth production posture |
 | Tasks and research metadata | Local task records, research-run/source metadata, redaction boundary | No raw prompts, provider payloads, raw fetched content, or PII |
 | Project registry | Optional local TOML projects with metadata-only digest or content graph mode | Root paths and local config values stay out of REST/MCP responses |
-| Ingestion scheduler | Async manual ingestion, live watcher rescan, configurable global/per-project limits, live path priority | Operators can cap workers per project when fairness matters |
+| Ingestion scheduler | Async manual ingestion, live watcher rescan, configurable global/per-project limits, live path priority | Global limits cap full-scan file workers; operators can cap workers per project when fairness matters |
 | Full-scan ingestion | Parallel bounded file workers, periodic running counters, stale cleanup after workers drain | Source is stored only for eligible chunks after safety gates |
 | Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph, named AST structural search, AST query catalog discovery | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
 | Search index | SQLite FTS5 rows for eligible chunks, files, symbols, references, and calls; async rebuild repair through ingestion scheduler | Raw FTS syntax and raw SQLite errors are never exposed |

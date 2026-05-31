@@ -109,11 +109,11 @@ func TestSchedulerProjectWideTasksRunInParallelForDifferentProjects(t *testing.T
 	}
 }
 
-func TestSchedulerPathWaitsForSameProjectFullScan(t *testing.T) {
+func TestSchedulerPathRunsDuringSameProjectFullScan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	runner := newBlockingSchedulerRunner()
-	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 2, PerProjectWorkerLimit: 2, LivePathPriority: true})
+	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 2, PerProjectWorkerLimit: 1, LivePathPriority: true})
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("start scheduler: %v", err)
 	}
@@ -131,16 +131,15 @@ func TestSchedulerPathWaitsForSameProjectFullScan(t *testing.T) {
 		_, err := scheduler.SubmitPath(ctx, "project-a", "src/app.go", TriggerLive)
 		pathDone <- err
 	}()
-	runner.assertNotStarted(t, "path", "project-a", 30*time.Millisecond)
-
-	runner.release("full_scan", "project-a")
-	if err := <-fullDone; err != nil {
-		t.Fatalf("full scan: %v", err)
-	}
 	runner.waitStarted(t, "path", "project-a")
 	runner.release("path", "project-a")
 	if err := <-pathDone; err != nil {
 		t.Fatalf("path ingest: %v", err)
+	}
+
+	runner.release("full_scan", "project-a")
+	if err := <-fullDone; err != nil {
+		t.Fatalf("full scan: %v", err)
 	}
 }
 
@@ -221,11 +220,11 @@ func TestSchedulerPathStartsWhileOtherProjectFullScanActive(t *testing.T) {
 	runner.release("full_scan", "project-a")
 }
 
-func TestSchedulerPerProjectAndGlobalLimits(t *testing.T) {
+func TestSchedulerPathDuringFullScanStillUsesPerProjectLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	runner := newBlockingSchedulerRunner()
-	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 2, PerProjectWorkerLimit: 1, LivePathPriority: true})
+	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 3, PerProjectWorkerLimit: 1, LivePathPriority: true})
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("start scheduler: %v", err)
 	}
@@ -234,10 +233,29 @@ func TestSchedulerPerProjectAndGlobalLimits(t *testing.T) {
 	go scheduler.SubmitFullScan(ctx, "project-a", TriggerManual)
 	runner.waitStarted(t, "full_scan", "project-a")
 	go scheduler.SubmitPath(ctx, "project-a", "src/app.go", TriggerLive)
-	time.Sleep(20 * time.Millisecond)
-	if started := runner.startedCount("path", "project-a"); started != 0 {
-		t.Fatalf("path for same project started before per-project slot released: %d", started)
+	runner.waitStarted(t, "path", "project-a")
+	go scheduler.SubmitPath(ctx, "project-a", "src/other.go", TriggerLive)
+	runner.assertStartedCount(t, "path", "project-a", 1, 30*time.Millisecond)
+	runner.release("path", "project-a")
+	runner.waitStartedCount(t, "path", "project-a", 2)
+	runner.release("path", "project-a")
+	runner.release("full_scan", "project-a")
+}
+
+func TestSchedulerGlobalLimitStillCapsPathPromotion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runner := newBlockingSchedulerRunner()
+	scheduler := NewScheduler(runner, SchedulerOptions{QueueDepth: 8, GlobalWorkerCount: 1, PerProjectWorkerLimit: 1, LivePathPriority: true})
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
 	}
+	defer scheduler.Stop(context.Background())
+
+	go scheduler.SubmitFullScan(ctx, "project-a", TriggerManual)
+	runner.waitStarted(t, "full_scan", "project-a")
+	go scheduler.SubmitPath(ctx, "project-a", "src/app.go", TriggerLive)
+	runner.assertNotStarted(t, "path", "project-a", 30*time.Millisecond)
 	runner.release("full_scan", "project-a")
 	runner.waitStarted(t, "path", "project-a")
 	runner.release("path", "project-a")
@@ -352,13 +370,18 @@ func (runner *blockingSchedulerRunner) block(ctx context.Context, taskType strin
 
 func (runner *blockingSchedulerRunner) waitStarted(t *testing.T, taskType string, projectID string) {
 	t.Helper()
+	runner.waitStartedCount(t, taskType, projectID, 1)
+}
+
+func (runner *blockingSchedulerRunner) waitStartedCount(t *testing.T, taskType string, projectID string, count int) {
+	t.Helper()
 	want := taskType + ":" + projectID
 	deadline := time.After(time.Second)
-	for runner.startedCount(taskType, projectID) == 0 {
+	for runner.startedCount(taskType, projectID) < count {
 		select {
 		case <-runner.notify:
 		case <-deadline:
-			t.Fatalf("timed out waiting for %s", want)
+			t.Fatalf("timed out waiting for %s count %d", want, count)
 		}
 	}
 }
@@ -371,15 +394,22 @@ func (runner *blockingSchedulerRunner) startedCount(taskType string, projectID s
 
 func (runner *blockingSchedulerRunner) assertNotStarted(t *testing.T, taskType string, projectID string, wait time.Duration) {
 	t.Helper()
+	runner.assertStartedCount(t, taskType, projectID, 0, wait)
+}
+
+func (runner *blockingSchedulerRunner) assertStartedCount(t *testing.T, taskType string, projectID string, count int, wait time.Duration) {
+	t.Helper()
 	time.Sleep(wait)
-	if started := runner.startedCount(taskType, projectID); started != 0 {
-		t.Fatalf("%s:%s started unexpectedly: %d", taskType, projectID, started)
+	if started := runner.startedCount(taskType, projectID); started != count {
+		t.Fatalf("expected %s:%s started count %d, got %d", taskType, projectID, count, started)
 	}
 }
 
 func (runner *blockingSchedulerRunner) release(taskType string, projectID string) {
 	runner.mu.Lock()
-	release := runner.releases[taskType+":"+projectID]
+	key := taskType + ":" + projectID
+	release := runner.releases[key]
+	delete(runner.releases, key)
 	runner.mu.Unlock()
 	if release != nil {
 		close(release)

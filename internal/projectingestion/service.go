@@ -92,6 +92,7 @@ type Service struct {
 	extractorCacheEnabled bool
 	fullScanBatchSize     int
 	fullScanWorkerCount   int
+	fullScanWorkerSlots   chan struct{}
 	now                   func() time.Time
 	newID                 func(projectregistry.Project, time.Time) string
 }
@@ -109,6 +110,7 @@ func NewService(registry *projectregistry.Registry, graph *GraphStore, state sta
 		extractorCacheEnabled: true,
 		fullScanBatchSize:     500,
 		fullScanWorkerCount:   defaultWorkerCount,
+		fullScanWorkerSlots:   make(chan struct{}, defaultWorkerCount),
 		now:                   func() time.Time { return time.Now().UTC() },
 		newID:                 defaultRunID,
 	}
@@ -309,7 +311,19 @@ func (svc *Service) SetFullScanBatchSize(size int) {
 func (svc *Service) SetFullScanWorkerCount(count int) {
 	if count > 0 {
 		svc.fullScanWorkerCount = count
+		svc.fullScanWorkerSlots = make(chan struct{}, count)
 	}
+}
+
+func (svc *Service) SetFullScanWorkerLimits(globalCount int, perProjectCount int) {
+	if perProjectCount <= 0 {
+		perProjectCount = svc.effectiveFullScanWorkerCount()
+	}
+	if globalCount <= 0 {
+		globalCount = perProjectCount
+	}
+	svc.fullScanWorkerCount = perProjectCount
+	svc.fullScanWorkerSlots = make(chan struct{}, globalCount)
 }
 
 func (svc *Service) SetExtractorCacheEnabled(enabled bool) {
@@ -457,7 +471,15 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 		go func() {
 			defer workers.Done()
 			for job := range jobs {
+				if err := svc.acquireFullScanWorker(runCtx); err != nil {
+					select {
+					case results <- fullScanFileResult{err: err}:
+					case <-runCtx.Done():
+					}
+					return
+				}
 				result := svc.prepareExistingFile(runCtx, project, job.relative, job.fullPath, job.info, progress.currentRun())
+				svc.releaseFullScanWorker()
 				select {
 				case results <- result:
 				case <-runCtx.Done():
@@ -638,6 +660,28 @@ func (svc *Service) effectiveFullScanWorkerCount() int {
 		return svc.fullScanWorkerCount
 	}
 	return 1
+}
+
+func (svc *Service) acquireFullScanWorker(ctx context.Context) error {
+	if svc == nil || svc.fullScanWorkerSlots == nil {
+		return nil
+	}
+	select {
+	case svc.fullScanWorkerSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (svc *Service) releaseFullScanWorker() {
+	if svc == nil || svc.fullScanWorkerSlots == nil {
+		return
+	}
+	select {
+	case <-svc.fullScanWorkerSlots:
+	default:
+	}
 }
 
 type fullScanFileJob struct {
