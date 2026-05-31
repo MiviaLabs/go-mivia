@@ -120,6 +120,30 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 		t.Fatalf("expected ready context health, got %s", health.Body.String())
 	}
 
+	impactReq := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/impact/analyze", bytes.NewBufferString(`{"changed_paths":["internal/projectregistry/httpapi/httpapi.go","internal/agentcontrol/model/model.go"]}`))
+	impactReq.Header.Set("Content-Type", "application/json")
+	impact := httptest.NewRecorder()
+	mux.ServeHTTP(impact, impactReq)
+	if impact.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", impact.Code, impact.Body.String())
+	}
+	assertDoesNotLeak(t, impact.Body.String(), root, "package main", "content_sha256", "root_path")
+	if !strings.Contains(impact.Body.String(), `"rest_project_api"`) || !strings.Contains(impact.Body.String(), `"agent_control"`) {
+		t.Fatalf("expected impact domains, got %s", impact.Body.String())
+	}
+
+	claimsReq := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/claims/check", bytes.NewBufferString(`{"documents":[{"path":"README.md","text":"Use projects.context_health and not projects.verifiers.recommend. Do not link .ai/tasks/active/local.md"}]}`))
+	claimsReq.Header.Set("Content-Type", "application/json")
+	claims := httptest.NewRecorder()
+	mux.ServeHTTP(claims, claimsReq)
+	if claims.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", claims.Code, claims.Body.String())
+	}
+	assertDoesNotLeak(t, claims.Body.String(), root, "package main", "content_sha256", "root_path", "local.md")
+	if !strings.Contains(claims.Body.String(), `"claim":"projects.context_health"`) || !strings.Contains(claims.Body.String(), `"claim":"projects.verifiers.recommend"`) || !strings.Contains(claims.Body.String(), `"status":"stale"`) {
+		t.Fatalf("expected claim statuses, got %s", claims.Body.String())
+	}
+
 	files := httptest.NewRecorder()
 	mux.ServeHTTP(files, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files?page_size=1", nil))
 	if files.Code != http.StatusOK {

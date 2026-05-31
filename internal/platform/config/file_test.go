@@ -121,6 +121,7 @@ enabled = true
 [[projects]]
 id = "example"
 display_name = "Example"
+aliases = ["github.com/MiviaLabs/go-mivia"]
 root_path = "/absolute/path/to/project"
 digest_mode = "content_graph"
 update_policy = "live"

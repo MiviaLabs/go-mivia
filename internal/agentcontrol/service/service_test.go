@@ -134,3 +134,65 @@ func TestTaskTransitions_InvalidTransition_ReturnsInvalidInput(t *testing.T) {
 		t.Fatalf("expected invalid transition, got %v", err)
 	}
 }
+
+func TestAgentRunLifecycle_RedactedMetadataOnly(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+
+	run, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+		ProjectID:    "example-service",
+		Summary:      "implemented bounded context health",
+		ChangedFiles: []string{"internal/projectreliability/service.go"},
+		Verifiers: []model.AgentVerifier{{
+			Command:    "go",
+			Args:       []string{"test", "./internal/projectreliability"},
+			Scope:      "focused",
+			Status:     "passed",
+			ExitStatus: 0,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create agent run: %v", err)
+	}
+	if run.Status != model.AgentRunStatusRunning || run.ProjectID != "example-service" {
+		t.Fatalf("unexpected run: %#v", run)
+	}
+
+	run, err = svc.AppendAgentStep(context.Background(), run.ID, model.AppendAgentStepInput{
+		ToolName:     "go",
+		ToolCategory: "test",
+		Status:       model.AgentRunStatusCompleted,
+		Notes:        "focused verifier passed",
+	})
+	if err != nil {
+		t.Fatalf("append step: %v", err)
+	}
+	if len(run.Steps) != 1 || run.Steps[0].Notes != "focused verifier passed" {
+		t.Fatalf("unexpected steps: %#v", run.Steps)
+	}
+
+	run, err = svc.CompleteAgentRun(context.Background(), run.ID, model.CompleteAgentRunInput{Status: model.AgentRunStatusCompleted})
+	if err != nil {
+		t.Fatalf("complete run: %v", err)
+	}
+	if run.Status != model.AgentRunStatusCompleted || run.CompletedAt.IsZero() {
+		t.Fatalf("unexpected completed run: %#v", run)
+	}
+}
+
+func TestAgentRunRejectsRawPromptSourceSecretsAndRoots(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+
+	for _, input := range []model.CreateAgentRunInput{
+		{ProjectID: "example-service", Summary: "raw prompt: do the thing"},
+		{ProjectID: "example-service", Summary: "package main\nfunc main() {}\n"},
+		{ProjectID: "example-service", Summary: "token=secret"},
+		{ProjectID: "example-service", ChangedFiles: []string{"/home/mac/project/main.go"}},
+	} {
+		_, err := svc.CreateAgentRun(context.Background(), input)
+		if !errors.Is(err, service.ErrInvalidInput) {
+			t.Fatalf("expected invalid input for %#v, got %v", input, err)
+		}
+	}
+}

@@ -177,13 +177,56 @@ func (svc *Service) withGraphBatch(ctx context.Context, fn func(*Service) (Run, 
 	}
 	var run Run
 	err := svc.graph.WithBatch(ctx, func(graph *GraphStore) error {
-		batched := *svc
-		batched.graph = graph
+		batched := &Service{
+			registry:              svc.registry,
+			graph:                 graph,
+			state:                 svc.state,
+			extractors:            svc.extractors,
+			extractorCacheEnabled: svc.extractorCacheEnabled,
+			fullScanBatchSize:     svc.fullScanBatchSize,
+			fullScanWorkerCount:   svc.fullScanWorkerCount,
+			fullScanWorkerSlots:   svc.fullScanWorkerSlots,
+			stageMetrics:          make(map[string]StageDiagnostic),
+			checkpoint:            svc.checkpoint,
+			now:                   svc.now,
+			newID:                 svc.newID,
+		}
 		var innerErr error
-		run, innerErr = fn(&batched)
+		run, innerErr = fn(batched)
+		batched.metricsMu.Lock()
+		for stage, diagnostic := range batched.stageMetrics {
+			svc.mergeStageDiagnostic(stage, diagnostic)
+		}
+		batched.metricsMu.Unlock()
 		return innerErr
 	})
 	return run, err
+}
+
+func (svc *Service) mergeStageDiagnostic(stage string, diagnostic StageDiagnostic) {
+	if svc == nil || stage == "" || diagnostic.Count == 0 {
+		return
+	}
+	svc.metricsMu.Lock()
+	defer svc.metricsMu.Unlock()
+	if svc.stageMetrics == nil {
+		svc.stageMetrics = make(map[string]StageDiagnostic)
+	}
+	existing := svc.stageMetrics[stage]
+	existing.Count += diagnostic.Count
+	existing.TotalMillis += diagnostic.TotalMillis
+	existing.LastMillis = diagnostic.LastMillis
+	if diagnostic.LastSeenUnix > existing.LastSeenUnix {
+		existing.LastSeenUnix = diagnostic.LastSeenUnix
+	}
+	if diagnostic.MaxMillis > existing.MaxMillis {
+		existing.MaxMillis = diagnostic.MaxMillis
+	}
+	existing.ErrorCount += diagnostic.ErrorCount
+	if diagnostic.LastErrorUnix > existing.LastErrorUnix {
+		existing.LastErrorUnix = diagnostic.LastErrorUnix
+	}
+	svc.stageMetrics[stage] = existing
 }
 
 func (svc *Service) IngestProject(ctx context.Context, projectID string, trigger Trigger) (Run, error) {

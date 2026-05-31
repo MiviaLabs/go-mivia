@@ -30,6 +30,8 @@ func RegisterRoutesWithWorkspace(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("POST /api/v1/projects/{id}/ingestion-runs", createIngestionRunHandler(ingestion))
 		mux.Handle("POST /api/v1/projects/{id}/search-index/rebuild", rebuildSearchIndexHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/context-health", getContextHealthHandler(registry, ingestion, workspace))
+		mux.Handle("POST /api/v1/projects/{id}/impact/analyze", analyzeImpactHandler(workspace))
+		mux.Handle("POST /api/v1/projects/{id}/claims/check", checkClaimsHandler(workspace))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/latest", getLatestIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/{run_id}", getIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files", listFilesHandler(ingestion))
@@ -63,6 +65,40 @@ func getContextHealthHandler(registry *projectregistry.Registry, ingestion proje
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		health, err := projectreliability.NewServiceFromAPIs(registry, ingestion, workspace, projectreliability.Options{}).ContextHealth(r.Context(), strings.TrimSpace(r.PathValue("id")))
 		writeReliabilityResult(w, health, err, http.StatusOK)
+	})
+}
+
+func analyzeImpactHandler(workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !httpserver.RequireJSON(r) {
+			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		var input projectreliability.ImpactAnalysisRequest
+		if err := httpserver.DecodeJSON(r, &input); err != nil {
+			httpserver.WriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		input.ProjectID = strings.TrimSpace(r.PathValue("id"))
+		impact, err := projectreliability.NewImpactAnalyzer(workspace).Analyze(r.Context(), input)
+		writeReliabilityResult(w, impact, err, http.StatusOK)
+	})
+}
+
+func checkClaimsHandler(workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !httpserver.RequireJSON(r) {
+			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		var input projectreliability.ClaimCheckRequest
+		if err := httpserver.DecodeJSON(r, &input); err != nil {
+			httpserver.WriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		input.ProjectID = strings.TrimSpace(r.PathValue("id"))
+		claims, err := projectreliability.NewClaimChecker(workspace).Check(r.Context(), input)
+		writeReliabilityResult(w, claims, err, http.StatusOK)
 	})
 }
 

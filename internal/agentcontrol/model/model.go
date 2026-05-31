@@ -71,11 +71,11 @@ type AgentStep struct {
 }
 
 type AgentVerifier struct {
-	Command    string `json:"command"`
+	Command    string   `json:"command"`
 	Args       []string `json:"args,omitempty"`
-	Scope      string `json:"scope,omitempty"`
-	Status     string `json:"status,omitempty"`
-	ExitStatus int    `json:"exit_status,omitempty"`
+	Scope      string   `json:"scope,omitempty"`
+	Status     string   `json:"status,omitempty"`
+	ExitStatus int      `json:"exit_status,omitempty"`
 }
 
 type AgentArtifact struct {

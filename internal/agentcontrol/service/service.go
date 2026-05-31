@@ -357,7 +357,7 @@ func safeIdentifier(value string, field string) (string, error) {
 	if value == "" {
 		return "", fmt.Errorf("%w: %s is required", ErrInvalidInput, field)
 	}
-	if len(value) > 200 || containsProhibitedData(value) {
+	if len(value) > 200 {
 		return "", fmt.Errorf("%w: %s is unsafe", ErrInvalidInput, field)
 	}
 	for _, r := range value {

@@ -4,7 +4,7 @@ Status: Current local guide
 Date: 2026-05-31
 Classification: Internal; PII-prohibited
 
-`mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, symbol navigation, call graph views, named AST structural search, and governed workspace git/read/edit operations, and keeps source understanding inside the developer machine.
+`mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, symbol navigation, call graph views, named AST structural search, governed workspace git/read/edit operations, redacted agent-run metadata, and deterministic reliability checks, and keeps source understanding inside the developer machine.
 
 ## Who It Helps
 
@@ -25,11 +25,15 @@ flowchart LR
   Agent --> Shell["Shell"]
   MCP --> Indexed["Indexed files, chunks, symbols, refs, calls, AST"]
   MCP --> Workspace["Governed workspace status/diff/read/edit"]
+  MCP --> Reliability["Context health, impact analysis, stale-claim checks"]
+  MCP --> AgentRuns["Redacted agent-run metadata"]
   MCP --> Server["mivia-server on localhost"]
   Server --> Project["Approved local project"]
   Server --> Store["Local graph, SQLite, and FTS"]
   Store --> MCP
   Indexed --> Agent
+  Reliability --> Agent
+  AgentRuns --> Agent
   Serena --> Code["Edit-time semantic gaps"]
   Shell --> Disk["Tests, build, logs, process control, generated files, arbitrary commands, non-opted-in repos"]
   Code --> Agent
@@ -73,9 +77,16 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Get research run metadata | `GET /research-runs/{id}` | `research_runs.get` |
 | Create research source metadata | `POST /research-runs/{id}/sources` | `research_sources.create` |
 | Get research source metadata | `GET /research-runs/{id}/sources/{source_id}` | `research_sources.get` |
+| Create redacted agent run metadata | `POST /agent-runs` | `agent_runs.create` |
+| Append redacted agent run step | `POST /agent-runs/{id}/steps` | `agent_runs.step_append` |
+| Complete redacted agent run metadata | `POST /agent-runs/{id}/complete` | `agent_runs.complete` |
+| Get redacted agent run metadata | `GET /agent-runs/{id}` | `agent_runs.get` |
 | List projects | `GET /projects` | `projects.list` |
 | Get project | `GET /projects/{id}` | `projects.get` |
 | Run metadata-only digest | `POST /projects/{id}/digest-runs` | `projects.digest` |
+| Get project context health | `GET /projects/{id}/context-health` | `projects.context_health` |
+| Analyze changed-path impact | `POST /projects/{id}/impact/analyze` | `projects.impact.analyze` |
+| Check stale documentation claims | `POST /projects/{id}/claims/check` | `projects.claims.check` |
 | Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
 | Rebuild local search index | `POST /projects/{id}/search-index/rebuild` | `projects.search_index.rebuild` |
 | Get ingestion run | `GET /projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
@@ -104,6 +115,7 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Apply exact token-guarded file edit | `POST /projects/{id}/workspace/files/edit` | `projects.workspace.file_edit` |
 | List configured integration providers | Not exposed | `projects.integrations.list` |
 | Get redacted integration status | Not exposed | `projects.integrations.status` |
+| Get local integration counts | Not exposed | `projects.integrations.counts` |
 | Queue one integration poll | Not exposed | `projects.integrations.poll` |
 | Get integration poll status | Not exposed | `projects.integrations.poll_status` |
 | Search local integration graph content | Not exposed | `projects.integrations.search` |
@@ -115,6 +127,10 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 Project integration polling is also asynchronous. Configure Jira and Confluence under the target project in local TOML, restart the server, check `projects.integrations.status`, queue a provider run with `projects.integrations.poll`, then wait on `projects.integrations.poll_status` before relying on `projects.integrations.search` or provider-specific read tools. Integration search/read uses only the local graph; it does not call Atlassian.
 
 `projects.digest` is only for `metadata_only` projects. For `content_graph` projects, use ingestion status and bounded file/search tools; the MCP error is `project digest unsupported`, not an active-ingestion block.
+
+`projects.context_health` summarizes whether a project is ready, warming up, running, degraded, stale, empty, disabled, or unavailable using only safe config, ingestion, search-index, and workspace-git metadata. `projects.impact.analyze` maps changed paths or governed workspace diff file metadata to affected domains, routes, tools, security flags, and residual unknowns without returning raw diff content. `projects.claims.check` checks selected stable docs/contracts for registered REST/MCP names and forbidden `.ai/tasks/` links; it does not use LLM judgment, broad crawling, or document-content echoing.
+
+`agent_runs.*` tools store redacted execution metadata only: project/task IDs, statuses, timestamps, changed project-relative paths, verifier command metadata, artifact refs, and short summaries/notes. They reject raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII.
 
 Search tools are backed by governed indexed state. Text search is literal-only and returns capped snippets from eligible chunks. File, symbol, reference, and call search use indexed metadata and pagination. Raw FTS syntax and raw SQLite errors are not exposed.
 

@@ -15,8 +15,9 @@ Local task plans and research plans are not stable technical documentation. Do n
 
 - One Go module with one local service entrypoint: `cmd/mivia-server`.
 - HTTP surfaces: `/healthz`, `/readyz`, REST under `/api/v1`, and MCP Streamable HTTP under `/mcp`.
-- Domain services: `internal/agentcontrol` for tasks and research runs; `internal/research` for redacted research source metadata.
+- Domain services: `internal/agentcontrol` for tasks, research runs, and redacted agent-run metadata; `internal/research` for redacted research source metadata.
 - Local project services: `internal/projectregistry` loads optional local project config from `configs/mivia-server.local.toml` or explicit `MIVIA_CONFIG_PATH`, validates local roots and patterns, exposes bounded project metadata, runs manual metadata-only digest, and routes content graph data to per-project `persistent` or `in_memory` graph storage.
+- Reliability services: `internal/projectreliability` exposes context health, changed-path impact analysis, and stale-claim checking through REST and MCP without raw diff or document-content echoing.
 - Project ingestion services: `internal/projectingestion` handles eligible local source safety gates, chunking, promoted AST extraction, extractor cache, SQLite FTS5 search indexing, bounded graph writes, SQLite run/file state, bounded REST/MCP query views, fair scheduling, live watcher orchestration, parallel full-scan file workers, search-index repair, startup recovery for interrupted runs, and periodic running-progress persistence.
 - Project workspace services: `internal/projectworkspace` handles governed git status/diff, current eligible file reads with opaque edit tokens, and token-guarded exact byte-span edits for explicitly opted-in workspaces.
 - Stores: Ladybug graph abstraction for graph data; SQLite for local app configuration, ingestion state, extractor cache, and FTS-backed governed search. Project graph storage can be persistent or process-local per project.
@@ -32,7 +33,9 @@ flowchart TB
   REST["REST adapter /api/v1"]
   MCP["MCP adapter /mcp"]
   AgentService["internal/agentcontrol service"]
+  AgentRuns["redacted agent-run metadata"]
   ProjectRegistry["internal/projectregistry registry"]
+  Reliability["internal/projectreliability"]
   ProjectDigest["metadata-only project digest"]
   ProjectIngestion["content graph ingestion"]
   ProjectWorkspace["governed workspace status/diff/read/edit"]
@@ -56,8 +59,14 @@ flowchart TB
   Server --> MCP
   REST --> AgentService
   MCP --> AgentService
+  AgentService --> AgentRuns
   REST --> ProjectRegistry
   MCP --> ProjectRegistry
+  REST --> Reliability
+  MCP --> Reliability
+  Reliability --> ProjectRegistry
+  Reliability --> ProjectWorkspace
+  Reliability --> SearchIndex
   ProjectRegistry --> ProjectDigest
   ProjectRegistry --> ProjectWorkspace
   ProjectDigest --> Ladybug
@@ -83,7 +92,9 @@ flowchart TB
   ResearchService --> Redaction
   AgentService --> Ladybug
   ResearchService --> Ladybug
+  AgentRuns --> Ladybug
   AgentService --> SQLite
+  AgentRuns --> SQLite
   ProjectRegistry --> SQLite
   Contracts --> REST
   Contracts --> MCP

@@ -40,6 +40,51 @@ func TestLadybugStore_CreateAndGetTask(t *testing.T) {
 	}
 }
 
+func TestLadybugStore_AgentRunLifecycle(t *testing.T) {
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(context.Background(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	runStore := store.NewLadybugStore(graph)
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+
+	created, err := runStore.CreateAgentRun(context.Background(), model.AgentRun{
+		ID:           "agent_run_test",
+		ProjectID:    "example-service",
+		Status:       model.AgentRunStatusRunning,
+		StartedAt:    now,
+		ChangedFiles: []string{"internal/agentcontrol/model/model.go"},
+	})
+	if err != nil {
+		t.Fatalf("create agent run: %v", err)
+	}
+	updated, err := runStore.AppendAgentStep(context.Background(), created.ID, model.AgentStep{
+		ID:        "agent_step_test",
+		ToolName:  "go",
+		Status:    model.AgentRunStatusCompleted,
+		StartedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("append step: %v", err)
+	}
+	if len(updated.Steps) != 1 {
+		t.Fatalf("expected one step, got %#v", updated)
+	}
+	updated.Status = model.AgentRunStatusCompleted
+	updated.CompletedAt = now
+	completed, err := runStore.CompleteAgentRun(context.Background(), updated)
+	if err != nil {
+		t.Fatalf("complete run: %v", err)
+	}
+	fetched, err := runStore.GetAgentRun(context.Background(), completed.ID)
+	if err != nil {
+		t.Fatalf("get agent run: %v", err)
+	}
+	if fetched.Status != model.AgentRunStatusCompleted || len(fetched.Steps) != 1 || fetched.ChangedFiles[0] != "internal/agentcontrol/model/model.go" {
+		t.Fatalf("unexpected fetched run: %#v", fetched)
+	}
+}
+
 func TestSQLiteConfigStore_PersistsSettingsAndFlags(t *testing.T) {
 	db, err := sqliteplatform.Open(":memory:")
 	if err != nil {

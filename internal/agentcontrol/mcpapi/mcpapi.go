@@ -234,9 +234,42 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		}
 		run, err := handler.service.GetResearchRun(r.Context(), input.ID)
 		return toolResult(run), err
+	case "agent_runs.create", "agent_runs_create":
+		var input model.CreateAgentRunInput
+		if err := decodeRaw(params.Arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid agent run arguments", service.ErrInvalidInput)
+		}
+		run, err := handler.service.CreateAgentRun(r.Context(), input)
+		return toolResult(run), err
+	case "agent_runs.step_append", "agent_runs_step_append":
+		var input model.AppendAgentStepInput
+		if err := decodeRaw(params.Arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid agent run arguments", service.ErrInvalidInput)
+		}
+		run, err := handler.service.AppendAgentStep(r.Context(), input.RunID, input)
+		return toolResult(run), err
+	case "agent_runs.complete", "agent_runs_complete":
+		var input model.CompleteAgentRunInput
+		if err := decodeRaw(params.Arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid agent run arguments", service.ErrInvalidInput)
+		}
+		run, err := handler.service.CompleteAgentRun(r.Context(), input.RunID, input)
+		return toolResult(run), err
+	case "agent_runs.get", "agent_runs_get":
+		var input struct {
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(params.Arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid agent run arguments", service.ErrInvalidInput)
+		}
+		run, err := handler.service.GetAgentRun(r.Context(), input.ID)
+		return toolResult(run), err
 	case "projects.list", "projects_list", "projects.get", "projects_get", "projects.digest", "projects_digest",
 		"projects.ingest", "projects_ingest", "projects.search_index.rebuild", "projects_search_index_rebuild",
 		"projects.context_health", "projects_context_health",
+		"projects.impact.analyze", "projects_impact_analyze",
+		"projects.claims.check", "projects_claims_check",
 		"projects.ingestion_status", "projects_ingestion_status",
 		"projects.ingestion_status_latest", "projects_ingestion_status_latest", "projects.ingestion_latest", "projects_ingestion_latest",
 		"projects.files.list", "projects_files_list", "projects.files.get", "projects_files_get",
@@ -303,6 +336,13 @@ func (handler *Handler) readResource(r *http.Request, raw json.RawMessage) (map[
 	case strings.HasPrefix(params.URI, "mivialabs://research-runs/"):
 		id := strings.TrimPrefix(params.URI, "mivialabs://research-runs/")
 		run, err := handler.service.GetResearchRun(r.Context(), id)
+		if err != nil {
+			return nil, err
+		}
+		return resourceResult(params.URI, run)
+	case strings.HasPrefix(params.URI, "mivialabs://agent-runs/"):
+		id := strings.TrimPrefix(params.URI, "mivialabs://agent-runs/")
+		run, err := handler.service.GetAgentRun(r.Context(), id)
 		if err != nil {
 			return nil, err
 		}
@@ -431,6 +471,57 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 				"id": map[string]any{"type": "string", "minLength": 1},
 			}, []string{"id"}),
 		},
+		{
+			"name":        "agent_runs.create",
+			"title":       "Create Agent Run",
+			"description": "Create redacted local agent run metadata without raw prompts, source, stderr, credentials, provider payloads, roots, or personal data.",
+			"inputSchema": objectSchema(map[string]any{
+				"project_id":    map[string]any{"type": "string", "minLength": 1},
+				"task_id":       map[string]any{"type": "string"},
+				"summary":       map[string]any{"type": "string", "maxLength": 500},
+				"changed_files": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 100},
+				"verifiers":     map[string]any{"type": "array", "items": verifierSchema(), "maxItems": 50},
+				"artifacts":     map[string]any{"type": "array", "items": artifactSchema(), "maxItems": 50},
+			}, []string{"project_id"}),
+		},
+		{
+			"name":        "agent_runs.step_append",
+			"title":       "Append Agent Run Step",
+			"description": "Append one redacted step to a local agent run without raw prompts, source, stderr, credentials, provider payloads, roots, or personal data.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id":           map[string]any{"type": "string", "minLength": 1},
+				"tool_name":        map[string]any{"type": "string"},
+				"tool_category":    map[string]any{"type": "string"},
+				"status":           map[string]any{"type": "string", "enum": []string{model.AgentRunStatusRunning, model.AgentRunStatusCompleted, model.AgentRunStatusFailed}},
+				"failure_category": map[string]any{"type": "string"},
+				"notes":            map[string]any{"type": "string", "maxLength": 500},
+				"changed_files":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 100},
+				"verifiers":        map[string]any{"type": "array", "items": verifierSchema(), "maxItems": 50},
+				"artifacts":        map[string]any{"type": "array", "items": artifactSchema(), "maxItems": 50},
+			}, []string{"run_id", "status"}),
+		},
+		{
+			"name":        "agent_runs.complete",
+			"title":       "Complete Agent Run",
+			"description": "Complete redacted local agent run metadata with safe status, verifier, artifact, and failure-category fields only.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id":           map[string]any{"type": "string", "minLength": 1},
+				"status":           map[string]any{"type": "string", "enum": []string{model.AgentRunStatusCompleted, model.AgentRunStatusFailed}},
+				"failure_category": map[string]any{"type": "string"},
+				"summary":          map[string]any{"type": "string", "maxLength": 500},
+				"changed_files":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 100},
+				"verifiers":        map[string]any{"type": "array", "items": verifierSchema(), "maxItems": 50},
+				"artifacts":        map[string]any{"type": "array", "items": artifactSchema(), "maxItems": 50},
+			}, []string{"run_id", "status"}),
+		},
+		{
+			"name":        "agent_runs.get",
+			"title":       "Get Agent Run",
+			"description": "Fetch redacted local agent run metadata by id.",
+			"inputSchema": objectSchema(map[string]any{
+				"id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id"}),
+		},
 	}
 	if handler.projects != nil {
 		tools = append(tools, projectmcpapi.ToolDefinitionsWithWorkspaceAndDiagnostics(handler.projectIngest != nil, handler.projectWork != nil, handler.diagnostics != nil)...)
@@ -457,6 +548,13 @@ func (handler *Handler) resourceTemplates() []map[string]any {
 			"description": "Research run metadata by id.",
 			"mimeType":    "application/json",
 		},
+		{
+			"uriTemplate": "mivialabs://agent-runs/{id}",
+			"name":        "agent_run",
+			"title":       "Agent Run",
+			"description": "Redacted agent run metadata by id.",
+			"mimeType":    "application/json",
+		},
 	}
 	if handler.projects != nil {
 		templates = append(templates, projectmcpapi.ResourceTemplatesWithIngestion(handler.projectIngest != nil)...)
@@ -471,6 +569,23 @@ func objectSchema(properties map[string]any, required []string) map[string]any {
 		"properties":           properties,
 		"required":             required,
 	}
+}
+
+func verifierSchema() map[string]any {
+	return objectSchema(map[string]any{
+		"command":     map[string]any{"type": "string", "minLength": 1},
+		"args":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 32},
+		"scope":       map[string]any{"type": "string"},
+		"status":      map[string]any{"type": "string"},
+		"exit_status": map[string]any{"type": "integer"},
+	}, []string{"command"})
+}
+
+func artifactSchema() map[string]any {
+	return objectSchema(map[string]any{
+		"ref":  map[string]any{"type": "string", "minLength": 1},
+		"kind": map[string]any{"type": "string"},
+	}, []string{"ref"})
 }
 
 func toolResult(value any) map[string]any {

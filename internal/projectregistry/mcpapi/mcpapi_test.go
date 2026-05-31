@@ -234,6 +234,42 @@ func TestCallToolWithIngestion_ContextHealthIsSafe(t *testing.T) {
 	}
 }
 
+func TestCallToolWithIngestion_ImpactAnalyzeMapsPaths(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+	if !hasToolDefinition(mcpapi.ToolDefinitionsWithIngestion(true), "projects.impact.analyze") {
+		t.Fatalf("expected projects.impact.analyze tool definition")
+	}
+
+	result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_impact_analyze", json.RawMessage(`{"id":"example-service","changed_paths":["internal/projectregistry/mcpapi/mcpapi.go","internal/agentcontrol/httpapi/httpapi.go"]}`))
+	if err != nil {
+		t.Fatalf("call impact analyze: %v", err)
+	}
+	body := marshalResult(t, result)
+	if !strings.Contains(body, `"mcp_project_tools"`) || !strings.Contains(body, `"agent_control"`) {
+		t.Fatalf("expected mapped impact domains, got %s", body)
+	}
+	for _, forbidden := range []string{"package main", "content_sha256", "root_path"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("impact analysis leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestCallToolWithIngestion_ClaimsCheckFlagsStaleTool(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+	result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_claims_check", json.RawMessage(`{"id":"example-service","documents":[{"path":"README.md","text":"Use projects.context_health not projects.verifiers.recommend and never link .ai/tasks/active/local.md"}]}`))
+	if err != nil {
+		t.Fatalf("call claims check: %v", err)
+	}
+	body := marshalResult(t, result)
+	if !strings.Contains(body, `"claim":"projects.context_health"`) || !strings.Contains(body, `"status":"verified"`) || !strings.Contains(body, `"claim":"projects.verifiers.recommend"`) || !strings.Contains(body, `"status":"stale"`) {
+		t.Fatalf("expected verified and stale claims, got %s", body)
+	}
+	if strings.Contains(body, "local.md") {
+		t.Fatalf("claim checker leaked task link tail: %s", body)
+	}
+}
+
 func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 	root := t.TempDir()
 	fullPath := filepath.Join(root, "main.go")

@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: MiviaLabs Agent Control API
   version: 0.1.0
-  description: Localhost-only bootstrap REST contract for task and research-run metadata.
+  description: Localhost-only bootstrap REST contract for task, research-run, project context, reliability, and redacted agent-run metadata.
 servers:
   - url: http://127.0.0.1:8080/api/v1
 paths:
@@ -116,6 +116,88 @@ paths:
                 $ref: '#/components/schemas/ResearchSource'
         '404':
           $ref: '#/components/responses/NotFound'
+  /agent-runs:
+    post:
+      operationId: createAgentRun
+      summary: Create redacted agent run metadata
+      description: Stores metadata only. Raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII are prohibited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRunRequest'
+      responses:
+        '201':
+          description: Created redacted agent run metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /agent-runs/{id}:
+    get:
+      operationId: getAgentRun
+      summary: Get redacted agent run metadata
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Redacted agent run metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRun'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /agent-runs/{id}/steps:
+    post:
+      operationId: appendAgentRunStep
+      summary: Append redacted agent run step metadata
+      description: Appends one metadata-only step. Raw tool payloads, prompts, completions, source dumps, raw stderr, secrets, credentials, absolute roots, and PII are prohibited.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendAgentStepRequest'
+      responses:
+        '200':
+          description: Updated redacted agent run metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /agent-runs/{id}/complete:
+    post:
+      operationId: completeAgentRun
+      summary: Complete redacted agent run metadata
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteAgentRunRequest'
+      responses:
+        '200':
+          description: Completed redacted agent run metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRun'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects:
     get:
       operationId: listProjects
@@ -160,6 +242,70 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/context-health:
+    get:
+      operationId: getProjectContextHealth
+      summary: Get project context health
+      description: Returns deterministic project context readiness and freshness metadata without roots, source text, skipped sensitive content, raw errors, prompts, provider payloads, secrets, or PII.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Project context health
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextHealth'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/impact/analyze:
+    post:
+      operationId: analyzeProjectImpact
+      summary: Analyze changed-path impact
+      description: Deterministic local impact analysis from changed paths or governed workspace diff metadata. It does not return raw diff content.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImpactAnalysisRequest'
+      responses:
+        '200':
+          description: Impact analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImpactAnalysis'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /projects/{id}/claims/check:
+    post:
+      operationId: checkProjectClaims
+      summary: Check stale documentation claims
+      description: Deterministic claim check for selected stable docs/contracts and registered REST/MCP names. It does not use LLM judgment or broad crawling.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimCheckRequest'
+      responses:
+        '200':
+          description: Claim check result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimCheckResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /projects/{id}/workspace/git/status:
     get:
       operationId: getProjectWorkspaceGitStatus
@@ -1056,6 +1202,193 @@ components:
           type: object
           additionalProperties:
             type: string
+    CreateAgentRunRequest:
+      type: object
+      additionalProperties: false
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
+          minLength: 1
+        task_id:
+          type: string
+        summary:
+          type: string
+          description: Redacted summary only; raw prompts, completions, source, stderr, secrets, provider payloads, and PII are prohibited.
+        changed_files:
+          type: array
+          items:
+            type: string
+            description: Safe project-relative path only.
+        verifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentVerifier'
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentArtifact'
+    AppendAgentStepRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        run_id:
+          type: string
+          description: Optional body alias; path id is authoritative for REST.
+        tool_name:
+          type: string
+        tool_category:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, failed]
+        failure_category:
+          type: string
+        notes:
+          type: string
+        changed_files:
+          type: array
+          items:
+            type: string
+        verifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentVerifier'
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentArtifact'
+    CompleteAgentRunRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        run_id:
+          type: string
+          description: Optional body alias; path id is authoritative for REST.
+        status:
+          type: string
+          enum: [completed, failed]
+        failure_category:
+          type: string
+        summary:
+          type: string
+        changed_files:
+          type: array
+          items:
+            type: string
+        verifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentVerifier'
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentArtifact'
+    AgentRun:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, status, started_at]
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        task_id:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, failed]
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        failure_category:
+          type: string
+        summary:
+          type: string
+        changed_files:
+          type: array
+          items:
+            type: string
+        verifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentVerifier'
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentArtifact'
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentStep'
+      description: Metadata only; raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII are prohibited.
+    AgentStep:
+      type: object
+      additionalProperties: false
+      required: [id, status, started_at]
+      properties:
+        id:
+          type: string
+        tool_name:
+          type: string
+        tool_category:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, failed]
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        failure_category:
+          type: string
+        notes:
+          type: string
+        changed_files:
+          type: array
+          items:
+            type: string
+        verifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentVerifier'
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentArtifact'
+    AgentVerifier:
+      type: object
+      additionalProperties: false
+      required: [command]
+      properties:
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+        scope:
+          type: string
+        status:
+          type: string
+        exit_status:
+          type: integer
+    AgentArtifact:
+      type: object
+      additionalProperties: false
+      required: [ref]
+      properties:
+        ref:
+          type: string
+        kind:
+          type: string
     ProjectList:
       type: object
       additionalProperties: false
@@ -1104,6 +1437,214 @@ components:
         validation_error:
           type: string
       description: Project metadata response intentionally omits local root paths, include/exclude patterns, raw source content, and file-content hashes.
+    ContextHealth:
+      type: object
+      additionalProperties: false
+      required: [project_id, status, enabled, digest_mode, update_policy, workspace_mode, graph_storage, validation_status, eligible_file_count, indexed_symbol_count, indexed_chunk_count, search_index, workspace_git_available, checked_at]
+      properties:
+        project_id:
+          type: string
+        status:
+          type: string
+          enum: [ready, warming_up, running, degraded, stale, empty, disabled, unavailable]
+        enabled:
+          type: boolean
+        digest_mode:
+          type: string
+        update_policy:
+          type: string
+        workspace_mode:
+          type: string
+        graph_storage:
+          type: string
+        validation_status:
+          type: string
+        status_reason:
+          type: string
+        latest_run:
+          $ref: '#/components/schemas/ContextRunSummary'
+        active_run_id:
+          type: string
+        eligible_file_count:
+          type: integer
+          minimum: 0
+        indexed_symbol_count:
+          type: integer
+          minimum: 0
+        indexed_chunk_count:
+          type: integer
+          minimum: 0
+        search_index:
+          $ref: '#/components/schemas/SearchIndexHealth'
+        workspace_git_available:
+          type: boolean
+        reason_counts:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+        checked_at:
+          type: string
+          format: date-time
+    ContextRunSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        id: {type: string}
+        status: {type: string}
+        trigger: {type: string}
+        mode: {type: string}
+        files_seen: {type: integer, minimum: 0}
+        files_ingested: {type: integer, minimum: 0}
+        files_skipped: {type: integer, minimum: 0}
+        files_unchanged: {type: integer, minimum: 0}
+        chunks_stored: {type: integer, minimum: 0}
+        symbols_stored: {type: integer, minimum: 0}
+        error_category: {type: string}
+        reason_counts:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+        current_phase: {type: string}
+        started_at: {type: string, format: date-time}
+        finished_at: {type: string, format: date-time}
+        heartbeat_at: {type: string, format: date-time}
+        last_progress_at: {type: string, format: date-time}
+    SearchIndexHealth:
+      type: object
+      additionalProperties: false
+      required: [status, degraded]
+      properties:
+        status:
+          type: string
+        degraded:
+          type: boolean
+        reason:
+          type: string
+    ImpactAnalysisRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        changed_paths:
+          type: array
+          items:
+            type: string
+            description: Safe project-relative path. Absolute paths and traversal are ignored.
+        diff_scope:
+          type: string
+          enum: [working_tree, staged, head]
+        max_diff_bytes:
+          type: integer
+          minimum: 1
+          maximum: 262144
+    ImpactAnalysis:
+      type: object
+      additionalProperties: false
+      required: [project_id, workspace_diff_used]
+      properties:
+        project_id:
+          type: string
+        diff_scope:
+          type: string
+        changed_paths:
+          type: array
+          items: {type: string}
+        affected_domains:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImpactDomain'
+        affected_routes:
+          type: array
+          items: {type: string}
+        affected_tools:
+          type: array
+          items: {type: string}
+        security_flags:
+          type: array
+          items: {type: string}
+        source_anchors:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceAnchor'
+        residual_unknowns:
+          type: array
+          items: {type: string}
+        workspace_diff_used:
+          type: boolean
+        workspace_truncated:
+          type: boolean
+    ImpactDomain:
+      type: object
+      additionalProperties: false
+      required: [name, reason, confidence]
+      properties:
+        name: {type: string}
+        reason: {type: string}
+        confidence: {type: string}
+        paths:
+          type: array
+          items: {type: string}
+    SourceAnchor:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path: {type: string}
+        kind: {type: string}
+    ClaimCheckRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimDocument'
+        selected_paths:
+          type: array
+          items:
+            type: string
+            description: "Stable docs/contracts only: README.md, docs/, api/, or .ai/skills/mivia-mcp/SKILL.md."
+        known_tools:
+          type: array
+          items: {type: string}
+        known_routes:
+          type: array
+          items: {type: string}
+    ClaimDocument:
+      type: object
+      additionalProperties: false
+      required: [path, text]
+      properties:
+        path: {type: string}
+        text:
+          type: string
+          description: Document text supplied by caller. Response findings do not echo document content.
+    ClaimCheckResult:
+      type: object
+      additionalProperties: false
+      required: [claims]
+      properties:
+        project_id:
+          type: string
+        claims:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimFinding'
+    ClaimFinding:
+      type: object
+      additionalProperties: false
+      required: [path, line, kind, status, safe_message]
+      properties:
+        path: {type: string}
+        line: {type: integer, minimum: 0}
+        kind: {type: string}
+        claim: {type: string}
+        status:
+          type: string
+          enum: [verified, stale, unverified, out_of_scope]
+        evidence: {type: string}
+        safe_message: {type: string}
     WorkspaceGitStatus:
       type: object
       additionalProperties: false

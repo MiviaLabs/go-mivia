@@ -156,6 +156,41 @@ func TestToolsCall_RejectsRawQueryArgument(t *testing.T) {
 	}
 }
 
+func TestToolsCall_AgentRunLifecycleIsRedacted(t *testing.T) {
+	handler := newHandler()
+	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"agent_runs.create"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"agent_runs.get"`)) {
+		t.Fatalf("expected agent run tools, got %s", list.Body.String())
+	}
+
+	create := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"agent_runs.create","arguments":{"project_id":"example-service","summary":"bounded run metadata","changed_files":["internal/agentcontrol/model/model.go"]}}}`)
+	if bytes.Contains(create.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected create success, got %s", create.Body.String())
+	}
+	var created rpcResponse
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	runID := created.Result.StructuredContent["id"].(string)
+
+	step := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"agent_runs_step_append","arguments":{"run_id":"`+runID+`","tool_name":"go","tool_category":"test","status":"completed","notes":"focused verifier passed"}}}`)
+	if bytes.Contains(step.Body.Bytes(), []byte(`"error"`)) || bytes.Contains(step.Body.Bytes(), []byte("raw prompt")) || bytes.Contains(step.Body.Bytes(), []byte("package main")) {
+		t.Fatalf("unexpected step response: %s", step.Body.String())
+	}
+
+	complete := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"agent_runs.complete","arguments":{"run_id":"`+runID+`","status":"completed"}}}`)
+	if bytes.Contains(complete.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected complete success, got %s", complete.Body.String())
+	}
+}
+
+func TestToolsCall_AgentRunRejectsUnsafePayload(t *testing.T) {
+	res := postMCP(t, newHandler(), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agent_runs.create","arguments":{"project_id":"example-service","summary":"raw prompt: token=secret"}}}`)
+	if !bytes.Contains(res.Body.Bytes(), []byte(`"code":-32602`)) {
+		t.Fatalf("expected invalid argument error, got %s", res.Body.String())
+	}
+}
+
 func TestResourcesRead_ReturnsTaskJSON(t *testing.T) {
 	handler := newHandler()
 	create := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tasks.create","arguments":{"title":"Resource task"}}}`)
@@ -171,6 +206,17 @@ func TestResourcesRead_ReturnsTaskJSON(t *testing.T) {
 	}
 	if !bytes.Contains(read.Body.Bytes(), []byte(`"mimeType":"application/json"`)) {
 		t.Fatalf("expected json resource, got %s", read.Body.String())
+	}
+
+	agentCreate := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"agent_runs.create","arguments":{"project_id":"example-service","summary":"bounded metadata"}}}`)
+	var createdAgent rpcResponse
+	if err := json.Unmarshal(agentCreate.Body.Bytes(), &createdAgent); err != nil {
+		t.Fatalf("decode agent run response: %v", err)
+	}
+	runID := createdAgent.Result.StructuredContent["id"].(string)
+	agentRead := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"mivialabs://agent-runs/`+runID+`"}}`)
+	if !bytes.Contains(agentRead.Body.Bytes(), []byte(`example-service`)) || bytes.Contains(agentRead.Body.Bytes(), []byte("raw prompt")) {
+		t.Fatalf("expected redacted agent run resource, got %s", agentRead.Body.String())
 	}
 }
 
@@ -299,7 +345,7 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	handler, root := newHandlerWithProjectIngestion(t)
 
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.context_health"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search_index.rebuild"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.context_health"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.impact.analyze"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.claims.check"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search_index.rebuild"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
 		t.Fatalf("expected ingestion tools, got %s", list.Body.String())
 	}
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.text"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.calls"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.ast.queries"`)) {
@@ -338,6 +384,16 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	}
 	if !bytes.Contains(health.Body.Bytes(), []byte(`"status":"ready"`)) || bytes.Contains(health.Body.Bytes(), []byte(root)) || bytes.Contains(health.Body.Bytes(), []byte("content_sha256")) || bytes.Contains(health.Body.Bytes(), []byte("package main")) {
 		t.Fatalf("unexpected context health response: %s", health.Body.String())
+	}
+
+	impact := postMCP(t, handler, `{"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"projects.impact.analyze","arguments":{"id":"example-service","changed_paths":["internal/agentcontrol/mcpapi/mcpapi.go"]}}}`)
+	if bytes.Contains(impact.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(impact.Body.Bytes(), []byte(`"agent_control"`)) || bytes.Contains(impact.Body.Bytes(), []byte(root)) {
+		t.Fatalf("unexpected impact response: %s", impact.Body.String())
+	}
+
+	claims := postMCP(t, handler, `{"jsonrpc":"2.0","id":35,"method":"tools/call","params":{"name":"projects.claims.check","arguments":{"id":"example-service","documents":[{"path":"README.md","text":"Use projects.context_health not projects.verifiers.recommend"}]}}}`)
+	if bytes.Contains(claims.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(claims.Body.Bytes(), []byte(`"projects.verifiers.recommend"`)) || bytes.Contains(claims.Body.Bytes(), []byte(root)) {
+		t.Fatalf("unexpected claims response: %s", claims.Body.String())
 	}
 
 	digest := postMCP(t, handler, `{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"projects.digest","arguments":{"id":"example-service"}}}`)

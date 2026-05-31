@@ -125,6 +125,41 @@ Input schema:
 
 Output: structured redacted `ResearchSource` metadata plus a JSON text content block.
 
+### `agent_runs.create`
+
+Input schema: `project_id` plus optional `task_id`, redacted `summary`, safe project-relative `changed_files`, verifier metadata, and artifact refs.
+
+Output: structured redacted `AgentRun` metadata plus a JSON text content block. The store rejects raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII.
+
+### `agent_runs.step_append`
+
+Input schema: `run_id`, `status` (`running`, `completed`, or `failed`), and optional `tool_name`, `tool_category`, `failure_category`, redacted `notes`, safe `changed_files`, verifier metadata, and artifact refs.
+
+Output: updated structured redacted `AgentRun` metadata plus a JSON text content block.
+
+### `agent_runs.complete`
+
+Input schema: `run_id`, final `status` (`completed` or `failed`), and optional `failure_category`, redacted `summary`, safe `changed_files`, verifier metadata, and artifact refs.
+
+Output: completed structured redacted `AgentRun` metadata plus a JSON text content block.
+
+### `agent_runs.get`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: structured redacted `AgentRun` metadata plus a JSON text content block.
+
 ### `projects.list`
 
 Input schema:
@@ -174,6 +209,35 @@ Input schema:
 ```
 
 Output: metadata-only digest run counts and status. Pass either `id` or `project_id`; `id` remains the preferred contract. The digest stores file metadata and metadata fingerprints only; raw source content and file-content hashes are not stored or returned.
+
+### `projects.context_health`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: deterministic context readiness and freshness metadata for one project, including enabled/config state, latest run summary, safe counters, search-index health, and workspace git availability. It omits roots, source text, skipped sensitive content, raw errors, prompts, provider payloads, secrets, credentials, and PII.
+
+### `projects.impact.analyze`
+
+Input schema: `id`, optional safe project-relative `changed_paths`, optional `diff_scope` (`working_tree`, `staged`, or `head`), and optional `max_diff_bytes`.
+
+Output: deterministic impact metadata with affected domains, REST routes, MCP tools, security flags, source anchors, and residual unknowns. When no paths are supplied, the tool may use governed workspace diff file metadata; it does not return raw diff content.
+
+### `projects.claims.check`
+
+Input schema: `id`, optional inline `documents`, optional `selected_paths`, and optional known REST/MCP name overrides. Selected paths are limited to stable docs/contracts (`README.md`, `docs/`, `api/`, and `.ai/skills/mivia-mcp/SKILL.md`).
+
+Output: line-level claim findings for registered MCP tool names, registered REST route patterns, and forbidden `.ai/tasks/` links in stable docs. The checker is deterministic and does not use LLM judgment, broad crawling, or document-content echoing.
 
 ### Workspace Tools
 
@@ -226,6 +290,23 @@ Input schema:
 ```
 
 Output: redacted config-derived provider status plus local source/sync metadata when available. Cursor presence may be reported as a boolean, but raw cursors are not returned.
+
+### `projects.integrations.counts`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}
+```
+
+Output: local item counts for configured integration providers only. Counts are read-only, do not call Jira or Confluence, and do not prove remote provider totals.
 
 ### `projects.integrations.poll`
 
@@ -599,6 +680,7 @@ Resource templates:
 - `mivialabs://tasks/{id}`
 - `mivialabs://research-runs/{id}`
 - `mivialabs://research-sources/{id}`
+- `mivialabs://agent-runs/{id}`
 - `mivialabs://projects/{id}`
 - `mivialabs://projects/{id}/digest-runs/{run_id}`
 - `mivialabs://projects/{id}/files/{file_id}`
@@ -606,7 +688,7 @@ Resource templates:
 - `mivialabs://projects/{id}/files/{file_id}/outline`
 - `mivialabs://projects/{id}/symbols/{symbol_id}`
 
-`resources/read` returns `application/json` text content for the requested task, research-run, research-source, project, project-digest-run, project-file, project-file-chunk, or project-symbol metadata.
+`resources/read` returns `application/json` text content for the requested task, research-run, research-source, agent-run, project, project-digest-run, project-file, project-file-chunk, or project-symbol metadata.
 
 ## Codex Desktop Registration
 
@@ -625,6 +707,7 @@ Codex Desktop exposes the tools through generated callable names. In this enviro
 - Raw prompts, skipped sensitive source content, fetched provider payload blobs, secrets, tokens, and credentials are prohibited in requests, responses, fixtures, logs, and stores.
 - Approved local Jira/Confluence rich content, including possible PII, is allowed only under [Project Integrations Security Policy](../../docs/security/project-integrations.md), in ignored local stores, through bounded local MCP search/read responses.
 - Research-run create accepts only a redacted `goal_summary`; live provider execution and broad crawling are out of scope.
+- Agent-run metadata stores only redacted execution metadata and rejects raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII.
 - Project responses omit local root paths by default.
 - Project responses may include safe aliases such as Go module paths; aliases are lookup IDs, not roots.
 - Project responses include `graph_storage` as `persistent` or `in_memory`; they do not expose datastore paths.

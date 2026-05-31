@@ -6,7 +6,7 @@ Generic Go microservices monorepo for AI-agent work.
 
 ## Overview
 
-This repository contains the local Mivia service platform. The current service is `mivia-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, research metadata, project registry, project ingestion, and semantic code-context workflows.
+This repository contains the local Mivia service platform. The current service is `mivia-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, redacted agent-run metadata, research metadata, project registry, project ingestion, reliability checks, and semantic code-context workflows.
 
 The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion with governed FTS, named AST search, git status/diff, and exact token-guarded file edits. It also supports approved local Jira/Confluence project integrations with polling-only ingestion and bounded local graph search/read. It does not call live AI or browsing providers, expose public APIs, run embeddings/vector storage, crawl arbitrary roots, expose arbitrary shell, or use production database infrastructure.
 
@@ -21,7 +21,9 @@ flowchart TB
   REST["REST /api/v1"]
   MCP["MCP /mcp"]
   Tasks["Tasks and research metadata"]
+  AgentRuns["Redacted agent-run metadata"]
   Registry["Local project registry"]
+  Reliability["Reliability checks: context health, impact analysis, stale claims"]
   Digest["Metadata-only digest"]
   Scheduler["Fair ingestion scheduler"]
   Live["Live watcher and rescan queue"]
@@ -42,9 +44,16 @@ flowchart TB
   Server --> MCP
   REST --> Tasks
   MCP --> Tasks
+  REST --> AgentRuns
+  MCP --> AgentRuns
   REST --> Registry
   MCP --> Registry
+  REST --> Reliability
+  MCP --> Reliability
   Registry --> Digest
+  Reliability --> Registry
+  Reliability --> Workspace
+  Reliability --> Queries
   Registry --> Scheduler
   Live --> Scheduler
   Scheduler --> Workers
@@ -68,6 +77,8 @@ flowchart TB
   Integrations --> Graph
   Integrations --> SQLite
   Integrations --> MCP
+  AgentRuns --> Graph
+  AgentRuns --> SQLite
   Server --> Boundaries
   Safety --> Boundaries
 ```
@@ -75,8 +86,9 @@ flowchart TB
 | Area | What exists now | Guardrails |
 | --- | --- | --- |
 | Local control surface | Health checks, REST `/api/v1`, MCP Streamable HTTP `/mcp` | Localhost-only default; no public/auth production posture |
-| Tasks and research metadata | Local task records, research-run/source metadata, redaction boundary | No raw prompts, provider payloads, raw fetched content, or PII |
+| Tasks, research, and agent-run metadata | Local task records, research-run/source metadata, redacted agent-run execution metadata | No raw prompts, completions, source dumps, raw stderr, provider payloads, raw fetched content, secrets, roots, or PII |
 | Project registry | Optional local TOML projects with metadata-only digest or content graph mode | Root paths and local config values stay out of REST/MCP responses |
+| Reliability checks | Context health, changed-path impact analysis, and deterministic stale-claim checking | Metadata-only; no verifier recommendation, eval runner, LLM judgment, raw diff echoing, broad crawling, or `.ai/tasks/*` stable-doc links |
 | Ingestion scheduler | Async manual ingestion, live watcher rescan, configurable global/per-project limits, live path priority | Global limits cap full-scan file workers; operators can cap workers per project when fairness matters |
 | Full-scan ingestion | Parallel bounded file workers, periodic running counters, stale cleanup after workers drain | Source is stored only for eligible chunks after safety gates |
 | Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph, named AST structural search, AST query catalog discovery | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
@@ -149,6 +161,8 @@ What this enables:
 - Engineers can opt local projects into metadata-only digest or content graph ingestion.
 - Engineers can opt project-specific Jira/Confluence allowlists into polling-only ingestion so issue/page context lands in the same local graph as source context.
 - Agents can ask for bounded project files, chunks, outlines, search results, symbols, symbol source, references, direct call edges, call graphs, the supported AST query catalog, named AST structural matches, and ingestion status through MCP instead of guessing from stale chat context.
+- Agents can ask for context health, changed-path impact analysis, and deterministic stale-claim checks against selected stable docs/contracts before relying on local context.
+- Agents can record redacted run metadata, steps, verifier outcomes, changed file paths, and artifact refs without storing raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or PII.
 - Agents can ask local MCP tools for configured integration status, trigger a one-shot provider poll, search locally ingested Jira/Confluence chunks, and read bounded Jira issue or Confluence page content without calling Atlassian during search/read.
 - Agents can use MCP/REST for governed git status/diff and exact current-file edits on opted-in workspaces; shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
@@ -368,7 +382,7 @@ wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored
 wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivia-server
 ```
 
-The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get`. Codex Desktop may show underscore-normalized callable names such as `tasks_create`, `projects_search_text`, or `projects_workspace_file_read`; the server accepts both forms.
+The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `agent_runs.create`, `agent_runs.step_append`, `agent_runs.complete`, `agent_runs.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.context_health`, `projects.impact.analyze`, `projects.claims.check`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.counts`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get`. Codex Desktop may show underscore-normalized callable names such as `tasks_create`, `projects_search_text`, or `projects_workspace_file_read`; the server accepts both forms.
 
 ## Local Project APIs
 
@@ -380,6 +394,9 @@ Use REST for scripts, smoke tests, and direct local checks. Use MCP first when a
 | --- | --- | --- |
 | Projects | `GET /api/v1/projects`, `GET /api/v1/projects/{id}` | `projects.list`, `projects.get` |
 | Metadata digest | `POST /api/v1/projects/{id}/digest-runs` | `projects.digest` |
+| Context health | `GET /api/v1/projects/{id}/context-health` | `projects.context_health` |
+| Changed-path impact analysis | `POST /api/v1/projects/{id}/impact/analyze` | `projects.impact.analyze` |
+| Stale-claim check | `POST /api/v1/projects/{id}/claims/check` | `projects.claims.check` |
 | Content graph ingestion | `POST /api/v1/projects/{id}/ingestion-runs` | `projects.ingest` |
 | Search index repair | `POST /api/v1/projects/{id}/search-index/rebuild` | `projects.search_index.rebuild` |
 | Ingestion run status | `GET /api/v1/projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
@@ -405,6 +422,7 @@ Use REST for scripts, smoke tests, and direct local checks. Use MCP first when a
 | Exact token-guarded file edit | `POST /api/v1/projects/{id}/workspace/files/edit` | `projects.workspace.file_edit` |
 | Integration providers | Not exposed over REST | `projects.integrations.list` |
 | Integration status | Not exposed over REST | `projects.integrations.status` |
+| Local integration counts | Not exposed over REST | `projects.integrations.counts` |
 | Manual integration poll | Not exposed over REST | `projects.integrations.poll`, then `projects.integrations.poll_status` |
 | Integration rich-content search | Not exposed over REST | `projects.integrations.search` |
 | Jira issue local read | Not exposed over REST | `projects.jira.issue.get` |
