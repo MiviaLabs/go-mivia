@@ -52,6 +52,33 @@ func TestSQLiteStore_ListFileStatesPageFiltersInStorage(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_CountFileStatesUsesStorageFilters(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	for _, state := range []FileState{
+		testFileState("project-1", "cmd/a.go", FileStatusEligible),
+		testFileState("project-1", "cmd/b.go", FileStatusEligible),
+		testFileState("project-1", "docs/guide.md", FileStatusEligible),
+		testFileState("project-1", "tmp/skip.go", FileStatusSkipped),
+		testFileState("project-2", "cmd/other.go", FileStatusEligible),
+	} {
+		if err := store.SaveFileState(ctx, state); err != nil {
+			t.Fatalf("save file state: %v", err)
+		}
+	}
+
+	count, err := store.CountFileStates(ctx, "project-1", FileStateFilter{
+		Status:    FileStatusEligible,
+		Extension: ".go",
+	})
+	if err != nil {
+		t.Fatalf("count file states: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected two eligible Go files, got %d", count)
+	}
+}
+
 func TestSQLiteStore_GetFileStateByHash(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)

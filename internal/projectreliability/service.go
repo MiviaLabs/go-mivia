@@ -124,9 +124,9 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 	}
 
 	var probeIssue string
-	probeCtx, cancelProbes := svc.probeContext(ctx)
-	defer cancelProbes()
+	probeCtx, cancelProbe := svc.probeContext(ctx)
 	latest, hasLatest, err := svc.latestRun(probeCtx, project.ID)
+	cancelProbe()
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "latest_run_unknown")
 	} else if hasLatest {
@@ -134,7 +134,9 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		health.ReasonCounts = copyPositiveCounts(latest.ReasonCounts)
 	}
 
+	probeCtx, cancelProbe = svc.probeContext(ctx)
 	activeRuns, err := svc.context.ActiveRuns(probeCtx, project.ID)
+	cancelProbe()
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "active_runs_unknown")
 	}
@@ -142,20 +144,28 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		health.ActiveRunID = activeRuns[0].ID
 	}
 
+	probeCtx, cancelProbe = svc.probeContext(ctx)
 	health.EligibleFileCount, err = svc.context.EligibleFileCount(probeCtx, project.ID)
+	cancelProbe()
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "eligible_file_count_unknown")
 	}
+	probeCtx, cancelProbe = svc.probeContext(ctx)
 	health.IndexedSymbolCount, err = svc.context.IndexedSymbolCount(probeCtx, project.ID)
+	cancelProbe()
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "indexed_symbol_count_unknown")
 	}
+	probeCtx, cancelProbe = svc.probeContext(ctx)
 	health.IndexedChunkCount, err = svc.context.IndexedChunkCount(probeCtx, project.ID)
+	cancelProbe()
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "indexed_chunk_count_unknown")
 	}
 
+	probeCtx, cancelProbe = svc.probeContext(ctx)
 	searchIndex, err := svc.context.SearchIndexHealth(probeCtx, project.ID)
+	cancelProbe()
 	if err != nil {
 		probeIssue = firstNonEmpty(probeIssue, "search_index_unknown")
 		searchIndex = SearchIndexHealth{Status: "unknown", Degraded: true, Reason: "search_index_unknown"}
@@ -167,7 +177,9 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 	}
 
 	if svc.workspace != nil {
+		probeCtx, cancelProbe = svc.probeContext(ctx)
 		health.WorkspaceGitAvailable, _ = svc.workspace.GitAvailable(probeCtx, project.ID)
+		cancelProbe()
 	}
 
 	health.Status, health.StatusReason = classifyHealth(project, latest, hasLatest, activeRuns, health, checkedAt, svc.staleAfter)
@@ -329,6 +341,22 @@ func (provider ingestionContextProvider) LatestRun(ctx context.Context, projectI
 }
 
 func (provider ingestionContextProvider) ActiveRuns(ctx context.Context, projectID string) ([]RunSummary, error) {
+	if provider.ingestion == nil {
+		return nil, nil
+	}
+	if activeProvider, ok := provider.ingestion.(interface {
+		ActiveRunMetadata(context.Context, string) ([]projectingestion.RunMetadata, error)
+	}); ok {
+		runs, err := activeProvider.ActiveRunMetadata(ctx, projectID)
+		if err != nil {
+			return nil, err
+		}
+		summaries := make([]RunSummary, 0, len(runs))
+		for _, run := range runs {
+			summaries = append(summaries, sanitizeRunSummary(runSummaryFromIngestion(run)))
+		}
+		return summaries, nil
+	}
 	latest, err := provider.LatestRun(ctx, projectID)
 	if errors.Is(err, ErrRunNotFound) {
 		return nil, nil
@@ -348,12 +376,22 @@ func (provider ingestionContextProvider) EligibleFileCount(ctx context.Context, 
 	if provider.ingestion == nil {
 		return 0, nil
 	}
+	if counter, ok := provider.ingestion.(interface {
+		EligibleFileCount(context.Context, string) (int, error)
+	}); ok {
+		return counter.EligibleFileCount(ctx, projectID)
+	}
 	return countFiles(ctx, provider.ingestion, projectID, projectingestion.FileStateFilter{Status: projectingestion.FileStatusEligible})
 }
 
 func (provider ingestionContextProvider) IndexedSymbolCount(ctx context.Context, projectID string) (int, error) {
 	if provider.ingestion == nil {
 		return 0, nil
+	}
+	if counter, ok := provider.ingestion.(interface {
+		IndexedSymbolCount(context.Context, string) (int, error)
+	}); ok {
+		return counter.IndexedSymbolCount(ctx, projectID)
 	}
 	total := 0
 	pageToken := ""
@@ -371,6 +409,14 @@ func (provider ingestionContextProvider) IndexedSymbolCount(ctx context.Context,
 }
 
 func (provider ingestionContextProvider) IndexedChunkCount(ctx context.Context, projectID string) (int, error) {
+	if provider.ingestion == nil {
+		return 0, nil
+	}
+	if counter, ok := provider.ingestion.(interface {
+		IndexedChunkCount(context.Context, string) (int, error)
+	}); ok {
+		return counter.IndexedChunkCount(ctx, projectID)
+	}
 	latest, err := provider.LatestRun(ctx, projectID)
 	if errors.Is(err, ErrRunNotFound) {
 		return 0, nil
@@ -384,6 +430,23 @@ func (provider ingestionContextProvider) IndexedChunkCount(ctx context.Context, 
 func (provider ingestionContextProvider) SearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
 	if provider.ingestion == nil {
 		return SearchIndexHealth{Status: "unknown"}, nil
+	}
+	if healthProvider, ok := provider.ingestion.(interface {
+		ContextSearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error)
+	}); ok {
+		health, err := healthProvider.ContextSearchIndexHealth(ctx, projectID)
+		if err != nil {
+			return SearchIndexHealth{}, err
+		}
+		status := "ok"
+		if health.Degraded {
+			status = "degraded"
+		}
+		return SearchIndexHealth{
+			Status:   status,
+			Degraded: health.Degraded,
+			Reason:   health.Reason,
+		}, nil
 	}
 	if healthProvider, ok := provider.ingestion.(interface {
 		SearchIndexHealth(context.Context, string) (projectingestion.SearchIndexHealth, error)

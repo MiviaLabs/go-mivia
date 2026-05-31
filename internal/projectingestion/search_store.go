@@ -459,6 +459,21 @@ func (store *SQLiteStore) ClearSearchIndexDegraded(ctx context.Context, projectI
 }
 
 func (store *SQLiteStore) SearchIndexHealth(ctx context.Context, project projectregistry.Project) (SearchIndexHealth, error) {
+	health, err := store.ContextSearchIndexHealth(ctx, project)
+	if err != nil || health.Degraded {
+		return health, err
+	}
+	drift, err := store.searchIndexHasDrift(ctx, project)
+	if err != nil {
+		return SearchIndexHealth{}, err
+	}
+	if drift {
+		return SearchIndexHealth{Degraded: true, Reason: "search_index_drift"}, nil
+	}
+	return SearchIndexHealth{}, nil
+}
+
+func (store *SQLiteStore) ContextSearchIndexHealth(ctx context.Context, project projectregistry.Project) (SearchIndexHealth, error) {
 	var status, reason string
 	err := store.db.QueryRowContext(ctx, `SELECT status, degraded_reason
 		FROM project_search_index_state
@@ -469,14 +484,23 @@ func (store *SQLiteStore) SearchIndexHealth(ctx context.Context, project project
 	if status == "degraded" {
 		return SearchIndexHealth{Degraded: true, Reason: safeSearchIndexReason(reason)}, nil
 	}
-	drift, err := store.searchIndexHasDrift(ctx, project)
-	if err != nil {
-		return SearchIndexHealth{}, err
-	}
-	if drift {
-		return SearchIndexHealth{Degraded: true, Reason: "search_index_drift"}, nil
-	}
 	return SearchIndexHealth{}, nil
+}
+
+func (store *SQLiteStore) CountSearchSymbols(ctx context.Context, project projectregistry.Project) (int, error) {
+	var count int
+	err := store.db.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM project_search_symbols_fts
+		WHERE project_id = ?`, project.ID).Scan(&count)
+	return count, sanitizeSearchError(err)
+}
+
+func (store *SQLiteStore) CountSearchChunks(ctx context.Context, project projectregistry.Project) (int, error) {
+	var count int
+	err := store.db.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM project_search_chunks_fts
+		WHERE project_id = ?`, project.ID).Scan(&count)
+	return count, sanitizeSearchError(err)
 }
 
 func (store *SQLiteStore) searchIndexHasDrift(ctx context.Context, project projectregistry.Project) (bool, error) {

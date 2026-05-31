@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
@@ -39,11 +40,12 @@ type Orchestrator struct {
 	logger         *slog.Logger
 	watcherFactory WatcherFactory
 
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	started bool
-	states  map[string]WatchState
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	started  bool
+	states   map[string]WatchState
+	watchers map[string]*projectWatcher
 }
 
 type DiagnosticsSource struct {
@@ -76,6 +78,12 @@ type WatchState struct {
 	SkippedDirectoryCount int
 	FailedDirectoryCount  int
 	QueueDepth            int
+	EventQueueDepth       int
+	TaskQueueDepth        int
+	RescanQueueDepth      int
+	OldestEventAgeMillis  int64
+	CoalescedEventCount   uint64
+	DroppedEventCount     uint64
 	LastErrorCategory     string
 	UpdatedAt             time.Time
 }
@@ -87,12 +95,15 @@ const (
 )
 
 type projectWatcher struct {
-	project  projectregistry.Project
-	watcher  FileWatcher
-	events   chan WatchEvent
-	rescans  chan struct{}
-	tasks    chan ingestTask
-	stopOnce sync.Once
+	project            projectregistry.Project
+	watcher            FileWatcher
+	events             chan WatchEvent
+	rescans            chan struct{}
+	tasks              chan ingestTask
+	stopOnce           sync.Once
+	firstEventUnixNano uint64
+	coalescedEvents    uint64
+	droppedEvents      uint64
 }
 
 type ingestTask struct {
@@ -144,6 +155,7 @@ func NewOrchestrator(registry *projectregistry.Registry, ingestion ingestionRunn
 		logger:         options.Logger,
 		watcherFactory: NewFSNotifyWatcher,
 		states:         make(map[string]WatchState),
+		watchers:       make(map[string]*projectWatcher),
 	}
 }
 
@@ -230,6 +242,7 @@ func (orchestrator *Orchestrator) Start(ctx context.Context) error {
 			)
 			continue
 		}
+		orchestrator.watchers[project.ID] = projectWatcher
 		orchestrator.logInfo("live ingestion watcher started",
 			slog.String("project_id", project.ID),
 			slog.String("watch_status", status),
@@ -257,6 +270,17 @@ func (orchestrator *Orchestrator) WatchStates() []WatchState {
 	defer orchestrator.mu.Unlock()
 	states := make([]WatchState, 0, len(orchestrator.states))
 	for _, state := range orchestrator.states {
+		if watcher := orchestrator.watchers[state.ProjectID]; watcher != nil {
+			state.EventQueueDepth = len(watcher.events)
+			state.TaskQueueDepth = len(watcher.tasks)
+			state.RescanQueueDepth = len(watcher.rescans)
+			state.CoalescedEventCount = atomic.LoadUint64(&watcher.coalescedEvents)
+			state.DroppedEventCount = atomic.LoadUint64(&watcher.droppedEvents)
+			firstEvent := atomic.LoadUint64(&watcher.firstEventUnixNano)
+			if firstEvent != 0 {
+				state.OldestEventAgeMillis = time.Since(time.Unix(0, int64(firstEvent))).Milliseconds()
+			}
+		}
 		states = append(states, state)
 	}
 	return states
@@ -271,6 +295,7 @@ func (orchestrator *Orchestrator) Stop(ctx context.Context) error {
 	cancel := orchestrator.cancel
 	orchestrator.cancel = nil
 	orchestrator.started = false
+	orchestrator.watchers = make(map[string]*projectWatcher)
 	orchestrator.mu.Unlock()
 
 	if cancel != nil {
@@ -355,7 +380,10 @@ func (orchestrator *Orchestrator) handleWatchEvent(projectWatcher *projectWatche
 	}
 	select {
 	case projectWatcher.events <- event:
+		atomic.CompareAndSwapUint64(&projectWatcher.firstEventUnixNano, 0, uint64(time.Now().UnixNano()))
 	default:
+		atomic.AddUint64(&projectWatcher.droppedEvents, 1)
+		atomic.AddUint64(&projectWatcher.coalescedEvents, 1)
 		orchestrator.logWarn("live ingestion event queue full; rescan queued", slog.String("project_id", projectWatcher.project.ID))
 		orchestrator.enqueueRescan(projectWatcher)
 	}
@@ -375,6 +403,9 @@ func (orchestrator *Orchestrator) debounceLoop(ctx context.Context, projectWatch
 		case <-projectWatcher.rescans:
 			orchestrator.enqueueTask(ctx, projectWatcher, ingestTask{rescan: true})
 		case event := <-projectWatcher.events:
+			if len(projectWatcher.events) == 0 {
+				atomic.StoreUint64(&projectWatcher.firstEventUnixNano, 0)
+			}
 			if relative, ok := orchestrator.relativeEventPath(projectWatcher.project, event.Path); ok {
 				pending[relative] = struct{}{}
 				resetTimer(timer, orchestrator.options.DebounceInterval)
@@ -391,6 +422,7 @@ func (orchestrator *Orchestrator) debounceLoop(ctx context.Context, projectWatch
 				delete(pending, relative)
 			}
 			if overflowed {
+				atomic.AddUint64(&projectWatcher.coalescedEvents, 1)
 				orchestrator.enqueueTask(ctx, projectWatcher, ingestTask{rescan: true})
 			}
 		}
@@ -472,6 +504,7 @@ func (orchestrator *Orchestrator) enqueueTask(ctx context.Context, projectWatche
 	default:
 		if !task.rescan {
 			orchestrator.logWarn("live ingestion task queue full; path events coalesced to rescan", slog.String("project_id", projectWatcher.project.ID))
+			atomic.AddUint64(&projectWatcher.coalescedEvents, 1)
 			return false
 		}
 		orchestrator.logWarn("live ingestion task queue full; rescan deferred", slog.String("project_id", projectWatcher.project.ID))

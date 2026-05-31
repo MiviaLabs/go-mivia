@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
@@ -75,7 +77,12 @@ func ReadinessHandler(checker Checker, logger *slog.Logger) http.Handler {
 		code := http.StatusOK
 		if !ready {
 			code = http.StatusServiceUnavailable
-			logger.Warn("readiness check failed", slog.String("error_category", "dependency"))
+			logger.Warn(
+				"readiness check failed",
+				slog.String("error_category", "dependency"),
+				slog.String("dependency_names", dependencyNames(status)),
+				slog.Any("dependency_status", status),
+			)
 		}
 		httpserver.WriteJSON(w, code, map[string]any{
 			"status":       statusText(ready),
@@ -89,4 +96,16 @@ func statusText(ready bool) string {
 		return "ready"
 	}
 	return "not_ready"
+}
+
+func dependencyNames(status map[string]string) string {
+	if len(status) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(status))
+	for name := range status {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }

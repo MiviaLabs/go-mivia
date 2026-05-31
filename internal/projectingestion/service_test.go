@@ -699,7 +699,7 @@ func caseneedle() {}
 	}
 }
 
-func TestSearchIndexMetadataReportsFTSDrift(t *testing.T) {
+func TestSearchIndexMetadataReportsPersistedFTSDrift(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "cmd", "main.go"), `package main
@@ -717,6 +717,9 @@ func CallDrift() {
 	}
 	if _, err := state.db.ExecContext(ctx, "DELETE FROM project_search_files_fts WHERE project_id = ?", "example-service"); err != nil {
 		t.Fatalf("delete fts file row: %v", err)
+	}
+	if err := state.MarkSearchIndexDegraded(ctx, "example-service", "search_index_drift"); err != nil {
+		t.Fatalf("mark search index degraded: %v", err)
 	}
 
 	results, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "DriftNeedle", PageSize: MaxPageSize})
@@ -985,6 +988,9 @@ func TestRebuildSearchIndex_RepairsMissingAndStaleFiles(t *testing.T) {
 	}
 	if err := state.SaveFileState(ctx, prepared.state); err != nil {
 		t.Fatalf("save stale file state: %v", err)
+	}
+	if err := state.MarkSearchIndexDegraded(ctx, "example-service", "search_index_drift"); err != nil {
+		t.Fatalf("mark search index degraded: %v", err)
 	}
 	staleSearch, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "OldNeedle", PageSize: MaxPageSize})
 	if err != nil {

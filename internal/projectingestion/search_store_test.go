@@ -81,6 +81,61 @@ func TestSQLiteStore_UpdateSearchFileMetadataBatch(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_CountSearchSymbolsAndChunks(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	state := testSearchFileState("project-1", "cmd/main.go", "sha256:main")
+	if err := store.UpsertSearchFile(ctx, project, state,
+		[]Chunk{{Index: 0, Text: "body"}, {Index: 1, Text: "more"}},
+		[]Symbol{{Kind: SymbolKindFunction, Name: "main"}, {Kind: SymbolKindFunction, Name: "helper"}},
+		nil,
+		nil,
+	); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	symbols, err := store.CountSearchSymbols(ctx, project)
+	if err != nil {
+		t.Fatalf("count symbols: %v", err)
+	}
+	chunks, err := store.CountSearchChunks(ctx, project)
+	if err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if symbols != 2 || chunks != 2 {
+		t.Fatalf("expected two symbols and chunks, got symbols=%d chunks=%d", symbols, chunks)
+	}
+}
+
+func TestSQLiteStore_ContextSearchIndexHealthDoesNotRunDriftScan(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	state := testSearchFileState("project-1", "cmd/main.go", "sha256:main")
+	if err := store.UpsertSearchFile(ctx, project, state, []Chunk{{Index: 0, Text: "body"}}, nil, nil, nil); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM project_search_files_fts WHERE project_id = ?", "project-1"); err != nil {
+		t.Fatalf("delete fts file row: %v", err)
+	}
+
+	health, err := store.ContextSearchIndexHealth(ctx, project)
+	if err != nil {
+		t.Fatalf("context health: %v", err)
+	}
+	if health.Degraded {
+		t.Fatalf("context health should not run request-time drift scans, got %#v", health)
+	}
+	searchHealth, err := store.SearchIndexHealth(ctx, project)
+	if err != nil {
+		t.Fatalf("search health: %v", err)
+	}
+	if !searchHealth.Degraded || searchHealth.Reason != "search_index_drift" {
+		t.Fatalf("expected deep search health to detect drift, got %#v", searchHealth)
+	}
+}
+
 func TestSQLiteStore_SearchFilesPaginatesInStorage(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)

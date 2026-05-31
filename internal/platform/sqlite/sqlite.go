@@ -68,6 +68,14 @@ func (db *DB) Ping(ctx context.Context) error {
 	return db.db.PingContext(ctx)
 }
 
+func (db *DB) Ready(context.Context) error {
+	if db == nil || db.db == nil {
+		return fmt.Errorf("sqlite database is not initialized")
+	}
+	_ = db.db.Stats()
+	return nil
+}
+
 func (db *DB) SQLDB() *sql.DB {
 	return db.db
 }

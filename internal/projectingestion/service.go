@@ -58,6 +58,16 @@ type activeRunLister interface {
 	ListActiveRuns(context.Context, string) ([]Run, error)
 }
 
+type fileStateCounter interface {
+	CountFileStates(context.Context, string, FileStateFilter) (int, error)
+}
+
+type searchCounter interface {
+	CountSearchSymbols(context.Context, projectregistry.Project) (int, error)
+	CountSearchChunks(context.Context, projectregistry.Project) (int, error)
+	ContextSearchIndexHealth(context.Context, projectregistry.Project) (SearchIndexHealth, error)
+}
+
 type API interface {
 	IngestProject(context.Context, string, Trigger) (Run, error)
 	IngestPath(context.Context, string, string, Trigger) (Run, error)
@@ -608,6 +618,87 @@ func (svc *Service) FailInterruptedRuns(ctx context.Context, errorCategory strin
 		}
 	}
 	return failed, nil
+}
+
+func (svc *Service) ActiveRunMetadata(ctx context.Context, projectID string) ([]RunMetadata, error) {
+	if svc == nil || svc.state == nil {
+		return nil, fmt.Errorf("%w: ingestion service dependencies are required", ErrUnsupportedIngest)
+	}
+	runs, err := listActiveRuns(ctx, svc.state, strings.TrimSpace(projectID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RunMetadata, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, MetadataForRun(run))
+	}
+	return out, nil
+}
+
+func (svc *Service) EligibleFileCount(ctx context.Context, projectID string) (int, error) {
+	if svc == nil || svc.state == nil {
+		return 0, fmt.Errorf("%w: ingestion service dependencies are required", ErrUnsupportedIngest)
+	}
+	if counter, ok := svc.state.(fileStateCounter); ok {
+		return counter.CountFileStates(ctx, strings.TrimSpace(projectID), FileStateFilter{Status: FileStatusEligible})
+	}
+	states, err := svc.state.ListFileStates(ctx, strings.TrimSpace(projectID), FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		return 0, err
+	}
+	return len(states), nil
+}
+
+func (svc *Service) IndexedSymbolCount(ctx context.Context, projectID string) (int, error) {
+	project, err := svc.projectForQuery(strings.TrimSpace(projectID))
+	if err != nil {
+		return 0, err
+	}
+	if counter, ok := svc.state.(searchCounter); ok {
+		return counter.CountSearchSymbols(ctx, project)
+	}
+	total := 0
+	pageToken := ""
+	for {
+		result, err := svc.ListSymbols(ctx, project.ID, SymbolFilter{}, Pagination{PageSize: MaxPageSize, PageToken: pageToken})
+		if err != nil {
+			return 0, err
+		}
+		total += len(result.Symbols)
+		if result.NextPageToken == "" {
+			return total, nil
+		}
+		pageToken = result.NextPageToken
+	}
+}
+
+func (svc *Service) IndexedChunkCount(ctx context.Context, projectID string) (int, error) {
+	project, err := svc.projectForQuery(strings.TrimSpace(projectID))
+	if err != nil {
+		return 0, err
+	}
+	if counter, ok := svc.state.(searchCounter); ok {
+		return counter.CountSearchChunks(ctx, project)
+	}
+	run, err := svc.LatestRunMetadata(ctx, project.ID)
+	if errors.Is(err, ErrRunNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return run.ChunksStored, nil
+}
+
+func (svc *Service) ContextSearchIndexHealth(ctx context.Context, projectID string) (SearchIndexHealth, error) {
+	project, err := svc.projectForQuery(strings.TrimSpace(projectID))
+	if err != nil {
+		return SearchIndexHealth{}, err
+	}
+	if counter, ok := svc.state.(searchCounter); ok {
+		return counter.ContextSearchIndexHealth(ctx, project)
+	}
+	return SearchIndexHealth{}, nil
 }
 
 func listActiveRuns(ctx context.Context, state stateStore, projectID string) ([]Run, error) {
@@ -1707,7 +1798,13 @@ func (svc *Service) withSearchIndexHealth(ctx context.Context, project projectre
 	if !ok {
 		return metadata
 	}
-	health, err := search.SearchIndexHealth(ctx, project)
+	var health SearchIndexHealth
+	var err error
+	if counter, ok := svc.state.(searchCounter); ok {
+		health, err = counter.ContextSearchIndexHealth(ctx, project)
+	} else {
+		health, err = search.SearchIndexHealth(ctx, project)
+	}
 	if err != nil || !health.Degraded {
 		return metadata
 	}

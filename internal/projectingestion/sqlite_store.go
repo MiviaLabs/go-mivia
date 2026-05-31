@@ -600,6 +600,19 @@ func (store *SQLiteStore) ListFileStatesPage(ctx context.Context, projectID stri
 	return states, next, nil
 }
 
+func (store *SQLiteStore) CountFileStates(ctx context.Context, projectID string, filter FileStateFilter) (int, error) {
+	query := `SELECT COUNT(*)
+	FROM project_file_ingestion_state
+	WHERE project_id = ?`
+	args := []any{projectID}
+	query, args = appendFileStateFilters(query, args, filter)
+	var count int
+	if err := store.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string, filter FileStateFilter, limit int, offset int) (*sql.Rows, error) {
 	query := `SELECT
 		project_id,
@@ -618,6 +631,16 @@ func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string,
 	FROM project_file_ingestion_state
 	WHERE project_id = ?`
 	args := []any{projectID}
+	query, args = appendFileStateFilters(query, args, filter)
+	query += ` ORDER BY relative_path_hash`
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	return store.db.QueryContext(ctx, query, args...)
+}
+
+func appendFileStateFilters(query string, args []any, filter FileStateFilter) (string, []any) {
 	if filter.Status != "" {
 		query += ` AND status = ?`
 		args = append(args, string(filter.Status))
@@ -642,12 +665,7 @@ func (store *SQLiteStore) queryFileStates(ctx context.Context, projectID string,
 		query += ` AND modified_at >= ?`
 		args = append(args, formatTime(filter.ModifiedSince))
 	}
-	query += ` ORDER BY relative_path_hash`
-	if limit > 0 {
-		query += ` LIMIT ? OFFSET ?`
-		args = append(args, limit, offset)
-	}
-	return store.db.QueryContext(ctx, query, args...)
+	return query, args
 }
 
 func scanFileStates(rows *sql.Rows) ([]FileState, error) {

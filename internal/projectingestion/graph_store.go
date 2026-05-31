@@ -274,6 +274,9 @@ func (store *GraphStore) putEligibleFile(ctx context.Context, project projectreg
 	}
 
 	symbolIDs := symbolIDIndex(repoFileID, symbols)
+	if err := store.addProjectSymbolIDs(ctx, project.ID, symbolIDs); err != nil {
+		return err
+	}
 	if err := store.putReferences(ctx, project.ID, repoFileID, versionID, chunks, references, symbolIDs); err != nil {
 		return err
 	}
@@ -1035,6 +1038,9 @@ func (store *GraphStore) putReferences(ctx context.Context, projectID string, re
 		refID := codeReferenceID(repoFileID, index, ref)
 		enclosingID := symbols.byName[ref.EnclosingSymbolName]
 		targetID := symbols.byName[ref.TargetName]
+		if targetID == "" && ref.Receiver == "" && ref.ImportPath == "" {
+			targetID = symbols.resolvePackageSymbol(ref.PackageName, ref.TargetName)
+		}
 		status := ref.ResolutionStatus
 		confidence := ref.Confidence
 		if targetID != "" {
@@ -1099,6 +1105,9 @@ func (store *GraphStore) putCalls(ctx context.Context, projectID string, repoFil
 		callID := codeCallID(repoFileID, index, call)
 		callerID := symbols.byName[call.CallerName]
 		calleeID := symbols.byName[call.CalleeName]
+		if calleeID == "" && call.Receiver == "" && call.ImportPath == "" {
+			calleeID = symbols.resolvePackageSymbol(symbols.packageName, call.CalleeName)
+		}
 		status := call.ResolutionStatus
 		confidence := call.Confidence
 		if callerID != "" && calleeID != "" {
@@ -1170,6 +1179,9 @@ func (store *GraphStore) putImplementations(ctx context.Context, projectID strin
 		implementationID := codeImplementationID(repoFileID, index, implementation)
 		implementerID := symbols.byName[implementation.ImplementerName]
 		implementedID := symbols.byName[implementation.ImplementedName]
+		if implementedID == "" && implementation.Receiver == "" && implementation.ImportPath == "" {
+			implementedID = symbols.resolvePackageSymbol(implementation.PackageName, implementation.ImplementedName)
+		}
 		status := implementation.ResolutionStatus
 		confidence := implementation.Confidence
 		if implementerID != "" && implementedID != "" {
@@ -1232,18 +1244,26 @@ func (store *GraphStore) putImplementations(ctx context.Context, projectID strin
 }
 
 type symbolIndex struct {
-	byName     map[string]string
-	byNameKind map[string]SymbolKind
+	byName        map[string]string
+	byNameKind    map[string]SymbolKind
+	byPackageName map[string]string
+	ambiguous     map[string]bool
+	packageName   string
 }
 
 func symbolIDIndex(repoFileID string, symbols []Symbol) symbolIndex {
 	index := symbolIndex{
-		byName:     make(map[string]string, len(symbols)),
-		byNameKind: make(map[string]SymbolKind, len(symbols)),
+		byName:        make(map[string]string, len(symbols)),
+		byNameKind:    make(map[string]SymbolKind, len(symbols)),
+		byPackageName: make(map[string]string, len(symbols)),
+		ambiguous:     make(map[string]bool),
 	}
 	for _, symbol := range symbols {
 		if symbol.Name == "" {
 			continue
+		}
+		if index.packageName == "" && symbol.PackageName != "" {
+			index.packageName = symbol.PackageName
 		}
 		id := codeSymbolID(repoFileID, symbol)
 		existingKind, exists := index.byNameKind[symbol.Name]
@@ -1251,8 +1271,52 @@ func symbolIDIndex(repoFileID string, symbols []Symbol) symbolIndex {
 			index.byName[symbol.Name] = id
 			index.byNameKind[symbol.Name] = symbol.Kind
 		}
+		index.addPackageSymbol(symbol.PackageName, symbol.Name, id)
 	}
 	return index
+}
+
+func (index symbolIndex) addPackageSymbol(packageName string, name string, id string) {
+	key := packageSymbolKey(packageName, name)
+	if key == "" || id == "" {
+		return
+	}
+	if existing := index.byPackageName[key]; existing != "" && existing != id {
+		index.ambiguous[key] = true
+		delete(index.byPackageName, key)
+		return
+	}
+	if !index.ambiguous[key] {
+		index.byPackageName[key] = id
+	}
+}
+
+func (index symbolIndex) resolvePackageSymbol(packageName string, name string) string {
+	key := packageSymbolKey(packageName, name)
+	if key == "" || index.ambiguous[key] {
+		return ""
+	}
+	return index.byPackageName[key]
+}
+
+func packageSymbolKey(packageName string, name string) string {
+	packageName = strings.TrimSpace(packageName)
+	name = strings.TrimSpace(name)
+	if packageName == "" || name == "" {
+		return ""
+	}
+	return packageName + "\x00" + name
+}
+
+func (store *GraphStore) addProjectSymbolIDs(ctx context.Context, projectID string, index symbolIndex) error {
+	nodes, err := store.graph.ListNodes(ctx, "CodeSymbol", map[string]string{"project_id": projectID})
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		index.addPackageSymbol(node.Properties["package"], node.Properties["name"], node.ID)
+	}
+	return nil
 }
 
 func preferredResolutionKind(candidate SymbolKind, existing SymbolKind) bool {
