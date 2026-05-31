@@ -306,6 +306,39 @@ func TestOrchestrator_WatchDirectoryBudgetDegradesWithSkippedCount(t *testing.T)
 	}
 }
 
+func TestOrchestrator_WatchStateReportsBackpressureCounters(t *testing.T) {
+	registry := newLiveRegistry(t)
+	project, _ := registry.Get("live_project")
+	orchestrator := NewOrchestrator(registry, &fakeIngestionRunner{}, OrchestratorOptions{
+		LiveUpdatesEnabled: true,
+		QueueDepth:         1,
+	})
+	projectWatcher := &projectWatcher{
+		project: project,
+		events:  make(chan WatchEvent, 1),
+		rescans: make(chan struct{}, 1),
+		tasks:   make(chan ingestTask, 1),
+	}
+	orchestrator.mu.Lock()
+	orchestrator.states[project.ID] = WatchState{ProjectID: project.ID, Status: WatchStatusLive, QueueDepth: 1}
+	orchestrator.watchers[project.ID] = projectWatcher
+	orchestrator.mu.Unlock()
+
+	orchestrator.handleWatchEvent(projectWatcher, WatchEvent{Path: filepath.Join(project.CanonicalRootPath, "one.go"), Op: WatchWrite})
+	orchestrator.handleWatchEvent(projectWatcher, WatchEvent{Path: filepath.Join(project.CanonicalRootPath, "two.go"), Op: WatchWrite})
+
+	state := findWatchState(t, orchestrator.WatchStates(), project.ID)
+	if state.EventQueueDepth != 1 || state.RescanQueueDepth != 1 {
+		t.Fatalf("expected queued event and rescan diagnostics, got %#v", state)
+	}
+	if state.DroppedEventCount != 1 || state.CoalescedEventCount != 1 {
+		t.Fatalf("expected dropped/coalesced counters, got %#v", state)
+	}
+	if state.OldestEventAgeMillis < 0 {
+		t.Fatalf("oldest event age must not be negative: %#v", state)
+	}
+}
+
 func TestOrchestrator_SlowPathEventLogsDiagnosticWithoutRawPath(t *testing.T) {
 	registry := newLiveRegistry(t)
 	project, _ := registry.Get("live_project")

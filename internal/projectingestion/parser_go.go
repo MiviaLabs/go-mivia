@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"path"
 	"strconv"
 	"unicode/utf8"
 )
@@ -35,6 +36,7 @@ func ParseGoFileSemantic(relativePath string, source []byte) (ExtractorResult, e
 	}}
 	applyGoSpan(fileSet, file.Name.Pos(), file.Name.End(), &symbols[0])
 
+	importsByQualifier := make(map[string]string, len(file.Imports))
 	for _, importSpec := range file.Imports {
 		importPath, err := strconv.Unquote(importSpec.Path.Value)
 		if err != nil {
@@ -43,6 +45,9 @@ func ParseGoFileSemantic(relativePath string, source []byte) (ExtractorResult, e
 		name := importPath
 		if importSpec.Name != nil {
 			name = importSpec.Name.Name
+		}
+		if qualifier := goImportQualifier(name, importPath); qualifier != "" && importPath != "" {
+			importsByQualifier[qualifier] = importPath
 		}
 		symbols = append(symbols, Symbol{
 			Kind:        SymbolKindImport,
@@ -102,7 +107,7 @@ func ParseGoFileSemantic(relativePath string, source []byte) (ExtractorResult, e
 				StartColumn: columnFor(fileSet, typed.Pos()),
 				EndColumn:   columnFor(fileSet, typed.End()),
 			})
-			funcRefs, funcCalls := extractGoFunctionOccurrences(fileSet, file.Name.Name, typed)
+			funcRefs, funcCalls := extractGoFunctionOccurrences(fileSet, file.Name.Name, importsByQualifier, typed)
 			references = append(references, funcRefs...)
 			calls = append(calls, funcCalls...)
 		}
@@ -147,7 +152,18 @@ func exprString(fileSet *token.FileSet, expr ast.Expr) string {
 	return buffer.String()
 }
 
-func extractGoFunctionOccurrences(fileSet *token.FileSet, packageName string, fn *ast.FuncDecl) ([]Reference, []Call) {
+func goImportQualifier(name string, importPath string) string {
+	switch name {
+	case "", importPath:
+		return path.Base(importPath)
+	case ".", "_":
+		return ""
+	default:
+		return name
+	}
+}
+
+func extractGoFunctionOccurrences(fileSet *token.FileSet, packageName string, importsByQualifier map[string]string, fn *ast.FuncDecl) ([]Reference, []Call) {
 	if fn == nil || fn.Body == nil {
 		return nil, nil
 	}
@@ -158,11 +174,13 @@ func extractGoFunctionOccurrences(fileSet *token.FileSet, packageName string, fn
 		switch typed := node.(type) {
 		case *ast.CallExpr:
 			name, receiver := goCallTarget(fileSet, typed.Fun)
+			importPath := importsByQualifier[receiver]
 			if name != "" {
 				calls = append(calls, Call{
 					CallerName:       callerName,
 					CalleeName:       name,
 					Receiver:         receiver,
+					ImportPath:       importPath,
 					StartLine:        lineFor(fileSet, typed.Pos()),
 					EndLine:          lineFor(fileSet, typed.End()),
 					StartByte:        offsetFor(fileSet, typed.Pos()),
@@ -175,12 +193,14 @@ func extractGoFunctionOccurrences(fileSet *token.FileSet, packageName string, fn
 			}
 		case *ast.SelectorExpr:
 			if typed.Sel != nil {
+				receiver := exprString(fileSet, typed.X)
 				references = append(references, Reference{
 					Kind:                "selector",
 					Name:                typed.Sel.Name,
 					TargetName:          typed.Sel.Name,
 					PackageName:         packageName,
-					Receiver:            exprString(fileSet, typed.X),
+					Receiver:            receiver,
+					ImportPath:          importsByQualifier[receiver],
 					EnclosingSymbolName: callerName,
 					StartLine:           lineFor(fileSet, typed.Pos()),
 					EndLine:             lineFor(fileSet, typed.End()),

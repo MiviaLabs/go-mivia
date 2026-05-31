@@ -74,6 +74,35 @@ func Run() {
 	}
 }
 
+func TestParseGoFileSemantic_AttachesImportPathToSelectorReferencesAndCalls(t *testing.T) {
+	source := []byte(`package sample
+
+import (
+	"context"
+	alias "example.com/local/pkg"
+)
+
+func Run(ctx context.Context) {
+	var _ context.Context
+	alias.Target()
+}
+`)
+
+	result, err := ParseGoFileSemantic("synthetic.go", source)
+	if err != nil {
+		t.Fatalf("parse go semantic file: %v", err)
+	}
+	if !hasCallWithImport(result.Calls, "Run", "Target", "alias", "example.com/local/pkg") {
+		t.Fatalf("expected imported alias call metadata, got %#v", result.Calls)
+	}
+	if !hasReferenceWithImport(result.References, "Run", "Target", "alias", "example.com/local/pkg") {
+		t.Fatalf("expected imported alias reference metadata, got %#v", result.References)
+	}
+	if !hasReferenceWithImport(result.References, "Run", "Context", "context", "context") {
+		t.Fatalf("expected default import selector metadata, got %#v", result.References)
+	}
+}
+
 func assertSymbol(t *testing.T, symbols []Symbol, kind SymbolKind, name string, importPath string, receiver string, startLine int, endLine int) {
 	t.Helper()
 	for _, symbol := range symbols {
@@ -122,9 +151,27 @@ func hasCall(calls []Call, caller string, callee string) bool {
 	return false
 }
 
+func hasCallWithImport(calls []Call, caller string, callee string, receiver string, importPath string) bool {
+	for _, call := range calls {
+		if call.CallerName == caller && call.CalleeName == callee && call.Receiver == receiver && call.ImportPath == importPath {
+			return true
+		}
+	}
+	return false
+}
+
 func hasReference(references []Reference, enclosing string, target string) bool {
 	for _, ref := range references {
 		if ref.EnclosingSymbolName == enclosing && ref.TargetName == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReferenceWithImport(references []Reference, enclosing string, target string, receiver string, importPath string) bool {
+	for _, ref := range references {
+		if ref.EnclosingSymbolName == enclosing && ref.TargetName == target && ref.Receiver == receiver && ref.ImportPath == importPath {
 			return true
 		}
 	}
