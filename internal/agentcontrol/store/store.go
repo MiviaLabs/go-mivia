@@ -20,6 +20,13 @@ type ResearchRunStore interface {
 	GetResearchRun(context.Context, string) (model.ResearchRun, error)
 }
 
+type AgentRunStore interface {
+	CreateAgentRun(context.Context, model.AgentRun) (model.AgentRun, error)
+	AppendAgentStep(context.Context, string, model.AgentStep) (model.AgentRun, error)
+	CompleteAgentRun(context.Context, model.AgentRun) (model.AgentRun, error)
+	GetAgentRun(context.Context, string) (model.AgentRun, error)
+}
+
 type AppConfigStore interface {
 	SetAppSetting(context.Context, string, string, string) error
 	GetAppSetting(context.Context, string) (string, string, error)

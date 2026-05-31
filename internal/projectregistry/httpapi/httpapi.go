@@ -10,6 +10,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
@@ -28,6 +29,7 @@ func RegisterRoutesWithWorkspace(mux *http.ServeMux, registry *projectregistry.R
 	if ingestion != nil {
 		mux.Handle("POST /api/v1/projects/{id}/ingestion-runs", createIngestionRunHandler(ingestion))
 		mux.Handle("POST /api/v1/projects/{id}/search-index/rebuild", rebuildSearchIndexHandler(ingestion))
+		mux.Handle("GET /api/v1/projects/{id}/context-health", getContextHealthHandler(registry, ingestion, workspace))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/latest", getLatestIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/ingestion-runs/{run_id}", getIngestionRunHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/files", listFilesHandler(ingestion))
@@ -55,6 +57,13 @@ func RegisterRoutesWithWorkspace(mux *http.ServeMux, registry *projectregistry.R
 		mux.Handle("GET /api/v1/projects/{id}/workspace/files/read", workspaceFileReadHandler(workspace))
 		mux.Handle("POST /api/v1/projects/{id}/workspace/files/edit", workspaceFileEditHandler(workspace))
 	}
+}
+
+func getContextHealthHandler(registry *projectregistry.Registry, ingestion projectingestion.API, workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		health, err := projectreliability.NewServiceFromAPIs(registry, ingestion, workspace, projectreliability.Options{}).ContextHealth(r.Context(), strings.TrimSpace(r.PathValue("id")))
+		writeReliabilityResult(w, health, err, http.StatusOK)
+	})
 }
 
 func listProjectsHandler(registry *projectregistry.Registry) http.Handler {
@@ -512,6 +521,31 @@ func writeWorkspaceResult(w http.ResponseWriter, body any, err error, successSta
 		errors.Is(err, projectworkspace.ErrEditConflict) ||
 		errors.Is(err, projectworkspace.ErrIngestionUnsupported) {
 		httpserver.WriteError(w, http.StatusBadRequest, "invalid_project_workspace_request", "project workspace request is invalid")
+		return
+	}
+	httpserver.WriteError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+}
+
+func writeReliabilityResult(w http.ResponseWriter, body any, err error, successStatus int) {
+	if err == nil {
+		httpserver.WriteJSON(w, successStatus, body)
+		return
+	}
+	if errors.Is(err, projectregistry.ErrProjectNotFound) || errors.Is(err, projectingestion.ErrProjectNotFound) {
+		httpserver.WriteError(w, http.StatusNotFound, "not_found", "project reliability resource not found")
+		return
+	}
+	if errors.Is(err, projectregistry.ErrInvalidInput) ||
+		errors.Is(err, projectingestion.ErrInvalidInput) ||
+		errors.Is(err, projectingestion.ErrProjectDisabled) ||
+		errors.Is(err, projectingestion.ErrUnsupportedIngest) ||
+		errors.Is(err, projectworkspace.ErrWorkspaceDisabled) ||
+		errors.Is(err, projectworkspace.ErrInvalidInput) {
+		httpserver.WriteError(w, http.StatusBadRequest, "invalid_project_reliability_request", "project reliability request is invalid")
+		return
+	}
+	if errors.Is(err, projectworkspace.ErrGitUnavailable) {
+		httpserver.WriteError(w, http.StatusServiceUnavailable, "git_unavailable", "git is not available in the mivia-server runtime")
 		return
 	}
 	httpserver.WriteError(w, http.StatusInternalServerError, "internal_error", "internal server error")

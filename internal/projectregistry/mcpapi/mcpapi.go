@@ -13,6 +13,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
@@ -161,6 +162,19 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		}
 		run, err := ingestion.SubmitIngestProject(ctx, strings.TrimSpace(input.ID), projectingestion.TriggerManual)
 		return toolResult(projectingestion.MetadataForRun(run)), err
+	case "projects.context_health", "projects_context_health":
+		var input struct {
+			ID   string          `json:"id"`
+			Meta json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid context health arguments", projectregistry.ErrInvalidInput)
+		}
+		if ingestion == nil {
+			return nil, fmt.Errorf("%w: ingestion service is not configured", projectingestion.ErrUnsupportedIngest)
+		}
+		health, err := projectreliability.NewServiceFromAPIs(registry, ingestion, workspace, projectreliability.Options{}).ContextHealth(ctx, strings.TrimSpace(input.ID))
+		return toolResult(health), err
 	case "projects.search_index.rebuild", "projects_search_index_rebuild":
 		var input struct {
 			ID   string          `json:"id"`
@@ -807,6 +821,14 @@ func ingestionToolDefinitions() []map[string]any {
 			"name":        "projects.search_index.rebuild",
 			"title":       "Rebuild Project Search Index",
 			"description": "Queue repair for the local SQLite FTS search index for an opted-in project by deleting indexed search rows and re-running governed content_graph ingestion. Returns safe queued run metadata only.",
+			"inputSchema": objectSchema(map[string]any{
+				"id": map[string]any{"type": "string", "minLength": 1},
+			}, []string{"id"}),
+		},
+		{
+			"name":        "projects.context_health",
+			"title":       "Get Project Context Health",
+			"description": "Return bounded readiness metadata for an opted-in local project without roots, source text, hashes, raw errors, secrets, or personal data.",
 			"inputSchema": objectSchema(map[string]any{
 				"id": map[string]any{"type": "string", "minLength": 1},
 			}, []string{"id"}),

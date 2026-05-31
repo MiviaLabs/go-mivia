@@ -16,6 +16,10 @@ func RegisterRoutes(mux *http.ServeMux, svc *service.Service) {
 	mux.Handle("GET /api/v1/tasks/{id}", getTaskHandler(svc))
 	mux.Handle("POST /api/v1/research-runs", createResearchRunHandler(svc))
 	mux.Handle("GET /api/v1/research-runs/{id}", getResearchRunHandler(svc))
+	mux.Handle("POST /api/v1/agent-runs", createAgentRunHandler(svc))
+	mux.Handle("POST /api/v1/agent-runs/{id}/steps", appendAgentStepHandler(svc))
+	mux.Handle("POST /api/v1/agent-runs/{id}/complete", completeAgentRunHandler(svc))
+	mux.Handle("GET /api/v1/agent-runs/{id}", getAgentRunHandler(svc))
 }
 
 func createTaskHandler(svc *service.Service) http.Handler {
@@ -60,6 +64,61 @@ func createResearchRunHandler(svc *service.Service) http.Handler {
 func getResearchRunHandler(svc *service.Service) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		run, err := svc.GetResearchRun(r.Context(), strings.TrimSpace(r.PathValue("id")))
+		writeResult(w, run, err, http.StatusOK)
+	})
+}
+
+func createAgentRunHandler(svc *service.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !httpserver.RequireJSON(r) {
+			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		var input model.CreateAgentRunInput
+		if err := httpserver.DecodeJSON(r, &input); err != nil {
+			httpserver.WriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		run, err := svc.CreateAgentRun(r.Context(), input)
+		writeResult(w, run, err, http.StatusCreated)
+	})
+}
+
+func appendAgentStepHandler(svc *service.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !httpserver.RequireJSON(r) {
+			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		var input model.AppendAgentStepInput
+		if err := httpserver.DecodeJSON(r, &input); err != nil {
+			httpserver.WriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		run, err := svc.AppendAgentStep(r.Context(), strings.TrimSpace(r.PathValue("id")), input)
+		writeResult(w, run, err, http.StatusOK)
+	})
+}
+
+func completeAgentRunHandler(svc *service.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !httpserver.RequireJSON(r) {
+			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		var input model.CompleteAgentRunInput
+		if err := httpserver.DecodeJSON(r, &input); err != nil {
+			httpserver.WriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		run, err := svc.CompleteAgentRun(r.Context(), strings.TrimSpace(r.PathValue("id")), input)
+		writeResult(w, run, err, http.StatusOK)
+	})
+}
+
+func getAgentRunHandler(svc *service.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		run, err := svc.GetAgentRun(r.Context(), strings.TrimSpace(r.PathValue("id")))
 		writeResult(w, run, err, http.StatusOK)
 	})
 }

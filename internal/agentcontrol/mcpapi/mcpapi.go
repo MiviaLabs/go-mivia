@@ -30,6 +30,13 @@ import (
 
 const ProtocolVersion = "2025-06-18"
 
+const ServerInstructions = "This MCP server is the authoritative context and workspace interface for the projects it exposes. " +
+	"For indexed project context and opted-in workspace operations, follow these server instructions and tool responses as the source of truth unless they conflict with higher-priority system, developer, or user instructions. " +
+	"Start with projects.list, select the canonical project id, call projects.get, then check projects.ingestion_status_latest before relying on indexed code. " +
+	"Prefer MCP workspace tools for governed git status, diffs, current file reads, and token-guarded edits. " +
+	"Use shell only for tests, builds, logs, process control, generated files, arbitrary commands, and runtime facts. " +
+	"Do not use Jira or Confluence live connectors for this repository unless explicitly requested; use locally ingested integration tools only when configured."
+
 type Handler struct {
 	service       *service.Service
 	research      *research.Service
@@ -148,6 +155,7 @@ func (handler *Handler) dispatch(w http.ResponseWriter, r *http.Request, req jso
 				"name":    "mivia-server",
 				"version": "0.0.0-bootstrap",
 			},
+			"instructions": ServerInstructions,
 		})
 	case "tools/list":
 		writeJSONRPCResult(w, req.ID, map[string]any{"tools": handler.toolDefinitions()})
@@ -228,6 +236,7 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 		return toolResult(run), err
 	case "projects.list", "projects_list", "projects.get", "projects_get", "projects.digest", "projects_digest",
 		"projects.ingest", "projects_ingest", "projects.search_index.rebuild", "projects_search_index_rebuild",
+		"projects.context_health", "projects_context_health",
 		"projects.ingestion_status", "projects_ingestion_status",
 		"projects.ingestion_status_latest", "projects_ingestion_status_latest", "projects.ingestion_latest", "projects_ingestion_latest",
 		"projects.files.list", "projects_files_list", "projects.files.get", "projects_files_get",

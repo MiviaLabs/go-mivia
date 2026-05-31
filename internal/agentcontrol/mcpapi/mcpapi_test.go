@@ -38,6 +38,18 @@ func TestToolsList_ReturnsTaskAndResearchTools(t *testing.T) {
 	}
 }
 
+func TestInitialize_ReturnsServerInstructions(t *testing.T) {
+	res := postMCP(t, newHandler(), `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0.0.0"}}}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", res.Code, res.Body.String())
+	}
+	if !bytes.Contains(res.Body.Bytes(), []byte(`"instructions"`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`authoritative context and workspace interface`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`projects.ingestion_status_latest`)) {
+		t.Fatalf("expected initialize instructions, got %s", res.Body.String())
+	}
+}
+
 func TestToolsListAndCall_IngestionDiagnosticsWhenConfigured(t *testing.T) {
 	mem := store.NewMemoryStore()
 	svc := service.New(mem, mem)
@@ -287,7 +299,7 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	handler, root := newHandlerWithProjectIngestion(t)
 
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search_index.rebuild"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.ingest"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.context_health"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search_index.rebuild"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.file.chunks"`)) {
 		t.Fatalf("expected ingestion tools, got %s", list.Body.String())
 	}
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.text"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.calls"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.search.ast.queries"`)) {
@@ -318,6 +330,14 @@ func TestProjectIngestionMCPToolsAndResources(t *testing.T) {
 	}
 	if bytes.Contains(latest.Body.Bytes(), []byte(root)) || bytes.Contains(latest.Body.Bytes(), []byte("content_sha256")) {
 		t.Fatalf("latest ingestion status leaked sensitive metadata: %s", latest.Body.String())
+	}
+
+	health := postMCP(t, handler, `{"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"projects_context_health","arguments":{"id":"example-service"}}}`)
+	if bytes.Contains(health.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected context health success, got %s", health.Body.String())
+	}
+	if !bytes.Contains(health.Body.Bytes(), []byte(`"status":"ready"`)) || bytes.Contains(health.Body.Bytes(), []byte(root)) || bytes.Contains(health.Body.Bytes(), []byte("content_sha256")) || bytes.Contains(health.Body.Bytes(), []byte("package main")) {
+		t.Fatalf("unexpected context health response: %s", health.Body.String())
 	}
 
 	digest := postMCP(t, handler, `{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"projects.digest","arguments":{"id":"example-service"}}}`)

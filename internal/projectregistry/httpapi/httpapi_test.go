@@ -110,6 +110,16 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 	}
 	assertDoesNotLeak(t, latest.Body.String(), root, "cmd/main.go", "package main", "content_sha256", "root_path")
 
+	health := httptest.NewRecorder()
+	mux.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/context-health", nil))
+	if health.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", health.Code, health.Body.String())
+	}
+	assertDoesNotLeak(t, health.Body.String(), root, "cmd/main.go", "package main", "content_sha256", "root_path")
+	if !strings.Contains(health.Body.String(), `"status":"ready"`) || !strings.Contains(health.Body.String(), `"project_id":"`+projectID+`"`) {
+		t.Fatalf("expected ready context health, got %s", health.Body.String())
+	}
+
 	files := httptest.NewRecorder()
 	mux.ServeHTTP(files, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/files?page_size=1", nil))
 	if files.Code != http.StatusOK {

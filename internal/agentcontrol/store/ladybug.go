@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -77,6 +78,50 @@ func (store *LadybugStore) GetResearchRun(ctx context.Context, id string) (model
 	return researchRunFromNode(node)
 }
 
+func (store *LadybugStore) CreateAgentRun(ctx context.Context, run model.AgentRun) (model.AgentRun, error) {
+	return store.putAgentRun(ctx, run)
+}
+
+func (store *LadybugStore) AppendAgentStep(ctx context.Context, runID string, step model.AgentStep) (model.AgentRun, error) {
+	run, err := store.GetAgentRun(ctx, runID)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	run.Steps = append(run.Steps, step)
+	return store.putAgentRun(ctx, run)
+}
+
+func (store *LadybugStore) CompleteAgentRun(ctx context.Context, run model.AgentRun) (model.AgentRun, error) {
+	if _, err := store.GetAgentRun(ctx, run.ID); err != nil {
+		return model.AgentRun{}, err
+	}
+	return store.putAgentRun(ctx, run)
+}
+
+func (store *LadybugStore) GetAgentRun(ctx context.Context, id string) (model.AgentRun, error) {
+	node, err := store.graph.GetNode(ctx, "AgentRun", id)
+	if errors.Is(err, ladybug.ErrNodeNotFound) {
+		return model.AgentRun{}, ErrNotFound
+	}
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	return agentRunFromNode(node)
+}
+
+func (store *LadybugStore) putAgentRun(ctx context.Context, run model.AgentRun) (model.AgentRun, error) {
+	properties, err := agentRunProperties(run)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	err = store.graph.PutNode(ctx, ladybug.Node{
+		Label:      "AgentRun",
+		ID:         run.ID,
+		Properties: properties,
+	})
+	return run, err
+}
+
 func taskFromNode(node ladybug.Node) (model.Task, error) {
 	createdAt, err := time.Parse(time.RFC3339Nano, node.Properties["created_at"])
 	if err != nil {
@@ -112,4 +157,107 @@ func researchRunFromNode(node ladybug.Node) (model.ResearchRun, error) {
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}, nil
+}
+
+func agentRunProperties(run model.AgentRun) (map[string]string, error) {
+	changedFiles, err := marshalJSON(run.ChangedFiles)
+	if err != nil {
+		return nil, err
+	}
+	verifiers, err := marshalJSON(run.Verifiers)
+	if err != nil {
+		return nil, err
+	}
+	artifacts, err := marshalJSON(run.Artifacts)
+	if err != nil {
+		return nil, err
+	}
+	steps, err := marshalJSON(run.Steps)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		"id":               run.ID,
+		"project_id":       run.ProjectID,
+		"task_id":          run.TaskID,
+		"status":           run.Status,
+		"started_at":       run.StartedAt.Format(time.RFC3339Nano),
+		"completed_at":     formatOptionalTime(run.CompletedAt),
+		"failure_category": run.FailureCategory,
+		"summary":          run.Summary,
+		"changed_files":    changedFiles,
+		"verifiers":        verifiers,
+		"artifacts":        artifacts,
+		"steps":            steps,
+	}, nil
+}
+
+func agentRunFromNode(node ladybug.Node) (model.AgentRun, error) {
+	startedAt, err := time.Parse(time.RFC3339Nano, node.Properties["started_at"])
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	completedAt, err := parseOptionalTime(node.Properties["completed_at"])
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	var changedFiles []string
+	if err := unmarshalJSON(node.Properties["changed_files"], &changedFiles); err != nil {
+		return model.AgentRun{}, err
+	}
+	var verifiers []model.AgentVerifier
+	if err := unmarshalJSON(node.Properties["verifiers"], &verifiers); err != nil {
+		return model.AgentRun{}, err
+	}
+	var artifacts []model.AgentArtifact
+	if err := unmarshalJSON(node.Properties["artifacts"], &artifacts); err != nil {
+		return model.AgentRun{}, err
+	}
+	var steps []model.AgentStep
+	if err := unmarshalJSON(node.Properties["steps"], &steps); err != nil {
+		return model.AgentRun{}, err
+	}
+	return model.AgentRun{
+		ID:              node.Properties["id"],
+		ProjectID:       node.Properties["project_id"],
+		TaskID:          node.Properties["task_id"],
+		Status:          node.Properties["status"],
+		StartedAt:       startedAt,
+		CompletedAt:     completedAt,
+		FailureCategory: node.Properties["failure_category"],
+		Summary:         node.Properties["summary"],
+		ChangedFiles:    changedFiles,
+		Verifiers:       verifiers,
+		Artifacts:       artifacts,
+		Steps:           steps,
+	}, nil
+}
+
+func marshalJSON(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func unmarshalJSON(raw string, dst any) error {
+	if raw == "" {
+		raw = "null"
+	}
+	return json.Unmarshal([]byte(raw), dst)
+}
+
+func formatOptionalTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.Format(time.RFC3339Nano)
+}
+
+func parseOptionalTime(raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339Nano, raw)
 }

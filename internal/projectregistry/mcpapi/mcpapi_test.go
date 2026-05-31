@@ -207,6 +207,33 @@ func TestCallToolWithIngestion_LatestStatusToolIsSafe(t *testing.T) {
 	}
 }
 
+func TestCallToolWithIngestion_ContextHealthIsSafe(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+	if _, err := ingestion.IngestProject(context.Background(), "example-service", projectingestion.TriggerManual); err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+
+	if !hasToolDefinition(mcpapi.ToolDefinitionsWithIngestion(true), "projects.context_health") {
+		t.Fatalf("expected projects.context_health tool definition")
+	}
+
+	for _, name := range []string{"projects.context_health", "projects_context_health"} {
+		result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, name, json.RawMessage(`{"id":"example-service"}`))
+		if err != nil {
+			t.Fatalf("call %s: %v", name, err)
+		}
+		body := marshalResult(t, result)
+		if !strings.Contains(body, `"status":"ready"`) || !strings.Contains(body, `"project_id":"example-service"`) {
+			t.Fatalf("expected ready health response, got %s", body)
+		}
+		for _, forbidden := range []string{"cmd/main.go", "package main", "content_sha256", "root_path"} {
+			if strings.Contains(body, forbidden) {
+				t.Fatalf("context health leaked %q: %s", forbidden, body)
+			}
+		}
+	}
+}
+
 func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 	root := t.TempDir()
 	fullPath := filepath.Join(root, "main.go")
@@ -675,6 +702,15 @@ func marshalArgs(t *testing.T, value any) json.RawMessage {
 		t.Fatalf("marshal args: %v", err)
 	}
 	return encoded
+}
+
+func hasToolDefinition(tools []map[string]any, name string) bool {
+	for _, tool := range tools {
+		if tool["name"] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func findSymbol(t *testing.T, symbols []projectingestion.SymbolMetadata, name string) projectingestion.SymbolMetadata {
