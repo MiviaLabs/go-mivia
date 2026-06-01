@@ -12,6 +12,10 @@ The platform is local-first and localhost-only by default. It stores local metad
 
 Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only.
 
+![Mivia dashboard project overview](docs/go-mivia-dashboard-1.png)
+
+![Mivia dashboard project details](docs/go-mivia-dashboard-2.png)
+
 ## Feature Map
 
 ```mermaid
