@@ -24,12 +24,12 @@ var emailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2
 var phonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
 
 type Service struct {
-	tasks        store.TaskStore
-	researchRuns store.ResearchRunStore
-	agentRuns    store.AgentRunStore
+	tasks          store.TaskStore
+	researchRuns   store.ResearchRunStore
+	agentRuns      store.AgentRunStore
 	policyRecorder *agentactivity.Recorder
-	now          func() time.Time
-	newID        func(string) string
+	now            func() time.Time
+	newID          func(string) string
 }
 
 func New(tasks store.TaskStore, researchRuns store.ResearchRunStore) *Service {

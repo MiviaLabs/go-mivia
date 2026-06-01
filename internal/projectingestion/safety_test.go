@@ -3,6 +3,10 @@ package projectingestion
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
+	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
 func TestEvaluateSafety_EligibleTextReturnsSafeMetadataOnly(t *testing.T) {
@@ -161,5 +165,29 @@ func TestEvaluateSafety_RejectsUnsupportedSensitiveMarkerPolicy(t *testing.T) {
 
 	if result.Reason != SkipReasonUnsupportedPolicy {
 		t.Fatalf("expected unsupported policy skip, got %#v", result)
+	}
+}
+
+func TestSkippedStateRecordsPolicyEventsForDeniedAndSensitiveSkips(t *testing.T) {
+	recorder := agentactivity.NewRecorder(10)
+	svc := &Service{}
+	svc.SetPolicyRecorder(recorder)
+	project := projectregistry.Project{ID: "example-service"}
+
+	denied := svc.skippedState(project, "secrets/config.txt", SkipReasonDeniedPath, 10, time.Time{}, true, time.Now())
+	sensitive := svc.skippedState(project, "src/config.txt", SkipReasonSensitiveContent, 10, time.Time{}, true, time.Now())
+
+	if denied.RelativePath != "" || denied.RelativePathSafe {
+		t.Fatalf("denied path must not persist relative path, got %#v", denied)
+	}
+	if sensitive.RelativePath != "" || sensitive.RelativePathSafe {
+		t.Fatalf("sensitive content state must not persist relative path, got %#v", sensitive)
+	}
+	events := recorder.Recent("example-service", 10)
+	if len(events) != 2 || events[0].PolicyCategory != "denied_path" || events[1].PolicyCategory != "sensitive_content" {
+		t.Fatalf("expected normalized policy events, got %#v", events)
+	}
+	if events[0].RelativePath != "" || events[1].RelativePath != "" {
+		t.Fatalf("policy events must omit unsafe/sensitive paths from these skips, got %#v", events)
 	}
 }

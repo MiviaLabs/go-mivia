@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,8 @@ func TestConfigValidate_NonLocalBind_ReturnsError(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected non-local bind to be rejected")
+	} else if !errors.Is(err, ErrNonLoopbackBind) || strings.Contains(err.Error(), "0.0.0.0") {
+		t.Fatalf("expected categorized non-loopback bind without raw addr, got %v", err)
 	}
 }
 

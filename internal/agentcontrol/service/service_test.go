@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
@@ -294,6 +295,39 @@ func TestAgentRunVerifierArgsAllowLoopbackURLsOnly(t *testing.T) {
 		if !errors.Is(err, service.ErrInvalidInput) {
 			t.Fatalf("expected unsafe verifier arg %q to be rejected, got %v", arg, err)
 		}
+	}
+}
+
+func TestAgentRunPolicyEventsRecordUnsafeEditAndInvalidVerifierURL(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	recorder := agentactivity.NewRecorder(10)
+	svc.SetPolicyRecorder(recorder)
+
+	_, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+		ProjectID:    "example-service",
+		ChangedFiles: []string{"../secret.txt"},
+	})
+	if !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected unsafe changed file to be rejected, got %v", err)
+	}
+	_, err = svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+		ProjectID: "example-service",
+		Verifiers: []model.AgentVerifier{{
+			Command: "curl",
+			Args:    []string{"https://example.com/readyz"},
+		}},
+	})
+	if !errors.Is(err, service.ErrInvalidInput) {
+		t.Fatalf("expected unsafe verifier url to be rejected, got %v", err)
+	}
+
+	events := recorder.Recent("example-service", 10)
+	if len(events) != 2 {
+		t.Fatalf("expected two policy events, got %#v", events)
+	}
+	if events[0].PolicyCategory != "unsafe_edit" || events[1].PolicyCategory != "invalid_verifier_url" {
+		t.Fatalf("expected normalized policy categories, got %#v", events)
 	}
 }
 

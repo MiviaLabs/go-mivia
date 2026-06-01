@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
@@ -126,6 +127,8 @@ func TestWorkspaceService_RejectsDeniedAndSensitiveContent(t *testing.T) {
 	writeFixture(t, root, "main.go", "package main\n")
 	writeFixture(t, root, ".env", "TOKEN=secret\n")
 	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	recorder := agentactivity.NewRecorder(10)
+	svc.SetPolicyRecorder(recorder)
 	if _, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: ".env"}); !errors.Is(err, ErrInvalidInput) && !errors.Is(err, ErrUnsafeContent) {
 		t.Fatalf("expected denied path error, got %v", err)
 	}
@@ -143,6 +146,10 @@ func TestWorkspaceService_RejectsDeniedAndSensitiveContent(t *testing.T) {
 	}
 	if strings.Contains(readFixture(t, root, "main.go"), "api_key") {
 		t.Fatalf("sensitive edit was written")
+	}
+	events := recorder.Recent("example-service", 10)
+	if len(events) != 1 || events[0].PolicyCategory != "unsafe_edit" || events[0].RelativePath != "main.go" {
+		t.Fatalf("expected unsafe edit policy event, got %#v", events)
 	}
 }
 

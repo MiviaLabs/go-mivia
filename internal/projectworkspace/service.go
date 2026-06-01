@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
@@ -32,12 +33,13 @@ type GitRunner interface {
 }
 
 type Service struct {
-	registry *projectregistry.Registry
-	ingest   workspaceIngestion
-	git      GitRunner
-	enabled  bool
-	secret   []byte
-	locks    sync.Map
+	registry       *projectregistry.Registry
+	ingest         workspaceIngestion
+	git            GitRunner
+	enabled        bool
+	secret         []byte
+	locks          sync.Map
+	policyRecorder *agentactivity.Recorder
 }
 
 type workspaceIngestion interface {
@@ -64,6 +66,10 @@ func (svc *Service) SetGitRunner(runner GitRunner) {
 	if runner != nil {
 		svc.git = runner
 	}
+}
+
+func (svc *Service) SetPolicyRecorder(recorder *agentactivity.Recorder) {
+	svc.policyRecorder = recorder
 }
 
 func (svc *Service) GitAvailable(ctx context.Context, projectID string) (bool, error) {
@@ -227,13 +233,16 @@ func (svc *Service) EditFile(ctx context.Context, projectID string, options Edit
 	}
 	next, err := applyExactEdits(content, options.Edits)
 	if err != nil {
+		svc.recordPolicyEvent(project.ID, "unsafe_edit", relativePath)
 		return EditResult{}, err
 	}
 	if !safeText(project, relativePath, next, project.MaxFileBytes) {
+		svc.recordPolicyEvent(project.ID, "unsafe_edit", relativePath)
 		return EditResult{}, ErrUnsafeContent
 	}
 	preview := diffPreview(relativePath, content, next, DefaultMaxDiffBytes)
 	if !safeText(project, relativePath, []byte(preview), DefaultMaxDiffBytes) {
+		svc.recordPolicyEvent(project.ID, "unsafe_edit", relativePath)
 		return EditResult{}, ErrUnsafeContent
 	}
 	result := EditResult{
@@ -302,6 +311,17 @@ func (svc *Service) project(projectID string, requireEdit bool) (projectregistry
 		return projectregistry.Project{}, ErrWorkspaceDisabled
 	}
 	return project, nil
+}
+
+func (svc *Service) recordPolicyEvent(projectID string, category string, relativePath string) {
+	if svc == nil || svc.policyRecorder == nil {
+		return
+	}
+	svc.policyRecorder.RecordPolicyEvent(agentactivity.PolicyEvent{
+		ProjectID: projectID,
+		Category:  category,
+		Path:      relativePath,
+	})
 }
 
 func (svc *Service) resolveSelector(ctx context.Context, project projectregistry.Project, fileID string, relativePath string) (string, string, error) {

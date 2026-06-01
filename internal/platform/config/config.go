@@ -43,6 +43,8 @@ const (
 	sensitiveMarkerPolicySkipFile     = "skip_file"
 )
 
+var ErrNonLoopbackBind = errors.New("non_loopback_bind_attempt")
+
 type Config struct {
 	ConfigPath        string
 	CPUCount          int
@@ -410,7 +412,7 @@ func (cfg Config) Validate() error {
 		return errors.New("MIVIA_HTTP_ADDR must not be empty")
 	}
 	if !isLocalAddress(cfg.HTTPAddr) {
-		return fmt.Errorf("MIVIA_HTTP_ADDR must bind to localhost until authn/authz is approved: %s", cfg.HTTPAddr)
+		return fmt.Errorf("%w: MIVIA_HTTP_ADDR must bind to localhost until authn/authz is approved", ErrNonLoopbackBind)
 	}
 	if cfg.LadybugPath == "" {
 		return errors.New("MIVIA_LADYBUG_PATH must not be empty")

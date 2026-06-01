@@ -229,6 +229,9 @@ func run() error {
 	activityRecorder := agentactivity.NewRecorderWithStore(500, activityStore)
 	agentService.SetPolicyRecorder(activityRecorder)
 	projectIngestionService.SetPolicyRecorder(activityRecorder)
+	if workspaceRecorder, ok := projectWorkspaceService.(interface{ SetPolicyRecorder(*agentactivity.Recorder) }); ok {
+		workspaceRecorder.SetPolicyRecorder(activityRecorder)
+	}
 
 	checker := health.NewChecker(
 		health.Check{

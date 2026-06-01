@@ -128,11 +128,14 @@ func TestBootstrap_AgentActivityTableExists(t *testing.T) {
 	assertTable(t, db.SQLDB(), "agent_activity_events")
 	for _, column := range []string{
 		"occurred_at",
+		"event_kind",
 		"project_id",
 		"tool_name",
 		"status",
 		"duration_ms",
 		"failure_category",
+		"policy_category",
+		"relative_path",
 		"client_class",
 		"input_summary_hash",
 		"input_summary_class",
