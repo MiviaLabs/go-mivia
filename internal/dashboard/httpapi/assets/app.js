@@ -2,15 +2,35 @@ const projectsBody = document.querySelector("#projects");
 const summary = document.querySelector("#summary");
 const statusBox = document.querySelector("#status");
 const refresh = document.querySelector("#refresh");
+const back = document.querySelector("#back");
 const metrics = document.querySelector("#metrics");
+const list = document.querySelector("#list");
+const detail = document.querySelector("#detail");
 
-refresh.addEventListener("click", loadDashboard);
+refresh.addEventListener("click", loadCurrentView);
+back.addEventListener("click", () => {
+  location.hash = "";
+});
+window.addEventListener("hashchange", loadCurrentView);
 
-loadDashboard();
+loadCurrentView();
+
+async function loadCurrentView() {
+  const projectID = selectedProjectID();
+  if (projectID) {
+    await loadProjectDetail(projectID);
+    return;
+  }
+  await loadDashboard();
+}
 
 async function loadDashboard() {
   refresh.disabled = true;
+  back.classList.add("hidden");
   statusBox.textContent = "";
+  detail.classList.add("hidden");
+  detail.replaceChildren();
+  list.classList.remove("hidden");
   metrics.innerHTML = "";
   projectsBody.innerHTML = "";
   summary.textContent = "Loading projects";
@@ -25,6 +45,41 @@ async function loadDashboard() {
   } catch (error) {
     summary.textContent = "Projects unavailable";
     statusBox.textContent = error.message;
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
+async function loadProjectDetail(projectID) {
+  refresh.disabled = true;
+  back.classList.remove("hidden");
+  statusBox.textContent = "";
+  list.classList.add("hidden");
+  metrics.innerHTML = "";
+  detail.classList.remove("hidden");
+  detail.innerHTML = `<section class="panel loading">Loading project details</section>`;
+  summary.textContent = projectID;
+
+  try {
+    const [project, health, latest, files] = await Promise.allSettled([
+      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}`, 4000),
+      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/context-health`, 4000),
+      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/ingestion-runs/latest`, 4000),
+      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/files?page_size=6`, 4000),
+    ]);
+
+    if (project.status === "rejected") throw project.reason;
+
+    const projectData = project.value;
+    const healthData = settledValue(health);
+    const latestData = settledValue(latest);
+    const filesData = settledValue(files);
+    summary.textContent = projectData.display_name || projectData.id;
+    renderProjectDetail(projectData, healthData, latestData, filesData);
+  } catch (error) {
+    summary.textContent = "Project unavailable";
+    statusBox.textContent = error.message;
+    detail.innerHTML = `<section class="panel empty">Project details could not be loaded.</section>`;
   } finally {
     refresh.disabled = false;
   }
@@ -63,7 +118,16 @@ function renderProjects(projects) {
 
   projectsBody.replaceChildren(...projects.map((project) => {
     const row = document.createElement("tr");
+    row.className = "project-row";
+    row.tabIndex = 0;
     row.dataset.projectId = project.id;
+    row.addEventListener("click", () => openProject(project.id));
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openProject(project.id);
+      }
+    });
     row.innerHTML = `
       <td>
         <strong>${escapeHTML(project.display_name || project.id)}</strong>
@@ -78,6 +142,223 @@ function renderProjects(projects) {
     `;
     return row;
   }));
+}
+
+function renderProjectDetail(project, health, latest, files) {
+  const fileItems = Array.isArray(files?.files) ? files.files : [];
+  detail.innerHTML = `
+    <aside class="detail-rail">
+      ${renderBasicInfoSection(project)}
+      ${renderStatsSection(health)}
+      ${renderAliasesSection(project)}
+    </aside>
+    <section class="detail-main">
+      ${renderHeroSection(project, health)}
+      ${renderPipelineSection(project, health, latest, fileItems)}
+      ${renderContextHealthSection(project, health)}
+      ${renderLatestIngestionSection(latest)}
+      ${renderRecentFilesSection(fileItems)}
+      ${renderIntegrationsSection(project)}
+    </section>
+  `;
+}
+
+function renderBasicInfoSection(project) {
+  return panel("Basic info", infoList([
+    ["Name", project.display_name || project.id],
+    ["Project ID", project.id],
+    ["Enabled", project.enabled ? "yes" : "no"],
+    ["Validation", project.validation_status || "unknown"],
+    ["Workspace", project.workspace_mode || "unknown"],
+    ["Classification", project.classification || "unknown"],
+  ]));
+}
+
+function renderStatsSection(health) {
+  return panel("Stats", infoList([
+    ["Health", health?.status || "unavailable"],
+    ["Files", numberValue(health?.eligible_file_count)],
+    ["Symbols", numberValue(health?.indexed_symbol_count)],
+    ["Chunks", numberValue(health?.indexed_chunk_count)],
+    ["Search", health?.search_index?.status || "unknown"],
+    ["Git", health?.workspace_git_available ? "available" : "unavailable"],
+  ]));
+}
+
+function renderAliasesSection(project) {
+  return panel("Aliases", aliasesList(project.aliases));
+}
+
+function renderHeroSection(project, health) {
+  const status = health?.status || "unavailable";
+  return `
+    <section class="project-hero panel">
+      <div>
+        <span class="eyebrow">Project</span>
+        <h2>${escapeHTML(project.display_name || project.id)}</h2>
+        <p>${escapeHTML(project.description || "No description configured")}</p>
+      </div>
+      <div class="hero-status">
+        ${pill(status, status === "ready" ? "ok" : "warn")}
+        ${pill(project.validation_status || "unknown", project.validation_status === "valid" ? "ok" : "warn")}
+      </div>
+    </section>
+  `;
+}
+
+function renderPipelineSection(project, health, latest, files) {
+  return panel("Data pipeline", projectPipelineDiagram(project, health, latest, files));
+}
+
+function renderContextHealthSection(project, health) {
+  return panel("Context health", contextHealth(project, health));
+}
+
+function renderLatestIngestionSection(latest) {
+  return panel("Latest ingestion", latestRun(latest));
+}
+
+function renderRecentFilesSection(files) {
+  return panel("Recent files", recentFiles(files));
+}
+
+function renderIntegrationsSection(project) {
+  return panel("Integrations", integrations(project.integrations));
+}
+
+function projectPipelineDiagram(project, health, latest, files) {
+  const nodes = [
+    {
+      title: "Project config",
+      detail: `${project.enabled ? "enabled" : "disabled"} / ${project.validation_status || "unknown"}`,
+      tone: project.enabled && project.validation_status === "valid" ? "ok" : "warn",
+    },
+    {
+      title: "Scan",
+      detail: latest?.status || health?.latest_run?.status || "unavailable",
+      tone: latest?.status === "completed" || health?.latest_run?.status === "completed" ? "ok" : "warn",
+    },
+    {
+      title: "Chunks",
+      detail: numberValue(health?.indexed_chunk_count),
+      tone: health?.indexed_chunk_count > 0 ? "ok" : "muted",
+    },
+    {
+      title: "Symbols",
+      detail: `${numberValue(health?.indexed_symbol_count)} symbols`,
+      tone: health?.indexed_symbol_count > 0 ? "ok" : "muted",
+    },
+    {
+      title: "Search index",
+      detail: health?.search_index?.status || "unknown",
+      tone: health?.search_index?.status === "ok" ? "ok" : "warn",
+    },
+    {
+      title: "MCP/REST",
+      detail: `${numberValue(health?.eligible_file_count)} files, ${files.length} sampled`,
+      tone: health?.indexed_content_available ? "ok" : "warn",
+    },
+  ];
+  const width = 1060;
+  const height = 230;
+  const boxWidth = 152;
+  const boxHeight = 74;
+  const startX = 22;
+  const gap = 22;
+  const y = 74;
+  const statusText = health?.status ? `Context ${health.status}` : "Context unavailable";
+
+  return `
+    <div class="pipeline-diagram" role="img" aria-label="${escapeHTML(statusText)} data pipeline">
+      <svg viewBox="0 0 ${width} ${height}" width="100%" height="230" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="pipeline-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+            <path d="M0,0 L8,4 L0,8 Z" fill="currentColor"></path>
+          </marker>
+        </defs>
+        <text x="${startX}" y="30" fill="currentColor" font-size="15" font-weight="700">${escapeHTML(statusText)}</text>
+        <text x="${startX}" y="52" fill="currentColor" opacity="0.68" font-size="12">Uses project, context-health, latest ingestion, and small files metadata only.</text>
+        ${nodes.map((node, index) => pipelineNode(node, startX + index * (boxWidth + gap), y, boxWidth, boxHeight)).join("")}
+        ${nodes.slice(0, -1).map((_, index) => pipelineArrow(startX + index * (boxWidth + gap) + boxWidth, y + boxHeight / 2, startX + (index + 1) * (boxWidth + gap), y + boxHeight / 2)).join("")}
+      </svg>
+    </div>
+  `;
+}
+
+function pipelineNode(node, x, y, width, height) {
+  const tone = node.tone === "ok" ? "var(--ok)" : node.tone === "warn" ? "var(--warn)" : "var(--muted)";
+  return `
+    <g>
+      <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="8" fill="var(--panel-soft)" stroke="${tone}" stroke-width="1.5"></rect>
+      <circle cx="${x + 16}" cy="${y + 18}" r="5" fill="${tone}"></circle>
+      <text x="${x + 28}" y="${y + 23}" fill="currentColor" font-size="12" font-weight="700">${escapeHTML(node.title)}</text>
+      <text x="${x + 14}" y="${y + 52}" fill="currentColor" opacity="0.72" font-size="11">${escapeHTML(node.detail)}</text>
+    </g>
+  `;
+}
+
+function pipelineArrow(x1, y1, x2, y2) {
+  return `<line x1="${x1 + 6}" y1="${y1}" x2="${x2 - 6}" y2="${y2}" stroke="currentColor" stroke-width="1.5" opacity="0.5" marker-end="url(#pipeline-arrow)"></line>`;
+}
+
+function contextHealth(project, health) {
+  if (!health) return `<p class="empty">Context health unavailable.</p>`;
+  const reasonCounts = Object.entries(health.reason_counts || {});
+  return `
+    <div class="split-grid">
+      ${infoList([
+        ["Status", health.status || "unknown"],
+        ["Reason", health.status_reason || "none"],
+        ["Digest mode", project.digest_mode || "unknown"],
+        ["Update policy", project.update_policy || "unknown"],
+        ["Indexed content", health.indexed_content_available ? "available" : "unavailable"],
+        ["Last checked", formatDate(health.checked_at)],
+      ])}
+      <div>
+        <h3>Skipped reasons</h3>
+        ${reasonCounts.length ? reasonCounts.map(([key, value]) => `<div class="reason-row"><span>${escapeHTML(key)}</span><strong>${escapeHTML(value)}</strong></div>`).join("") : `<p class="empty">No skipped reason counts.</p>`}
+      </div>
+    </div>
+  `;
+}
+
+function latestRun(run) {
+  if (!run) return `<p class="empty">Latest ingestion run unavailable.</p>`;
+  return `
+    <div class="split-grid">
+      ${infoList([
+        ["Run ID", run.id || "unknown"],
+        ["Status", run.status || "unknown"],
+        ["Trigger", run.trigger || "unknown"],
+        ["Mode", run.mode || "unknown"],
+        ["Phase", run.current_phase || "unknown"],
+        ["Started", formatDate(run.started_at)],
+        ["Finished", formatDate(run.finished_at)],
+      ])}
+      ${infoList([
+        ["Files seen", numberValue(run.files_seen)],
+        ["Ingested", numberValue(run.files_ingested)],
+        ["Skipped", numberValue(run.files_skipped)],
+        ["Unchanged", numberValue(run.files_unchanged)],
+        ["Chunks", numberValue(run.chunks_stored)],
+        ["Symbols", numberValue(run.symbols_stored)],
+      ])}
+    </div>
+  `;
+}
+
+function recentFiles(files) {
+  if (files.length === 0) return `<p class="empty">No files returned.</p>`;
+  return `
+    <div class="file-list">
+      ${files.map((file) => `
+        <div class="file-row">
+          <strong>${escapeHTML(file.relative_path || file.id)}</strong>
+          <span>${escapeHTML(file.status || "unknown")} / ${escapeHTML(file.extension || "no extension")} / ${file.present ? "present" : "absent"}</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
 }
 
 async function loadOptionalStatus(projects) {
@@ -114,9 +395,51 @@ async function fetchJSON(url, timeoutMs) {
   }
 }
 
+function openProject(id) {
+  location.hash = `project=${encodeURIComponent(id)}`;
+}
+
+function selectedProjectID() {
+  const hash = location.hash.replace(/^#/, "");
+  if (!hash) return "";
+  const params = new URLSearchParams(hash);
+  return params.get("project") || "";
+}
+
+function settledValue(result) {
+  return result.status === "fulfilled" ? result.value : null;
+}
+
+function panel(title, body) {
+  return `
+    <section class="panel">
+      <h3>${escapeHTML(title)}</h3>
+      ${body}
+    </section>
+  `;
+}
+
+function infoList(items) {
+  return `
+    <dl class="info-list">
+      ${items.map(([label, value]) => `
+        <div>
+          <dt>${escapeHTML(label)}</dt>
+          <dd>${escapeHTML(value)}</dd>
+        </div>
+      `).join("")}
+    </dl>
+  `;
+}
+
 function aliases(project) {
   if (!Array.isArray(project.aliases) || project.aliases.length === 0) return "";
   return `<span>${project.aliases.map(escapeHTML).join(", ")}</span>`;
+}
+
+function aliasesList(values) {
+  if (!Array.isArray(values) || values.length === 0) return `<p class="empty">No aliases configured.</p>`;
+  return `<div class="tag-list">${values.map((value) => `<span>${escapeHTML(value)}</span>`).join("")}</div>`;
 }
 
 function integrations(value) {
@@ -135,6 +458,18 @@ function provider(name, value) {
 
 function pill(text, tone) {
   return `<span class="pill ${tone}">${escapeHTML(text)}</span>`;
+}
+
+function numberValue(value) {
+  if (typeof value !== "number") return "unknown";
+  return new Intl.NumberFormat().format(value);
+}
+
+function formatDate(value) {
+  if (!value) return "unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown";
+  return date.toLocaleString();
 }
 
 function escapeHTML(value) {

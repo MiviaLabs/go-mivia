@@ -14,12 +14,16 @@
         <h1>Mivia</h1>
         <p id="summary">Loading projects</p>
       </div>
-      <button id="refresh" type="button">Refresh</button>
+      <div class="actions">
+        <button id="back" class="secondary hidden" type="button">Projects</button>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
     </header>
     <main>
       <section id="status" class="status" aria-live="polite"></section>
       <section id="metrics" class="metrics" aria-label="Project summary"></section>
-      <section class="table-wrap">
+      <section id="detail" class="detail hidden" aria-label="Project details"></section>
+      <section id="list" class="table-wrap">
         <table>
           <thead>
             <tr>
