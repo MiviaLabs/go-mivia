@@ -84,6 +84,36 @@ func TestRecorderPersistsRedactedAuditEvents(t *testing.T) {
 	assertAgentActivityTableOmits(t, db.SQLDB(), "secret", `{"id":"alpha"}`, `{"ok":true}`)
 }
 
+func TestRecorderRecentPrefersLiveMemoryPayloadOverPersistedRedaction(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t, SQLiteStoreOptions{})
+	recorder := NewRecorderWithStore(10, store)
+
+	recorded := recorder.Record(Event{
+		ProjectID: "alpha",
+		Method:    "tools/call",
+		ToolName:  "projects.context_pack.build",
+		Status:    "ok",
+		RawArgs:   json.RawMessage(`{"id":"alpha","query":"ContextPack"}`),
+		RawResult: json.RawMessage(`{"structuredContent":{"manifest":{"graph_status":"ready","contains_source":false}}}`),
+	})
+
+	persisted, err := store.Recent(ctx, "alpha", 10)
+	if err != nil {
+		t.Fatalf("recent persisted: %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].RawArgs != nil || persisted[0].RawResult != nil {
+		t.Fatalf("expected persisted payload redaction, got %#v", persisted)
+	}
+	recent := recorder.Recent("alpha", 10)
+	if len(recent) != 1 || recent[0].ID != recorded.ID {
+		t.Fatalf("expected one live event, got %#v", recent)
+	}
+	if string(recent[0].RawArgs) == "" || string(recent[0].RawResult) == "" {
+		t.Fatalf("expected live memory payload to remain visible, got %#v", recent[0])
+	}
+}
+
 func TestRecorderRunEventSanitizesAndPersistsCorrelation(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newTestSQLiteStore(t, SQLiteStoreOptions{})

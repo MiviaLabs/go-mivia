@@ -757,7 +757,18 @@ function contextPackManifestBlock(event) {
       manifest.generated_at ? el("span", {}, `Generated: ${formatDate(manifest.generated_at)}`) : null,
       manifest.export_mode ? el("span", {}, `Export: ${manifest.export_mode}`) : null,
     ),
-    activityPayloadBlock("Manifest hashes", manifest.redacted_hashes || []),
+    manifestHashStrip(manifest.redacted_hashes || []),
+    el("details", { class: "activity-manifest__details" },
+      el("summary", { text: "Manifest details" }),
+      el("pre", { text: prettyJSON(manifest) }),
+    ),
+  );
+}
+
+function manifestHashStrip(hashes) {
+  if (!hashes.length) return null;
+  return el("div", { class: "activity-manifest__hashes" },
+    hashes.slice(0, 4).map((hash) => el("span", { class: "tag", title: hash.kind || "hash", text: `${hash.kind || "hash"} ${shortID(hash.value || "")}` })),
   );
 }
 

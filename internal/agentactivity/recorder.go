@@ -178,13 +178,9 @@ func (recorder *Recorder) Recent(projectID string, limit int) []Event {
 		limit = recorder.capacity
 	}
 	memoryEvents := recorder.recentFromMemoryLocked(projectID, limit)
-	storeDirty := recorder.storeDirty
 	recorder.mu.Unlock()
 	if recorder.store != nil {
 		if events, err := recorder.store.Recent(context.Background(), projectID, limit); err == nil {
-			if !storeDirty {
-				return events
-			}
 			return mergeRecent(events, memoryEvents, projectID, limit)
 		}
 	}
@@ -203,13 +199,9 @@ func (recorder *Recorder) Since(projectID string, afterID int64, limit int) []Ev
 	}
 	recorder.mu.Lock()
 	memoryEvents := recorder.sinceFromMemoryLocked(projectID, afterID, limit)
-	storeDirty := recorder.storeDirty
 	recorder.mu.Unlock()
 	if cursorStore, ok := recorder.store.(CursorStore); ok {
 		if events, err := cursorStore.Since(context.Background(), projectID, afterID, limit); err == nil {
-			if !storeDirty {
-				return events
-			}
 			return mergeRecent(events, memoryEvents, projectID, limit)
 		}
 	}
