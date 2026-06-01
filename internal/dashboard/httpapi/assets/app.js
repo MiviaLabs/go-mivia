@@ -1,76 +1,192 @@
-const projectsBody = document.querySelector("#projects");
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Element references
+// ---------------------------------------------------------------------------
 const summary = document.querySelector("#summary");
 const statusBox = document.querySelector("#status");
 const refresh = document.querySelector("#refresh");
 const back = document.querySelector("#back");
 const metrics = document.querySelector("#metrics");
+const overview = document.querySelector("#overview");
 const list = document.querySelector("#list");
 const detail = document.querySelector("#detail");
+const searchInput = document.querySelector("#search");
+const filtersBox = document.querySelector("#filters");
 
-refresh.addEventListener("click", loadCurrentView);
+// ---------------------------------------------------------------------------
+// View state
+// ---------------------------------------------------------------------------
+let cachedProjects = null;
+let listSearch = "";
+let listFilter = "all";
+let currentDetail = null; // { projectID, dashboard }
+const statusCache = new Map(); // projectID -> { health, runStatus }
+const cardById = new Map(); // projectID -> card element
+
+const FILTERS = [
+  { id: "all", label: "All" },
+  { id: "enabled", label: "Enabled" },
+  { id: "attention", label: "Needs attention" },
+];
+
+const TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "graph", label: "Graph" },
+  { id: "ingestion", label: "Ingestion" },
+  { id: "workspace", label: "Workspace" },
+  { id: "integrations", label: "Integrations" },
+];
+
+const DONUT_COLORS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)"];
+const SVGNS = "http://www.w3.org/2000/svg";
+
+// Live sync polling: there is no total-files denominator in the run metadata
+// (files_seen is a running processed count, not a target), so we never show a
+// fabricated percentage — only honest live counters while a run is active.
+const POLL_MS = 3000;
+const ACTIVE_HEALTH = new Set(["syncing", "running", "warming_up"]);
+const ACTIVE_RUN = new Set(["running", "queued", "pending", "syncing"]);
+let pollHandle = null;
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+refresh.addEventListener("click", () => {
+  currentDetail = null;
+  cachedProjects = null;
+  statusCache.clear();
+  loadCurrentView();
+});
 back.addEventListener("click", () => {
   location.hash = "";
 });
 window.addEventListener("hashchange", loadCurrentView);
+searchInput.addEventListener("input", (event) => {
+  listSearch = event.target.value.trim().toLowerCase();
+  renderListView();
+  loadOptionalStatus(visibleProjects());
+});
 
 loadCurrentView();
 
-async function loadCurrentView() {
-  const projectID = selectedProjectID();
-  if (projectID) {
-    await loadProjectDetail(projectID);
-    return;
+// ---------------------------------------------------------------------------
+// DOM builders (CSP-safe: dynamic styling is applied through the CSSOM, never
+// through inline style attributes, which the dashboard CSP forbids).
+// ---------------------------------------------------------------------------
+function el(tag, props, ...children) {
+  const node = document.createElement(tag);
+  if (props) {
+    for (const [key, value] of Object.entries(props)) {
+      if (value == null || value === false) continue;
+      if (key === "class") node.className = value;
+      else if (key === "text") node.textContent = value;
+      else if (key === "tabIndex") node.tabIndex = value;
+      else if (key === "dataset") {
+        for (const [dk, dv] of Object.entries(value)) node.dataset[dk] = dv;
+      } else if (key === "style" && typeof value === "object") {
+        for (const [prop, val] of Object.entries(value)) {
+          if (val != null) node.style.setProperty(prop, String(val));
+        }
+      } else if (key.startsWith("on") && typeof value === "function") {
+        node.addEventListener(key.slice(2).toLowerCase(), value);
+      } else {
+        node.setAttribute(key, value);
+      }
+    }
   }
-  await loadDashboard();
+  appendChildren(node, children);
+  return node;
 }
 
+function svgEl(tag, attrs, ...children) {
+  const node = document.createElementNS(SVGNS, tag);
+  if (attrs) {
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value != null) node.setAttribute(key, String(value));
+    }
+  }
+  appendChildren(node, children);
+  return node;
+}
+
+function frag(...children) {
+  const fragment = document.createDocumentFragment();
+  appendChildren(fragment, children);
+  return fragment;
+}
+
+function appendChildren(node, children) {
+  for (const child of children.flat(Infinity)) {
+    if (child == null || child === false) continue;
+    node.append(child.nodeType ? child : document.createTextNode(String(child)));
+  }
+}
+
+function clear(node) {
+  node.replaceChildren();
+}
+
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+function loadCurrentView() {
+  const { projectID, tab } = selectedRoute();
+  if (projectID) {
+    if (currentDetail && currentDetail.projectID === projectID) {
+      showTab(tab);
+      return;
+    }
+    loadProjectDetail(projectID);
+    return;
+  }
+  currentDetail = null;
+  loadDashboard();
+}
+
+function selectedRoute() {
+  const hash = location.hash.replace(/^#/, "");
+  const params = new URLSearchParams(hash);
+  return { projectID: params.get("project") || "", tab: params.get("tab") || "overview" };
+}
+
+function openProject(id) {
+  location.hash = `project=${encodeURIComponent(id)}`;
+}
+
+function selectTab(tab) {
+  const { projectID } = selectedRoute();
+  if (!projectID) return;
+  location.hash = `project=${encodeURIComponent(projectID)}&tab=${encodeURIComponent(tab)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Projects list (card grid)
+// ---------------------------------------------------------------------------
 async function loadDashboard() {
+  stopPolling();
   refresh.disabled = true;
   back.classList.add("hidden");
   statusBox.textContent = "";
   detail.classList.add("hidden");
-  detail.replaceChildren();
-  list.classList.remove("hidden");
-  metrics.innerHTML = "";
-  projectsBody.innerHTML = "";
+  clear(detail);
+  overview.classList.remove("hidden");
   summary.textContent = "Loading projects";
+  clear(list);
+  metrics.replaceChildren();
 
   try {
     const data = await fetchJSON("/api/v1/projects", 4000);
     const projects = Array.isArray(data.projects) ? data.projects : [];
+    cachedProjects = projects;
     summary.textContent = `${projects.length} configured project${projects.length === 1 ? "" : "s"}`;
     renderMetrics(projects);
-    renderProjects(projects);
-    await loadOptionalStatus(projects);
+    renderFilters();
+    renderListView();
+    await loadOptionalStatus(visibleProjects());
   } catch (error) {
     summary.textContent = "Projects unavailable";
     statusBox.textContent = error.message;
-  } finally {
-    refresh.disabled = false;
-  }
-}
-
-async function loadProjectDetail(projectID) {
-  refresh.disabled = true;
-  back.classList.remove("hidden");
-  statusBox.textContent = "";
-  list.classList.add("hidden");
-  metrics.innerHTML = "";
-  detail.classList.remove("hidden");
-  detail.innerHTML = `<section class="panel loading">Loading project details</section>`;
-  summary.textContent = projectID;
-
-  try {
-    const dashboard = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/dashboard-summary`, 12000);
-    const projectData = dashboard.project;
-    const healthData = dashboard.context_health;
-    const latestData = dashboard.latest_run;
-    summary.textContent = projectData.display_name || projectData.id;
-    renderProjectDetail(projectData, healthData, latestData, dashboard);
-  } catch (error) {
-    summary.textContent = "Project unavailable";
-    statusBox.textContent = error.message;
-    detail.innerHTML = `<section class="panel empty">Project details could not be loaded.</section>`;
   } finally {
     refresh.disabled = false;
   }
@@ -91,686 +207,877 @@ function renderMetrics(projects) {
 }
 
 function metricCard(label, value, note) {
-  const card = document.createElement("article");
-  card.className = "metric";
-  card.innerHTML = `
-    <span>${escapeHTML(label)}</span>
-    <strong>${escapeHTML(value)}</strong>
-    <small>${escapeHTML(note)}</small>
-  `;
+  return el("article", { class: "metric" },
+    el("span", { class: "metric__label", text: label }),
+    el("strong", { class: "metric__value", text: String(value) }),
+    el("small", { class: "metric__note", text: note }),
+  );
+}
+
+function renderFilters() {
+  clear(filtersBox);
+  FILTERS.forEach((filter) => {
+    const count = (cachedProjects || []).filter((project) => matchesFilter(project, filter.id)).length;
+    const active = listFilter === filter.id;
+    filtersBox.append(el("button", {
+      class: "chip" + (active ? " is-active" : ""),
+      type: "button",
+      "aria-pressed": active ? "true" : "false",
+      onClick: () => {
+        listFilter = filter.id;
+        renderFilters();
+        renderListView();
+        loadOptionalStatus(visibleProjects());
+      },
+    }, filter.label, el("span", { class: "chip__count", text: String(count) })));
+  });
+}
+
+function visibleProjects() {
+  if (!Array.isArray(cachedProjects)) return [];
+  return cachedProjects.filter((project) => matchesFilter(project, listFilter) && matchesSearch(project));
+}
+
+function matchesFilter(project, filterID) {
+  switch (filterID) {
+    case "enabled":
+      return Boolean(project.enabled);
+    case "attention":
+      return !project.enabled || project.validation_status !== "valid";
+    default:
+      return true;
+  }
+}
+
+function matchesSearch(project) {
+  if (!listSearch) return true;
+  const haystack = [project.display_name, project.id, ...(project.aliases || [])]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(listSearch);
+}
+
+function renderListView() {
+  cardById.clear();
+  clear(list);
+  if (!cachedProjects || cachedProjects.length === 0) {
+    list.append(emptyText("No projects configured."));
+    return;
+  }
+  const projects = visibleProjects();
+  if (projects.length === 0) {
+    list.append(emptyText("No projects match the current filter."));
+    return;
+  }
+  projects.forEach((project) => {
+    const card = projectCard(project);
+    cardById.set(project.id, card);
+    list.append(card);
+    const cached = statusCache.get(project.id);
+    if (cached) applyCardStatus(project.id, cached.health, cached.runStatus);
+  });
+}
+
+function projectCard(project) {
+  const card = el("button", {
+    class: "project-card",
+    type: "button",
+    dataset: { projectId: project.id },
+    onClick: () => openProject(project.id),
+  },
+    el("div", { class: "card__head" },
+      el("strong", { class: "card__name", text: project.display_name || project.id }),
+      el("span", { class: "card__id", text: project.id }),
+    ),
+    el("div", { class: "card__badges" }, projectEnabledPill(project), projectValidationPill(project)),
+    el("div", { class: "card__status" }, el("span", { class: "muted-text", text: "Checking status…" })),
+    el("div", { class: "card-kpis" }),
+    el("div", { class: "card__meta" },
+      metaItem("Graph", `${project.graph_storage} · ${project.digest_mode}/${project.update_policy}`),
+      metaItem("Workspace", project.workspace_mode || "unknown"),
+    ),
+    integrationsInline(project.integrations),
+    aliasesInline(project),
+  );
   return card;
 }
 
-function renderProjects(projects) {
-  if (projects.length === 0) {
-    projectsBody.innerHTML = `<tr><td colspan="6" class="empty">No projects configured</td></tr>`;
-    return;
-  }
+function metaItem(label, value) {
+  return el("div", { class: "meta" },
+    el("span", { class: "meta__label", text: label }),
+    el("span", { class: "meta__value", text: value }),
+  );
+}
 
-  projectsBody.replaceChildren(...projects.map((project) => {
-    const row = document.createElement("tr");
-    row.className = "project-row";
-    row.tabIndex = 0;
-    row.dataset.projectId = project.id;
-    row.addEventListener("click", () => openProject(project.id));
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        openProject(project.id);
-      }
-    });
-    row.innerHTML = `
-      <td>
-        <strong>${escapeHTML(project.display_name || project.id)}</strong>
-        <span>${escapeHTML(project.id)}</span>
-        ${aliases(project)}
-      </td>
-      <td>${pill(project.enabled ? "enabled" : "disabled", project.enabled ? "ok" : "muted")} ${pill(project.validation_status || "unknown", project.validation_status === "valid" ? "ok" : "warn")}</td>
-      <td>${escapeHTML(project.graph_storage)}<span>${escapeHTML(project.digest_mode)} / ${escapeHTML(project.update_policy)}</span></td>
-      <td>${escapeHTML(project.workspace_mode)}</td>
-      <td>${integrations(project.integrations)}</td>
-      <td class="context">Loading</td>
-    `;
-    return row;
+async function loadOptionalStatus(projects) {
+  await Promise.all(projects.map(async (project) => {
+    const cached = statusCache.get(project.id);
+    if (cached) {
+      applyCardStatus(project.id, cached.health, cached.runStatus);
+      return;
+    }
+    try {
+      const [health, latest] = await Promise.allSettled([
+        fetchJSON(`/api/v1/projects/${encodeURIComponent(project.id)}/context-health`, 3000),
+        fetchJSON(`/api/v1/projects/${encodeURIComponent(project.id)}/ingestion-runs/latest`, 3000),
+      ]);
+      const healthValue = health.status === "fulfilled" ? health.value : null;
+      const runStatus = latest.status === "fulfilled" && latest.value.status ? latest.value.status : "";
+      statusCache.set(project.id, { health: healthValue, runStatus });
+      applyCardStatus(project.id, healthValue, runStatus);
+    } catch {
+      const card = cardById.get(project.id);
+      const slot = card && card.querySelector(".card__status");
+      if (slot) slot.replaceChildren(el("span", { class: "muted-text", text: "status unavailable" }));
+    }
   }));
 }
 
-function renderProjectDetail(project, health, latest, dashboard) {
-  const graph = dashboard?.graph || {};
-  const fileItems = Array.isArray(graph.files?.sample) ? graph.files.sample : [];
-  detail.innerHTML = `
-    <aside class="detail-rail">
-      ${renderBasicInfoSection(project)}
-      ${renderStatsSection(health, graph, dashboard?.workspace)}
-      ${renderAliasesSection(project)}
-      ${renderControlPlaneSection()}
-    </aside>
-    <section class="detail-main">
-      ${renderHeroSection(project, health)}
-      ${renderPipelineSection(project, health, latest, graph, dashboard)}
-      ${renderOperationalVisualsSection(project, health, latest, graph, dashboard)}
-      ${renderGraphStatsSection(graph)}
-      ${renderContextHealthSection(project, health)}
-      ${renderLatestIngestionSection(latest)}
-      ${renderWorkspaceSection(dashboard?.workspace)}
-      ${renderASTCoverageSection(graph.ast_coverage)}
-      ${renderRecentFilesSection(fileItems)}
-      ${renderIntegrationsSection(project, dashboard?.integrations)}
-      ${renderWarningsSection(dashboard?.warnings)}
-    </section>
-  `;
+function applyCardStatus(projectID, health, runStatus) {
+  const card = cardById.get(projectID);
+  if (!card) return;
+  const slot = card.querySelector(".card__status");
+  if (slot) slot.replaceChildren(contextHealthPill(health), latestRunPill(runStatus));
+  const kpis = card.querySelector(".card-kpis");
+  if (kpis) {
+    kpis.replaceChildren(
+      kpiMini("Files", numberValue(health?.eligible_file_count)),
+      kpiMini("Symbols", numberValue(health?.indexed_symbol_count)),
+      kpiMini("Chunks", numberValue(health?.indexed_chunk_count)),
+    );
+  }
 }
 
-function renderBasicInfoSection(project) {
-  return panel("Basic info", infoList([
-    ["Name", project.display_name || project.id],
-    ["Project ID", project.id],
-    ["Enabled", project.enabled ? "yes" : "no"],
-    ["Validation", project.validation_status || "unknown"],
-    ["Workspace", project.workspace_mode || "unknown"],
-    ["Classification", project.classification || "unknown"],
-  ]));
+function kpiMini(label, value) {
+  return el("div", { class: "kpi-mini" },
+    el("span", { class: "kpi-mini__value", text: value }),
+    el("span", { class: "kpi-mini__label", text: label }),
+  );
 }
 
-function renderStatsSection(health, graph, workspace) {
-  return panel("Stats", infoList([
-    ["Health", health?.status || "unavailable"],
-    ["Files", numberValue(health?.eligible_file_count)],
+// ---------------------------------------------------------------------------
+// Project detail (tabbed)
+// ---------------------------------------------------------------------------
+async function loadProjectDetail(projectID) {
+  stopPolling();
+  refresh.disabled = true;
+  back.classList.remove("hidden");
+  statusBox.textContent = "";
+  overview.classList.add("hidden");
+  detail.classList.remove("hidden");
+  clear(detail);
+  detail.append(el("section", { class: "panel loading", text: "Loading project details…" }));
+  summary.textContent = projectID;
+
+  try {
+    const dashboard = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/dashboard-summary`, 12000);
+    currentDetail = { projectID, dashboard };
+    summary.textContent = dashboard.project.display_name || dashboard.project.id;
+    renderProjectDetail(dashboard);
+  } catch (error) {
+    currentDetail = null;
+    summary.textContent = "Project unavailable";
+    statusBox.textContent = error.message;
+    clear(detail);
+    detail.append(el("section", { class: "panel empty", text: "Project details could not be loaded." }));
+  } finally {
+    refresh.disabled = false;
+  }
+}
+
+function renderProjectDetail(dashboard) {
+  const project = dashboard.project;
+  const health = dashboard.context_health;
+  const latest = dashboard.latest_run;
+  const graph = dashboard.graph || {};
+  clear(detail);
+  appendChildren(detail, [
+    el("div", { class: "detail-head" }),
+    buildTabs(project, health, latest, graph, dashboard),
+  ]);
+  renderHead();
+  showTab(selectedRoute().tab);
+  managePolling();
+}
+
+// Re-renders only the header region (hero, sync banner, KPI strip, warnings)
+// so live polling updates never disturb the active tab or its scroll position.
+function renderHead() {
+  const head = detail.querySelector(".detail-head");
+  const dashboard = currentDetail && currentDetail.dashboard;
+  if (!head || !dashboard) return;
+  const project = dashboard.project;
+  const health = dashboard.context_health;
+  const latest = dashboard.latest_run;
+  const graph = dashboard.graph || {};
+  clear(head);
+  appendChildren(head, [
+    hero(project, health),
+    syncBanner(health, latest),
+    kpiStrip(health, graph, latest),
+    warningsBlock(dashboard.warnings),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Live sync progress
+// ---------------------------------------------------------------------------
+function isActive(health, latest) {
+  return ACTIVE_HEALTH.has(health?.status) || ACTIVE_RUN.has(latest?.status);
+}
+
+function syncBanner(health, latest) {
+  const healthActive = ACTIVE_HEALTH.has(health?.status);
+  const runActive = ACTIVE_RUN.has(latest?.status);
+  if (!healthActive && !runActive) return null;
+  const phase = runActive && latest.current_phase ? latest.current_phase : (health?.status || "syncing");
+  const children = [
+    el("div", { class: "sync__head" },
+      pill("syncing", "warn"),
+      el("span", { class: "sync__phase", text: phase }),
+    ),
+    el("div", { class: "progress progress--indeterminate" }, el("i", { class: "progress__bar" })),
+  ];
+  if (runActive) {
+    children.push(el("div", { class: "sync__stats" },
+      syncStat(numberValue(latest.files_seen), "files processed"),
+      syncStat(numberValue(latest.chunks_stored), "chunks"),
+      syncStat(numberValue(latest.symbols_stored), "symbols"),
+    ));
+    const age = progressAge(latest.last_progress_at || latest.heartbeat_at);
+    children.push(el("span", { class: "sync__age", text: age || "no total known — count is files handled so far" }));
+  } else {
+    children.push(el("span", { class: "sync__age", text: "preparing to index…" }));
+  }
+  return el("section", { class: "sync panel", "aria-live": "polite" }, ...children);
+}
+
+function syncStat(value, label) {
+  return el("div", { class: "sync-stat" },
+    el("strong", { class: "sync-stat__value", text: value }),
+    el("span", { class: "sync-stat__label", text: label }),
+  );
+}
+
+function progressAge(value) {
+  if (!value) return "";
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return `last progress ${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `last progress ${minutes}m ${seconds % 60}s ago`;
+  return `last progress ${Math.floor(minutes / 60)}h ${minutes % 60}m ago`;
+}
+
+function managePolling() {
+  stopPolling();
+  if (!currentDetail) return;
+  const dashboard = currentDetail.dashboard;
+  if (isActive(dashboard.context_health, dashboard.latest_run)) {
+    pollHandle = setTimeout(pollOnce, POLL_MS);
+  }
+}
+
+function stopPolling() {
+  if (pollHandle) {
+    clearTimeout(pollHandle);
+    pollHandle = null;
+  }
+}
+
+async function pollOnce() {
+  pollHandle = null;
+  if (!currentDetail) return;
+  const projectID = currentDetail.projectID;
+  if (selectedRoute().projectID !== projectID) return;
+
+  let health = null;
+  let latest = null;
+  try {
+    const [healthResult, latestResult] = await Promise.allSettled([
+      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/context-health`, 3000),
+      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/ingestion-runs/latest`, 3000),
+    ]);
+    if (healthResult.status === "fulfilled") health = healthResult.value;
+    if (latestResult.status === "fulfilled" && latestResult.value && latestResult.value.status) latest = latestResult.value;
+  } catch {
+    pollHandle = setTimeout(pollOnce, POLL_MS);
+    return;
+  }
+  if (!currentDetail || currentDetail.projectID !== projectID) return;
+
+  const wasActive = isActive(currentDetail.dashboard.context_health, currentDetail.dashboard.latest_run);
+  if (health) currentDetail.dashboard.context_health = health;
+  if (latest) currentDetail.dashboard.latest_run = latest;
+  const stillActive = isActive(currentDetail.dashboard.context_health, currentDetail.dashboard.latest_run);
+
+  renderHead();
+  if (stillActive) {
+    pollHandle = setTimeout(pollOnce, POLL_MS);
+  } else if (wasActive) {
+    // Run just finished: reload the full summary so graph stats, composition
+    // and AST coverage reflect the freshly indexed content.
+    loadProjectDetail(projectID);
+  }
+}
+
+function hero(project, health) {
+  return el("section", { class: "hero" },
+    el("div", { class: "hero__main" },
+      el("span", { class: "eyebrow", text: "Project" }),
+      el("h2", { class: "hero__title", text: project.display_name || project.id }),
+      el("p", { class: "hero__desc", text: project.description || "No description configured" }),
+    ),
+    el("div", { class: "hero__status" },
+      contextHealthPill(health),
+      projectValidationPill(project),
+      projectEnabledPill(project),
+    ),
+  );
+}
+
+function kpiStrip(health, graph, latest) {
+  const items = [
+    ["Files", numberValue(health?.eligible_file_count ?? graph?.files?.sampled_count)],
     ["Symbols", numberValue(health?.indexed_symbol_count)],
     ["Chunks", numberValue(health?.indexed_chunk_count)],
     ["Headings", numberValue(graph?.headings?.sampled_count)],
-    ["Dirty sampled", numberValue(workspace?.sampled_dirty_count ?? 0)],
-    ["Search", health?.search_index?.status || "unknown"],
-    ["Git", health?.workspace_git_available ? "available" : "unavailable"],
-  ]));
+    ["Health", contextStatusLabel(health)],
+    ["Last run", latest?.status || "unknown"],
+  ];
+  return el("div", { class: "kpi-strip" },
+    items.map(([label, value]) => el("div", { class: "kpi" },
+      el("span", { class: "kpi__label", text: label }),
+      el("strong", { class: "kpi__value", text: value }),
+    )),
+  );
 }
 
-function renderAliasesSection(project) {
-  return panel("Aliases", aliasesList(project.aliases));
+function buildTabs(project, health, latest, graph, dashboard) {
+  const renderers = {
+    overview: () => tabOverview(project, health, latest, graph),
+    graph: () => tabGraph(graph),
+    ingestion: () => tabIngestion(latest, graph),
+    workspace: () => tabWorkspace(dashboard.workspace),
+    integrations: () => tabIntegrations(project, dashboard.integrations),
+  };
+  const tablist = el("div", { class: "tabs", role: "tablist", "aria-label": "Project sections" });
+  const panels = el("div", { class: "tab-panels" });
+  TABS.forEach((tab) => {
+    tablist.append(el("button", {
+      class: "tab",
+      type: "button",
+      role: "tab",
+      id: `tab-${tab.id}`,
+      "aria-controls": `panel-${tab.id}`,
+      text: tab.label,
+      onClick: () => selectTab(tab.id),
+    }));
+    panels.append(el("section", {
+      class: "tab-panel",
+      role: "tabpanel",
+      id: `panel-${tab.id}`,
+      "aria-labelledby": `tab-${tab.id}`,
+      tabIndex: 0,
+    }, renderers[tab.id]()));
+  });
+  tablist.addEventListener("keydown", onTablistKeydown);
+  return el("div", { class: "tabbed" }, tablist, panels);
 }
 
-function renderControlPlaneSection() {
-  return panel("Control plane", infoList([
-    ["Task runs", "create/get by ID"],
-    ["Research runs", "create/get by ID"],
-    ["Agent runs", "create/get by ID"],
-    ["Aggregates", "list/count API not exposed"],
-  ]));
+function showTab(tabID) {
+  const valid = TABS.some((tab) => tab.id === tabID) ? tabID : "overview";
+  TABS.forEach((tab) => {
+    const button = document.getElementById(`tab-${tab.id}`);
+    const panel = document.getElementById(`panel-${tab.id}`);
+    if (!button || !panel) return;
+    const active = tab.id === valid;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
+    panel.hidden = !active;
+  });
 }
 
-function renderHeroSection(project, health) {
-  const status = health?.status || "unavailable";
-  return `
-    <section class="project-hero panel">
-      <div>
-        <span class="eyebrow">Project</span>
-        <h2>${escapeHTML(project.display_name || project.id)}</h2>
-        <p>${escapeHTML(project.description || "No description configured")}</p>
-      </div>
-      <div class="hero-status">
-        ${pill(status, status === "ready" ? "ok" : "warn")}
-        ${pill(project.validation_status || "unknown", project.validation_status === "valid" ? "ok" : "warn")}
-      </div>
-    </section>
-  `;
+function onTablistKeydown(event) {
+  if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const ids = TABS.map((tab) => tab.id);
+  let index = ids.indexOf(selectedRoute().tab);
+  if (index < 0) index = 0;
+  if (event.key === "ArrowRight") index = (index + 1) % ids.length;
+  else if (event.key === "ArrowLeft") index = (index - 1 + ids.length) % ids.length;
+  else if (event.key === "Home") index = 0;
+  else if (event.key === "End") index = ids.length - 1;
+  selectTab(ids[index]);
+  const button = document.getElementById(`tab-${ids[index]}`);
+  if (button) button.focus();
 }
 
-function renderPipelineSection(project, health, latest, graph, dashboard) {
-  return panel("Data pipeline", projectPipelineDiagram(project, health, latest, graph, dashboard));
+// ---------------------------------------------------------------------------
+// Tab content
+// ---------------------------------------------------------------------------
+function tabOverview(project, health, latest, graph) {
+  const identity = panel("Project",
+    infoList([
+      ["Project ID", project.id],
+      ["Classification", project.classification || "unknown"],
+      ["Workspace", project.workspace_mode || "unknown"],
+      ["Digest mode", project.digest_mode || "unknown"],
+      ["Update policy", project.update_policy || "unknown"],
+      ["Graph storage", project.graph_storage || "unknown"],
+    ]),
+    aliasesInline(project) || el("p", { class: "muted-text", text: "No aliases configured." }),
+  );
+  const compItems = [
+    { key: "Files", count: health?.eligible_file_count ?? graph?.files?.sampled_count ?? 0 },
+    { key: "Chunks", count: health?.indexed_chunk_count ?? 0 },
+    { key: "Symbols", count: health?.indexed_symbol_count ?? 0 },
+    { key: "Headings", count: graph?.headings?.sampled_count ?? 0 },
+  ];
+  const composition = panel("Graph composition",
+    el("div", { class: "composition" }, donutVisual(compItems), distributionBars(compItems)),
+  );
+  return frag(
+    identity,
+    panel("Data pipeline", stageFlow(project, health, latest, graph)),
+    composition,
+    panel("Context health", contextHealthBlock(project, health)),
+  );
 }
 
-function renderOperationalVisualsSection(project, health, latest, graph, dashboard) {
-  return panel("Operational visuals", `
-    <div class="split-grid">
-      ${renderIngestionFlowVisual(project, health, latest, graph)}
-      ${renderGraphCompositionVisual(health, graph)}
-      ${renderSymbolConcentrationVisual(graph?.symbols)}
-      ${countBlock("Symbols by language", graph?.symbols?.by_language, { bars: true })}
-      ${renderWorkspaceDirtyVisual(dashboard?.workspace)}
-      ${renderIntegrationProviderVisual(project, dashboard?.integrations)}
-    </div>
-    ${renderLatestIngestionTimeline(latest)}
-    ${renderASTCoverageMatrix(graph?.ast_coverage)}
-  `);
+function tabGraph(graph) {
+  const distributions = el("div", { class: "grid" },
+    countBlock("Files by extension", graph?.files?.by_extension),
+    countBlock("Symbols by kind", graph?.symbols?.by_kind),
+    countBlock("Symbols by language", graph?.symbols?.by_language),
+    countBlock("Headings by level", graph?.headings?.by_level),
+  );
+  const concentration = concentrationBlocks(graph?.symbols);
+  return frag(
+    panel("Graph distributions", distributions),
+    panel("Symbol concentration",
+      concentration.length
+        ? el("div", { class: "grid" }, ...concentration)
+        : emptyText("No concentration data.")),
+  );
 }
 
-function renderGraphStatsSection(graph) {
-  return panel("Graph stats", `
-    <div class="split-grid">
-      ${countBlock("Files by extension", graph?.files?.by_extension, { bars: true })}
-      ${countBlock("Symbols by kind", graph?.symbols?.by_kind, { bars: true })}
-      ${symbolConcentrationBlock(graph?.symbols)}
-      ${countBlock("Symbols by language", graph?.symbols?.by_language, { bars: true })}
-      ${countBlock("Headings by level", graph?.headings?.by_level, { bars: true })}
-    </div>
-  `);
+function tabIngestion(latest, graph) {
+  return frag(
+    panel("Latest ingestion", latestRunBlock(latest)),
+    panel("Ingestion timeline", timelineBlock(latest)),
+    panel("AST coverage", astCoverageBlock(graph?.ast_coverage)),
+  );
 }
 
-function renderContextHealthSection(project, health) {
-  return panel("Context health", contextHealth(project, health));
-}
-
-function renderLatestIngestionSection(latest) {
-  return panel("Latest ingestion", latestRun(latest));
-}
-
-function renderWorkspaceSection(workspace) {
-  if (!workspace) return panel("Workspace", `<p class="empty">Workspace git status unavailable.</p>`);
-  return panel("Workspace", `
-    <div class="split-grid">
-      ${infoList([
+function tabWorkspace(workspace) {
+  if (!workspace) return panel("Workspace", emptyText("Workspace git status unavailable."));
+  return panel("Workspace",
+    el("div", { class: "grid" },
+      infoList([
         ["Branch", workspace.branch || "unknown"],
         ["Head", workspace.head_oid_short || "unknown"],
         ["Dirty sampled", numberValue(workspace.sampled_dirty_count)],
         ["Truncated", workspace.truncated ? "yes" : "no"],
-      ])}
-      ${countBlock("Status", workspace.by_status)}
-    </div>
-    ${gitSample(workspace.sample)}
-  `);
+      ]),
+      countBlock("Dirty by status", workspace.by_status),
+    ),
+    block("Working tree sample", gitSampleList(workspace.sample)),
+  );
 }
 
-function renderASTCoverageSection(coverage) {
-  if (!Array.isArray(coverage) || coverage.length === 0) return panel("AST coverage", `<p class="empty">AST coverage unavailable.</p>`);
-  return panel("AST coverage", `
-    <div class="coverage-grid">
-      ${coverage.map((item) => `
-        <div class="coverage-row">
-          <strong>${escapeHTML(item.language || "unknown")}</strong>
-          <span>${escapeHTML(item.coverage_status || "unknown")}</span>
-          <small>${numberValue(item.eligible_files)} files / ${escapeHTML((item.extensions || []).join(", ") || "no extensions")}</small>
-        </div>
-      `).join("")}
-    </div>
-  `);
-}
-
-function renderRecentFilesSection(files) {
-  return panel("Recent files", recentFiles(files));
-}
-
-function renderIntegrationsSection(project, integrationSummary) {
-  const providerStatus = Array.isArray(integrationSummary?.providers) ? integrationSummary.providers : [];
-  const counts = Array.isArray(integrationSummary?.counts) ? integrationSummary.counts : [];
-  return panel("Integrations", `
-    ${integrations(project.integrations)}
-    ${providerStatus.length ? `<div class="integration-grid">${providerStatus.map((provider) => `
-      <div class="integration-row">
-        <strong>${escapeHTML(provider.provider)}</strong>
-        <span>${provider.enabled ? "enabled" : "disabled"} / ${provider.ingestion_enabled ? "ingest on" : "ingest off"}</span>
-        <small>${escapeHTML(provider.allowlist_kind || "allowlist")} ${numberValue(provider.allowlist_count)} scopes, source ${provider.source_persisted ? "persisted" : "not persisted"}</small>
-      </div>
-    `).join("")}</div>` : `<p class="empty">No live integration status returned.</p>`}
-    ${counts.length ? countBlock("Indexed integration items", counts.map((item) => ({ key: item.provider, count: item.count })), { bars: true }) : ""}
-  `);
-}
-
-function renderWarningsSection(warnings) {
-  if (!Array.isArray(warnings) || warnings.length === 0) return "";
-  return panel("Partial data", `<div class="tag-list">${warnings.map((warning) => `<span>${escapeHTML(warning)}</span>`).join("")}</div>`);
-}
-
-function renderIngestionFlowVisual(project, health, latest, graph) {
-  const seen = latest?.files_seen ?? graph?.files?.sampled_count ?? 0;
-  const ingested = latest?.files_ingested ?? 0;
-  const unchanged = latest?.files_unchanged ?? 0;
-  const skipped = latest?.files_skipped ?? 0;
-  const chunks = latest?.chunks_stored ?? health?.indexed_chunk_count ?? 0;
-  const symbols = latest?.symbols_stored ?? health?.indexed_symbol_count ?? 0;
-  const stages = [
-    ["Config", project.enabled ? "enabled" : "disabled", project.enabled ? "ok" : "warn"],
-    ["Scan", `${numberValue(seen)} seen`, seen > 0 ? "ok" : "muted"],
-    ["Store", `${numberValue(chunks)} chunks`, chunks > 0 ? "ok" : "muted"],
-    ["Index", `${numberValue(symbols)} symbols`, symbols > 0 ? "ok" : "muted"],
-    ["Serve", health?.status || "unknown", health?.indexed_content_available ? "ok" : "warn"],
-  ];
-  return `
-    <div>
-      <h3>Ingestion flow</h3>
-      <div class="diagram">
-        ${stages.map(([label, value, tone]) => `
-          <div class="diagram-node">
-            ${pill(label, tone)}
-            <strong>${escapeHTML(value)}</strong>
-            <span>${escapeHTML(label === "Scan" ? `${numberValue(ingested)} new, ${numberValue(unchanged)} unchanged, ${numberValue(skipped)} skipped` : "")}</span>
-          </div>
-        `).join("")}
-      </div>
-    </div>
-  `;
-}
-
-function renderGraphCompositionVisual(health, graph) {
-  const items = [
-    { key: "Files", count: health?.eligible_file_count ?? graph?.files?.sampled_count },
-    { key: "Chunks", count: health?.indexed_chunk_count },
-    { key: "Symbols", count: health?.indexed_symbol_count },
-    { key: "Headings", count: graph?.headings?.sampled_count },
-  ];
-  return `
-    <div>
-      <h3>Graph composition</h3>
-      ${donutVisual(items)}
-      ${distributionBars(items)}
-    </div>
-  `;
-}
-
-function renderSymbolConcentrationVisual(symbols) {
-  const source = symbolConcentrationSource(symbols);
-  const values = normalizeCounts(source.items).slice(0, 8);
-  if (!values.length) return `<div><h3>Symbol concentration</h3><p class="empty">No concentration data.</p></div>`;
-  const displayedTotal = values.reduce((sum, item) => sum + item.count, 0);
-  const denominatorCount = Number.isFinite(source.denominatorCount) && source.denominatorCount > 0 ? source.denominatorCount : displayedTotal;
-  const leader = values[0];
-  const denominator = source.denominatorLabel || `sample of ${numberValue(denominatorCount)} symbols`;
-  const scopeNote = symbols?.sample_truncated ? "Full indexed graph" : "Current indexed graph";
-  return `
-    <div>
-      <h3>${escapeHTML(source.title)}</h3>
-      <div class="metric" style="min-height:auto; margin-bottom:8px; box-shadow:none;">
-        <span>${escapeHTML(source.leaderLabel)} · ${escapeHTML(scopeNote)}</span>
-        <strong>${percent(leader.count, denominatorCount)}</strong>
-        <small>${escapeHTML(leader.key)} / ${escapeHTML(denominator)}</small>
-      </div>
-      ${distributionBars(values, { total: denominatorCount })}
-    </div>
-  `;
-}
-
-function symbolConcentrationSource(symbols) {
-  if (!symbols || typeof symbols !== "object") {
-    return {
-      title: "Symbol concentration",
-      leaderLabel: "Top code area share",
-      items: [],
-      denominatorLabel: "0 indexed symbols",
-    };
-  }
-  const basis = symbols.concentration_basis || {};
-  const sources = symbolConcentrationCandidates(symbols, basis);
-  for (const source of sources) {
-    if (source.enabled && normalizeCounts(source.items).length) {
-      const basisDenominator = Number.isFinite(basis.denominator_count) && basis.denominator_count > 0 ? basis.denominator_count : 0;
-      return {
-        title: source.title,
-        leaderLabel: source.leaderLabel,
-        items: source.items,
-        denominatorLabel: source.denominatorLabel || `${numberValue(basisDenominator || symbols.total_count || symbols.sampled_count)} indexed symbols`,
-        denominatorCount: basisDenominator || symbols.total_count || symbols.sampled_count,
-      };
-    }
-  }
-  return {
-    title: "Symbol concentration",
-    leaderLabel: "Top code area share",
-    items: [],
-    denominatorLabel: "0 indexed symbols",
-  };
-}
-
-function symbolConcentrationCandidates(symbols, basis) {
-  const preferred = {
-    by_module: {
-      enabled: basis.source !== "relative_path_bucket",
-      items: symbols.by_module,
-      title: "Module concentration",
-      leaderLabel: "Top module share",
-      denominatorLabel: `${numberValue(basis.denominator_count)} indexed JS/TS symbols`,
-    },
-    by_namespace: {
-      enabled: true,
-      items: symbols.by_namespace,
-      title: "Namespace concentration",
-      leaderLabel: "Top namespace share",
-      denominatorLabel: `${numberValue(basis.denominator_count)} indexed C# namespace symbols`,
-    },
-    by_assembly: {
-      enabled: true,
-      items: symbols.by_assembly,
-      title: "Assembly concentration",
-      leaderLabel: "Top assembly share",
-      denominatorLabel: `${numberValue(basis.denominator_count)} indexed Unity C# symbols`,
-    },
-    by_package: {
-      enabled: true,
-      items: symbols.by_package,
-      title: "Package concentration",
-      leaderLabel: "Top package share",
-      denominatorLabel: `${numberValue(basis.denominator_count)} indexed package symbols`,
-    },
-    by_code_area: {
-      enabled: true,
-      items: symbols.by_code_area || symbols.by_path_bucket || symbols.by_directory || symbols.by_path,
-      title: "Code area concentration",
-      leaderLabel: "Top code area share",
-      denominatorLabel: `${numberValue(basis.denominator_count || symbols.total_count)} indexed symbols`,
-    },
-  };
-  const orderedKeys = ["by_module", "by_namespace", "by_assembly", "by_package", "by_code_area"];
-  const primary = preferred[basis.primary_field];
-  return primary ? [primary, ...orderedKeys.filter((key) => key !== basis.primary_field).map((key) => preferred[key])] : orderedKeys.map((key) => preferred[key]);
-}
-
-function symbolConcentrationBlock(symbols) {
-  const source = symbolConcentrationSource(symbols);
-  return countBlock(source.title, source.items, { bars: true, total: source.denominatorCount });
-}
-
-function renderWorkspaceDirtyVisual(workspace) {
-  if (!workspace) return `<div><h3>Workspace dirty summary</h3><p class="empty">Workspace git status unavailable.</p></div>`;
-  const values = normalizeCounts(workspace.by_status);
-  const dirty = workspace.sampled_dirty_count ?? values.reduce((sum, item) => sum + item.count, 0);
-  return `
-    <div>
-      <h3>Workspace dirty summary</h3>
-      <div class="diagram">
-        <div class="diagram-node">
-          ${pill(dirty > 0 ? "dirty" : "clean", dirty > 0 ? "warn" : "ok")}
-          <strong>${numberValue(dirty)} sampled path${dirty === 1 ? "" : "s"}</strong>
-          <span>${escapeHTML(workspace.branch || "unknown branch")} @ ${escapeHTML(workspace.head_oid_short || "unknown")}</span>
-        </div>
-        <div class="diagram-node">
-          ${pill(workspace.truncated ? "truncated" : "complete", workspace.truncated ? "warn" : "ok")}
-          <strong>${values.length ? `${numberValue(values.length)} statuses` : "No changes"}</strong>
-          <span>Sample limit only; no raw diffs rendered.</span>
-        </div>
-      </div>
-      ${values.length ? distributionBars(values) : ""}
-    </div>
-  `;
-}
-
-function renderIntegrationProviderVisual(project, integrationSummary) {
+function tabIntegrations(project, integrationSummary) {
   const providers = Array.isArray(integrationSummary?.providers) ? integrationSummary.providers : [];
   const counts = Array.isArray(integrationSummary?.counts) ? integrationSummary.counts : [];
-  const configured = providers.length ? providers : projectProviders(project.integrations);
-  if (!configured.length && !counts.length) return `<div><h3>Integration providers</h3><p class="empty">No providers configured.</p></div>`;
-  return `
-    <div>
-      <h3>Integration providers</h3>
-      <div class="integration-grid">
-        ${configured.map((provider) => providerVisual(provider, counts)).join("")}
-      </div>
-      ${counts.length ? distributionBars(counts.map((item) => ({ key: item.provider, count: item.count }))) : ""}
-    </div>
-  `;
+  const children = [
+    block("Configured", integrationsInline(project.integrations) || emptyText("No integrations configured.")),
+    block("Provider status",
+      providers.length
+        ? el("div", { class: "grid grid--tight" }, providers.map((provider) => providerTile(provider, counts)))
+        : emptyText("No live integration status returned.")),
+  ];
+  if (counts.length) {
+    children.push(countBlock("Indexed integration items", counts.map((item) => ({ key: item.provider, count: item.count })), { total: 0 }));
+  }
+  return panel("Integrations", ...children);
 }
 
-function providerVisual(providerData, counts) {
-  const providerName = providerData.provider || providerData.name || "unknown";
-  const count = counts.find((item) => item.provider === providerName)?.count;
-  const enabled = Boolean(providerData.enabled);
-  const ingest = Boolean(providerData.ingestion_enabled);
-  const scopes = providerData.allowlist_count ?? providerData.project_key_count ?? providerData.space_key_count ?? 0;
-  return `
-    <div class="integration-row">
-      <strong>${escapeHTML(providerName)}</strong>
-      <span>${pill(enabled ? "enabled" : "disabled", enabled ? "ok" : "muted")} ${pill(ingest ? "ingest on" : "ingest off", ingest ? "ok" : "muted")}</span>
-      <small>${numberValue(scopes)} configured scopes${typeof count === "number" ? `, ${numberValue(count)} local items` : ""}</small>
-    </div>
-  `;
+// ---------------------------------------------------------------------------
+// Detail building blocks
+// ---------------------------------------------------------------------------
+function stageFlow(project, health, latest, graph) {
+  const chunks = health?.indexed_chunk_count ?? latest?.chunks_stored ?? 0;
+  const symbols = health?.indexed_symbol_count ?? latest?.symbols_stored ?? 0;
+  const searchStatus = graph?.search_index?.status || health?.search_index?.status || "unknown";
+  const scan = latest?.status || health?.latest_run?.status || "unavailable";
+  const stages = [
+    ["Config", project.enabled ? (project.validation_status || "enabled") : "disabled",
+      project.enabled && project.validation_status === "valid" ? "ok" : "warn"],
+    ["Scan", scan, scan === "completed" ? "ok" : "warn"],
+    ["Store", `${numberValue(chunks)} chunks`, chunks > 0 ? "ok" : "muted"],
+    ["Index", `${numberValue(symbols)} symbols`, symbols > 0 ? "ok" : "muted"],
+    ["Search", searchStatus, searchStatus === "ok" ? "ok" : "warn"],
+    ["Serve", health?.status || "unknown", health?.indexed_content_available ? "ok" : "warn"],
+  ];
+  return el("div", { class: "flow" },
+    stages.map(([label, value, tone]) => el("div", { class: "flow__node" },
+      pill(label, tone),
+      el("strong", { class: "flow__val", text: value }),
+    )),
+  );
 }
 
-function renderLatestIngestionTimeline(run) {
-  if (!run) return `<p class="empty">Latest ingestion timeline unavailable.</p>`;
+function donutVisual(items) {
+  const values = normalizeCounts(items).filter((item) => item.count > 0);
+  const total = values.reduce((sum, item) => sum + item.count, 0);
+  if (!total) return emptyText("No graph totals.");
+  let offset = 25;
+  const rings = values.map((item, index) => {
+    const length = (item.count / total) * 100;
+    const ring = svgEl("circle", {
+      cx: 58, cy: 58, r: 46, fill: "none",
+      "stroke-width": 14,
+      "stroke-dasharray": `${length} ${100 - length}`,
+      "stroke-dashoffset": offset,
+      pathLength: 100,
+    });
+    ring.style.setProperty("stroke", DONUT_COLORS[index % DONUT_COLORS.length]);
+    offset -= length;
+    return ring;
+  });
+  const track = svgEl("circle", { cx: 58, cy: 58, r: 46, fill: "none", "stroke-width": 14 });
+  track.style.setProperty("stroke", "var(--bar-track)");
+  const svg = svgEl("svg", { viewBox: "0 0 116 116", width: 116, height: 116, role: "img", "aria-label": "Graph composition donut" },
+    track,
+    ...rings,
+    svgEl("text", { x: 58, y: 55, "text-anchor": "middle", fill: "currentColor", "font-size": 15, "font-weight": 700 }, numberValue(total)),
+    svgEl("text", { x: 58, y: 72, "text-anchor": "middle", fill: "currentColor", opacity: 0.64, "font-size": 10 }, "total"),
+  );
+  const legend = el("div", { class: "donut__legend" },
+    values.map((item, index) => {
+      const dot = el("i", { class: "donut__dot" });
+      dot.style.setProperty("background", DONUT_COLORS[index % DONUT_COLORS.length]);
+      return el("span", { class: "donut__item" }, dot, `${item.key}: ${numberValue(item.count)}`);
+    }),
+  );
+  return el("div", { class: "donut" }, svg, legend);
+}
+
+function distributionBars(items, options = {}) {
+  const values = normalizeCounts(items);
+  if (!values.length) return emptyText("No data.");
+  const max = Math.max(...values.map((item) => item.count), 1);
+  const total = Number.isFinite(options.total) && options.total > 0 ? options.total : 0;
+  return el("div", { class: "bars" },
+    values.map((item) => {
+      const width = Math.max(2, Math.round((item.count / max) * 100));
+      const countLabel = total ? `${numberValue(item.count)} · ${percent(item.count, total)}` : numberValue(item.count);
+      const fill = el("i", { class: "bar__fill" });
+      fill.style.setProperty("--w", `${width}%`);
+      return el("div", { class: "bar" },
+        el("div", { class: "bar__head" },
+          el("span", { class: "bar__key", text: item.key }),
+          el("strong", { class: "bar__val", text: countLabel }),
+        ),
+        el("div", { class: "bar__track" }, fill),
+      );
+    }),
+  );
+}
+
+function countBlock(title, items, options = {}) {
+  const node = block(title);
+  if (!Array.isArray(items) || items.length === 0) {
+    node.append(emptyText("No data."));
+    return node;
+  }
+  node.append(distributionBars(items, options));
+  return node;
+}
+
+function contextHealthBlock(project, health) {
+  if (!health) return emptyText("Context health unavailable.");
+  const reasons = Object.entries(health.reason_counts || {});
+  return el("div", { class: "grid" },
+    infoList([
+      ["Status", contextStatusLabel(health)],
+      ["Reason", health.status_reason || "none"],
+      ["Digest mode", project.digest_mode || "unknown"],
+      ["Update policy", project.update_policy || "unknown"],
+      ["Indexed content", health.indexed_content_available ? "available" : "unavailable"],
+      ["Last checked", formatDate(health.checked_at)],
+    ]),
+    block("Skipped reasons",
+      reasons.length
+        ? el("div", { class: "rows" }, reasons.map(([key, value]) => reasonRow(key, value)))
+        : emptyText("No skipped reason counts.")),
+  );
+}
+
+function reasonRow(key, value) {
+  return el("div", { class: "row" },
+    el("span", { text: key }),
+    el("strong", { text: numberValue(value) }),
+  );
+}
+
+function latestRunBlock(run) {
+  if (!run) return emptyText("Latest ingestion run unavailable.");
+  return el("div", { class: "grid" },
+    infoList([
+      ["Run ID", run.id || "unknown"],
+      ["Status", run.status || "unknown"],
+      ["Trigger", run.trigger || "unknown"],
+      ["Mode", run.mode || "unknown"],
+      ["Phase", run.current_phase || "unknown"],
+      ["Started", formatDate(run.started_at)],
+      ["Finished", formatDate(run.finished_at)],
+    ]),
+    infoList([
+      ["Files seen", numberValue(run.files_seen)],
+      ["Ingested", numberValue(run.files_ingested)],
+      ["Skipped", numberValue(run.files_skipped)],
+      ["Unchanged", numberValue(run.files_unchanged)],
+      ["Chunks", numberValue(run.chunks_stored)],
+      ["Symbols", numberValue(run.symbols_stored)],
+    ]),
+  );
+}
+
+function timelineBlock(run) {
+  if (!run) return emptyText("Latest ingestion timeline unavailable.");
   const points = [
     ["Started", run.started_at],
     ["Progress", run.last_progress_at || run.heartbeat_at],
     ["Heartbeat", run.heartbeat_at],
     ["Finished", run.finished_at],
   ].filter(([, value]) => value);
-  if (!points.length) return `<p class="empty">Latest ingestion timestamps unavailable.</p>`;
-  return `
-    <div>
-      <h3>Latest ingestion timeline</h3>
-      <div class="timeline">
-        ${points.map(([label, value]) => `
-          <div class="timeline-item">
-            <strong>${escapeHTML(label)}</strong>
-            <span>${formatDate(value)}</span>
-          </div>
-        `).join("")}
-      </div>
-    </div>
-  `;
+  if (!points.length) return emptyText("Latest ingestion timestamps unavailable.");
+  return el("div", { class: "timeline" },
+    points.map(([label, value]) => el("div", { class: "timeline-item" },
+      el("strong", { text: label }),
+      el("span", { text: formatDate(value) }),
+    )),
+  );
 }
 
-function renderASTCoverageMatrix(coverage) {
-  if (!Array.isArray(coverage) || coverage.length === 0) return `<p class="empty">AST coverage unavailable.</p>`;
-  return `
-    <div>
-      <h3>AST coverage matrix</h3>
-      <div class="coverage-grid">
-        ${coverage.map((item) => {
-          const eligible = item.eligible_files ?? 0;
-          const skipped = item.skipped_file_too_large ?? 0;
-          const complete = item.coverage_status === "complete";
-          return `
-            <div class="coverage-row">
-              <strong>${escapeHTML(item.language || "unknown")}</strong>
-              <span>${pill(item.coverage_status || "unknown", complete ? "ok" : "warn")} ${numberValue(eligible)} eligible</span>
-              <small>${escapeHTML((item.extensions || []).join(", ") || "no extensions")} / ${numberValue(skipped)} oversized skips</small>
-            </div>
-          `;
-        }).join("")}
-      </div>
-    </div>
-  `;
+function astCoverageBlock(coverage) {
+  if (!Array.isArray(coverage) || coverage.length === 0) return emptyText("AST coverage unavailable.");
+  return el("div", { class: "grid grid--tight" },
+    coverage.map((item) => {
+      const eligible = item.eligible_files ?? 0;
+      const skipped = item.skipped_file_too_large ?? 0;
+      const complete = item.coverage_status === "complete";
+      return el("div", { class: "tile" },
+        el("div", { class: "tile__head" },
+          el("strong", { text: item.language || "unknown" }),
+          pill(item.coverage_status || "unknown", complete ? "ok" : "warn"),
+        ),
+        el("span", { class: "tile__sub", text: `${numberValue(eligible)} eligible · ${numberValue(skipped)} oversized skips` }),
+        el("span", { class: "tile__sub", text: (item.extensions || []).join(", ") || "no extensions" }),
+      );
+    }),
+  );
 }
 
-function projectPipelineDiagram(project, health, latest, graph, dashboard) {
-  const nodes = [
-    {
-      title: "Project config",
-      detail: `${project.enabled ? "enabled" : "disabled"} / ${project.validation_status || "unknown"}`,
-      tone: project.enabled && project.validation_status === "valid" ? "ok" : "warn",
-    },
-    {
-      title: "Scan",
-      detail: latest?.status || health?.latest_run?.status || "unavailable",
-      tone: latest?.status === "completed" || health?.latest_run?.status === "completed" ? "ok" : "warn",
-    },
-    {
-      title: "Chunks",
-      detail: numberValue(health?.indexed_chunk_count),
-      tone: health?.indexed_chunk_count > 0 ? "ok" : "muted",
-    },
-    {
-      title: "Symbols",
-      detail: `${numberValue(health?.indexed_symbol_count)} symbols`,
-      tone: health?.indexed_symbol_count > 0 ? "ok" : "muted",
-    },
-    {
-      title: "Graph stats",
-      detail: `${numberValue(graph?.files?.sampled_count)} files sampled`,
-      tone: graph?.files?.sampled_count > 0 ? "ok" : "muted",
-    },
-    {
-      title: "Search index",
-      detail: graph?.search_index?.status || health?.search_index?.status || "unknown",
-      tone: (graph?.search_index?.status || health?.search_index?.status) === "ok" ? "ok" : "warn",
-    },
-    {
-      title: "REST summary",
-      detail: `${numberValue(dashboard?.limits?.files_page_size)} file sample`,
-      tone: health?.indexed_content_available ? "ok" : "warn",
-    },
-  ];
-  const width = 1220;
-  const height = 230;
-  const boxWidth = 146;
-  const boxHeight = 74;
-  const startX = 22;
-  const gap = 16;
-  const y = 74;
-  const statusText = contextStatusLabel(health);
-
-  return `
-    <div class="pipeline-diagram" role="img" aria-label="${escapeHTML(statusText)} data pipeline">
-      <svg viewBox="0 0 ${width} ${height}" width="100%" height="230" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <marker id="pipeline-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-            <path d="M0,0 L8,4 L0,8 Z" fill="currentColor"></path>
-          </marker>
-        </defs>
-        <text x="${startX}" y="30" fill="currentColor" font-size="15" font-weight="700">${escapeHTML(statusText)}</text>
-        <text x="${startX}" y="52" fill="currentColor" opacity="0.68" font-size="12">One bounded REST summary: graph metadata, AST coverage, git status, integration status. No source text or diffs.</text>
-        ${nodes.map((node, index) => pipelineNode(node, startX + index * (boxWidth + gap), y, boxWidth, boxHeight)).join("")}
-        ${nodes.slice(0, -1).map((_, index) => pipelineArrow(startX + index * (boxWidth + gap) + boxWidth, y + boxHeight / 2, startX + (index + 1) * (boxWidth + gap), y + boxHeight / 2)).join("")}
-      </svg>
-    </div>
-  `;
+function gitSampleList(items) {
+  if (!Array.isArray(items) || items.length === 0) return emptyText("No working tree changes.");
+  return el("div", { class: "rows" },
+    items.map((item) => el("div", { class: "row row--file" },
+      el("strong", { text: item.relative_path || "(unknown path)" }),
+      el("span", { text: item.status || "unknown" }),
+    )),
+  );
 }
 
-function pipelineNode(node, x, y, width, height) {
-  const tone = node.tone === "ok" ? "var(--ok)" : node.tone === "warn" ? "var(--warn)" : "var(--muted)";
-  return `
-    <g>
-      <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="8" fill="var(--panel-soft)" stroke="${tone}" stroke-width="1.5"></rect>
-      <circle cx="${x + 16}" cy="${y + 18}" r="5" fill="${tone}"></circle>
-      <text x="${x + 28}" y="${y + 23}" fill="currentColor" font-size="12" font-weight="700">${escapeHTML(node.title)}</text>
-      <text x="${x + 14}" y="${y + 52}" fill="currentColor" opacity="0.72" font-size="11">${escapeHTML(node.detail)}</text>
-    </g>
-  `;
+function providerTile(provider, counts) {
+  const name = provider.provider || provider.name || "unknown";
+  const count = counts.find((item) => item.provider === name)?.count;
+  const scopes = provider.allowlist_count ?? provider.project_key_count ?? provider.space_key_count ?? 0;
+  const detail = `${provider.allowlist_kind || "allowlist"} ${numberValue(scopes)} scopes · source ${provider.source_persisted ? "persisted" : "not persisted"}` +
+    (typeof count === "number" ? ` · ${numberValue(count)} local items` : "");
+  return el("div", { class: "tile" },
+    el("div", { class: "tile__head" },
+      el("strong", { text: name }),
+      pill(provider.enabled ? "enabled" : "disabled", provider.enabled ? "ok" : "muted"),
+    ),
+    el("div", { class: "tile__badges" }, pill(provider.ingestion_enabled ? "ingest on" : "ingest off", provider.ingestion_enabled ? "ok" : "muted")),
+    el("span", { class: "tile__sub", text: detail }),
+  );
 }
 
-function pipelineArrow(x1, y1, x2, y2) {
-  return `<line x1="${x1 + 6}" y1="${y1}" x2="${x2 - 6}" y2="${y2}" stroke="currentColor" stroke-width="1.5" opacity="0.5" marker-end="url(#pipeline-arrow)"></line>`;
+function integrationsInline(integrations) {
+  if (!integrations) return null;
+  const parts = [];
+  if (integrations.jira) parts.push(providerInline("Jira", integrations.jira));
+  if (integrations.confluence) parts.push(providerInline("Confluence", integrations.confluence));
+  if (!parts.length) return null;
+  return el("div", { class: "inline-providers" }, ...parts);
 }
 
-function contextHealth(project, health) {
-  if (!health) return `<p class="empty">Context health unavailable.</p>`;
-  const reasonCounts = Object.entries(health.reason_counts || {});
-  return `
-    <div class="split-grid">
-      ${infoList([
-        ["Status", contextStatusLabel(health)],
-        ["Reason", health.status_reason || "none"],
-        ["Digest mode", project.digest_mode || "unknown"],
-        ["Update policy", project.update_policy || "unknown"],
-        ["Indexed content", health.indexed_content_available ? "available" : "unavailable"],
-        ["Last checked", formatDate(health.checked_at)],
-      ])}
-      <div>
-        <h3>Skipped reasons</h3>
-        ${reasonCounts.length ? reasonCounts.map(([key, value]) => `<div class="reason-row"><span>${escapeHTML(key)}</span><strong>${escapeHTML(value)}</strong></div>`).join("") : `<p class="empty">No skipped reason counts.</p>`}
-      </div>
-    </div>
-  `;
+function providerInline(name, value) {
+  const count = value.project_key_count || value.space_key_count || 0;
+  return el("div", { class: "inline-provider" },
+    el("span", { class: "inline-provider__name", text: name }),
+    pill(value.enabled ? "on" : "off", value.enabled ? "ok" : "muted"),
+    el("span", { class: "inline-provider__meta", text: `${count} scopes · ${value.ingestion_enabled ? "ingest on" : "ingest off"}` }),
+  );
+}
+
+function aliasesInline(project) {
+  if (!Array.isArray(project.aliases) || project.aliases.length === 0) return null;
+  return el("div", { class: "tag-list" }, project.aliases.map((alias) => el("span", { class: "tag", text: alias })));
+}
+
+function warningsBlock(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) return null;
+  return el("section", { class: "notice" },
+    el("span", { class: "notice__label", text: "Partial data" }),
+    el("div", { class: "tag-list" }, warnings.map((warning) => el("span", { class: "tag", text: warning }))),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Symbol concentration (semantic basis: module / namespace / assembly /
+// package / code area) — renders every applicable basis with its own
+// denominator so percentages are comparable across languages.
+// ---------------------------------------------------------------------------
+function concentrationBlocks(symbols) {
+  if (!symbols || typeof symbols !== "object") return [];
+  const basis = symbols.concentration_basis || {};
+  return symbolConcentrationCandidates(symbols, basis)
+    .filter((source) => source.enabled && normalizeCounts(source.items).length)
+    .map((source) => countBlock(source.title, source.items, { total: source.denominatorCount }));
+}
+
+function symbolConcentrationCandidates(symbols, basis) {
+  const denominatorByField = {
+    [basis.primary_field]: basis.denominator_count,
+    by_module: countTotal(symbols.by_module),
+    by_namespace: countTotal(symbols.by_namespace),
+    by_assembly: countTotal(symbols.by_assembly),
+    by_package: countTotal(symbols.by_package),
+    by_code_area: symbols.total_count,
+  };
+  const preferred = {
+    by_module: {
+      enabled: basis.source !== "relative_path_bucket",
+      items: symbols.by_module,
+      title: "Module concentration",
+      denominatorCount: denominatorByField.by_module,
+    },
+    by_namespace: {
+      enabled: true,
+      items: symbols.by_namespace,
+      title: "Namespace concentration",
+      denominatorCount: denominatorByField.by_namespace,
+    },
+    by_assembly: {
+      enabled: true,
+      items: symbols.by_assembly,
+      title: "Assembly concentration",
+      denominatorCount: denominatorByField.by_assembly,
+    },
+    by_package: {
+      enabled: true,
+      items: symbols.by_package,
+      title: "Package concentration",
+      denominatorCount: denominatorByField.by_package,
+    },
+    by_code_area: {
+      enabled: true,
+      items: symbols.by_code_area || symbols.by_path_bucket || symbols.by_directory || symbols.by_path,
+      title: "Code area concentration",
+      denominatorCount: denominatorByField.by_code_area,
+    },
+  };
+  const orderedKeys = ["by_module", "by_namespace", "by_assembly", "by_package", "by_code_area"];
+  const primary = preferred[basis.primary_field];
+  return primary
+    ? [primary, ...orderedKeys.filter((key) => key !== basis.primary_field).map((key) => preferred[key])]
+    : orderedKeys.map((key) => preferred[key]);
+}
+
+function countTotal(items) {
+  return normalizeCounts(items).reduce((sum, item) => sum + item.count, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Shared presentational helpers
+// ---------------------------------------------------------------------------
+function panel(title, ...children) {
+  return el("section", { class: "panel" }, el("h3", { class: "panel__title", text: title }), ...children);
+}
+
+function block(title, ...children) {
+  return el("div", { class: "block" }, el("h3", { class: "block__title", text: title }), ...children);
+}
+
+function infoList(items) {
+  return el("dl", { class: "info-list" },
+    items.map(([label, value]) => el("div", {},
+      el("dt", { text: label }),
+      el("dd", { text: value }),
+    )),
+  );
+}
+
+function emptyText(message) {
+  return el("p", { class: "empty", text: message });
+}
+
+function pill(text, tone, title) {
+  return el("span", { class: `pill ${tone}`, title: title || null, text });
+}
+
+function projectEnabledPill(project) {
+  const enabled = Boolean(project?.enabled);
+  return pill(
+    enabled ? "project enabled" : "project disabled",
+    enabled ? "ok" : "muted",
+    enabled ? "This project is enabled in local config." : "This project is disabled in local config.",
+  );
+}
+
+function projectValidationPill(project) {
+  const status = project?.validation_status || "unknown";
+  const valid = status === "valid";
+  return pill(
+    `config ${status}`,
+    valid ? "ok" : "warn",
+    valid ? "Project config passed local validation." : "Project config needs attention before it can be trusted.",
+  );
+}
+
+function latestRunPill(status) {
+  if (!status) {
+    return pill("latest run unavailable", "warn", "Latest ingestion run could not be loaded.");
+  }
+  const okStatuses = new Set(["completed", "succeeded", "success"]);
+  const activeStatuses = new Set(["running", "queued", "pending", "syncing"]);
+  const tone = okStatuses.has(status) ? "ok" : activeStatuses.has(status) ? "warn" : "muted";
+  return pill(`latest run ${status}`, tone, "Most recent ingestion run status.");
+}
+
+function contextHealthPill(health) {
+  if (!health?.status) {
+    return pill("index unavailable", "warn", "Indexed context health could not be loaded.");
+  }
+  const label = health.status === "ready" ? "index ready" : `index ${health.status}`;
+  const detail = health.status_reason && health.status_reason !== "none" ? ` Reason: ${health.status_reason}.` : "";
+  const availability = health.indexed_content_available ? " Indexed content is available." : " Indexed content is not available.";
+  return pill(label, health.status === "ready" ? "ok" : "warn", `Indexed context health.${detail}${availability}`);
 }
 
 function contextStatusLabel(health) {
-  if (!health?.status) return "Context unavailable";
+  if (!health?.status) return "unavailable";
   if (health.status === "ready" && health.status_reason === "file_warnings") {
     return "ready with warnings";
   }
   return health.status;
-}
-
-function latestRun(run) {
-  if (!run) return `<p class="empty">Latest ingestion run unavailable.</p>`;
-  return `
-    <div class="split-grid">
-      ${infoList([
-        ["Run ID", run.id || "unknown"],
-        ["Status", run.status || "unknown"],
-        ["Trigger", run.trigger || "unknown"],
-        ["Mode", run.mode || "unknown"],
-        ["Phase", run.current_phase || "unknown"],
-        ["Started", formatDate(run.started_at)],
-        ["Finished", formatDate(run.finished_at)],
-      ])}
-      ${infoList([
-        ["Files seen", numberValue(run.files_seen)],
-        ["Ingested", numberValue(run.files_ingested)],
-        ["Skipped", numberValue(run.files_skipped)],
-        ["Unchanged", numberValue(run.files_unchanged)],
-        ["Chunks", numberValue(run.chunks_stored)],
-        ["Symbols", numberValue(run.symbols_stored)],
-      ])}
-    </div>
-  `;
-}
-
-function recentFiles(files) {
-  if (files.length === 0) return `<p class="empty">No files returned.</p>`;
-  return `
-    <div class="file-list">
-      ${files.map((file) => `
-        <div class="file-row">
-          <strong>${escapeHTML(file.relative_path || file.id)}</strong>
-          <span>${escapeHTML(file.status || "unknown")} / ${escapeHTML(file.extension || "no extension")} / ${file.present ? "present" : "absent"}</span>
-        </div>
-      `).join("")}
-    </div>
-  `;
-}
-
-function countBlock(title, items, options = {}) {
-  if (!Array.isArray(items) || items.length === 0) return `<div><h3>${escapeHTML(title)}</h3><p class="empty">No data.</p></div>`;
-  if (options.bars) {
-    return `
-      <div>
-        <h3>${escapeHTML(title)}</h3>
-        ${distributionBars(items, { total: options.total })}
-      </div>
-    `;
-  }
-  return `
-    <div>
-      <h3>${escapeHTML(title)}</h3>
-      ${items.map((item) => `<div class="reason-row"><span>${escapeHTML(item.key || item.provider || "unknown")}</span><strong>${numberValue(item.count)}</strong></div>`).join("")}
-    </div>
-  `;
-}
-
-function distributionBars(items, options = {}) {
-  const values = normalizeCounts(items);
-  if (!values.length) return `<p class="empty">No data.</p>`;
-  const max = Math.max(...values.map((item) => item.count), 1);
-  const total = Number.isFinite(options.total) && options.total > 0 ? options.total : 0;
-  return `
-    <div class="content-list">
-      ${values.map((item) => {
-        const width = Math.max(4, Math.round((item.count / max) * 100));
-        const countLabel = total ? `${numberValue(item.count)} · ${percent(item.count, total)}` : numberValue(item.count);
-        return `
-          <div class="reason-row">
-            <span>${escapeHTML(item.key)}</span>
-            <strong>${escapeHTML(countLabel)}</strong>
-            <span style="grid-column:1 / -1; display:block; height:6px; margin-top:2px; border-radius:999px; background:linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--node) 58%, var(--accent))) left / ${width}% 100% no-repeat, var(--bar-track);"></span>
-          </div>
-        `;
-      }).join("")}
-    </div>
-  `;
-}
-
-function donutVisual(items) {
-  const values = normalizeCounts(items);
-  const total = values.reduce((sum, item) => sum + item.count, 0);
-  if (!total) return `<p class="empty">No graph totals.</p>`;
-  let offset = 25;
-  const colors = ["var(--accent)", "var(--node)", "var(--ok)", "var(--warn)"];
-  const rings = values.map((item, index) => {
-    const length = (item.count / total) * 100;
-    const stroke = colors[index % colors.length];
-    const circle = `<circle cx="58" cy="58" r="46" fill="none" stroke="${stroke}" stroke-width="14" stroke-dasharray="${length} ${100 - length}" stroke-dashoffset="${offset}" pathLength="100"></circle>`;
-    offset -= length;
-    return circle;
-  }).join("");
-  return `
-    <div class="diagram-node" style="display:grid; grid-template-columns:auto minmax(0,1fr); gap:12px; align-items:center; margin-bottom:8px;">
-      <svg viewBox="0 0 116 116" width="116" height="116" role="img" aria-label="Graph composition donut">
-        <circle cx="58" cy="58" r="46" fill="none" stroke="var(--bar-track)" stroke-width="14"></circle>
-        ${rings}
-        <text x="58" y="55" text-anchor="middle" fill="currentColor" font-size="15" font-weight="700">${numberValue(total)}</text>
-        <text x="58" y="72" text-anchor="middle" fill="currentColor" opacity="0.64" font-size="10">total</text>
-      </svg>
-      <div>${values.map((item) => `<span>${escapeHTML(item.key)}: ${numberValue(item.count)}</span>`).join("")}</div>
-    </div>
-  `;
 }
 
 function normalizeCounts(items) {
@@ -783,50 +1090,21 @@ function normalizeCounts(items) {
     .filter((item) => item.count >= 0);
 }
 
-function projectProviders(integrationsValue) {
-  if (!integrationsValue) return [];
-  const providers = [];
-  if (integrationsValue.jira) providers.push({ provider: "jira", ...integrationsValue.jira });
-  if (integrationsValue.confluence) providers.push({ provider: "confluence", ...integrationsValue.confluence });
-  return providers;
-}
-
 function percent(value, total) {
   if (!total) return "0%";
   return `${Math.round((value / total) * 100)}%`;
 }
 
-function gitSample(items) {
-  if (!Array.isArray(items) || items.length === 0) return `<p class="empty">No working tree changes.</p>`;
-  return `
-    <div class="file-list">
-      ${items.map((item) => `
-        <div class="file-row">
-          <strong>${escapeHTML(item.relative_path)}</strong>
-          <span>${escapeHTML(item.status || "unknown")}</span>
-        </div>
-      `).join("")}
-    </div>
-  `;
+function numberValue(value) {
+  if (typeof value !== "number") return "unknown";
+  return new Intl.NumberFormat().format(value);
 }
 
-async function loadOptionalStatus(projects) {
-  await Promise.all(projects.map(async (project) => {
-    const cell = document.querySelector(`tr[data-project-id="${cssEscape(project.id)}"] .context`);
-    if (!cell) return;
-
-    try {
-      const [health, latest] = await Promise.allSettled([
-        fetchJSON(`/api/v1/projects/${encodeURIComponent(project.id)}/context-health`, 3000),
-        fetchJSON(`/api/v1/projects/${encodeURIComponent(project.id)}/ingestion-runs/latest`, 3000),
-      ]);
-      const healthText = health.status === "fulfilled" ? health.value.status : "unavailable";
-      const runText = latest.status === "fulfilled" && latest.value.status ? latest.value.status : "no run";
-      cell.innerHTML = `${pill(healthText, healthText === "ready" ? "ok" : "warn")}<span>${escapeHTML(runText)}</span>`;
-    } catch {
-      cell.textContent = "unavailable";
-    }
-  }));
+function formatDate(value) {
+  if (!value) return "unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "unknown";
+  return date.toLocaleString();
 }
 
 async function fetchJSON(url, timeoutMs) {
@@ -842,92 +1120,4 @@ async function fetchJSON(url, timeoutMs) {
   } finally {
     clearTimeout(timeout);
   }
-}
-
-function openProject(id) {
-  location.hash = `project=${encodeURIComponent(id)}`;
-}
-
-function selectedProjectID() {
-  const hash = location.hash.replace(/^#/, "");
-  if (!hash) return "";
-  const params = new URLSearchParams(hash);
-  return params.get("project") || "";
-}
-
-function panel(title, body) {
-  return `
-    <section class="panel">
-      <h3>${escapeHTML(title)}</h3>
-      ${body}
-    </section>
-  `;
-}
-
-function infoList(items) {
-  return `
-    <dl class="info-list">
-      ${items.map(([label, value]) => `
-        <div>
-          <dt>${escapeHTML(label)}</dt>
-          <dd>${escapeHTML(value)}</dd>
-        </div>
-      `).join("")}
-    </dl>
-  `;
-}
-
-function aliases(project) {
-  if (!Array.isArray(project.aliases) || project.aliases.length === 0) return "";
-  return `<span>${project.aliases.map(escapeHTML).join(", ")}</span>`;
-}
-
-function aliasesList(values) {
-  if (!Array.isArray(values) || values.length === 0) return `<p class="empty">No aliases configured.</p>`;
-  return `<div class="tag-list">${values.map((value) => `<span>${escapeHTML(value)}</span>`).join("")}</div>`;
-}
-
-function integrations(value) {
-  if (!value) return `<span class="muted-text">none</span>`;
-  const parts = [];
-  if (value.jira) parts.push(provider("Jira", value.jira));
-  if (value.confluence) parts.push(provider("Confluence", value.confluence));
-  return parts.length ? parts.join("") : `<span class="muted-text">none</span>`;
-}
-
-function provider(name, value) {
-  const state = value.enabled ? "on" : "off";
-  const count = value.project_key_count || value.space_key_count || 0;
-  return `<div>${escapeHTML(name)} ${pill(state, value.enabled ? "ok" : "muted")}<span>${count} scopes, ${value.ingestion_enabled ? "ingest on" : "ingest off"}</span></div>`;
-}
-
-function pill(text, tone) {
-  return `<span class="pill ${tone}">${escapeHTML(text)}</span>`;
-}
-
-function numberValue(value) {
-  if (typeof value !== "number") return "unknown";
-  return new Intl.NumberFormat().format(value);
-}
-
-function formatDate(value) {
-  if (!value) return "unknown";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "unknown";
-  return date.toLocaleString();
-}
-
-function escapeHTML(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;",
-  }[char]));
-}
-
-function cssEscape(value) {
-  if (window.CSS && CSS.escape) return CSS.escape(value);
-  return String(value).replace(/["\\]/g, "\\$&");
 }

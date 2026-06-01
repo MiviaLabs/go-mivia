@@ -51,6 +51,11 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 	if !strings.Contains(app.Body.String(), "/api/v1/projects") {
 		t.Fatalf("expected app to fetch project metadata")
 	}
+	for _, want := range []string{"contextHealthPill", "projectValidationPill", "project enabled", "config ${status}", "latest run ${status}"} {
+		if !strings.Contains(app.Body.String(), want) {
+			t.Fatalf("expected dashboard app to contain explicit status label %q", want)
+		}
+	}
 }
 
 func TestRoutes_UnknownRootSubpathNotFound(t *testing.T) {

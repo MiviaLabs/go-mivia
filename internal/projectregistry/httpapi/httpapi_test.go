@@ -378,11 +378,11 @@ func TestProjectDashboardSummary_SymbolConcentrationUsesExplicitCodeAreaFallback
 	if err := json.Unmarshal(dashboard.Body.Bytes(), &summary); err != nil {
 		t.Fatalf("decode dashboard summary: %v", err)
 	}
-	if summary.Graph.Symbols.ConcentrationBasis.PrimaryField != "by_module" || summary.Graph.Symbols.ConcentrationBasis.Source != "relative_file_module" || summary.Graph.Symbols.ConcentrationBasis.Denominator != "indexed_js_ts_symbols" {
-		t.Fatalf("expected semantic module concentration basis: %#v", summary.Graph.Symbols.ConcentrationBasis)
+	if summary.Graph.Symbols.ConcentrationBasis.PrimaryField != "by_namespace" || summary.Graph.Symbols.ConcentrationBasis.Source != "csharp_package_metadata" || summary.Graph.Symbols.ConcentrationBasis.Denominator != "indexed_csharp_namespace_symbols" {
+		t.Fatalf("expected highest-coverage semantic namespace concentration basis: %#v", summary.Graph.Symbols.ConcentrationBasis)
 	}
-	if summary.Graph.Symbols.ConcentrationBasis.DenominatorCount <= 0 || summary.Graph.Symbols.ConcentrationBasis.DenominatorCount >= summary.Graph.Symbols.TotalCount {
-		t.Fatalf("expected module denominator to cover JS/TS symbols only in mixed fixture: %#v total=%d", summary.Graph.Symbols.ConcentrationBasis, summary.Graph.Symbols.TotalCount)
+	if summary.Graph.Symbols.ConcentrationBasis.DenominatorCount <= 0 {
+		t.Fatalf("expected semantic denominator count in mixed fixture: %#v total=%d", summary.Graph.Symbols.ConcentrationBasis, summary.Graph.Symbols.TotalCount)
 	}
 	hasGoPackage := false
 	for _, item := range summary.Graph.Symbols.ByPackage {

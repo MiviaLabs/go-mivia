@@ -322,45 +322,52 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 }
 
 func symbolConcentrationBasis(symbols dashboardSymbolSummary, moduleCount int, namespaceCount int, assemblyCount int, packageCount int) dashboardSymbolConcentrationBasis {
-	if len(symbols.ByModule) > 0 {
-		return dashboardSymbolConcentrationBasis{
+	candidates := []dashboardSymbolConcentrationBasis{}
+	if len(symbols.ByModule) > 0 && moduleCount > 0 {
+		candidates = append(candidates, dashboardSymbolConcentrationBasis{
 			PrimaryField:     "by_module",
 			Source:           "relative_file_module",
 			Label:            "Module concentration",
 			Description:      "Share of indexed JavaScript and TypeScript symbols grouped by source file module identity; this is not package-manager workspace ownership.",
 			Denominator:      "indexed_js_ts_symbols",
 			DenominatorCount: moduleCount,
-		}
+		})
 	}
-	if len(symbols.ByNamespace) > 0 {
-		return dashboardSymbolConcentrationBasis{
+	if len(symbols.ByNamespace) > 0 && namespaceCount > 0 {
+		candidates = append(candidates, dashboardSymbolConcentrationBasis{
 			PrimaryField:     "by_namespace",
 			Source:           "csharp_package_metadata",
 			Label:            "Namespace concentration",
 			Description:      "Share of indexed C# symbols grouped by namespace metadata assigned during extraction.",
 			Denominator:      "indexed_csharp_namespace_symbols",
 			DenominatorCount: namespaceCount,
-		}
+		})
 	}
-	if len(symbols.ByAssembly) > 0 {
-		return dashboardSymbolConcentrationBasis{
+	if len(symbols.ByAssembly) > 0 && assemblyCount > 0 {
+		candidates = append(candidates, dashboardSymbolConcentrationBasis{
 			PrimaryField:     "by_assembly",
 			Source:           "unity_asmdef_directory_or_predefined_path_bucket",
 			Label:            "Unity assembly concentration",
 			Description:      "Share of indexed Unity C# symbols grouped by the nearest parsed .asmdef name in path ancestry, or by documented Unity predefined assembly buckets inferred from Assets path segments.",
 			Denominator:      "indexed_unity_csharp_symbols",
 			DenominatorCount: assemblyCount,
-		}
+		})
 	}
-	if len(symbols.ByPackage) > 0 {
-		return dashboardSymbolConcentrationBasis{
+	if len(symbols.ByPackage) > 0 && packageCount > 0 {
+		candidates = append(candidates, dashboardSymbolConcentrationBasis{
 			PrimaryField:     "by_package",
 			Source:           "parsed_symbol_package",
 			Label:            "Package concentration",
 			Description:      "Share of indexed symbols grouped by parsed package metadata.",
 			Denominator:      "indexed_symbols_with_package_metadata",
 			DenominatorCount: packageCount,
-		}
+		})
+	}
+	if len(candidates) > 0 {
+		sort.SliceStable(candidates, func(i, j int) bool {
+			return candidates[i].DenominatorCount > candidates[j].DenominatorCount
+		})
+		return candidates[0]
 	}
 	return dashboardSymbolConcentrationBasis{
 		PrimaryField:     "by_code_area",

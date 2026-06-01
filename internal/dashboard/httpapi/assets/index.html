@@ -15,29 +15,26 @@
         <p id="summary">Loading projects</p>
       </div>
       <div class="actions">
-        <button id="back" class="secondary hidden" type="button">Projects</button>
+        <button id="back" class="secondary hidden" type="button">&larr; Projects</button>
         <button id="refresh" type="button">Refresh</button>
       </div>
     </header>
     <main>
       <section id="status" class="status" aria-live="polite"></section>
-      <section id="metrics" class="metrics" aria-label="Project summary"></section>
-      <section id="detail" class="detail hidden" aria-label="Project details"></section>
-      <section id="list" class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Project</th>
-              <th>State</th>
-              <th>Graph</th>
-              <th>Workspace</th>
-              <th>Integrations</th>
-              <th>Context</th>
-            </tr>
-          </thead>
-          <tbody id="projects"></tbody>
-        </table>
+
+      <section id="overview">
+        <section id="metrics" class="metrics" aria-label="Project summary"></section>
+        <div id="list-toolbar" class="toolbar" role="search">
+          <label class="search">
+            <span class="visually-hidden">Filter projects</span>
+            <input id="search" type="search" placeholder="Filter by name, id, or alias" autocomplete="off">
+          </label>
+          <div id="filters" class="chips" role="group" aria-label="Status filter"></div>
+        </div>
+        <section id="list" class="card-grid" aria-label="Projects"></section>
       </section>
+
+      <section id="detail" class="detail hidden" aria-label="Project details"></section>
     </main>
   </body>
 </html>

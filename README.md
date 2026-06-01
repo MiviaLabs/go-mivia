@@ -16,6 +16,8 @@ Canonical workflow rules live in `.ai/`. Root agent files are thin adapters only
 
 ![Mivia dashboard project details](docs/go-mivia-dashboard-2.png)
 
+![Mivia dashboard code context](docs/go-mivia-dashboard-3.png)
+
 ## Feature Map
 
 ```mermaid
