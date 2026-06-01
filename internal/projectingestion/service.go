@@ -18,6 +18,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
@@ -123,6 +124,7 @@ type Service struct {
 	metricsMu             sync.Mutex
 	stageMetrics          map[string]StageDiagnostic
 	checkpoint            func(context.Context) error
+	policyRecorder        *agentactivity.Recorder
 	now                   func() time.Time
 	newID                 func(projectregistry.Project, time.Time) string
 }
@@ -152,6 +154,10 @@ func (svc *Service) SetSearchStore(search any) {
 	if search != nil {
 		svc.search = search
 	}
+}
+
+func (svc *Service) SetPolicyRecorder(recorder *agentactivity.Recorder) {
+	svc.policyRecorder = recorder
 }
 
 func (svc *Service) searchStore() any {
@@ -2190,6 +2196,7 @@ func (svc *Service) prepareExistingFile(ctx context.Context, project projectregi
 	}
 	if !safety.Eligible {
 		state := fileStateFromSafety(project, relative, safety, "", info.ModTime().UTC(), run.StartedAt)
+		svc.recordPolicySkip(project.ID, safety.Reason, state.RelativePath)
 		return fullScanFileResult{state: state}
 	}
 
@@ -2601,6 +2608,7 @@ func (svc *Service) skippedState(project projectregistry.Project, relative strin
 		state.RelativePath = ""
 		state.RelativePathSafe = false
 	}
+	svc.recordPolicySkip(project.ID, reason, state.RelativePath)
 	return state
 }
 
@@ -2635,6 +2643,20 @@ func fileStateFromSafety(project projectregistry.Project, originalRelative strin
 		state.ContentSHA256 = ""
 	}
 	return state
+}
+
+func (svc *Service) recordPolicySkip(projectID string, reason SkipReason, relativePath string) {
+	if svc == nil || svc.policyRecorder == nil {
+		return
+	}
+	switch reason {
+	case SkipReasonDeniedPath:
+		svc.policyRecorder.RecordPolicyEvent(agentactivity.PolicyEvent{ProjectID: projectID, Category: "denied_path"})
+	case SkipReasonSensitiveContent:
+		svc.policyRecorder.RecordPolicyEvent(agentactivity.PolicyEvent{ProjectID: projectID, Category: "sensitive_content", Path: relativePath})
+	case SkipReasonUnsafePath:
+		svc.policyRecorder.RecordPolicyEvent(agentactivity.PolicyEvent{ProjectID: projectID, Category: "unsafe_path"})
+	}
 }
 
 func parseEligible(relative string, content []byte) ([]Symbol, []Heading, error) {
