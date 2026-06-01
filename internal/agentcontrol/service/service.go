@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
 )
@@ -26,6 +27,7 @@ type Service struct {
 	tasks        store.TaskStore
 	researchRuns store.ResearchRunStore
 	agentRuns    store.AgentRunStore
+	policyRecorder *agentactivity.Recorder
 	now          func() time.Time
 	newID        func(string) string
 }
@@ -48,6 +50,10 @@ func NewWithAgentRuns(tasks store.TaskStore, researchRuns store.ResearchRunStore
 	svc := New(tasks, researchRuns)
 	svc.agentRuns = agentRuns
 	return svc
+}
+
+func (svc *Service) SetPolicyRecorder(recorder *agentactivity.Recorder) {
+	svc.policyRecorder = recorder
 }
 
 func (svc *Service) CreateTask(ctx context.Context, input model.CreateTaskInput) (model.Task, error) {
@@ -171,10 +177,12 @@ func (svc *Service) CreateAgentRun(ctx context.Context, input model.CreateAgentR
 	}
 	changedFiles, err := safeRelativePaths(input.ChangedFiles)
 	if err != nil {
+		svc.recordPolicyEvent(projectID, "unsafe_edit", "")
 		return model.AgentRun{}, err
 	}
 	verifiers, err := safeVerifiers(input.Verifiers)
 	if err != nil {
+		svc.recordVerifierPolicyEvent(projectID, input.Verifiers, err)
 		return model.AgentRun{}, err
 	}
 	artifacts, err := safeArtifacts(input.Artifacts)
@@ -226,10 +234,12 @@ func (svc *Service) AppendAgentStep(ctx context.Context, runID string, input mod
 	}
 	changedFiles, err := safeRelativePaths(input.ChangedFiles)
 	if err != nil {
+		svc.recordPolicyEvent("", "unsafe_edit", "")
 		return model.AgentRun{}, err
 	}
 	verifiers, err := safeVerifiers(input.Verifiers)
 	if err != nil {
+		svc.recordVerifierPolicyEvent("", input.Verifiers, err)
 		return model.AgentRun{}, err
 	}
 	artifacts, err := safeArtifacts(input.Artifacts)
@@ -339,10 +349,12 @@ func (svc *Service) CompleteAgentRun(ctx context.Context, runID string, input mo
 	}
 	changedFiles, err := safeRelativePaths(input.ChangedFiles)
 	if err != nil {
+		svc.recordPolicyEvent("", "unsafe_edit", "")
 		return model.AgentRun{}, err
 	}
 	verifiers, err := safeVerifiers(input.Verifiers)
 	if err != nil {
+		svc.recordVerifierPolicyEvent("", input.Verifiers, err)
 		return model.AgentRun{}, err
 	}
 	artifacts, err := safeArtifacts(input.Artifacts)
@@ -386,6 +398,39 @@ func (svc *Service) updateTaskStatus(ctx context.Context, task model.Task, statu
 	task.Status = status
 	task.UpdatedAt = svc.now()
 	return svc.tasks.UpdateTask(ctx, task)
+}
+
+func (svc *Service) recordVerifierPolicyEvent(projectID string, verifiers []model.AgentVerifier, err error) {
+	category := "unsafe_edit"
+	if err != nil && verifierInputHasURL(verifiers) {
+		category = "invalid_verifier_url"
+	}
+	svc.recordPolicyEvent(projectID, category, "")
+}
+
+func (svc *Service) recordPolicyEvent(projectID string, category string, path string) {
+	if svc == nil || svc.policyRecorder == nil {
+		return
+	}
+	svc.policyRecorder.RecordPolicyEvent(agentactivity.PolicyEvent{
+		ProjectID: projectID,
+		Category:  category,
+		Path:      path,
+	})
+}
+
+func verifierInputHasURL(verifiers []model.AgentVerifier) bool {
+	for _, verifier := range verifiers {
+		if strings.Contains(verifier.Command, "://") {
+			return true
+		}
+		for _, arg := range verifier.Args {
+			if strings.Contains(arg, "://") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func containsProhibitedData(value string) bool {

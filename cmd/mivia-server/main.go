@@ -227,6 +227,8 @@ func run() error {
 		RetainRawPayloads: cfg.AgentActivity.RetainRawPayloads,
 	})
 	activityRecorder := agentactivity.NewRecorderWithStore(500, activityStore)
+	agentService.SetPolicyRecorder(activityRecorder)
+	projectIngestionService.SetPolicyRecorder(activityRecorder)
 
 	checker := health.NewChecker(
 		health.Check{
