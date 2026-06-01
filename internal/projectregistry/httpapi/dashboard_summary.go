@@ -17,13 +17,10 @@ import (
 )
 
 const (
-	dashboardFilesPageSize    = 100
-	dashboardFilesMax         = 500
-	dashboardSymbolsPageSize  = 100
-	dashboardSymbolsMax       = 500
-	dashboardHeadingsPageSize = 100
-	dashboardHeadingsMax      = 300
-	dashboardGitPageSize      = 50
+	dashboardFilesPageSize    = 50
+	dashboardSymbolsPageSize  = 50
+	dashboardHeadingsPageSize = 50
+	dashboardGitPageSize      = 25
 )
 
 type dashboardSummary struct {
@@ -86,10 +83,10 @@ type dashboardIntegrationSummary struct {
 }
 
 type dashboardSummaryLimits struct {
-	FilesMax    int `json:"files_max"`
-	SymbolsMax  int `json:"symbols_max"`
-	HeadingsMax int `json:"headings_max"`
-	GitMax      int `json:"git_max"`
+	FilesPageSize    int `json:"files_page_size"`
+	SymbolsPageSize  int `json:"symbols_page_size"`
+	HeadingsPageSize int `json:"headings_page_size"`
+	GitPageSize      int `json:"git_page_size"`
 }
 
 type dashboardCount struct {
@@ -151,10 +148,10 @@ func getDashboardSummaryHandler(registry *projectregistry.Registry, ingestion pr
 		summary := dashboardSummary{
 			Project: projectregistry.MetadataForProject(project),
 			Limits: dashboardSummaryLimits{
-				FilesMax:    dashboardFilesMax,
-				SymbolsMax:  dashboardSymbolsMax,
-				HeadingsMax: dashboardHeadingsMax,
-				GitMax:      dashboardGitPageSize,
+				FilesPageSize:    dashboardFilesPageSize,
+				SymbolsPageSize:  dashboardSymbolsPageSize,
+				HeadingsPageSize: dashboardHeadingsPageSize,
+				GitPageSize:      dashboardGitPageSize,
 			},
 			CheckedAt: time.Now().UTC(),
 		}
@@ -197,37 +194,30 @@ func dashboardFiles(ctx context.Context, ingestion projectingestion.API, project
 	}
 	byExtension := map[string]int{}
 	bySkippedReason := map[string]int{}
-	token := ""
-	for result.SampledCount < dashboardFilesMax {
-		page, err := ingestion.ListFiles(ctx, projectID, projectingestion.FileStateFilter{}, projectingestion.Pagination{PageSize: dashboardFilesPageSize, PageToken: token})
-		if err != nil {
-			*warnings = append(*warnings, "files_unavailable")
-			return result
-		}
-		for _, file := range page.Files {
-			result.SampledCount++
-			result.ByStatus[emptyKey(file.Status)]++
-			byExtension[emptyKey(file.Extension)]++
-			if file.SkippedReason != "" {
-				bySkippedReason[file.SkippedReason]++
-			}
-			result.TotalSizeBytes += file.SizeBytes
-			if len(result.Sample) < 12 {
-				result.Sample = append(result.Sample, fileSample{
-					RelativePath: file.RelativePath,
-					Extension:    file.Extension,
-					Status:       file.Status,
-					Present:      file.Present,
-					SizeBytes:    file.SizeBytes,
-				})
-			}
-		}
-		if page.NextPageToken == "" {
-			break
-		}
-		token = page.NextPageToken
+	page, err := ingestion.ListFiles(ctx, projectID, projectingestion.FileStateFilter{}, projectingestion.Pagination{PageSize: dashboardFilesPageSize})
+	if err != nil {
+		*warnings = append(*warnings, "files_unavailable")
+		return result
 	}
-	result.SampleTruncated = token != ""
+	for _, file := range page.Files {
+		result.SampledCount++
+		result.ByStatus[emptyKey(file.Status)]++
+		byExtension[emptyKey(file.Extension)]++
+		if file.SkippedReason != "" {
+			bySkippedReason[file.SkippedReason]++
+		}
+		result.TotalSizeBytes += file.SizeBytes
+		if len(result.Sample) < 12 {
+			result.Sample = append(result.Sample, fileSample{
+				RelativePath: file.RelativePath,
+				Extension:    file.Extension,
+				Status:       file.Status,
+				Present:      file.Present,
+				SizeBytes:    file.SizeBytes,
+			})
+		}
+	}
+	result.SampleTruncated = page.NextPageToken != ""
 	result.ByExtension = sortedCounts(byExtension, 12)
 	result.BySkippedReason = sortedCounts(bySkippedReason, 12)
 	return result
@@ -237,29 +227,22 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 	result := dashboardSymbolSummary{}
 	byKind := map[string]int{}
 	byPackage := map[string]int{}
-	token := ""
-	for result.SampledCount < dashboardSymbolsMax {
-		page, err := ingestion.ListSymbols(ctx, projectID, projectingestion.SymbolFilter{}, projectingestion.Pagination{PageSize: dashboardSymbolsPageSize, PageToken: token})
-		if err != nil {
-			*warnings = append(*warnings, "symbols_unavailable")
-			return result
-		}
-		for _, symbol := range page.Symbols {
-			result.SampledCount++
-			byKind[emptyKey(symbol.Kind)]++
-			if symbol.PackageName != "" {
-				byPackage[symbol.PackageName]++
-			}
-			if len(result.Sample) < 12 {
-				result.Sample = append(result.Sample, symbolSample{Name: symbol.Name, Kind: symbol.Kind, PackageName: symbol.PackageName, FileID: symbol.FileID})
-			}
-		}
-		if page.NextPageToken == "" {
-			break
-		}
-		token = page.NextPageToken
+	page, err := ingestion.ListSymbols(ctx, projectID, projectingestion.SymbolFilter{}, projectingestion.Pagination{PageSize: dashboardSymbolsPageSize})
+	if err != nil {
+		*warnings = append(*warnings, "symbols_unavailable")
+		return result
 	}
-	result.SampleTruncated = token != ""
+	for _, symbol := range page.Symbols {
+		result.SampledCount++
+		byKind[emptyKey(symbol.Kind)]++
+		if symbol.PackageName != "" {
+			byPackage[symbol.PackageName]++
+		}
+		if len(result.Sample) < 12 {
+			result.Sample = append(result.Sample, symbolSample{Name: symbol.Name, Kind: symbol.Kind, PackageName: symbol.PackageName, FileID: symbol.FileID})
+		}
+	}
+	result.SampleTruncated = page.NextPageToken != ""
 	result.ByKind = sortedCounts(byKind, 12)
 	result.ByPackage = sortedCounts(byPackage, 12)
 	return result
@@ -268,26 +251,19 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 func dashboardHeadings(ctx context.Context, ingestion projectingestion.API, projectID string, warnings *[]string) dashboardHeadingSummary {
 	result := dashboardHeadingSummary{}
 	byLevel := map[string]int{}
-	token := ""
-	for result.SampledCount < dashboardHeadingsMax {
-		page, err := ingestion.ListHeadings(ctx, projectID, "", projectingestion.Pagination{PageSize: dashboardHeadingsPageSize, PageToken: token})
-		if err != nil {
-			*warnings = append(*warnings, "headings_unavailable")
-			return result
-		}
-		for _, heading := range page.Headings {
-			result.SampledCount++
-			byLevel[strconv.Itoa(heading.Level)]++
-			if len(result.Sample) < 8 {
-				result.Sample = append(result.Sample, headingSample{Level: heading.Level, FileID: heading.FileID})
-			}
-		}
-		if page.NextPageToken == "" {
-			break
-		}
-		token = page.NextPageToken
+	page, err := ingestion.ListHeadings(ctx, projectID, "", projectingestion.Pagination{PageSize: dashboardHeadingsPageSize})
+	if err != nil {
+		*warnings = append(*warnings, "headings_unavailable")
+		return result
 	}
-	result.SampleTruncated = token != ""
+	for _, heading := range page.Headings {
+		result.SampledCount++
+		byLevel[strconv.Itoa(heading.Level)]++
+		if len(result.Sample) < 8 {
+			result.Sample = append(result.Sample, headingSample{Level: heading.Level, FileID: heading.FileID})
+		}
+	}
+	result.SampleTruncated = page.NextPageToken != ""
 	result.ByLevel = sortedCounts(byLevel, 8)
 	return result
 }

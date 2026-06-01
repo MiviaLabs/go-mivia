@@ -61,7 +61,7 @@ async function loadProjectDetail(projectID) {
   summary.textContent = projectID;
 
   try {
-    const dashboard = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/dashboard-summary`, 5000);
+    const dashboard = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/dashboard-summary`, 12000);
     const projectData = dashboard.project;
     const healthData = dashboard.context_health;
     const latestData = dashboard.latest_run;
@@ -327,7 +327,7 @@ function projectPipelineDiagram(project, health, latest, graph, dashboard) {
     },
     {
       title: "REST summary",
-      detail: `${numberValue(dashboard?.limits?.files_max)} file cap`,
+      detail: `${numberValue(dashboard?.limits?.files_page_size)} file sample`,
       tone: health?.indexed_content_available ? "ok" : "warn",
     },
   ];
