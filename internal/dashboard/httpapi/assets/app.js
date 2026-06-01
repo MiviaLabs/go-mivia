@@ -47,6 +47,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 const POLL_MS = 3000;
 const ACTIVE_HEALTH = new Set(["syncing", "running", "warming_up"]);
 const ACTIVE_RUN = new Set(["running", "queued", "pending", "syncing"]);
+const ACTIVITY_EVENT_TYPES = ["mcp_activity", "policy_event", "agent_run_started", "agent_step", "agent_promotion", "agent_run_completed"];
 let pollHandle = null;
 let activitySource = null;
 let activityDrawer = null;
@@ -576,12 +577,12 @@ function openActivityDrawer(projectID) {
   activityDrawer = el("aside", { class: "activity-drawer", role: "dialog", "aria-modal": "false", "aria-label": "Agent activity" },
     el("div", { class: "activity-drawer__head" },
       el("div", {},
-        el("span", { class: "eyebrow", text: "MCP" }),
+        el("span", { class: "eyebrow", text: "Trace" }),
         el("h2", { class: "activity-drawer__title", text: "Agent activity" }),
       ),
       el("button", { class: "secondary compact", type: "button", onClick: closeActivityDrawer, title: "Close activity drawer" }, "Close"),
     ),
-    el("p", { class: "activity-drawer__note", text: "Persisted replay is redacted by default. Live local-debug payloads stay collapsed and are not downloaded automatically." }),
+    el("p", { class: "activity-drawer__note", text: "Persisted replay is redacted by default. Trace IDs connect MCP calls, agent runs, workspace edits, verifier metadata, ingestion runs, and promotion decisions." }),
     el("div", { class: "activity-toolbar" },
       el("button", { class: "secondary compact", type: "button", onClick: () => renderActivityEvents([]) }, "Clear"),
       el("button", { class: "secondary compact", type: "button", onClick: copyVisibleActivity }, "Copy JSONL"),
@@ -594,7 +595,14 @@ function openActivityDrawer(projectID) {
   activitySource.addEventListener("open", () => {
     if (activityStatus) activityStatus.textContent = "Connected";
   });
-  activitySource.addEventListener("mcp_activity", (event) => {
+  ACTIVITY_EVENT_TYPES.forEach((type) => activitySource.addEventListener(type, handleActivityEvent));
+  activitySource.onmessage = handleActivityEvent;
+  activitySource.addEventListener("error", () => {
+    if (activityStatus) activityStatus.textContent = "Stream disconnected or unavailable";
+  });
+}
+
+function handleActivityEvent(event) {
     try {
       activityEvents.push(JSON.parse(event.data));
       if (activityEvents.length > 200) activityEvents = activityEvents.slice(-200);
@@ -602,10 +610,6 @@ function openActivityDrawer(projectID) {
     } catch {
       if (activityStatus) activityStatus.textContent = "Received malformed activity event";
     }
-  });
-  activitySource.addEventListener("error", () => {
-    if (activityStatus) activityStatus.textContent = "Stream disconnected or unavailable";
-  });
 }
 
 function closeActivityDrawer() {
@@ -627,24 +631,29 @@ function renderActivityEvents(events) {
   if (!activityList) return;
   clear(activityList);
   if (!events.length) {
-    activityList.append(emptyText("No MCP activity captured for this project yet."));
+    activityList.append(emptyText("No agent activity captured for this project yet."));
     return;
   }
   events.slice().reverse().forEach((event) => activityList.append(activityEventRow(event)));
 }
 
 function activityEventRow(event) {
-  const statusTone = event.status === "ok" ? "ok" : "warn";
+  const statusTone = event.status === "ok" || event.status === "completed" || event.status === "validated" || event.status === "promoted" ? "ok" : "warn";
+  const title = event.tool_name || event.method || event.event_kind || "activity";
+  const badges = [
+    pill(event.status || "unknown", statusTone),
+    event.event_kind ? pill(event.event_kind, event.event_kind === "mcp_activity" ? "muted" : "ok") : null,
+    event.trace_id ? el("span", { class: "tag", text: `trace ${shortID(event.trace_id)}` }) : null,
+    event.run_id ? el("span", { class: "tag", text: `run ${shortID(event.run_id)}` }) : null,
+    el("span", { class: "tag", text: `${numberValue(event.duration_ms)} ms` }),
+  ].filter(Boolean);
   return el("article", { class: "activity-event" },
     el("div", { class: "activity-event__summary" },
       el("div", { class: "activity-event__main" },
-        el("strong", { text: event.tool_name || event.method || "mcp" }),
+        el("strong", { text: title }),
         el("span", { class: "muted-text", text: formatDate(event.timestamp) }),
       ),
-      el("div", { class: "activity-event__badges" },
-        pill(event.status || "unknown", statusTone),
-        el("span", { class: "tag", text: `${numberValue(event.duration_ms)} ms` }),
-      ),
+      el("div", { class: "activity-event__badges" }, badges),
     ),
     event.error ? el("p", { class: "activity-event__error", text: event.error }) : null,
     el("details", { class: "activity-details activity-details--summary" },
@@ -658,8 +667,13 @@ function activityEventRow(event) {
       el("summary", { text: "Full payload" }),
       el("pre", { text: prettyJSON({
         id: event.id,
+        event_kind: event.event_kind,
         request_id: event.request_id,
         project_id: event.project_id,
+        trace_id: event.trace_id,
+        run_id: event.run_id,
+        parent_id: event.parent_id,
+        correlation_kind: event.correlation_kind,
         method: event.method,
         tool_name: event.tool_name,
         remote_addr: event.remote_addr,
@@ -696,6 +710,11 @@ function redactedActivityEvent(event) {
     timestamp: event.timestamp,
     request_id: event.request_id,
     project_id: event.project_id,
+    event_kind: event.event_kind,
+    trace_id: event.trace_id,
+    run_id: event.run_id,
+    parent_id: event.parent_id,
+    correlation_kind: event.correlation_kind,
     method: event.method,
     tool_name: event.tool_name,
     status: event.status,
@@ -706,6 +725,11 @@ function redactedActivityEvent(event) {
     input_summary_class: event.input_summary_class,
     output_summary_class: event.output_summary_class,
   };
+}
+
+function shortID(value) {
+  if (!value) return "";
+  return value.length > 14 ? `${value.slice(0, 10)}...` : value;
 }
 
 function buildTabs(project, health, latest, graph, dashboard) {

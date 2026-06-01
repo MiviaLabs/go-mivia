@@ -165,6 +165,10 @@ func (svc *Service) CreateAgentRun(ctx context.Context, input model.CreateAgentR
 	if err != nil {
 		return model.AgentRun{}, err
 	}
+	traceID, err := safeOptionalIdentifier(input.TraceID, "trace_id")
+	if err != nil {
+		return model.AgentRun{}, err
+	}
 	taskID := strings.TrimSpace(input.TaskID)
 	if taskID != "" {
 		if _, err := svc.tasks.GetTask(ctx, taskID); err != nil {
@@ -192,6 +196,7 @@ func (svc *Service) CreateAgentRun(ctx context.Context, input model.CreateAgentR
 	now := svc.now()
 	run := model.AgentRun{
 		ID:           svc.newID("agent_run"),
+		TraceID:      traceID,
 		ProjectID:    projectID,
 		TaskID:       taskID,
 		Status:       model.AgentRunStatusRunning,
@@ -201,7 +206,15 @@ func (svc *Service) CreateAgentRun(ctx context.Context, input model.CreateAgentR
 		Verifiers:    verifiers,
 		Artifacts:    artifacts,
 	}
-	return svc.agentRuns.CreateAgentRun(ctx, run)
+	if run.TraceID == "" {
+		run.TraceID = run.ID
+	}
+	run, err = svc.agentRuns.CreateAgentRun(ctx, run)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	svc.recordAgentRunEvent(run, "agent_run_started", "", run.Status, "", "")
+	return run, nil
 }
 
 func (svc *Service) AppendAgentStep(ctx context.Context, runID string, input model.AppendAgentStepInput) (model.AgentRun, error) {
@@ -213,6 +226,10 @@ func (svc *Service) AppendAgentStep(ctx context.Context, runID string, input mod
 		return model.AgentRun{}, err
 	}
 	status, err := safeAgentRunStatus(firstNonEmpty(input.Status, model.AgentRunStatusRunning), true)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	traceID, err := safeOptionalIdentifier(input.TraceID, "trace_id")
 	if err != nil {
 		return model.AgentRun{}, err
 	}
@@ -249,6 +266,7 @@ func (svc *Service) AppendAgentStep(ctx context.Context, runID string, input mod
 	now := svc.now()
 	step := model.AgentStep{
 		ID:              svc.newID("agent_step"),
+		TraceID:         traceID,
 		ToolName:        toolName,
 		ToolCategory:    toolCategory,
 		Status:          status,
@@ -260,7 +278,19 @@ func (svc *Service) AppendAgentStep(ctx context.Context, runID string, input mod
 		Verifiers:       verifiers,
 		Artifacts:       artifacts,
 	}
-	return svc.agentRuns.AppendAgentStep(ctx, runID, step)
+	run, err := svc.agentRuns.GetAgentRun(ctx, runID)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	if step.TraceID == "" {
+		step.TraceID = run.TraceID
+	}
+	run, err = svc.agentRuns.AppendAgentStep(ctx, runID, step)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	svc.recordAgentRunEvent(run, "agent_step", step.ID, step.Status, step.FailureCategory, step.ToolName)
+	return run, nil
 }
 
 func (svc *Service) PromoteAgentArtifact(ctx context.Context, runID string, input model.PromoteAgentArtifactInput) (model.AgentRun, error) {
@@ -324,7 +354,12 @@ func (svc *Service) PromoteAgentArtifact(ctx context.Context, runID string, inpu
 		Decision:     decision,
 		DecidedAt:    svc.now(),
 	}
-	return svc.agentRuns.PromoteAgentArtifact(ctx, runID, promotion)
+	run, err = svc.agentRuns.PromoteAgentArtifact(ctx, runID, promotion)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	svc.recordAgentRunEvent(run, "agent_promotion", promotion.SourceRef, promotion.State, "", promotion.ArtifactRef)
+	return run, nil
 }
 
 func (svc *Service) CompleteAgentRun(ctx context.Context, runID string, input model.CompleteAgentRunInput) (model.AgentRun, error) {
@@ -380,7 +415,12 @@ func (svc *Service) CompleteAgentRun(ctx context.Context, runID string, input mo
 	if len(artifacts) > 0 {
 		run.Artifacts = artifacts
 	}
-	return svc.agentRuns.CompleteAgentRun(ctx, run)
+	run, err = svc.agentRuns.CompleteAgentRun(ctx, run)
+	if err != nil {
+		return model.AgentRun{}, err
+	}
+	svc.recordAgentRunEvent(run, "agent_run_completed", "", run.Status, run.FailureCategory, "")
+	return run, nil
 }
 
 func (svc *Service) GetAgentRun(ctx context.Context, id string) (model.AgentRun, error) {
@@ -416,6 +456,29 @@ func (svc *Service) recordPolicyEvent(projectID string, category string, path st
 		ProjectID: projectID,
 		Category:  category,
 		Path:      path,
+	})
+}
+
+func (svc *Service) recordAgentRunEvent(run model.AgentRun, kind string, parentID string, status string, failureCategory string, toolName string) {
+	if svc == nil || svc.policyRecorder == nil {
+		return
+	}
+	traceID := run.TraceID
+	if traceID == "" {
+		traceID = run.ID
+	}
+	svc.policyRecorder.RecordRunEvent(agentactivity.Event{
+		EventKind:       kind,
+		ProjectID:       run.ProjectID,
+		TraceID:         traceID,
+		RunID:           run.ID,
+		ParentID:        parentID,
+		CorrelationKind: "agent_run",
+		Method:          kind,
+		ToolName:        toolName,
+		Status:          status,
+		FailureCategory: failureCategory,
+		ClientClass:     "agent",
 	})
 }
 

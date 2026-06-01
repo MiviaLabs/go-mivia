@@ -18,6 +18,10 @@ type Event struct {
 	Timestamp          time.Time       `json:"timestamp"`
 	EventKind          string          `json:"event_kind,omitempty"`
 	ProjectID          string          `json:"project_id,omitempty"`
+	TraceID            string          `json:"trace_id,omitempty"`
+	RunID              string          `json:"run_id,omitempty"`
+	ParentID           string          `json:"parent_id,omitempty"`
+	CorrelationKind    string          `json:"correlation_kind,omitempty"`
 	Method             string          `json:"method"`
 	ToolName           string          `json:"tool_name,omitempty"`
 	Status             string          `json:"status"`
@@ -145,6 +149,22 @@ func (recorder *Recorder) RecordPolicyEvent(event PolicyEvent) Event {
 	})
 }
 
+func (recorder *Recorder) RecordRunEvent(event Event) Event {
+	if recorder == nil {
+		return Event{}
+	}
+	event.EventKind = firstNonEmptyString(event.EventKind, "agent_run")
+	event.Method = firstNonEmptyString(event.Method, event.EventKind)
+	event.ToolName = safeIdentifierLike(event.ToolName, 100)
+	event.ProjectID = safeProjectID(event.ProjectID)
+	event.TraceID = safeIdentifierLike(event.TraceID, 200)
+	event.RunID = safeIdentifierLike(event.RunID, 200)
+	event.ParentID = safeIdentifierLike(event.ParentID, 200)
+	event.CorrelationKind = safeIdentifierLike(event.CorrelationKind, 100)
+	event.RelativePath = safeRelativePath(event.RelativePath)
+	return recorder.Record(event)
+}
+
 func (recorder *Recorder) Recent(projectID string, limit int) []Event {
 	if recorder == nil {
 		return nil
@@ -265,6 +285,11 @@ func enrichEvent(event Event) Event {
 	if event.EventKind == "" {
 		event.EventKind = "mcp_activity"
 	}
+	event.ProjectID = safeProjectID(event.ProjectID)
+	event.TraceID = safeIdentifierLike(event.TraceID, 200)
+	event.RunID = safeIdentifierLike(event.RunID, 200)
+	event.ParentID = safeIdentifierLike(event.ParentID, 200)
+	event.CorrelationKind = safeIdentifierLike(event.CorrelationKind, 100)
 	if event.ClientClass == "" {
 		event.ClientClass = classifyClient(event.UserAgent)
 	}
@@ -281,6 +306,15 @@ func enrichEvent(event Event) Event {
 		event.OutputSummaryClass = "error"
 	}
 	return event
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func safeProjectID(value string) string {

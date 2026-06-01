@@ -48,6 +48,7 @@ type CreateResearchRunInput struct {
 
 type AgentRun struct {
 	ID              string           `json:"id"`
+	TraceID         string           `json:"trace_id,omitempty"`
 	ProjectID       string           `json:"project_id"`
 	TaskID          string           `json:"task_id,omitempty"`
 	Status          string           `json:"status"`
@@ -64,6 +65,7 @@ type AgentRun struct {
 
 type AgentStep struct {
 	ID              string          `json:"id"`
+	TraceID         string          `json:"trace_id,omitempty"`
 	ToolName        string          `json:"tool_name,omitempty"`
 	ToolCategory    string          `json:"tool_category,omitempty"`
 	Status          string          `json:"status"`
@@ -101,6 +103,7 @@ type AgentPromotion struct {
 
 type CreateAgentRunInput struct {
 	ProjectID    string          `json:"project_id"`
+	TraceID      string          `json:"trace_id,omitempty"`
 	TaskID       string          `json:"task_id,omitempty"`
 	Summary      string          `json:"summary,omitempty"`
 	ChangedFiles []string        `json:"changed_files,omitempty"`
@@ -110,6 +113,7 @@ type CreateAgentRunInput struct {
 
 type AppendAgentStepInput struct {
 	RunID           string          `json:"run_id,omitempty"`
+	TraceID         string          `json:"trace_id,omitempty"`
 	ToolName        string          `json:"tool_name,omitempty"`
 	ToolCategory    string          `json:"tool_category,omitempty"`
 	Status          string          `json:"status"`

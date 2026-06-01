@@ -361,6 +361,10 @@ var statements = []string{
 		occurred_at TEXT NOT NULL,
 		event_kind TEXT NOT NULL DEFAULT 'mcp_activity',
 		project_id TEXT NOT NULL DEFAULT '',
+		trace_id TEXT NOT NULL DEFAULT '',
+		run_id TEXT NOT NULL DEFAULT '',
+		parent_id TEXT NOT NULL DEFAULT '',
+		correlation_kind TEXT NOT NULL DEFAULT '',
 		method TEXT NOT NULL,
 		tool_name TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL,
@@ -460,6 +464,8 @@ var fileIngestionStateColumns = []columnDefinition{
 var postColumnStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_project_file_ingestion_state_project_extension
 		ON project_file_ingestion_state(project_id, extension, relative_path_hash)`,
+	`CREATE INDEX IF NOT EXISTS idx_agent_activity_events_project_trace
+		ON agent_activity_events(project_id, trace_id, id DESC)`,
 }
 
 var integrationSyncStateColumns = []columnDefinition{
@@ -496,6 +502,22 @@ var agentActivityColumns = []columnDefinition{
 	{
 		Name:       "event_kind",
 		Definition: "event_kind TEXT NOT NULL DEFAULT 'mcp_activity'",
+	},
+	{
+		Name:       "trace_id",
+		Definition: "trace_id TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "run_id",
+		Definition: "run_id TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "parent_id",
+		Definition: "parent_id TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "correlation_kind",
+		Definition: "correlation_kind TEXT NOT NULL DEFAULT ''",
 	},
 	{
 		Name:       "policy_category",

@@ -51,6 +51,7 @@ func TestLadybugStore_AgentRunLifecycle(t *testing.T) {
 
 	created, err := runStore.CreateAgentRun(context.Background(), model.AgentRun{
 		ID:           "agent_run_test",
+		TraceID:      "trace_test",
 		ProjectID:    "example-service",
 		Status:       model.AgentRunStatusRunning,
 		StartedAt:    now,
@@ -62,6 +63,7 @@ func TestLadybugStore_AgentRunLifecycle(t *testing.T) {
 	}
 	updated, err := runStore.AppendAgentStep(context.Background(), created.ID, model.AgentStep{
 		ID:        "agent_step_test",
+		TraceID:   "trace_test",
 		ToolName:  "go",
 		Status:    model.AgentRunStatusCompleted,
 		StartedAt: now,
@@ -97,7 +99,7 @@ func TestLadybugStore_AgentRunLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get agent run: %v", err)
 	}
-	if fetched.Status != model.AgentRunStatusCompleted || len(fetched.Steps) != 1 || len(fetched.Promotions) != 1 || fetched.ChangedFiles[0] != "internal/agentcontrol/model/model.go" {
+	if fetched.Status != model.AgentRunStatusCompleted || fetched.TraceID != "trace_test" || len(fetched.Steps) != 1 || fetched.Steps[0].TraceID != "trace_test" || len(fetched.Promotions) != 1 || fetched.ChangedFiles[0] != "internal/agentcontrol/model/model.go" {
 		t.Fatalf("unexpected fetched run: %#v", fetched)
 	}
 }

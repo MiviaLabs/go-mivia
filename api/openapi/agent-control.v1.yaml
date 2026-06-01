@@ -303,8 +303,8 @@ paths:
   /projects/{id}/agent-activity/stream:
     get:
       operationId: streamProjectAgentActivity
-      summary: Stream project-scoped MCP activity
-      description: Streams recent persisted redacted MCP activity events and live in-memory events for one local project as server-sent events. Persistent storage includes metadata plus input/output summary classes and omits raw payloads and payload-derived hashes by default. Full raw request, params, argument, result payloads, and payload hashes may be present for live local debugging or when explicit local debug retention is enabled with MIVIA_DEBUG_ENABLED and MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS.
+      summary: Stream project-scoped agent activity
+      description: Streams recent persisted redacted MCP activity, agent-run lifecycle events, verifier metadata, promotion decisions, policy guard events, and live in-memory events for one local project as server-sent events. Events can include trace_id, run_id, parent_id, and correlation_kind. Persistent storage includes metadata plus input/output summary classes and omits raw payloads and payload-derived hashes by default. Full raw request, params, argument, result payloads, and payload hashes may be present for live local debugging or when explicit local debug retention is enabled with MIVIA_DEBUG_ENABLED and MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS.
       parameters:
         - $ref: '#/components/parameters/ID'
         - name: recent
@@ -1308,6 +1308,9 @@ components:
         project_id:
           type: string
           minLength: 1
+        trace_id:
+          type: string
+          description: Optional safe correlation id. Defaults to the generated run id.
         task_id:
           type: string
         summary:
@@ -1334,6 +1337,9 @@ components:
         run_id:
           type: string
           description: Optional body alias; path id is authoritative for REST.
+        trace_id:
+          type: string
+          description: Optional safe correlation id. Defaults to the parent run trace id.
         tool_name:
           type: string
         tool_category:
@@ -1419,6 +1425,8 @@ components:
       properties:
         id:
           type: string
+        trace_id:
+          type: string
         project_id:
           type: string
         task_id:
@@ -1463,6 +1471,8 @@ components:
       required: [id, status, started_at]
       properties:
         id:
+          type: string
+        trace_id:
           type: string
         tool_name:
           type: string

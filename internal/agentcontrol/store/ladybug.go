@@ -191,6 +191,7 @@ func agentRunProperties(run model.AgentRun) (map[string]string, error) {
 	}
 	return map[string]string{
 		"id":               run.ID,
+		"trace_id":         run.TraceID,
 		"project_id":       run.ProjectID,
 		"task_id":          run.TaskID,
 		"status":           run.Status,
@@ -237,6 +238,7 @@ func agentRunFromNode(node ladybug.Node) (model.AgentRun, error) {
 	}
 	return model.AgentRun{
 		ID:              node.Properties["id"],
+		TraceID:         node.Properties["trace_id"],
 		ProjectID:       node.Properties["project_id"],
 		TaskID:          node.Properties["task_id"],
 		Status:          node.Properties["status"],

@@ -142,6 +142,7 @@ func TestAgentRunLifecycle_RedactedMetadataOnly(t *testing.T) {
 
 	run, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
 		ProjectID:    "example-service",
+		TraceID:      "trace_manual_1",
 		Summary:      "implemented bounded context health",
 		ChangedFiles: []string{"internal/projectreliability/service.go"},
 		Verifiers: []model.AgentVerifier{{
@@ -159,7 +160,7 @@ func TestAgentRunLifecycle_RedactedMetadataOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent run: %v", err)
 	}
-	if run.Status != model.AgentRunStatusRunning || run.ProjectID != "example-service" {
+	if run.Status != model.AgentRunStatusRunning || run.ProjectID != "example-service" || run.TraceID != "trace_manual_1" {
 		t.Fatalf("unexpected run: %#v", run)
 	}
 
@@ -174,6 +175,9 @@ func TestAgentRunLifecycle_RedactedMetadataOnly(t *testing.T) {
 	}
 	if len(run.Steps) != 1 || run.Steps[0].Notes != "focused verifier passed" {
 		t.Fatalf("unexpected steps: %#v", run.Steps)
+	}
+	if run.Steps[0].TraceID != run.TraceID {
+		t.Fatalf("expected step trace to inherit run trace, got %#v", run.Steps[0])
 	}
 
 	run, err = svc.PromoteAgentArtifact(context.Background(), run.ID, model.PromoteAgentArtifactInput{
@@ -196,6 +200,48 @@ func TestAgentRunLifecycle_RedactedMetadataOnly(t *testing.T) {
 	}
 	if run.Status != model.AgentRunStatusCompleted || run.CompletedAt.IsZero() {
 		t.Fatalf("unexpected completed run: %#v", run)
+	}
+}
+
+func TestAgentRunLifecycleRecordsTraceActivity(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	recorder := agentactivity.NewRecorder(10)
+	svc.SetPolicyRecorder(recorder)
+
+	run, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+		ProjectID: "example-service",
+		Summary:   "bounded trace metadata",
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if run.TraceID != run.ID {
+		t.Fatalf("expected run id as default trace id, got %#v", run)
+	}
+	run, err = svc.AppendAgentStep(context.Background(), run.ID, model.AppendAgentStepInput{
+		ToolName: "go",
+		Status:   model.AgentRunStatusCompleted,
+	})
+	if err != nil {
+		t.Fatalf("append step: %v", err)
+	}
+	_, err = svc.CompleteAgentRun(context.Background(), run.ID, model.CompleteAgentRunInput{Status: model.AgentRunStatusCompleted})
+	if err != nil {
+		t.Fatalf("complete run: %v", err)
+	}
+
+	events := recorder.Recent("example-service", 10)
+	if len(events) != 3 {
+		t.Fatalf("expected lifecycle events, got %#v", events)
+	}
+	for _, event := range events {
+		if event.TraceID != run.TraceID || event.RunID != run.ID || event.CorrelationKind != "agent_run" {
+			t.Fatalf("expected correlated lifecycle event, got %#v", event)
+		}
+	}
+	if events[0].EventKind != "agent_run_started" || events[1].EventKind != "agent_step" || events[2].EventKind != "agent_run_completed" {
+		t.Fatalf("unexpected lifecycle order: %#v", events)
 	}
 }
 

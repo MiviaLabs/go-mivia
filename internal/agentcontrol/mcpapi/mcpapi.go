@@ -628,6 +628,7 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 			"description": "Create redacted local agent run metadata without raw prompts, source, stderr, credentials, provider payloads, roots, or personal data.",
 			"inputSchema": objectSchema(map[string]any{
 				"project_id":    map[string]any{"type": "string", "minLength": 1},
+				"trace_id":      map[string]any{"type": "string", "description": "Optional safe correlation id. Defaults to the generated run id."},
 				"task_id":       map[string]any{"type": "string"},
 				"summary":       map[string]any{"type": "string", "maxLength": 500},
 				"changed_files": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 100},
@@ -641,6 +642,7 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 			"description": "Append one redacted step to a local agent run without raw prompts, source, stderr, credentials, provider payloads, roots, or personal data.",
 			"inputSchema": objectSchema(map[string]any{
 				"run_id":           map[string]any{"type": "string", "minLength": 1},
+				"trace_id":         map[string]any{"type": "string", "description": "Optional safe correlation id. Defaults to the parent run trace id."},
 				"tool_name":        map[string]any{"type": "string"},
 				"tool_category":    map[string]any{"type": "string"},
 				"status":           map[string]any{"type": "string", "enum": []string{model.AgentRunStatusRunning, model.AgentRunStatusCompleted, model.AgentRunStatusFailed}},

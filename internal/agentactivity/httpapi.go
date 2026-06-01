@@ -122,6 +122,14 @@ func writeSSE(w http.ResponseWriter, event Event) {
 		return
 	}
 	fmt.Fprintf(w, "id: %d\n", event.ID)
-	fmt.Fprint(w, "event: mcp_activity\n")
+	fmt.Fprintf(w, "event: %s\n", safeEventKind(event.EventKind))
 	fmt.Fprintf(w, "data: %s\n\n", encoded)
+}
+
+func safeEventKind(value string) string {
+	value = safeIdentifierLike(value, 100)
+	if value == "" {
+		return "mcp_activity"
+	}
+	return value
 }

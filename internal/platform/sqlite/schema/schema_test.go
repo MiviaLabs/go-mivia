@@ -130,6 +130,10 @@ func TestBootstrap_AgentActivityTableExists(t *testing.T) {
 		"occurred_at",
 		"event_kind",
 		"project_id",
+		"trace_id",
+		"run_id",
+		"parent_id",
+		"correlation_kind",
 		"tool_name",
 		"status",
 		"duration_ms",
@@ -144,6 +148,48 @@ func TestBootstrap_AgentActivityTableExists(t *testing.T) {
 	} {
 		assertColumn(t, db.SQLDB(), "agent_activity_events", column)
 	}
+}
+
+func TestBootstrap_AgentActivityTraceColumnsUpgradeExistingTableBeforeIndex(t *testing.T) {
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.SQLDB().ExecContext(context.Background(), `CREATE TABLE agent_activity_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		occurred_at TEXT NOT NULL,
+		event_kind TEXT NOT NULL DEFAULT 'mcp_activity',
+		project_id TEXT NOT NULL DEFAULT '',
+		method TEXT NOT NULL,
+		tool_name TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL,
+		duration_ms INTEGER NOT NULL DEFAULT 0,
+		failure_category TEXT NOT NULL DEFAULT '',
+		policy_category TEXT NOT NULL DEFAULT '',
+		relative_path TEXT NOT NULL DEFAULT '',
+		request_id TEXT NOT NULL DEFAULT '',
+		client_class TEXT NOT NULL DEFAULT '',
+		input_summary_hash TEXT NOT NULL DEFAULT '',
+		input_summary_class TEXT NOT NULL DEFAULT '',
+		output_summary_hash TEXT NOT NULL DEFAULT '',
+		output_summary_class TEXT NOT NULL DEFAULT '',
+		raw_request TEXT NOT NULL DEFAULT '',
+		raw_params TEXT NOT NULL DEFAULT '',
+		raw_arguments TEXT NOT NULL DEFAULT '',
+		raw_result TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		t.Fatalf("create old agent activity table: %v", err)
+	}
+
+	if err := schema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap existing agent activity table: %v", err)
+	}
+
+	for _, column := range []string{"trace_id", "run_id", "parent_id", "correlation_kind"} {
+		assertColumn(t, db.SQLDB(), "agent_activity_events", column)
+	}
+	assertIndex(t, db.SQLDB(), "idx_agent_activity_events_project_trace")
 }
 
 func TestBootstrap_AgentActivityRawColumnsAreEmptyByDefault(t *testing.T) {
@@ -342,6 +388,18 @@ func assertColumn(t *testing.T, db *sql.DB, table string, column string) {
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("inspect column %s.%s: %v", table, column, err)
+	}
+}
+
+func assertIndex(t *testing.T, db *sql.DB, index string) {
+	t.Helper()
+	var name string
+	err := db.QueryRowContext(context.Background(), `SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&name)
+	if err != nil {
+		t.Fatalf("expected index %s: %v", index, err)
+	}
+	if name != index {
+		t.Fatalf("expected index %s, got %s", index, name)
 	}
 }
 

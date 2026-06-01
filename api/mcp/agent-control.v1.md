@@ -19,10 +19,10 @@ Classification: Internal; local project-integration rich-content exception only
 
 ## Local Dashboard Activity
 
-- The REST dashboard exposes `GET /api/v1/projects/{id}/agent-activity/stream` as a project-scoped SSE stream for MCP activity.
-- The stream replays recent persisted redacted events and then sends live `mcp_activity` events for the selected project.
+- The REST dashboard exposes `GET /api/v1/projects/{id}/agent-activity/stream` as a project-scoped SSE stream for MCP activity, agent-run lifecycle events, verifier metadata, promotion decisions, policy guard events, and workspace/ingestion correlation metadata.
+- The stream replays recent persisted redacted events and then sends live `mcp_activity`, `policy_event`, `agent_run_started`, `agent_step`, `agent_promotion`, and `agent_run_completed` events for the selected project.
 - Reconnecting clients may send `Last-Event-ID` or `after_id` to replay events with IDs greater than the last seen event.
-- Events include method/tool, status, duration, failure category, client class, request metadata, and input/output summary classes.
+- Events include method/tool, status, duration, failure category, client class, request metadata, `trace_id`, `run_id`, `parent_id`, `correlation_kind`, and input/output summary classes.
 - Live in-memory events may include raw request/params/arguments/result payloads for localhost debugging. Persistent storage omits raw payloads and payload-derived hashes by default; raw payload/hash retention requires explicit local debug opt-in with `MIVIA_DEBUG_ENABLED=true` and `MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS=true`.
 - Raw payloads may include source snippets, prompts, secrets, provider payloads, or personal data if a caller sent them. They should not be copied into durable artifacts without explicit intent.
 
@@ -136,13 +136,13 @@ Output: structured redacted `ResearchSource` metadata plus a JSON text content b
 
 ### `agent_runs.create`
 
-Input schema: `project_id` plus optional `task_id`, redacted `summary`, safe project-relative `changed_files`, verifier metadata, and artifact refs.
+Input schema: `project_id` plus optional `trace_id`, `task_id`, redacted `summary`, safe project-relative `changed_files`, verifier metadata, and artifact refs. If omitted, `trace_id` defaults to the generated run id.
 
 Output: structured redacted `AgentRun` metadata plus a JSON text content block. The store rejects raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII.
 
 ### `agent_runs.step_append`
 
-Input schema: `run_id`, `status` (`running`, `completed`, or `failed`), and optional `tool_name`, `tool_category`, `failure_category`, redacted `notes`, safe `changed_files`, verifier metadata, and artifact refs. For verifier metadata, prefer `command` as the executable and `args` as flags/paths; simple space-separated words in `command` are normalized into args.
+Input schema: `run_id`, `status` (`running`, `completed`, or `failed`), and optional `trace_id`, `tool_name`, `tool_category`, `failure_category`, redacted `notes`, safe `changed_files`, verifier metadata, and artifact refs. If omitted, `trace_id` inherits the parent run trace id. For verifier metadata, prefer `command` as the executable and `args` as flags/paths; simple space-separated words in `command` are normalized into args.
 
 Output: updated structured redacted `AgentRun` metadata plus a JSON text content block.
 

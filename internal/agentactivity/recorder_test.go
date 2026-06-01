@@ -54,6 +54,8 @@ func TestRecorderPersistsRedactedAuditEvents(t *testing.T) {
 
 	recorder.Record(Event{
 		ProjectID: "alpha",
+		TraceID:   "trace_1",
+		RunID:     "agent_run_1",
 		Method:    "tools/call",
 		ToolName:  "projects.get",
 		Status:    "ok",
@@ -76,10 +78,39 @@ func TestRecorderPersistsRedactedAuditEvents(t *testing.T) {
 	if got.InputSummaryHash != "" || got.OutputSummaryHash != "" {
 		t.Fatalf("expected durable payload hashes omitted by default, got %#v", got)
 	}
-	if got.InputSummaryClass != "object" || got.OutputSummaryClass != "object" || got.ClientClass != "codex" {
+	if got.InputSummaryClass != "object" || got.OutputSummaryClass != "object" || got.ClientClass != "codex" || got.TraceID != "trace_1" || got.RunID != "agent_run_1" {
 		t.Fatalf("expected redacted summaries and client class, got %#v", got)
 	}
 	assertAgentActivityTableOmits(t, db.SQLDB(), "secret", `{"id":"alpha"}`, `{"ok":true}`)
+}
+
+func TestRecorderRunEventSanitizesAndPersistsCorrelation(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t, SQLiteStoreOptions{})
+	recorder := NewRecorderWithStore(10, store)
+
+	recorded := recorder.RecordRunEvent(Event{
+		EventKind:       "agent_step",
+		ProjectID:       "alpha",
+		TraceID:         "trace_1",
+		RunID:           "agent_run_1",
+		ParentID:        "agent_step_1",
+		CorrelationKind: "agent_run",
+		Method:          "agent_step",
+		ToolName:        "go",
+		Status:          "completed",
+		RawArgs:         json.RawMessage(`{"raw":"prompt"}`),
+	})
+	if recorded.EventKind != "agent_step" || recorded.TraceID != "trace_1" || recorded.RunID != "agent_run_1" {
+		t.Fatalf("unexpected recorded event: %#v", recorded)
+	}
+	recent, err := store.Recent(ctx, "alpha", 10)
+	if err != nil {
+		t.Fatalf("recent: %v", err)
+	}
+	if len(recent) != 1 || recent[0].ParentID != "agent_step_1" || recent[0].CorrelationKind != "agent_run" || recent[0].RawArgs != nil {
+		t.Fatalf("expected redacted correlated run event, got %#v", recent)
+	}
 }
 
 func TestRecorderPersistsPolicyEventWithoutRawPayloads(t *testing.T) {
