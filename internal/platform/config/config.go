@@ -58,6 +58,7 @@ type Config struct {
 	ShutdownTimeout   time.Duration
 	Ingestion         Ingestion
 	Workspace         Workspace
+	AgentActivity     AgentActivity
 	Projects          []Project
 }
 
@@ -82,6 +83,10 @@ type SQLite struct {
 
 type Workspace struct {
 	Enabled bool
+}
+
+type AgentActivity struct {
+	RetainRawPayloads bool
 }
 
 type Ingestion struct {
@@ -370,6 +375,9 @@ func applyEnvOverrides(cfg *Config) error {
 	if cfg.Workspace.Enabled, err = getenvBool("MIVIA_WORKSPACE_ENABLED", cfg.Workspace.Enabled); err != nil {
 		return err
 	}
+	if cfg.AgentActivity.RetainRawPayloads, err = getenvBool("MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS", cfg.AgentActivity.RetainRawPayloads); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -433,6 +441,9 @@ func (cfg Config) Validate() error {
 	}
 	if err := cfg.Ingestion.Validate(); err != nil {
 		return err
+	}
+	if cfg.AgentActivity.RetainRawPayloads && !cfg.Debug.Enabled {
+		return errors.New("MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS requires MIVIA_DEBUG_ENABLED")
 	}
 	return nil
 }

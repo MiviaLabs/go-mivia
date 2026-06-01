@@ -223,7 +223,10 @@ func run() error {
 		projectWorkspaceService = projectworkspace.NewService(projectRegistry, projectIngestionScheduler, projectworkspace.Options{Enabled: true})
 	}
 	agentService := service.New(agentStore, agentStore)
-	activityRecorder := agentactivity.NewRecorder(500)
+	activityStore := agentactivity.NewSQLiteStore(sqliteDB.SQLDB(), agentactivity.SQLiteStoreOptions{
+		RetainRawPayloads: cfg.AgentActivity.RetainRawPayloads,
+	})
+	activityRecorder := agentactivity.NewRecorderWithStore(500, activityStore)
 
 	checker := health.NewChecker(
 		health.Check{

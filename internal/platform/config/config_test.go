@@ -52,6 +52,40 @@ func TestConfigValidate_LiveUpdatesAllowDisabledLivePathPriority(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_AgentActivityRawRetentionRequiresDebug(t *testing.T) {
+	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
+	cfg.AgentActivity.RetainRawPayloads = true
+
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS") {
+		t.Fatalf("expected raw retention debug guard, got %v", err)
+	}
+
+	cfg.Debug.Enabled = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected debug-enabled raw retention to validate: %v", err)
+	}
+}
+
+func TestLoad_AgentActivityRawRetentionEnvRequiresDebug(t *testing.T) {
+	chdir(t, t.TempDir())
+	clearConfigEnv(t)
+	t.Setenv("MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS", "true")
+
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS") {
+		t.Fatalf("expected raw retention env guard, got %v", err)
+	}
+
+	t.Setenv("MIVIA_DEBUG_ENABLED", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected raw retention with debug to load: %v", err)
+	}
+	if !cfg.AgentActivity.RetainRawPayloads {
+		t.Fatal("expected raw retention env override")
+	}
+}
+
 func TestLoad_DefaultConfigMissing_UsesEnvOnlyDefaults(t *testing.T) {
 	chdir(t, t.TempDir())
 	clearConfigEnv(t)

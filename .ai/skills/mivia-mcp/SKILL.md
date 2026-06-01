@@ -213,7 +213,7 @@ Use raw HTTP only when no native MCP client is available:
 
 Start with `tools/list`, then use `tools/call`. Do not use raw HTTP to bypass MCP boundaries.
 
-The local dashboard exposes a project-scoped `Agent activity` drawer backed by `GET /api/v1/projects/{id}/agent-activity/stream`. It streams in-memory MCP activity for the selected project, including method/tool, status, duration, request/client metadata, a collapsed input/output summary, and collapsed raw request/params/arguments/result payloads for localhost debugging. Treat the full payload as sensitive: it is useful for local inspection, but do not copy it into docs, commits, agent-run metadata, or external tools unless the task explicitly requires that exposure.
+The local dashboard exposes a project-scoped `Agent activity` drawer backed by `GET /api/v1/projects/{id}/agent-activity/stream`. It streams persisted redacted recent MCP activity plus live in-memory activity for the selected project, including method/tool, status, duration, failure category, client class, request metadata, and input/output summary classes. Reconnecting clients can resume with `Last-Event-ID` or `after_id`. Live in-memory events may include collapsed raw request/params/arguments/result payloads for localhost debugging; persistent storage omits raw payloads and payload-derived hashes by default unless explicit local debug retention is enabled with `MIVIA_DEBUG_ENABLED=true` and `MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS=true`. Treat full payloads as sensitive: they are useful for local inspection, but do not copy them into docs, commits, agent-run metadata, or external tools unless the task explicitly requires that exposure.
 
 ## A/B Agent Tests
 

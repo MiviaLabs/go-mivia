@@ -114,6 +114,51 @@ func TestBootstrap_ProjectIntegrationTablesExist(t *testing.T) {
 	}
 }
 
+func TestBootstrap_AgentActivityTableExists(t *testing.T) {
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := schema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+
+	assertTable(t, db.SQLDB(), "agent_activity_events")
+	for _, column := range []string{
+		"occurred_at",
+		"project_id",
+		"tool_name",
+		"status",
+		"duration_ms",
+		"failure_category",
+		"client_class",
+		"input_summary_hash",
+		"input_summary_class",
+		"output_summary_hash",
+		"output_summary_class",
+	} {
+		assertColumn(t, db.SQLDB(), "agent_activity_events", column)
+	}
+}
+
+func TestBootstrap_AgentActivityRawColumnsAreEmptyByDefault(t *testing.T) {
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if err := schema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+
+	for _, column := range []string{"raw_request", "raw_params", "raw_arguments", "raw_result"} {
+		assertColumn(t, db.SQLDB(), "agent_activity_events", column)
+	}
+}
+
 func TestBootstrap_ProjectIntegrationTablesDoNotExposeCredentialOrContentColumns(t *testing.T) {
 	db, err := sqliteplatform.Open(":memory:")
 	if err != nil {

@@ -2,8 +2,13 @@ package agentactivity
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
+	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
 )
 
 func TestRecorderRecentFiltersByProjectAndKeepsCapacity(t *testing.T) {
@@ -39,5 +44,181 @@ func TestRecorderSubscribeReceivesNewEvents(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected subscriber event")
+	}
+}
+
+func TestRecorderPersistsRedactedAuditEvents(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestSQLiteStore(t, SQLiteStoreOptions{})
+	recorder := NewRecorderWithStore(10, store)
+
+	recorder.Record(Event{
+		ProjectID: "alpha",
+		Method:    "tools/call",
+		ToolName:  "projects.get",
+		Status:    "ok",
+		UserAgent: "codex",
+		RawArgs:   json.RawMessage(`{"id":"alpha","token":"secret"}`),
+		RawResult: json.RawMessage(`{"ok":true}`),
+	})
+
+	recent, err := store.Recent(ctx, "alpha", 10)
+	if err != nil {
+		t.Fatalf("recent: %v", err)
+	}
+	if len(recent) != 1 {
+		t.Fatalf("expected one persisted event, got %#v", recent)
+	}
+	got := recent[0]
+	if got.RawArgs != nil || got.RawResult != nil {
+		t.Fatalf("expected raw payloads omitted by default, got %#v", got)
+	}
+	if got.InputSummaryHash != "" || got.OutputSummaryHash != "" {
+		t.Fatalf("expected durable payload hashes omitted by default, got %#v", got)
+	}
+	if got.InputSummaryClass != "object" || got.OutputSummaryClass != "object" || got.ClientClass != "codex" {
+		t.Fatalf("expected redacted summaries and client class, got %#v", got)
+	}
+	assertAgentActivityTableOmits(t, db.SQLDB(), "secret", `{"id":"alpha"}`, `{"ok":true}`)
+}
+
+func TestSQLiteStoreCanRetainRawPayloadsWhenExplicitlyEnabled(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t, SQLiteStoreOptions{RetainRawPayloads: true})
+
+	if err := store.Record(ctx, Event{
+		ProjectID: "alpha",
+		Method:    "tools/call",
+		Status:    "ok",
+		RawArgs:   json.RawMessage(`{"id":"alpha"}`),
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	recent, err := store.Recent(ctx, "alpha", 1)
+	if err != nil {
+		t.Fatalf("recent: %v", err)
+	}
+	if len(recent) != 1 || string(recent[0].RawArgs) != `{"id":"alpha"}` || recent[0].InputSummaryHash == "" {
+		t.Fatalf("expected explicit raw retention, got %#v", recent)
+	}
+}
+
+func TestSQLiteStoreSinceReturnsEventsAfterCursorAscending(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t, SQLiteStoreOptions{})
+	for _, event := range []Event{
+		{ID: 1, ProjectID: "alpha", Method: "tools/list", Status: "ok"},
+		{ID: 2, ProjectID: "beta", Method: "tools/call", Status: "ok"},
+		{ID: 3, ProjectID: "alpha", Method: "tools/call", ToolName: "projects.get", Status: "ok"},
+		{ID: 4, ProjectID: "alpha", Method: "resources/read", Status: "ok"},
+	} {
+		if err := store.Record(ctx, event); err != nil {
+			t.Fatalf("record %d: %v", event.ID, err)
+		}
+	}
+
+	recent, err := store.Since(ctx, "alpha", 1, 10)
+	if err != nil {
+		t.Fatalf("since: %v", err)
+	}
+	if len(recent) != 2 || recent[0].ID != 3 || recent[1].ID != 4 {
+		t.Fatalf("expected alpha events after cursor in ascending order, got %#v", recent)
+	}
+}
+
+func TestRecorderInitializesNextIDFromStore(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t, SQLiteStoreOptions{})
+	if err := store.Record(ctx, Event{ID: 41, ProjectID: "alpha", Method: "tools/call", Status: "ok"}); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	recorder := NewRecorderWithStore(10, store)
+	recorded := recorder.Record(Event{ProjectID: "alpha", Method: "tools/list", Status: "ok"})
+
+	if recorded.ID != 42 {
+		t.Fatalf("expected recorder to continue persisted IDs, got %d", recorded.ID)
+	}
+}
+
+func TestRecorderRecentFallsBackToMemoryWhenStoreFails(t *testing.T) {
+	recorder := NewRecorderWithStore(10, failingStore{})
+	recorder.Record(Event{ProjectID: "alpha", Method: "tools/call"})
+
+	recent := recorder.Recent("alpha", 10)
+	if len(recent) != 1 || recent[0].ProjectID != "alpha" {
+		t.Fatalf("expected in-memory fallback, got %#v", recent)
+	}
+}
+
+func TestRecorderRecentMergesMemoryWhenStoreWriteFails(t *testing.T) {
+	store := &recordFailReadSuccessStore{
+		recent: []Event{{ID: 1, ProjectID: "alpha", Method: "tools/list", Status: "ok"}},
+	}
+	recorder := NewRecorderWithStore(10, store)
+	recorder.Record(Event{ProjectID: "alpha", Method: "tools/call", Status: "ok"})
+
+	recent := recorder.Recent("alpha", 10)
+	if len(recent) != 2 || recent[0].Method != "tools/list" || recent[1].Method != "tools/call" {
+		t.Fatalf("expected persisted plus unpersisted memory events, got %#v", recent)
+	}
+}
+
+type failingStore struct{}
+
+func (failingStore) Record(context.Context, Event) error {
+	return assertErr("record failed")
+}
+
+func (failingStore) Recent(context.Context, string, int) ([]Event, error) {
+	return nil, assertErr("recent failed")
+}
+
+type assertErr string
+
+func (err assertErr) Error() string {
+	return string(err)
+}
+
+type recordFailReadSuccessStore struct {
+	recent []Event
+}
+
+func (store *recordFailReadSuccessStore) Record(context.Context, Event) error {
+	return assertErr("record failed")
+}
+
+func (store *recordFailReadSuccessStore) Recent(context.Context, string, int) ([]Event, error) {
+	return store.recent, nil
+}
+
+func (store *recordFailReadSuccessStore) MaxID(context.Context) (int64, error) {
+	return 1, nil
+}
+
+func newTestSQLiteStore(t *testing.T, options SQLiteStoreOptions) (*SQLiteStore, *sqliteplatform.DB) {
+	t.Helper()
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := sqliteschema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+	return NewSQLiteStore(db.SQLDB(), options), db
+}
+
+func assertAgentActivityTableOmits(t *testing.T, db *sql.DB, forbidden ...string) {
+	t.Helper()
+	var rawRequest, rawParams, rawArgs, rawResult string
+	if err := db.QueryRowContext(context.Background(), `SELECT raw_request, raw_params, raw_arguments, raw_result FROM agent_activity_events LIMIT 1`).Scan(&rawRequest, &rawParams, &rawArgs, &rawResult); err != nil {
+		t.Fatalf("query raw payload columns: %v", err)
+	}
+	joined := rawRequest + rawParams + rawArgs + rawResult
+	for _, value := range forbidden {
+		if strings.Contains(joined, value) {
+			t.Fatalf("agent activity table leaked %q in raw payload columns", value)
+		}
 	}
 }

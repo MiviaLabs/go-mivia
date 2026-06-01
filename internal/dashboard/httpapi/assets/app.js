@@ -581,7 +581,7 @@ function openActivityDrawer(projectID) {
       ),
       el("button", { class: "secondary compact", type: "button", onClick: closeActivityDrawer, title: "Close activity drawer" }, "Close"),
     ),
-    el("p", { class: "activity-drawer__note", text: "Raw payloads are available inside collapsed details and are not downloaded automatically." }),
+    el("p", { class: "activity-drawer__note", text: "Persisted replay is redacted by default. Live local-debug payloads stay collapsed and are not downloaded automatically." }),
     el("div", { class: "activity-toolbar" },
       el("button", { class: "secondary compact", type: "button", onClick: () => renderActivityEvents([]) }, "Clear"),
       el("button", { class: "secondary compact", type: "button", onClick: copyVisibleActivity }, "Copy JSONL"),
@@ -682,12 +682,30 @@ function activityPayloadBlock(title, payload) {
 
 function copyVisibleActivity() {
   if (!activityEvents.length || !navigator.clipboard) return;
-  const jsonl = activityEvents.map((event) => JSON.stringify(event)).join("\n");
+  const jsonl = activityEvents.map((event) => JSON.stringify(redactedActivityEvent(event))).join("\n");
   navigator.clipboard.writeText(jsonl).then(() => {
-    if (activityStatus) activityStatus.textContent = "Copied visible activity as JSONL";
+    if (activityStatus) activityStatus.textContent = "Copied redacted visible activity as JSONL";
   }).catch(() => {
     if (activityStatus) activityStatus.textContent = "Copy failed";
   });
+}
+
+function redactedActivityEvent(event) {
+  return {
+    id: event.id,
+    timestamp: event.timestamp,
+    request_id: event.request_id,
+    project_id: event.project_id,
+    method: event.method,
+    tool_name: event.tool_name,
+    status: event.status,
+    duration_ms: event.duration_ms,
+    error: event.error,
+    failure_category: event.failure_category,
+    client_class: event.client_class,
+    input_summary_class: event.input_summary_class,
+    output_summary_class: event.output_summary_class,
+  };
 }
 
 function buildTabs(project, health, latest, graph, dashboard) {

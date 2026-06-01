@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 15
+const Version = 16
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -356,6 +356,30 @@ var statements = []string{
 		confidence,
 		tokenize='trigram'
 	)`,
+	`CREATE TABLE IF NOT EXISTS agent_activity_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		occurred_at TEXT NOT NULL,
+		project_id TEXT NOT NULL DEFAULT '',
+		method TEXT NOT NULL,
+		tool_name TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL,
+		duration_ms INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+		failure_category TEXT NOT NULL DEFAULT '',
+		request_id TEXT NOT NULL DEFAULT '',
+		client_class TEXT NOT NULL DEFAULT '',
+		input_summary_hash TEXT NOT NULL DEFAULT '',
+		input_summary_class TEXT NOT NULL DEFAULT '',
+		output_summary_hash TEXT NOT NULL DEFAULT '',
+		output_summary_class TEXT NOT NULL DEFAULT '',
+		raw_request TEXT NOT NULL DEFAULT '',
+		raw_params TEXT NOT NULL DEFAULT '',
+		raw_arguments TEXT NOT NULL DEFAULT '',
+		raw_result TEXT NOT NULL DEFAULT '',
+		CHECK (input_summary_hash = '' OR input_summary_hash LIKE 'sha256:%'),
+		CHECK (output_summary_hash = '' OR output_summary_hash LIKE 'sha256:%')
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_agent_activity_events_project_recent
+		ON agent_activity_events(project_id, id DESC)`,
 }
 
 const versionStatement = `INSERT INTO schema_versions (component, version)

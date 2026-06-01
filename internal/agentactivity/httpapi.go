@@ -35,12 +35,21 @@ func ProjectStreamHandler(recorder *Recorder) http.Handler {
 			}
 			limit = value
 		}
+		afterID, hasCursor, err := replayCursor(r)
+		if err != nil {
+			httpserver.WriteError(w, http.StatusBadRequest, "invalid_activity_request", "Last-Event-ID and after_id must be non-negative integers")
+			return
+		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(http.StatusOK)
-		for _, event := range recorder.Recent(projectID, limit) {
+		replay := recorder.Recent(projectID, limit)
+		if hasCursor {
+			replay = recorder.Since(projectID, afterID, limit)
+		}
+		for _, event := range replay {
 			writeSSE(w, event)
 		}
 		flusher.Flush()
@@ -62,6 +71,21 @@ func ProjectStreamHandler(recorder *Recorder) http.Handler {
 			}
 		}
 	})
+}
+
+func replayCursor(r *http.Request) (int64, bool, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("after_id"))
+	if raw == "" {
+		raw = strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	}
+	if raw == "" {
+		return 0, false, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0, false, err
+	}
+	return value, true, nil
 }
 
 func writeSSE(w http.ResponseWriter, event Event) {

@@ -198,9 +198,11 @@ Content graph responses are bounded and must not include absolute roots, skipped
 
 ## Dashboard Activity
 
-Open `http://127.0.0.1:8080/dashboard/`, select a project, then use `Agent activity` on the project details page to watch project-scoped MCP calls. The drawer streams recent and live activity over `GET /api/v1/projects/{id}/agent-activity/stream` and shows method/tool, status, duration, request/client metadata, a collapsed call summary with inputs and outputs, and collapsed full request/params/arguments/result payloads.
+Open `http://127.0.0.1:8080/dashboard/`, select a project, then use `Agent activity` on the project details page to watch project-scoped MCP calls. The drawer streams recent persisted redacted activity and live in-memory activity over `GET /api/v1/projects/{id}/agent-activity/stream` and shows method/tool, status, duration, failure category, client class, request metadata, summary classes, and available local-debug payload details.
 
-The drawer is for localhost debugging. Full payloads may include source snippets, prompts, secrets, or personal data if a caller sent them. Do not paste full payloads into docs, commits, issue trackers, Slack, or agent-run metadata unless the task explicitly requires that exposure.
+SSE reconnects can resume replay by sending the browser-managed `Last-Event-ID` header or an explicit `after_id` query value. The server returns project-scoped events with IDs greater than that cursor before continuing with live events.
+
+The drawer is for localhost debugging. Full payloads may include source snippets, prompts, secrets, or personal data if a caller sent them. Persistent storage omits raw payloads and payload-derived hashes by default; raw payload/hash retention requires explicit local debug opt-in with `MIVIA_DEBUG_ENABLED=true` and `MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS=true`. Do not paste full payloads into docs, commits, issue trackers, Slack, or agent-run metadata unless the task explicitly requires that exposure.
 
 ## MCP Smoke
 

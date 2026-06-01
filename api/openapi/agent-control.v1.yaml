@@ -304,7 +304,7 @@ paths:
     get:
       operationId: streamProjectAgentActivity
       summary: Stream project-scoped MCP activity
-      description: Streams recent and live in-memory MCP activity events for one local project as server-sent events. Full raw request, params, and argument payloads may be present for local debugging and are not persisted by this endpoint.
+      description: Streams recent persisted redacted MCP activity events and live in-memory events for one local project as server-sent events. Persistent storage includes metadata plus input/output summary classes and omits raw payloads and payload-derived hashes by default. Full raw request, params, argument, result payloads, and payload hashes may be present for live local debugging or when explicit local debug retention is enabled with MIVIA_DEBUG_ENABLED and MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS.
       parameters:
         - $ref: '#/components/parameters/ID'
         - name: recent
@@ -314,6 +314,13 @@ paths:
             type: integer
             minimum: 0
             maximum: 500
+        - name: after_id
+          in: query
+          required: false
+          description: Replay events with IDs greater than this cursor. Equivalent to the SSE Last-Event-ID header.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: Server-sent MCP activity stream

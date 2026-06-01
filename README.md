@@ -117,7 +117,7 @@ flowchart TB
 | Query APIs | Files, chunks, outlines, text/file/symbol/reference/call search, AST query catalog, named AST search, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned; raw FTS and raw Tree-sitter syntax are not exposed |
 | Workspace APIs | Governed git status/diff, current eligible file read, token-guarded exact byte-span edits | Disabled by default; requires global workspace gate plus per-project `workspace_mode`; no arbitrary shell, raw patch, or git commit/push/reset/checkout tools |
 | Project integrations | Jira/Confluence configured provider status, manual/scheduled polling, local rich-content graph search/read | Atlassian Cloud only; polling-only; env/file credential refs; explicit project/space allowlists; rich content stays in ignored local stores |
-| Dashboard agent activity | Project details `Agent activity` drawer streams recent/live MCP calls over SSE with method/tool/status/duration, collapsed input/output summaries, and collapsed raw payload details | Localhost debug surface only; events are in-memory and raw payloads may contain source, prompts, secrets, or personal data |
+| Dashboard agent activity | Project details `Agent activity` drawer streams persisted redacted recent events and live MCP calls over SSE with reconnect cursor replay, method/tool/status/duration, failure category, client class, and input/output summary classes | Localhost debug surface only; live raw payloads may contain source, prompts, secrets, or personal data, and persistent raw payload/hash retention requires explicit debug opt-in |
 
 ## Start Here
 
