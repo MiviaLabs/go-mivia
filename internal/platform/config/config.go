@@ -195,6 +195,17 @@ type ConfluenceIntegration struct {
 
 func Load() (Config, error) {
 	configPath, explicitConfigPath := configPathFromEnv()
+	return load(configPath, explicitConfigPath)
+}
+
+func LoadPath(configPath string) (Config, error) {
+	if strings.TrimSpace(configPath) == "" {
+		return Config{}, errors.New("config path must not be empty")
+	}
+	return load(configPath, true)
+}
+
+func load(configPath string, explicitConfigPath bool) (Config, error) {
 	cfg := defaultConfig(configPath)
 
 	fileCfg, err := loadFileConfig(configPath)

@@ -6,7 +6,7 @@ Generic Go microservices monorepo for AI-agent work.
 
 ## Overview
 
-This repository contains the local Mivia service platform. The current service is `mivia-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, redacted agent-run metadata, promotion-gate decisions, research metadata, project registry, project ingestion, reliability checks, context packs, and semantic code-context workflows. The dashboard also includes a persistent, redacted Agent Activity stream so engineers can inspect recent MCP calls, reconnect without losing events, and see normalized policy guard events without persisting raw payloads by default.
+This repository contains the local Mivia service platform. The current service is `mivia-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, redacted agent-run metadata, promotion-gate decisions, research metadata, project registry, project ingestion, reliability checks, context packs, and semantic code-context workflows. It also provides `mivia-server config check --config <path> --redacted-json` for operator-safe config validation reports. The dashboard includes a persistent, redacted Agent Activity stream so engineers can inspect recent MCP calls, reconnect without losing events, and see normalized policy guard events without persisting raw payloads by default.
 
 The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion with governed FTS, named AST search, git status/diff, and exact token-guarded file edits. It also supports approved local Jira/Confluence project integrations with polling-only ingestion and bounded local graph search/read. It does not call live AI or browsing providers, expose public APIs, run embeddings/vector storage, crawl arbitrary roots, expose arbitrary shell, or use production database infrastructure.
 
@@ -108,6 +108,7 @@ flowchart TB
 | Area | What exists now | Guardrails |
 | --- | --- | --- |
 | Local control surface | Health checks, REST `/api/v1`, MCP Streamable HTTP `/mcp` | Localhost-only default; no public/auth production posture |
+| Config validation | `mivia-server config check --config <path> --redacted-json` writes a machine-readable support report for config, project, ingestion, and workspace validation | Redacts local roots, bind/URL values, config paths, Cloud IDs, and credential references; reports classes/counts/categories only |
 | Tasks, research, and agent-run metadata | Local task records, research-run/source metadata, redacted agent-run execution metadata | No raw prompts, completions, source dumps, raw stderr, provider payloads, raw fetched content, secrets, roots, or PII |
 | Promotion gates | Metadata-only artifact promotion decisions with `candidate`, `validated`, `promoted`, and `rejected` states | Existing artifact refs only; refs and decisions stay bounded and redacted |
 | Project registry | Optional local TOML projects with metadata-only digest or content graph mode | Root paths and local config values stay out of REST/MCP responses |
@@ -192,6 +193,7 @@ What this enables:
 
 - Engineers can opt local projects into metadata-only digest or content graph ingestion.
 - Engineers can opt project-specific Jira/Confluence allowlists into polling-only ingestion so issue/page context lands in the same local graph as source context.
+- Operators can run `mivia-server config check --config <path> --redacted-json` to produce a support-bundle-style validation report without exposing local roots, URLs, Cloud IDs, credential refs, or config paths.
 - Agents can ask for bounded project files, chunks, outlines, search results, symbols, symbol source, references, direct call edges, call graphs, the supported AST query catalog, named AST structural matches, and ingestion status through MCP instead of guessing from stale chat context.
 - Agents can ask for a context pack that combines bounded search snippets, indexed file metadata, symbol metadata, and optional impact analysis in one response.
 - Agents can ask for context health, changed-path impact analysis, and deterministic stale-claim checks against selected stable docs/contracts before relying on local context.

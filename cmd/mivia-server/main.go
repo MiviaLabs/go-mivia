@@ -42,6 +42,9 @@ import (
 const serviceName = "mivia-server"
 
 func main() {
+	if handled, exitCode := runCLI(os.Args[1:], os.Stdout, os.Stderr); handled {
+		os.Exit(exitCode)
+	}
 	if err := run(); err != nil {
 		logger := logging.New(serviceName)
 		logger.Error("service stopped", slog.String("error_category", "startup"), slog.String("error", err.Error()))
