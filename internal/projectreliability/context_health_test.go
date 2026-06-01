@@ -466,7 +466,7 @@ func TestContextHealth_ActiveSyncBoundsBlockingProvider(t *testing.T) {
 	close(block)
 }
 
-func TestProjectHasActiveSyncTreatsGlobalIngestionAsIndexingWindow(t *testing.T) {
+func TestProjectHasActiveSyncIgnoresOtherProjectGlobalIngestion(t *testing.T) {
 	provider := schedulerDiagnosticsProviderFunc(func() projectingestion.SchedulerDiagnostics {
 		return projectingestion.SchedulerDiagnostics{
 			ActiveTaskCount:             1,
@@ -475,8 +475,8 @@ func TestProjectHasActiveSyncTreatsGlobalIngestionAsIndexingWindow(t *testing.T)
 			PendingProjectWideTaskCount: map[string]int{},
 		}
 	})
-	if !projectHasActiveSync(provider, "example") {
-		t.Fatalf("expected global active ingestion to count as active sync window")
+	if projectHasActiveSync(provider, "example") {
+		t.Fatalf("expected unrelated active ingestion not to mark project syncing")
 	}
 }
 

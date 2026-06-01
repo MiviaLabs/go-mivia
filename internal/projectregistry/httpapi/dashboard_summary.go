@@ -161,9 +161,6 @@ func getDashboardSummaryHandler(registry *projectregistry.Registry, ingestion pr
 			writeResult(w, nil, projectregistry.ErrProjectNotFound, http.StatusOK)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), dashboardSummaryTimeout)
-		defer cancel()
-
 		summary := dashboardSummary{
 			Project: projectregistry.MetadataForProject(project),
 			Limits: dashboardSummaryLimits{
@@ -175,39 +172,55 @@ func getDashboardSummaryHandler(registry *projectregistry.Registry, ingestion pr
 			CheckedAt: time.Now().UTC(),
 		}
 
-		if health, err := projectreliability.NewServiceFromAPIs(registry, ingestion, workspace, projectreliability.Options{}).ContextHealth(ctx, projectID); err == nil {
+		if health, err := dashboardWithTimeout(r.Context(), func(ctx context.Context) (projectreliability.ContextHealth, error) {
+			return projectreliability.NewServiceFromAPIs(registry, ingestion, workspace, projectreliability.Options{}).ContextHealth(ctx, projectID)
+		}); err == nil {
 			summary.ContextHealth = health
 		} else {
 			summary.Warnings = append(summary.Warnings, "context_health_unavailable")
 		}
-		if latest, err := ingestion.LatestRunMetadata(ctx, projectID); err == nil {
+		if latest, err := dashboardWithTimeout(r.Context(), func(ctx context.Context) (projectingestion.RunMetadata, error) {
+			return ingestion.LatestRunMetadata(ctx, projectID)
+		}); err == nil {
 			summary.LatestRun = &latest
 		} else {
 			summary.Warnings = append(summary.Warnings, "latest_ingestion_unavailable")
 		}
-		if search, err := ingestion.SearchIndexHealth(ctx, projectID); err == nil {
+		if search, err := dashboardWithTimeout(r.Context(), func(ctx context.Context) (projectingestion.SearchIndexHealth, error) {
+			return ingestion.SearchIndexHealth(ctx, projectID)
+		}); err == nil {
 			summary.Graph.SearchIndex = search
 		}
-		summary.Graph.Files = dashboardFiles(ctx, ingestion, projectID, &summary.Warnings)
-		summary.Graph.Symbols = dashboardSymbols(ctx, ingestion, projectID, &summary.Warnings)
-		summary.Graph.Headings = dashboardHeadings(ctx, ingestion, projectID, &summary.Warnings)
-		if ast, err := ingestion.ListASTQueries(ctx, projectID); err == nil {
+		summary.Graph.Files = dashboardFiles(r.Context(), ingestion, projectID, &summary.Warnings)
+		summary.Graph.Symbols = dashboardSymbols(r.Context(), ingestion, projectID, &summary.Warnings)
+		summary.Graph.Headings = dashboardHeadings(r.Context(), ingestion, projectID, &summary.Warnings)
+		if ast, err := dashboardWithTimeout(r.Context(), func(ctx context.Context) (projectingestion.ASTQueryCatalog, error) {
+			return ingestion.ListASTQueries(ctx, projectID)
+		}); err == nil {
 			summary.Graph.ASTCoverage = ast.Coverage
 		} else {
 			summary.Warnings = append(summary.Warnings, "ast_coverage_unavailable")
 		}
 		if workspace != nil {
-			summary.Workspace = dashboardWorkspace(ctx, workspace, projectID, &summary.Warnings)
+			summary.Workspace = dashboardWorkspace(r.Context(), workspace, projectID, &summary.Warnings)
 		}
 		if integrations != nil {
-			summary.Integrations = dashboardIntegrations(ctx, integrations, projectID, &summary.Warnings)
+			summary.Integrations = dashboardIntegrations(r.Context(), integrations, projectID, &summary.Warnings)
 		}
 
 		httpserver.WriteJSON(w, http.StatusOK, summary)
 	})
 }
 
+func dashboardWithTimeout[T any](parent context.Context, fn func(context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(parent, dashboardSectionTimeout)
+	defer cancel()
+	return fn(ctx)
+}
+
 func dashboardFiles(ctx context.Context, ingestion projectingestion.API, projectID string, warnings *[]string) dashboardFileSummary {
+	ctx, cancel := context.WithTimeout(ctx, dashboardSectionTimeout)
+	defer cancel()
 	result := dashboardFileSummary{
 		ByStatus: make(map[string]int),
 	}
@@ -221,7 +234,9 @@ func dashboardFiles(ctx context.Context, ingestion projectingestion.API, project
 	for _, file := range page.Files {
 		result.SampledCount++
 		result.ByStatus[emptyKey(file.Status)]++
-		byExtension[emptyKey(file.Extension)]++
+		if dashboardFileExtensionCountable(file) {
+			byExtension[emptyKey(file.Extension)]++
+		}
 		if file.SkippedReason != "" {
 			bySkippedReason[file.SkippedReason]++
 		}
@@ -242,7 +257,13 @@ func dashboardFiles(ctx context.Context, ingestion projectingestion.API, project
 	return result
 }
 
+func dashboardFileExtensionCountable(file projectingestion.FileMetadata) bool {
+	return file.Status == string(projectingestion.FileStatusEligible) && file.RelativePathOK
+}
+
 func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, projectID string, warnings *[]string) dashboardSymbolSummary {
+	ctx, cancel := context.WithTimeout(ctx, dashboardSectionTimeout)
+	defer cancel()
 	result := dashboardSymbolSummary{}
 	byKind := map[string]int{}
 	byPackage := map[string]int{}
@@ -634,6 +655,8 @@ func pathDir(relativePath string) string {
 }
 
 func dashboardHeadings(ctx context.Context, ingestion projectingestion.API, projectID string, warnings *[]string) dashboardHeadingSummary {
+	ctx, cancel := context.WithTimeout(ctx, dashboardSectionTimeout)
+	defer cancel()
 	result := dashboardHeadingSummary{}
 	byLevel := map[string]int{}
 	page, err := ingestion.ListHeadings(ctx, projectID, "", projectingestion.Pagination{PageSize: dashboardHeadingsPageSize})
@@ -654,6 +677,8 @@ func dashboardHeadings(ctx context.Context, ingestion projectingestion.API, proj
 }
 
 func dashboardWorkspace(ctx context.Context, workspace projectworkspace.API, projectID string, warnings *[]string) *dashboardWorkspaceSummary {
+	ctx, cancel := context.WithTimeout(ctx, dashboardSectionTimeout)
+	defer cancel()
 	status, err := workspace.GitStatus(ctx, projectID, projectworkspace.GitStatusOptions{IncludeUntracked: true, PageSize: dashboardGitPageSize})
 	if err != nil {
 		*warnings = append(*warnings, "workspace_git_unavailable")

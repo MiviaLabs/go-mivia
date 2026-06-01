@@ -18,7 +18,7 @@ import (
 )
 
 const workspaceGitStatusTimeout = 30 * time.Second
-const dashboardSummaryTimeout = 3 * time.Second
+const dashboardSectionTimeout = 3 * time.Second
 
 func RegisterRoutes(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService) {
 	RegisterRoutesWithIngestion(mux, registry, digest, nil)
