@@ -7,22 +7,22 @@ description: Use with the Mivia localhost MCP server for any indexed project whe
 
 Portable skill. It can be copied into any repository indexed by a running Mivia `mivia-server`.
 
-## Mandatory Use Gate
+## MCP-First Routing
 
-When a Mivia MCP server is available for the target project, agents must use it before broad shell scans, manual file walking, Serena indexed-context discovery, or chat-only assumptions for every capability listed below.
+When a Mivia MCP server is available for the target project, use it as the first choice for indexed project discovery and bounded context. Keep the MCP call set proportional to the task; do not run reliability or handoff tools by default when a smaller read/search/status call answers the question.
 
-Critical review and implementation rule:
+Review and implementation guidance:
 
-- For code review, PR review, implementation planning, and fix verification, agents must start with `projects.list` -> `projects.get` -> `projects.graph_status` or `projects.context_health`. Do not use `projects.ingestion_status_latest` alone to decide whether indexed MCP context is usable; it is one run record, not the authoritative graph inventory.
-- If `projects.graph_status.status` / `projects.context_health.status` is not `ready`, agents must state the status and freshness gap before relying on indexed context. Treat `syncing` as normal active indexing, not corruption. If `indexed_content_available=true`, indexed MCP tools remain usable while ingestion catches up; prefer bounded MCP search/symbol/file tools and state the active-sync caveat.
-- For any changed-path review, agents must call `projects.impact.analyze` with the changed paths before deciding review scope. Use its affected domains, routes, tools, security flags, and source anchors to decide which code, contracts, docs, and tests need inspection. If the result is partial with `index_syncing`, treat it as active indexing and fall back to focused source inspection for the current task rather than treating the index as degraded.
-- For source evidence, agents must use indexed MCP search/navigation first when available: `projects.context_pack.build`, `projects.search.*`, `projects.symbols.list`, `projects.symbol.source`, `projects.symbol.references`, callers/callees, call graph, headings, outlines, and bounded chunks.
-- For actual runtime proof, agents must use shell: tests, builds, logs, process control, generated files, and exact git/runtime facts.
-- For stable docs/contracts that changed or are cited in a review, agents must call `projects.claims.check` on selected files or snippets before trusting MCP tool names, REST route names, or `.ai/tasks/*` link claims.
-- Before any commit in a project exposed by Mivia MCP, agents must complete the applicable MCP reliability checks: `projects.context_health`, `projects.impact.analyze` for changed paths, `projects.claims.check` for changed stable docs/contracts, and `agent_runs.*` breadcrumbs for multi-step handoffs. If Mivia MCP is unavailable, agents must state that gap before committing.
+- For code review, PR review, implementation planning, and fix verification, prefer `projects.list` -> `projects.get` -> `projects.graph_status` or `projects.context_health` when freshness affects the answer. Do not use `projects.ingestion_status_latest` alone to decide whether indexed MCP context is usable; it is one run record, not the authoritative graph inventory.
+- If `projects.graph_status.status` / `projects.context_health.status` is not `ready`, state the status and freshness gap only when the answer relies on indexed freshness. Treat `syncing` as normal active indexing, not corruption. If `indexed_content_available=true`, indexed MCP tools remain usable while ingestion catches up.
+- For changed-path review, use `projects.impact.analyze` when blast radius is unclear, the change is security/privacy/API-sensitive, or the user asks for review/audit confidence. If the result is partial with `index_syncing`, treat it as active indexing and fall back to focused source inspection for the current task rather than treating the index as degraded.
+- For source evidence, prefer indexed MCP search/navigation when available: `projects.context_pack.build`, `projects.search.*`, `projects.symbols.list`, `projects.symbol.source`, `projects.symbol.references`, callers/callees, call graph, headings, outlines, and bounded chunks.
+- For actual runtime proof, use shell: tests, builds, logs, process control, generated files, and exact git/runtime facts.
+- For stable docs/contracts that changed or are cited in a review, use `projects.claims.check` when the task depends on MCP tool names, REST route names, or `.ai/tasks/*` link claims being current.
+- Before commit, use the smallest verification set appropriate to the changed files and risk. Add `projects.context_health`, `projects.impact.analyze`, `projects.claims.check`, or `agent_runs.*` only when they materially improve confidence, support a review/handoff, or are explicitly requested.
 - For multi-step reviews, fix loops, implementation handoffs, or resumable work, agents should use `agent_runs.*` to record redacted breadcrumbs and `agent_runs.promote_artifact` to record promotion-gate decisions for existing artifact refs. Store only safe metadata; never store raw prompts, completions, source dumps, raw stderr, roots, secrets, provider payloads, skipped sensitive content, or PII.
 
-Mandatory MCP-first surfaces:
+MCP-first surfaces:
 
 - Project discovery, enabled state, digest mode, update policy, workspace mode, and graph storage.
 - Ingestion run state, live/manual freshness, skipped reason counts, search-index degradation, repair status, and redacted ingestion diagnostics, including project-scoped storage keys but not raw datastore paths.
@@ -48,7 +48,7 @@ Know or discover:
 - MCP endpoint, default `http://127.0.0.1:8080/mcp`.
 - Project ID, from the user or `projects.list`. Project-scoped tools also accept safe aliases returned by `projects.list` / `projects.get`, including configured repo/module aliases and auto-discovered Go module paths.
 - Host repository rules, tests, and privacy/security boundaries.
-- Release examples in docs, Docker Compose, and devcontainer snippets must stay on the current public release pair: Go module tag `v0.1.6` and container tag `0.1.6`.
+- Release examples in docs, Docker Compose, and devcontainer snippets must stay on the current public release pair: Go module tag `v0.1.7` and container tag `0.1.7`.
 
 Do not assume the current repository is the server repo. Do not assume any specific language or directory layout.
 

@@ -48,9 +48,9 @@ func TestInitialize_ReturnsServerInstructions(t *testing.T) {
 		!bytes.Contains(res.Body.Bytes(), []byte(`projects.graph_status`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`projects.ingestion_status_latest`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`do not use projects.ingestion_status_latest alone`)) ||
-		!bytes.Contains(res.Body.Bytes(), []byte(`For code review, PR review, implementation planning, and fix verification, this is mandatory`)) ||
-		!bytes.Contains(res.Body.Bytes(), []byte(`Before any commit in a project exposed by this server`)) ||
-		!bytes.Contains(res.Body.Bytes(), []byte(`projects.impact.analyze with changed paths`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`Use the smallest MCP call set that answers the task`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`Before commit, use the smallest verification set appropriate`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`projects.impact.analyze with changed paths when blast radius is unclear`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`projects.context_health`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`projects.claims.check`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`agent_runs.step_append`)) {

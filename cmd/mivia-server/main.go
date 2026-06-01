@@ -247,7 +247,7 @@ func run() error {
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
 	httpapi.RegisterRoutes(mux, agentService)
 	researchhttpapi.RegisterRoutes(mux, researchService)
-	projecthttpapi.RegisterRoutesWithWorkspace(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService)
+	projecthttpapi.RegisterRoutesWithWorkspaceAndIntegrations(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService)
 	var diagnosticsService *diagnostics.Service
 	if diagnostics.Enabled(cfg.Debug.Enabled, cfg.HTTPAddr) {
 		diagnosticsService = diagnostics.NewService(projectingestion.DiagnosticsSource{

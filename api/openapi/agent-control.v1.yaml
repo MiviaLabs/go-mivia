@@ -284,6 +284,22 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/dashboard-summary:
+    get:
+      operationId: getProjectDashboardSummary
+      summary: Get bounded project dashboard summary
+      description: Returns one bounded aggregate for dashboard rendering, including project metadata, context health, latest ingestion metadata, graph statistics, AST coverage, workspace git status summary, and integration status/counts when available. It omits roots, source text, raw diffs, provider payloads, secrets, and PII.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Bounded dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDashboardSummary'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects/{id}/impact/analyze:
     post:
       operationId: analyzeProjectImpact
@@ -1541,6 +1557,37 @@ components:
         validation_error:
           type: string
       description: Project metadata response intentionally omits local root paths, include/exclude patterns, raw source content, and file-content hashes.
+    ProjectDashboardSummary:
+      type: object
+      additionalProperties: false
+      required: [project, graph, limits, checked_at]
+      properties:
+        project:
+          $ref: '#/components/schemas/Project'
+        context_health:
+          $ref: '#/components/schemas/ContextHealth'
+        latest_run:
+          $ref: '#/components/schemas/IngestionRun'
+        graph:
+          type: object
+          description: Bounded file, symbol, heading, AST coverage, and search-index metadata for dashboards. It never contains source text or raw diff content.
+        workspace:
+          type: object
+          description: Bounded workspace git status summary with counts and sampled relative paths only.
+        integrations:
+          type: object
+          description: Safe integration provider status and indexed item counts when configured.
+        limits:
+          type: object
+          additionalProperties:
+            type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+        checked_at:
+          type: string
+          format: date-time
     ContextHealth:
       type: object
       additionalProperties: false
