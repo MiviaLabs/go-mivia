@@ -22,7 +22,7 @@ services:
       MIVIA_PUBLIC_PORT: "8080"
       # Persistent project graph/search stores derive from this parent:
       # /var/lib/mivia/projects/<project-id>/mivialabs.lbug
-      # /var/lib/mivia/projects/<project-id>/mivialabs-search.sqlite
+      # /var/lib/mivia/projects/<project-id>/mivialabs-pebble-search.sqlite
       # v0.1.7 bounds heavy per-project graph/search flushes during ingestion.
       # Keep full_scan_batch_size in the mounted TOML as the hard file-count cap.
       MIVIA_LADYBUG_PATH: /var/lib/mivia/mivialabs.lbug
