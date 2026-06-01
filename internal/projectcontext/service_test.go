@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
 )
 
 func TestServiceBuild_ComposesBoundedSearchFilesSymbolsAndImpact(t *testing.T) {
+	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	ingestion := &fakeIngestion{
 		text: projectingestion.TextSearchResultList{Results: []projectingestion.TextSearchResult{{
 			File: fileMeta("file-1", "internal/projectcontext/service.go"),
@@ -18,18 +20,18 @@ func TestServiceBuild_ComposesBoundedSearchFilesSymbolsAndImpact(t *testing.T) {
 				Text: "raw chunk text must not be copied into context packs",
 			},
 			Snippet: "ContextPack",
-		}}},
+		}}, Index: &projectingestion.SearchIndexMetadata{IndexStatus: "completed", IngestionRunID: "ingest-1"}},
 		files: projectingestion.FileList{Files: []projectingestion.FileMetadata{
 			fileMeta("file-1", "internal/projectcontext/service.go"),
 			fileMeta("file-2", "internal/projectregistry/mcpapi/mcpapi.go"),
-		}},
+		}, Index: &projectingestion.SearchIndexMetadata{IndexStatus: "completed", IngestionRunID: "ingest-1"}},
 		symbols: projectingestion.SymbolList{Symbols: []projectingestion.SymbolMetadata{{
 			ID:        "sym-1",
 			FileID:    "file-1",
 			ProjectID: "project-1",
 			Kind:      "function",
 			Name:      "Build",
-		}}},
+		}}, Index: &projectingestion.SearchIndexMetadata{IndexStatus: "completed", IngestionRunID: "ingest-1"}},
 	}
 	impact := &fakeImpact{result: projectreliability.ImpactAnalysis{
 		ProjectID:    "project-1",
@@ -40,7 +42,9 @@ func TestServiceBuild_ComposesBoundedSearchFilesSymbolsAndImpact(t *testing.T) {
 		}},
 	}}
 
-	pack, err := NewService(ingestion, impact).Build(context.Background(), BuildRequest{
+	service := NewService(ingestion, impact)
+	service.setNowForTest(func() time.Time { return generatedAt })
+	pack, err := service.Build(context.Background(), BuildRequest{
 		ProjectID:       " project-1 ",
 		Query:           " Build ",
 		ChangedPaths:    []string{"internal/projectcontext/service.go", "internal/projectcontext/service.go"},
@@ -78,6 +82,27 @@ func TestServiceBuild_ComposesBoundedSearchFilesSymbolsAndImpact(t *testing.T) {
 	if !contains(pack.Limitations, "integration_artifacts_not_included_v1") {
 		t.Fatalf("expected v1 limitation, got %#v", pack.Limitations)
 	}
+	if pack.Manifest.Version != "context-pack-manifest.v1" || pack.Manifest.GeneratedAt != generatedAt {
+		t.Fatalf("unexpected manifest identity: %#v", pack.Manifest)
+	}
+	if pack.Manifest.GraphStatus != "ready" || pack.Manifest.ContainsSource || pack.Manifest.ExportMode != "none" {
+		t.Fatalf("unexpected manifest safety fields: %#v", pack.Manifest)
+	}
+	if len(pack.Manifest.FileIDs) != 1 || pack.Manifest.FileIDs[0] != "file-1" {
+		t.Fatalf("expected deterministic file ids, got %#v", pack.Manifest.FileIDs)
+	}
+	if len(pack.Manifest.SymbolIDs) != 1 || pack.Manifest.SymbolIDs[0] != "sym-1" {
+		t.Fatalf("expected deterministic symbol ids, got %#v", pack.Manifest.SymbolIDs)
+	}
+	if len(pack.Manifest.ChunkIDs) != 1 || pack.Manifest.ChunkIDs[0] != "chunk-1" {
+		t.Fatalf("expected deterministic chunk ids, got %#v", pack.Manifest.ChunkIDs)
+	}
+	if len(pack.Manifest.RedactedHashes) != 4 || len(pack.Manifest.RedactedHashes[0].Value) != 16 {
+		t.Fatalf("expected redacted hashes, got %#v", pack.Manifest.RedactedHashes)
+	}
+	if !contains(pack.Manifest.Limitations, "full_source_not_included_by_default") {
+		t.Fatalf("expected source exclusion limitation, got %#v", pack.Manifest.Limitations)
+	}
 }
 
 func TestServiceBuild_EmptyQueryReturnsFileSampleAndWarning(t *testing.T) {
@@ -110,6 +135,31 @@ func TestServiceBuild_RejectsInvalidInput(t *testing.T) {
 	_, err = NewService(&fakeIngestion{}, nil).Build(context.Background(), BuildRequest{ProjectID: "project-1", Query: "ok", MaxItems: -1})
 	if !errors.Is(err, projectingestion.ErrInvalidInput) {
 		t.Fatalf("expected invalid input for negative max items, got %v", err)
+	}
+}
+
+func TestServiceBuild_ManifestFlagsStaleGraph(t *testing.T) {
+	ingestion := &fakeIngestion{
+		text: projectingestion.TextSearchResultList{
+			Results: []projectingestion.TextSearchResult{{
+				File:    fileMeta("file-1", "internal/projectcontext/service.go"),
+				Chunk:   projectingestion.ChunkMetadata{ID: "chunk-1"},
+				Snippet: "Build",
+			}},
+			Index: &projectingestion.SearchIndexMetadata{IndexStatus: "running", IngestionRunID: "ingest-running"},
+		},
+	}
+
+	pack, err := NewService(ingestion, nil).Build(context.Background(), BuildRequest{
+		ProjectID: "project-1",
+		Query:     "Build",
+		MaxItems:  1,
+	})
+	if err != nil {
+		t.Fatalf("build context pack: %v", err)
+	}
+	if pack.Manifest.GraphStatus != "stale" {
+		t.Fatalf("expected stale graph status, got %#v", pack.Manifest)
 	}
 }
 
@@ -168,6 +218,7 @@ func fileMeta(id string, path string) projectingestion.FileMetadata {
 		Extension:      ".go",
 		Status:         string(projectingestion.FileStatusEligible),
 		Present:        true,
+		ModifiedAt:     time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC),
 		RelativePathOK: true,
 	}
 }

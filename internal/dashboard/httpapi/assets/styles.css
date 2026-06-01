@@ -630,6 +630,32 @@ main {
   margin-top: 8px;
 }
 
+.activity-manifest {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--muted-bg);
+}
+
+.activity-manifest__head,
+.activity-manifest__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.activity-manifest__head strong {
+  margin-right: auto;
+}
+
+.activity-manifest__grid {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .activity-payload {
   display: grid;
   gap: 4px;

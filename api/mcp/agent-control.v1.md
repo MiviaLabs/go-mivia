@@ -260,9 +260,9 @@ Output: deterministic impact metadata with graph-backed source anchors from defi
 
 Input schema: `id`, optional `query`, optional `path_prefix`, optional safe project-relative `changed_paths`, optional `diff_scope` (`working_tree`, `staged`, or `head`), optional `max_diff_bytes`, optional `max_items` capped at 25, optional `max_snippet_bytes`, and optional `include_impact`.
 
-Output: bounded context pack with project ID, limits, text search hits, file metadata, symbol metadata, optional impact analysis, warnings, partial flag, and explicit v1 limitations.
+Output: bounded context pack with project ID, limits, text search hits, file metadata, symbol metadata, optional impact analysis, a manifest-only reproducibility record, warnings, partial flag, and explicit v1 limitations.
 
-The tool composes existing local indexed context only. It does not create storage, call providers, return roots, return raw workspace diffs, or include full chunk text. Text hits include capped snippets and chunk metadata with empty `chunk.text`.
+The manifest records normalized query/options, graph/search-index status, selected file/symbol/chunk IDs, file timestamps, warnings, limitations, and truncated redacted SHA-256 values over manifest metadata identifiers only. The tool composes existing local indexed context only. It does not create storage, call providers, return roots, return raw workspace diffs, include full chunk text, or include full source by default. Text hits include capped snippets and chunk metadata with empty `chunk.text`.
 
 ### `projects.claims.check`
 

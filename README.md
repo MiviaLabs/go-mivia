@@ -31,7 +31,7 @@ flowchart TB
   Activity["Agent Activity: trace_id/run_id SSE, reconnect replay, policy events"]
   Registry["Local project registry"]
   Reliability["Reliability checks: context health, impact analysis, stale claims"]
-  ContextPack["Context packs: search hits, files, symbols, impact"]
+  ContextPack["Context packs: search hits, files, symbols, impact, manifests"]
   Promotion["Promotion gates: candidate, validated, promoted, rejected"]
   Digest["Metadata-only digest"]
   Scheduler["Fair ingestion scheduler"]
@@ -113,7 +113,7 @@ flowchart TB
 | Promotion gates | Metadata-only artifact promotion decisions with `candidate`, `validated`, `promoted`, and `rejected` states | Existing artifact refs only; refs and decisions stay bounded and redacted |
 | Project registry | Optional local TOML projects with metadata-only digest or content graph mode | Root paths and local config values stay out of REST/MCP responses |
 | Reliability checks | Context health, changed-path impact analysis, and deterministic stale-claim checking | Metadata-only; no verifier recommendation, eval runner, LLM judgment, raw diff echoing, broad crawling, or `.ai/tasks/*` stable-doc links |
-| Context packs | Bounded package of search snippets, indexed file metadata, symbol metadata, and optional impact analysis | No new storage, provider calls, roots, raw diffs, or full chunk text |
+| Context packs | Bounded package of search snippets, indexed file metadata, symbol metadata, optional impact analysis, and manifest-only reproducibility metadata | No new storage, provider calls, roots, raw diffs, full chunk text, or full source by default |
 | Ingestion scheduler | Async manual ingestion, live watcher rescan, configurable global/per-project limits, live path priority | Global limits cap full-scan file workers; operators can cap workers per project when fairness matters |
 | Full-scan ingestion | Parallel bounded file workers, weighted prepared-file storage flushes, periodic running counters, stale cleanup after workers drain | Source is stored only for eligible chunks after safety gates; heavy graph/search write units flush before the file-count cap |
 | Semantic graph | Files, chunks, headings, symbols, references, direct calls, callers/callees, bounded call graph, named AST structural search, AST query catalog discovery | No embeddings, vectors, crawling, provider calls, or raw DB query endpoint |
@@ -195,7 +195,7 @@ What this enables:
 - Engineers can opt project-specific Jira/Confluence allowlists into polling-only ingestion so issue/page context lands in the same local graph as source context.
 - Operators can run `mivia-server config check --config <path> --redacted-json` to produce a support-bundle-style validation report without exposing local roots, URLs, Cloud IDs, credential refs, or config paths.
 - Agents can ask for bounded project files, chunks, outlines, search results, symbols, symbol source, references, direct call edges, call graphs, the supported AST query catalog, named AST structural matches, and ingestion status through MCP instead of guessing from stale chat context.
-- Agents can ask for a context pack that combines bounded search snippets, indexed file metadata, symbol metadata, and optional impact analysis in one response.
+- Agents can ask for a context pack that combines bounded search snippets, indexed file metadata, symbol metadata, optional impact analysis, and a manifest-only reproducibility record in one response.
 - Agents can ask for context health, changed-path impact analysis, and deterministic stale-claim checks against selected stable docs/contracts before relying on local context.
 - Agents can record redacted run metadata, steps, verifier outcomes, changed file paths, and artifact refs without storing raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or PII.
 - Agents can record promotion-gate decisions for existing run artifacts using `candidate`, `validated`, `promoted`, and `rejected` states without promoting raw runtime payloads into knowledge.

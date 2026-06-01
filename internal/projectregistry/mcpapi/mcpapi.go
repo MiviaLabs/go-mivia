@@ -951,7 +951,7 @@ func ingestionToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.context_pack.build",
 			"title":       "Build Project Context Pack",
-			"description": "Compose bounded code search hits, file metadata, symbol metadata, and optional impact metadata for an opted-in local project without new storage, raw roots, raw diffs, or external provider calls.",
+			"description": "Compose bounded code search hits, file metadata, symbol metadata, optional impact metadata, and a manifest-only reproducibility record for an opted-in local project without new storage, raw roots, raw diffs, full source, or external provider calls.",
 			"inputSchema": objectSchema(map[string]any{
 				"id":                map[string]any{"type": "string", "minLength": 1},
 				"project_id":        map[string]any{"type": "string"},

@@ -360,7 +360,7 @@ paths:
     post:
       operationId: buildProjectContextPack
       summary: Build bounded project context pack
-      description: Composes bounded text search hits, file metadata, symbol metadata, and optional impact metadata from existing local indexed context. It creates no new storage and returns no roots, raw diffs, external provider data, or uncapped chunk source.
+      description: Composes bounded text search hits, file metadata, symbol metadata, optional impact metadata, and manifest-only reproducibility metadata from existing local indexed context. It creates no new storage and returns no roots, raw diffs, external provider data, uncapped chunk source, or full source by default.
       parameters:
         - $ref: '#/components/parameters/ID'
       requestBody:
@@ -1816,7 +1816,7 @@ components:
     ContextPack:
       type: object
       additionalProperties: false
-      required: [project_id, limits]
+      required: [project_id, limits, manifest]
       properties:
         project_id:
           type: string
@@ -1844,6 +1844,8 @@ components:
             $ref: '#/components/schemas/ProjectSymbol'
         impact:
           $ref: '#/components/schemas/ImpactAnalysis'
+        manifest:
+          $ref: '#/components/schemas/ContextPackManifest'
         partial:
           type: boolean
         warnings:
@@ -1861,6 +1863,84 @@ components:
           type: integer
         max_snippet_bytes:
           type: integer
+    ContextPackManifest:
+      type: object
+      additionalProperties: false
+      required: [version, generated_at, mode, project_id, graph_status, contains_source, export_mode]
+      properties:
+        version: {type: string}
+        generated_at: {type: string, format: date-time}
+        mode:
+          type: string
+          enum: [manifest_only]
+        project_id: {type: string}
+        query: {type: string}
+        path_prefix: {type: string}
+        changed_paths:
+          type: array
+          items: {type: string}
+        graph_status:
+          type: string
+          enum: [ready, stale, degraded, partial]
+        search_index_statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextPackSearchIndexSnapshot'
+        file_ids:
+          type: array
+          items: {type: string}
+        symbol_ids:
+          type: array
+          items: {type: string}
+        chunk_ids:
+          type: array
+          items: {type: string}
+        file_timestamps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextPackFileTimestamp'
+        redacted_hashes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextPackRedactedHash'
+        contains_source:
+          type: boolean
+          description: False for default manifest-only packs; full source is not included by default.
+        export_mode:
+          type: string
+          description: Export mode marker; default is none.
+        warnings:
+          type: array
+          items: {type: string}
+        limitations:
+          type: array
+          items: {type: string}
+    ContextPackSearchIndexSnapshot:
+      type: object
+      additionalProperties: false
+      required: [source, index_status]
+      properties:
+        source: {type: string}
+        index_status: {type: string}
+        ingestion_run_id: {type: string}
+        degraded: {type: boolean}
+        degraded_reason: {type: string}
+    ContextPackFileTimestamp:
+      type: object
+      additionalProperties: false
+      required: [file_id, modified_at]
+      properties:
+        file_id: {type: string}
+        modified_at: {type: string, format: date-time}
+    ContextPackRedactedHash:
+      type: object
+      additionalProperties: false
+      required: [kind, value]
+      properties:
+        kind: {type: string}
+        value:
+          type: string
+          description: Truncated redacted SHA-256 over manifest metadata identifiers only, never source content.
     ImpactDomain:
       type: object
       additionalProperties: false

@@ -639,6 +639,7 @@ function renderActivityEvents(events) {
 
 function visibleActivityRows(events) {
   const rows = [];
+  const policyGroups = new Map();
   const reversed = events.slice().reverse();
   for (const event of reversed) {
     if (!isPolicyEvent(event)) {
@@ -646,19 +647,21 @@ function visibleActivityRows(events) {
       continue;
     }
     const key = policyEventKey(event);
-    const previous = rows[rows.length - 1];
-    if (previous && previous._policy_group_key === key) {
-      previous._policy_group_count += 1;
-      previous._policy_group_ids.push(event.id);
-      if (!previous.relative_path && event.relative_path) previous.relative_path = event.relative_path;
+    const group = policyGroups.get(key);
+    if (group) {
+      group._policy_group_count += 1;
+      group._policy_group_ids.push(event.id);
+      if (!group.relative_path && event.relative_path) group.relative_path = event.relative_path;
       continue;
     }
-    rows.push({
+    const grouped = {
       ...event,
       _policy_group_key: key,
       _policy_group_count: 1,
       _policy_group_ids: [event.id],
-    });
+    };
+    policyGroups.set(key, grouped);
+    rows.push(grouped);
   }
   return rows;
 }
@@ -680,7 +683,7 @@ function activityEventRow(event) {
   const title = event.tool_name || event.method || event.event_kind || "activity";
   const groupedCount = event._policy_group_count || 1;
   const subtitle = groupedCount > 1
-    ? `${formatDate(event.timestamp)} · ${groupedCount} repeated policy events`
+    ? `${formatDate(event.timestamp)} - ${groupedCount} repeated policy events`
     : formatDate(event.timestamp);
   const badges = [
     pill(event.status || "unknown", statusTone),
@@ -699,6 +702,7 @@ function activityEventRow(event) {
       el("div", { class: "activity-event__badges" }, badges),
     ),
     event.error ? el("p", { class: "activity-event__error", text: event.error }) : null,
+    contextPackManifestBlock(event),
     el("details", { class: "activity-details activity-details--summary" },
       el("summary", { text: "Call summary" }),
       el("div", { class: "activity-summary-grid" },
@@ -732,6 +736,34 @@ function activityEventRow(event) {
       }) }),
     ),
   );
+}
+
+function contextPackManifestBlock(event) {
+  const manifest = contextPackManifest(event);
+  if (!manifest) return null;
+  const counts = [
+    ["Files", manifest.file_ids?.length || 0],
+    ["Symbols", manifest.symbol_ids?.length || 0],
+    ["Chunks", manifest.chunk_ids?.length || 0],
+  ];
+  return el("div", { class: "activity-manifest" },
+    el("div", { class: "activity-manifest__head" },
+      el("strong", { text: "Context-pack manifest" }),
+      el("span", { class: "tag", text: manifest.graph_status || "unknown" }),
+      manifest.contains_source ? el("span", { class: "tag tag--warn", text: "source included" }) : el("span", { class: "tag", text: "manifest only" }),
+    ),
+    el("div", { class: "activity-manifest__grid" },
+      ...counts.map(([label, value]) => el("span", {}, `${label}: ${value}`)),
+      manifest.generated_at ? el("span", {}, `Generated: ${formatDate(manifest.generated_at)}`) : null,
+      manifest.export_mode ? el("span", {}, `Export: ${manifest.export_mode}`) : null,
+    ),
+    activityPayloadBlock("Manifest hashes", manifest.redacted_hashes || []),
+  );
+}
+
+function contextPackManifest(event) {
+  if (event?.tool_name !== "projects.context_pack.build" && event?.tool_name !== "projects_context_pack_build") return null;
+  return event?.raw_result?.structuredContent?.manifest || event?.raw_result?.manifest || null;
 }
 
 function activityPayloadBlock(title, payload) {
