@@ -291,8 +291,11 @@ func classifyHealth(project projectregistry.Project, latest RunSummary, hasLates
 	if hasLatest && latest.Status == runStatusFailed {
 		return ContextHealthDegraded, safeCategory(latest.ErrorCategory, "latest_ingestion_failed")
 	}
+	latestHasFileWarnings := hasLatest && latest.Status == runStatusCompleted && latest.ErrorCategory == "file_errors" && health.IndexedContentAvailable
 	if hasLatest && latest.ErrorCategory != "" {
-		return ContextHealthDegraded, safeCategory(latest.ErrorCategory, "latest_ingestion_degraded")
+		if !latestHasFileWarnings {
+			return ContextHealthDegraded, safeCategory(latest.ErrorCategory, "latest_ingestion_degraded")
+		}
 	}
 	if hasLatest && latest.Status == runStatusCompleted && health.EligibleFileCount == 0 {
 		return ContextHealthEmpty, ""
@@ -307,6 +310,9 @@ func classifyHealth(project projectregistry.Project, latest RunSummary, hasLates
 		}
 	}
 	if hasLatest && latest.Status == runStatusCompleted {
+		if latestHasFileWarnings {
+			return ContextHealthReady, "file_warnings"
+		}
 		return ContextHealthReady, ""
 	}
 	if project.UpdatePolicy == projectregistry.UpdatePolicyLive {

@@ -564,7 +564,7 @@ function projectPipelineDiagram(project, health, latest, graph, dashboard) {
   const startX = 22;
   const gap = 16;
   const y = 74;
-  const statusText = health?.status ? `Context ${health.status}` : "Context unavailable";
+  const statusText = contextStatusLabel(health);
 
   return `
     <div class="pipeline-diagram" role="img" aria-label="${escapeHTML(statusText)} data pipeline">
@@ -605,7 +605,7 @@ function contextHealth(project, health) {
   return `
     <div class="split-grid">
       ${infoList([
-        ["Status", health.status || "unknown"],
+        ["Status", contextStatusLabel(health)],
         ["Reason", health.status_reason || "none"],
         ["Digest mode", project.digest_mode || "unknown"],
         ["Update policy", project.update_policy || "unknown"],
@@ -618,6 +618,14 @@ function contextHealth(project, health) {
       </div>
     </div>
   `;
+}
+
+function contextStatusLabel(health) {
+  if (!health?.status) return "Context unavailable";
+  if (health.status === "ready" && health.status_reason === "file_warnings") {
+    return "ready with warnings";
+  }
+  return health.status;
 }
 
 function latestRun(run) {

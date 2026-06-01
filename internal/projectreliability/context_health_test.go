@@ -178,6 +178,87 @@ func TestContextHealth_SanitizesRawCategories(t *testing.T) {
 	}
 }
 
+func TestContextHealth_CompletedFileErrorsWithIndexedContentAreReadyWithWarnings(t *testing.T) {
+	svc := newTestService(ContextProviderFunc{
+		latest: RunSummary{
+			ID:            "run-1",
+			Status:        runStatusCompleted,
+			ErrorCategory: "file_errors",
+			ReasonCounts: map[string]int{
+				"parse_error":       2,
+				"sensitive_content": 4,
+			},
+			LastProgressAt: testNow,
+		},
+		eligible: 10,
+		symbols:  20,
+		chunks:   30,
+		index:    SearchIndexHealth{Status: "ok"},
+	})
+
+	health, err := svc.ContextHealth(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("context health: %v", err)
+	}
+	if health.Status != ContextHealthReady || health.StatusReason != "file_warnings" {
+		t.Fatalf("expected ready with file warnings, got %#v", health)
+	}
+	if !health.IndexedContentAvailable {
+		t.Fatalf("expected indexed content available, got %#v", health)
+	}
+	if health.ReasonCounts["parse_error"] != 2 || health.ReasonCounts["sensitive_content"] != 4 {
+		t.Fatalf("expected warning reason counts to remain visible, got %#v", health.ReasonCounts)
+	}
+}
+
+func TestContextHealth_CompletedFileErrorsWithoutIndexedContentStayDegraded(t *testing.T) {
+	svc := newTestService(ContextProviderFunc{
+		latest: RunSummary{
+			ID:             "run-1",
+			Status:         runStatusCompleted,
+			ErrorCategory:  "file_errors",
+			ReasonCounts:   map[string]int{"parse_error": 2},
+			LastProgressAt: testNow,
+		},
+		eligible: 0,
+		symbols:  0,
+		chunks:   0,
+		index:    SearchIndexHealth{Status: "ok"},
+	})
+
+	health, err := svc.ContextHealth(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("context health: %v", err)
+	}
+	if health.Status != ContextHealthDegraded || health.StatusReason != "file_errors" {
+		t.Fatalf("expected degraded with no indexed content, got %#v", health)
+	}
+}
+
+func TestContextHealth_CompletedFileErrorsDoNotMaskStaleLiveProject(t *testing.T) {
+	svc := newTestService(ContextProviderFunc{
+		latest: RunSummary{
+			ID:             "run-1",
+			Status:         runStatusCompleted,
+			ErrorCategory:  "file_errors",
+			ReasonCounts:   map[string]int{"parse_error": 2},
+			LastProgressAt: testNow.Add(-25 * time.Hour),
+		},
+		eligible: 10,
+		symbols:  20,
+		chunks:   30,
+		index:    SearchIndexHealth{Status: "ok"},
+	})
+
+	health, err := svc.ContextHealth(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("context health: %v", err)
+	}
+	if health.Status != ContextHealthStale || health.StatusReason != "latest_ingestion_stale" {
+		t.Fatalf("expected stale to win over file warnings, got %#v", health)
+	}
+}
+
 func TestContextHealth_StaleLiveProject(t *testing.T) {
 	svc := newTestService(ContextProviderFunc{
 		latest: RunSummary{
