@@ -73,6 +73,37 @@ func (store *SQLiteStore) recordSearchWrite(projectID string, weight int, insert
 	store.searchMetrics[projectID] = diagnostic
 }
 
+func (store *SQLiteStore) recordSearchQuery(projectID string, diagnostic SearchQueryDiagnostic) {
+	if store == nil || projectID == "" {
+		return
+	}
+	store.searchMetricsMu.Lock()
+	defer store.searchMetricsMu.Unlock()
+	if store.searchMetrics == nil {
+		store.searchMetrics = make(map[string]SearchWriteDiagnostic)
+	}
+	current := store.searchMetrics[projectID]
+	current.Query.FTSQueries += diagnostic.FTSQueries
+	current.Query.ScopedFallbackQueries += diagnostic.ScopedFallbackQueries
+	current.Query.RejectedFallbackQueries += diagnostic.RejectedFallbackQueries
+	current.Query.RowsScanned += diagnostic.RowsScanned
+	store.searchMetrics[projectID] = current
+}
+
+func (store *SQLiteStore) recordSearchRewriteSkipped(projectID string, count int64) {
+	if store == nil || projectID == "" || count <= 0 {
+		return
+	}
+	store.searchMetricsMu.Lock()
+	defer store.searchMetricsMu.Unlock()
+	if store.searchMetrics == nil {
+		store.searchMetrics = make(map[string]SearchWriteDiagnostic)
+	}
+	current := store.searchMetrics[projectID]
+	current.FTSRewriteSkipped += count
+	store.searchMetrics[projectID] = current
+}
+
 func (store *SQLiteStore) SearchWriteDiagnostics(projectID string) SearchWriteDiagnostic {
 	if store == nil || projectID == "" {
 		return SearchWriteDiagnostic{}
@@ -113,18 +144,19 @@ func cloneInt64Map(values map[string]int64) map[string]int64 {
 }
 
 type ExtractorCacheEntry struct {
-	ProjectID        string
-	RelativePathHash string
-	ContentSHA256    string
-	ExtractorName    string
-	ExtractorVersion string
-	Symbols          []Symbol
-	Headings         []Heading
-	References       []Reference
-	Calls            []Call
-	Implementations  []Implementation
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ProjectID            string
+	RelativePathHash     string
+	ContentSHA256        string
+	ExtractorName        string
+	ExtractorVersion     string
+	ExtractorFingerprint string
+	Symbols              []Symbol
+	Headings             []Heading
+	References           []Reference
+	Calls                []Call
+	Implementations      []Implementation
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 func (store *SQLiteStore) SaveRun(ctx context.Context, run Run) error {
@@ -507,6 +539,7 @@ func (store *SQLiteStore) GetExtractorCache(ctx context.Context, projectID strin
 		content_sha256,
 		extractor_name,
 		extractor_version,
+		extractor_fingerprint,
 		symbols_json,
 		headings_json,
 		references_json,
@@ -525,6 +558,42 @@ func (store *SQLiteStore) GetExtractorCache(ctx context.Context, projectID strin
 		contentSHA256,
 		extractorName,
 		extractorVersion,
+	)
+	entry, err := scanExtractorCacheEntry(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ExtractorCacheEntry{}, ErrExtractorCacheMiss
+	}
+	return entry, err
+}
+
+func (store *SQLiteStore) GetExtractorCacheWithFingerprint(ctx context.Context, projectID string, relativePathHash string, contentSHA256 string, extractorName string, extractorVersion string, extractorFingerprint string) (ExtractorCacheEntry, error) {
+	row := store.db.QueryRowContext(ctx, `SELECT
+		project_id,
+		relative_path_hash,
+		content_sha256,
+		extractor_name,
+		extractor_version,
+		extractor_fingerprint,
+		symbols_json,
+		headings_json,
+		references_json,
+		calls_json,
+		implementations_json,
+		created_at,
+		updated_at
+	FROM project_extractor_cache
+	WHERE project_id = ?
+		AND relative_path_hash = ?
+		AND content_sha256 = ?
+		AND extractor_name = ?
+		AND extractor_version = ?
+		AND extractor_fingerprint = ?`,
+		projectID,
+		relativePathHash,
+		contentSHA256,
+		extractorName,
+		extractorVersion,
+		extractorFingerprint,
 	)
 	entry, err := scanExtractorCacheEntry(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -576,6 +645,7 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 		content_sha256,
 		extractor_name,
 		extractor_version,
+		extractor_fingerprint,
 		symbols_json,
 		headings_json,
 		references_json,
@@ -583,8 +653,9 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 		implementations_json,
 		created_at,
 		updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(project_id, relative_path_hash, content_sha256, extractor_name, extractor_version) DO UPDATE SET
+		extractor_fingerprint = excluded.extractor_fingerprint,
 		symbols_json = excluded.symbols_json,
 		headings_json = excluded.headings_json,
 		references_json = excluded.references_json,
@@ -596,6 +667,7 @@ func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry Extracto
 		entry.ContentSHA256,
 		entry.ExtractorName,
 		entry.ExtractorVersion,
+		entry.ExtractorFingerprint,
 		string(symbolsJSON),
 		string(headingsJSON),
 		string(referencesJSON),
@@ -874,6 +946,7 @@ func scanExtractorCacheEntry(scanner runScanner) (ExtractorCacheEntry, error) {
 		&entry.ContentSHA256,
 		&entry.ExtractorName,
 		&entry.ExtractorVersion,
+		&entry.ExtractorFingerprint,
 		&symbolsJSON,
 		&headingsJSON,
 		&referencesJSON,

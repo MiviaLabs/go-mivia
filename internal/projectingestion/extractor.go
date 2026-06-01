@@ -2,6 +2,8 @@ package projectingestion
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path"
 	"strings"
@@ -142,6 +144,10 @@ func (extractor staticExtractor) Version() string {
 	return extractor.version
 }
 
+func (extractor staticExtractor) Fingerprint() string {
+	return extractorFingerprint(extractor.name, extractor.version, "")
+}
+
 func (extractor staticExtractor) Supports(relative string) bool {
 	return extractor.supports != nil && extractor.supports(relative)
 }
@@ -158,6 +164,11 @@ func (extractor staticExtractor) Validate() error {
 
 func (extractor staticExtractor) Parse(ctx context.Context, relative string, content []byte) (ExtractorResult, error) {
 	return extractor.parse(ctx, relative, content)
+}
+
+func extractorFingerprint(name string, version string, query string) string {
+	sum := sha256.Sum256([]byte(name + "\x00" + version + "\x00" + query))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func supportsInfraLightweight(relative string) bool {

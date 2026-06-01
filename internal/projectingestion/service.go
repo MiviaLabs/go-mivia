@@ -49,6 +49,10 @@ type stateStore interface {
 	DeleteExtractorCacheForFile(context.Context, string, string) error
 }
 
+type fingerprintExtractorCacheStore interface {
+	GetExtractorCacheWithFingerprint(context.Context, string, string, string, string, string, string) (ExtractorCacheEntry, error)
+}
+
 type stateBatchStore interface {
 	SaveFileStatesBatch(context.Context, []FileState) error
 }
@@ -837,6 +841,7 @@ func (svc *Service) executeProjectRun(ctx context.Context, project projectregist
 			batchWeight += resultWeight
 			if result.state.RelativePathHash != "" {
 				progress.record(result.state, true, result.chunkCount, result.symbolCount, result.unchanged)
+				progress.recordReason(result.extractError)
 				if err := progress.flush(ctx, svc, project, false); err != nil {
 					resultMu.Lock()
 					if resultErr == nil {
@@ -1052,6 +1057,7 @@ type fullScanFileResult struct {
 	chunkCount      int
 	symbolCount     int
 	unchanged       bool
+	extractError    SkipReason
 	err             error
 }
 
@@ -1125,6 +1131,12 @@ func (progress *fullScanProgress) record(state FileState, countSeen bool, chunkC
 	progress.run.LastProgressAt = now
 	progress.run.CurrentPhase = "processing"
 	progress.changesSinceFlush++
+}
+
+func (progress *fullScanProgress) recordReason(reason SkipReason) {
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	recordRunReason(&progress.run, reason)
 }
 
 func (progress *fullScanProgress) flush(ctx context.Context, svc *Service, project projectregistry.Project, force bool) error {
@@ -1250,6 +1262,7 @@ func (svc *Service) ingestPath(ctx context.Context, projectID string, relativePa
 			run.ChunksStored = len(result.chunks)
 			run.SymbolsStored = len(result.symbols)
 		}
+		recordRunReason(&run, result.extractError)
 	} else {
 		run.FilesSeen = 1
 		run.FilesSkipped = 1
@@ -2131,11 +2144,11 @@ func (svc *Service) prepareExistingFile(ctx context.Context, project projectregi
 		MaxChunkBytes:         project.MaxChunkBytes,
 		SensitiveMarkerPolicy: project.SensitiveMarkerPolicy,
 	}
-	if options.MaxFileBytes > 0 && info.Size() > options.MaxFileBytes {
-		state := svc.skippedState(project, relative, SkipReasonFileTooLarge, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
-		return fullScanFileResult{state: state}
-	}
 	extractor := svc.extractors.ExtractorFor(relative)
+	largeForSemanticExtraction := options.MaxFileBytes > 0 && info.Size() > options.MaxFileBytes
+	if largeForSemanticExtraction {
+		extractor = nil
+	}
 	unchangedStartedAt := time.Now()
 	unchangedState, unchanged, err := svc.metadataUnchangedFile(ctx, project, extractor, relative, info, run)
 	svc.recordStage("fast_unchanged_check", unchangedStartedAt, err)
@@ -2146,17 +2159,33 @@ func (svc *Service) prepareExistingFile(ctx context.Context, project projectregi
 		return fullScanFileResult{state: unchangedState, unchanged: true}
 	}
 	readStartedAt := time.Now()
-	content, err := os.ReadFile(fullPath)
-	svc.recordStage("read", readStartedAt, err)
-	if err != nil {
-		state := svc.skippedState(project, relative, SkipReasonReadError, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
-		return fullScanFileResult{state: state}
+	var content []byte
+	var chunkSet ChunkSet
+	var safety SafetyResult
+	if largeForSemanticExtraction {
+		file, openErr := os.Open(fullPath)
+		svc.recordStage("read", readStartedAt, openErr)
+		if openErr != nil {
+			state := svc.skippedState(project, relative, SkipReasonReadError, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
+			return fullScanFileResult{state: state}
+		}
+		defer file.Close()
+		chunkStartedAt := time.Now()
+		chunkSet, safety, err = BuildChunksFromReader(relative, file, info.Size(), options)
+		svc.recordStage("chunk", chunkStartedAt, err)
+	} else {
+		content, err = os.ReadFile(fullPath)
+		svc.recordStage("read", readStartedAt, err)
+		if err != nil {
+			state := svc.skippedState(project, relative, SkipReasonReadError, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
+			return fullScanFileResult{state: state}
+		}
+		chunkStartedAt := time.Now()
+		chunkSet, safety, err = BuildChunks(relative, content, options)
+		svc.recordStage("chunk", chunkStartedAt, err)
 	}
-	chunkStartedAt := time.Now()
-	chunkSet, safety, err := BuildChunks(relative, content, options)
-	svc.recordStage("chunk", chunkStartedAt, err)
 	if err != nil {
-		state := svc.skippedState(project, relative, SkipReasonChunkError, int64(len(content)), info.ModTime().UTC(), true, run.StartedAt)
+		state := svc.skippedState(project, relative, SkipReasonChunkError, info.Size(), info.ModTime().UTC(), true, run.StartedAt)
 		return fullScanFileResult{state: state}
 	}
 	if !safety.Eligible {
@@ -2165,6 +2194,9 @@ func (svc *Service) prepareExistingFile(ctx context.Context, project projectregi
 	}
 
 	state := fileStateFromSafety(project, relative, safety, chunkSet.ContentSHA256, info.ModTime().UTC(), run.StartedAt)
+	if largeForSemanticExtraction {
+		state.SkippedReason = SkipReasonSemanticTooLarge
+	}
 	contentUnchangedStartedAt := time.Now()
 	unchanged, err = svc.fileVersionUnchanged(ctx, project, extractor, state)
 	svc.recordStage("fast_unchanged_check", contentUnchangedStartedAt, err)
@@ -2178,8 +2210,12 @@ func (svc *Service) prepareExistingFile(ctx context.Context, project projectregi
 	result, err := svc.extractEligible(ctx, project, relative, hashValue(relative), chunkSet.ContentSHA256, extractor, content, run.StartedAt)
 	svc.recordStage("extract", extractStartedAt, err)
 	if err != nil {
-		state := svc.skippedState(project, relative, SkipReasonParseError, int64(len(content)), info.ModTime().UTC(), true, run.StartedAt)
-		return fullScanFileResult{state: state}
+		return fullScanFileResult{
+			state:        state,
+			chunks:       chunkSet.Chunks,
+			chunkCount:   len(chunkSet.Chunks),
+			extractError: SkipReasonParseError,
+		}
 	}
 	return fullScanFileResult{
 		state:           state,
@@ -2212,7 +2248,7 @@ func (svc *Service) metadataUnchangedFile(ctx context.Context, project projectre
 	state.LastEventAt = run.StartedAt
 	state.LastIngestedAt = run.StartedAt
 	if extractor != nil && svc.extractorCacheEnabled {
-		if _, err := svc.state.GetExtractorCache(ctx, project.ID, state.RelativePathHash, state.ContentSHA256, extractor.Name(), extractor.Version()); err != nil {
+		if _, err := svc.getExtractorCache(ctx, project.ID, state.RelativePathHash, state.ContentSHA256, extractor.Name(), extractor.Version(), extractorFingerprintFor(extractor)); err != nil {
 			if errors.Is(err, ErrExtractorCacheMiss) {
 				return FileState{}, false, nil
 			}
@@ -2249,7 +2285,7 @@ func (svc *Service) fileVersionUnchanged(ctx context.Context, project projectreg
 		return false, nil
 	}
 	if extractor != nil && svc.extractorCacheEnabled {
-		if _, err := svc.state.GetExtractorCache(ctx, project.ID, state.RelativePathHash, state.ContentSHA256, extractor.Name(), extractor.Version()); err != nil {
+		if _, err := svc.getExtractorCache(ctx, project.ID, state.RelativePathHash, state.ContentSHA256, extractor.Name(), extractor.Version(), extractorFingerprintFor(extractor)); err != nil {
 			if errors.Is(err, ErrExtractorCacheMiss) {
 				return false, nil
 			}
@@ -2397,8 +2433,9 @@ func (svc *Service) extractEligible(ctx context.Context, project projectregistry
 	if extractor == nil {
 		return ExtractorResult{}, nil
 	}
+	fingerprint := extractorFingerprintFor(extractor)
 	if svc.extractorCacheEnabled && contentSHA256 != "" {
-		entry, err := svc.state.GetExtractorCache(ctx, project.ID, relativePathHash, contentSHA256, extractor.Name(), extractor.Version())
+		entry, err := svc.getExtractorCache(ctx, project.ID, relativePathHash, contentSHA256, extractor.Name(), extractor.Version(), fingerprint)
 		if err == nil {
 			return ExtractorResult{
 				ExtractorName:    entry.ExtractorName,
@@ -2422,23 +2459,41 @@ func (svc *Service) extractEligible(ctx context.Context, project projectregistry
 	result.ExtractorVersion = extractor.Version()
 	if svc.extractorCacheEnabled && contentSHA256 != "" {
 		if err := svc.state.SaveExtractorCache(ctx, ExtractorCacheEntry{
-			ProjectID:        project.ID,
-			RelativePathHash: relativePathHash,
-			ContentSHA256:    contentSHA256,
-			ExtractorName:    result.ExtractorName,
-			ExtractorVersion: result.ExtractorVersion,
-			Symbols:          result.Symbols,
-			Headings:         result.Headings,
-			References:       result.References,
-			Calls:            result.Calls,
-			Implementations:  result.Implementations,
-			CreatedAt:        eventAt,
-			UpdatedAt:        eventAt,
+			ProjectID:            project.ID,
+			RelativePathHash:     relativePathHash,
+			ContentSHA256:        contentSHA256,
+			ExtractorName:        result.ExtractorName,
+			ExtractorVersion:     result.ExtractorVersion,
+			ExtractorFingerprint: fingerprint,
+			Symbols:              result.Symbols,
+			Headings:             result.Headings,
+			References:           result.References,
+			Calls:                result.Calls,
+			Implementations:      result.Implementations,
+			CreatedAt:            eventAt,
+			UpdatedAt:            eventAt,
 		}); err != nil {
 			return ExtractorResult{}, err
 		}
 	}
 	return result, nil
+}
+
+func (svc *Service) getExtractorCache(ctx context.Context, projectID string, relativePathHash string, contentSHA256 string, extractorName string, extractorVersion string, extractorFingerprint string) (ExtractorCacheEntry, error) {
+	if store, ok := svc.state.(fingerprintExtractorCacheStore); ok {
+		return store.GetExtractorCacheWithFingerprint(ctx, projectID, relativePathHash, contentSHA256, extractorName, extractorVersion, extractorFingerprint)
+	}
+	if extractorFingerprint != "" {
+		return ExtractorCacheEntry{}, ErrExtractorCacheMiss
+	}
+	return svc.state.GetExtractorCache(ctx, projectID, relativePathHash, contentSHA256, extractorName, extractorVersion)
+}
+
+func extractorFingerprintFor(extractor Extractor) string {
+	if provider, ok := extractor.(ExtractorFingerprintProvider); ok {
+		return provider.Fingerprint()
+	}
+	return extractorFingerprint(extractor.Name(), extractor.Version(), "")
 }
 
 func (svc *Service) saveSkipped(ctx context.Context, project projectregistry.Project, run Run, state FileState, skipDir bool) error {
@@ -2602,7 +2657,7 @@ func recordRunReason(run *Run, reason SkipReason) {
 
 func isFileErrorReason(reason SkipReason) bool {
 	switch reason {
-	case SkipReasonStatError, SkipReasonReadError, SkipReasonChunkError, SkipReasonParseError:
+	case SkipReasonStatError, SkipReasonReadError, SkipReasonChunkError, SkipReasonParseError, SkipReasonSemanticTooLarge:
 		return true
 	default:
 		return false

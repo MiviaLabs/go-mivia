@@ -123,12 +123,13 @@ func TestBadCSharpSyntaxRecordsParseError(t *testing.T) {
 	if run.Status != RunStatusCompleted || run.ErrorCategory != "file_errors" {
 		t.Fatalf("expected completed run with file errors, got %#v", run)
 	}
-	skipped, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusSkipped})
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
 	if err != nil {
-		t.Fatalf("list skipped states: %v", err)
+		t.Fatalf("list eligible states: %v", err)
 	}
-	if len(skipped) != 1 || skipped[0].SkippedReason != SkipReasonParseError || skipped[0].ContentSHA256 != "" {
-		t.Fatalf("expected parse-error skip without content hash, got %#v", skipped)
+	bad := findState(t, states, "Bad.cs")
+	if bad.ContentSHA256 == "" || bad.SkippedReason != SkipReasonNone {
+		t.Fatalf("expected parse-error file to preserve eligible content state, got %#v", bad)
 	}
 }
 

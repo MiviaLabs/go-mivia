@@ -60,6 +60,67 @@ func TestSQLiteStore_UpsertSearchFilesBatchPreservesDeleteBeforeInsert(t *testin
 	}
 }
 
+func TestSQLiteStore_UpsertSearchFilesBatchSkipsFTSRewriteForCurrentVersion(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	state := testSearchFileState("project-1", "cmd/main.go", "sha256:main")
+	chunks := []Chunk{{Index: 0, Text: "stable body"}}
+	if err := store.UpsertSearchFile(ctx, project, state, chunks, nil, nil, nil); err != nil {
+		t.Fatalf("initial upsert: %v", err)
+	}
+
+	state.ModifiedAt = state.ModifiedAt.Add(time.Hour)
+	if err := store.UpsertSearchFilesBatch(ctx, project, []PreparedSearchFile{{State: state, Chunks: chunks}}); err != nil {
+		t.Fatalf("same-version upsert: %v", err)
+	}
+
+	diagnostics := store.SearchWriteDiagnostics(project.ID)
+	if diagnostics.FTSRewriteSkipped != 1 {
+		t.Fatalf("expected one skipped FTS rewrite, got %#v", diagnostics)
+	}
+	var ftsModifiedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT modified_at
+		FROM project_search_chunks_fts
+		WHERE project_id = ? AND file_id = ?`, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash)).Scan(&ftsModifiedAt); err != nil {
+		t.Fatalf("query fts modified_at: %v", err)
+	}
+	if ftsModifiedAt != formatTime(state.ModifiedAt) {
+		t.Fatalf("expected metadata update without FTS rewrite, got %q", ftsModifiedAt)
+	}
+}
+
+func TestSQLiteStore_UpsertSearchFilesBatchRewritesCurrentVersionWhenSymbolsChange(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	state := testSearchFileState("project-1", "cmd/main.go", "sha256:main")
+	if err := store.UpsertSearchFile(ctx, project, state, []Chunk{{Index: 0, Text: "stable body"}}, []Symbol{{Kind: SymbolKindFunction, Name: "OldSymbol", StartLine: 1}}, nil, nil); err != nil {
+		t.Fatalf("initial upsert: %v", err)
+	}
+	if err := store.UpsertSearchFilesBatch(ctx, project, []PreparedSearchFile{{
+		State:   state,
+		Chunks:  []Chunk{{Index: 0, Text: "stable body"}},
+		Symbols: []Symbol{{Kind: SymbolKindFunction, Name: "NewSymbol", StartLine: 1}},
+	}}); err != nil {
+		t.Fatalf("same-version semantic upsert: %v", err)
+	}
+	oldSymbols, err := store.SearchSymbols(ctx, project, SymbolFilter{NameContains: "OldSymbol"}, Pagination{PageSize: 10})
+	if err != nil {
+		t.Fatalf("search old symbol: %v", err)
+	}
+	if len(oldSymbols.Symbols) != 0 {
+		t.Fatalf("expected stale symbol rows to be removed, got %#v", oldSymbols.Symbols)
+	}
+	newSymbols, err := store.SearchSymbols(ctx, project, SymbolFilter{NameContains: "NewSymbol"}, Pagination{PageSize: 10})
+	if err != nil {
+		t.Fatalf("search new symbol: %v", err)
+	}
+	if len(newSymbols.Symbols) != 1 {
+		t.Fatalf("expected refreshed symbol row, got %#v", newSymbols.Symbols)
+	}
+}
+
 func TestSQLiteStore_UpdateSearchFileMetadataBatch(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)
@@ -331,6 +392,94 @@ func TestSQLiteStore_SearchFilesPaginatesInStorage(t *testing.T) {
 		t.Fatalf("search second page: %v", err)
 	}
 	if len(second.Files) != 1 || second.Files[0].RelativePath != "cmd/c.go" || second.NextPageToken != "" {
+		t.Fatalf("unexpected second page: %#v", second)
+	}
+}
+
+func TestSQLiteStore_SearchTextRejectsUnscopedNonFTSFallback(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	if err := store.UpsertSearchFile(ctx, project, testSearchFileState("project-1", "cmd/main.go", "sha256:main"), []Chunk{{Index: 0, Text: "go language"}}, nil, nil, nil); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if _, err := store.SearchText(ctx, project, TextSearchOptions{Query: "go", MaxMatches: 10}); err == nil {
+		t.Fatalf("expected unscoped non-FTS query to be rejected")
+	}
+
+	diagnostics := store.SearchWriteDiagnostics(project.ID)
+	if diagnostics.Query.RejectedFallbackQueries != 1 {
+		t.Fatalf("expected rejected fallback diagnostic, got %#v", diagnostics.Query)
+	}
+}
+
+func TestSQLiteStore_SearchTextAllowsScopedNonFTSFallback(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	if err := store.UpsertSearchFile(ctx, project, testSearchFileState("project-1", "cmd/main.go", "sha256:main"), []Chunk{{Index: 0, Text: "go language"}}, nil, nil, nil); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	results, err := store.SearchText(ctx, project, TextSearchOptions{Query: "go", PathPrefix: "cmd/", MaxMatches: 10})
+	if err != nil {
+		t.Fatalf("scoped fallback search: %v", err)
+	}
+	if len(results.Results) != 1 || results.Results[0].File.RelativePath != "cmd/main.go" {
+		t.Fatalf("expected scoped fallback result, got %#v", results.Results)
+	}
+
+	diagnostics := store.SearchWriteDiagnostics(project.ID)
+	if diagnostics.Query.ScopedFallbackQueries != 1 || diagnostics.Query.RowsScanned != 1 {
+		t.Fatalf("expected scoped fallback diagnostics, got %#v", diagnostics.Query)
+	}
+}
+
+func TestSQLiteStore_SearchTextScopedFallbackDoesNotMissLateMatches(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	chunks := make([]Chunk, 0, MaxPageSize+1)
+	for i := 0; i < MaxPageSize; i++ {
+		chunks = append(chunks, Chunk{Index: i, Text: "ordinary chunk"})
+	}
+	chunks = append(chunks, Chunk{Index: MaxPageSize, Text: "go late-match"})
+	if err := store.UpsertSearchFile(ctx, project, testSearchFileState("project-1", "cmd/main.go", "sha256:main"), chunks, nil, nil, nil); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	results, err := store.SearchText(ctx, project, TextSearchOptions{Query: "go", PathPrefix: "cmd/", MaxMatches: 10})
+	if err != nil {
+		t.Fatalf("scoped fallback search: %v", err)
+	}
+	if len(results.Results) != 1 || results.Results[0].Chunk.Index != MaxPageSize {
+		t.Fatalf("expected late scoped fallback match, got %#v", results.Results)
+	}
+}
+
+func TestSQLiteStore_SearchFilesUsesSQLContainsPaginationForNonFTSPath(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	project := testSearchProject()
+	for _, relativePath := range []string{"cmd/main.go", "internal/main.go", "pkg/main.go", "cmd/other.go"} {
+		if err := store.UpsertSearchFile(ctx, project, testSearchFileState("project-1", relativePath, "sha256:"+relativePath), nil, nil, nil, nil); err != nil {
+			t.Fatalf("upsert %s: %v", relativePath, err)
+		}
+	}
+
+	first, err := store.SearchFiles(ctx, project, FileSearchOptions{PathContains: "main.go", PageSize: 2})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(first.Files) != 2 || first.NextPageToken == "" {
+		t.Fatalf("unexpected first page: %#v", first)
+	}
+	second, err := store.SearchFiles(ctx, project, FileSearchOptions{PathContains: "main.go", PageSize: 2, PageToken: first.NextPageToken})
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(second.Files) != 1 || second.Files[0].RelativePath != "pkg/main.go" || second.NextPageToken != "" {
 		t.Fatalf("unexpected second page: %#v", second)
 	}
 }

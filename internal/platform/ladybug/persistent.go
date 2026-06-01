@@ -16,10 +16,15 @@ import (
 )
 
 type PersistentGraph struct {
-	mu      sync.Mutex
-	path    string
-	graph   *MemoryGraph
-	journal bool
+	mu          sync.Mutex
+	path        string
+	graph       *MemoryGraph
+	journal     bool
+	diagnostics PersistentGraphDiagnostics
+}
+
+type PersistentGraphDiagnostics struct {
+	IgnoredPartialJournalRecords int `json:"ignored_partial_journal_records"`
 }
 
 type persistentSnapshot struct {
@@ -157,6 +162,12 @@ func (graph *PersistentGraph) SchemaSnapshot() schema.GraphSchema {
 	return graph.graph.SchemaSnapshot()
 }
 
+func (graph *PersistentGraph) Diagnostics() PersistentGraphDiagnostics {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	return graph.diagnostics
+}
+
 func (graph *PersistentGraph) load() error {
 	if _, err := os.Stat(graph.path); err != nil {
 		if os.IsNotExist(err) {
@@ -187,6 +198,11 @@ func (graph *PersistentGraph) load() error {
 		graph.journal = true
 		return graph.replayJournal(data)
 	}
+	if !bytes.HasSuffix(data, []byte{'\n'}) && bytes.Contains(firstLine, []byte(`"op"`)) {
+		graph.journal = true
+		graph.diagnostics.IgnoredPartialJournalRecords++
+		return nil
+	}
 	var snapshot persistentSnapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return fmt.Errorf("decode ladybug graph store: %w", err)
@@ -216,6 +232,10 @@ func (graph *PersistentGraph) replayJournal(data []byte) error {
 		if len(bytes.TrimSpace(line)) > 0 {
 			var operation persistentOperation
 			if decodeErr := json.Unmarshal(bytes.TrimSpace(line), &operation); decodeErr != nil {
+				if errors.Is(err, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'}) {
+					graph.diagnostics.IgnoredPartialJournalRecords++
+					return nil
+				}
 				return fmt.Errorf("decode ladybug graph journal: %w", decodeErr)
 			}
 			if applyErr := replay.applyOperation(operation); applyErr != nil {
@@ -474,27 +494,74 @@ func (graph *PersistentGraph) appendOperationsLocked(operations []persistentOper
 	if err != nil {
 		return fmt.Errorf("write ladybug graph store: %w", err)
 	}
-	defer file.Close()
 	encoder := json.NewEncoder(file)
 	for _, operation := range operations {
 		if err := encoder.Encode(operation); err != nil {
+			_ = file.Close()
 			return fmt.Errorf("write ladybug graph store: %w", err)
 		}
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync ladybug graph store: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close ladybug graph store: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(graph.path)); err != nil {
+		return err
 	}
 	return nil
 }
 
 func (graph *PersistentGraph) rewriteJournalLocked() error {
-	file, err := os.OpenFile(graph.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	dir := filepath.Dir(graph.path)
+	file, err := os.CreateTemp(dir, ".ladybug-graph-*.tmp")
 	if err != nil {
 		return fmt.Errorf("write ladybug graph store: %w", err)
 	}
-	defer file.Close()
+	tempPath := file.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+		_ = os.Remove(tempPath)
+	}()
 	encoder := json.NewEncoder(file)
 	for _, operation := range graph.snapshotOperationsLocked() {
 		if err := encoder.Encode(operation); err != nil {
 			return fmt.Errorf("write ladybug graph store: %w", err)
 		}
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync ladybug graph store: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		closed = true
+		return fmt.Errorf("close ladybug graph store: %w", err)
+	}
+	closed = true
+	if err := os.Chmod(tempPath, 0o600); err != nil {
+		return fmt.Errorf("chmod ladybug graph store: %w", err)
+	}
+	if err := os.Rename(tempPath, graph.path); err != nil {
+		return fmt.Errorf("replace ladybug graph store: %w", err)
+	}
+	if err := syncDirectory(dir); err != nil {
+		return err
+	}
+	return nil
+}
+
+func syncDirectory(dir string) error {
+	file, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open ladybug graph store directory: %w", err)
+	}
+	defer file.Close()
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync ladybug graph store directory: %w", err)
 	}
 	return nil
 }

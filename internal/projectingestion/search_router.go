@@ -22,10 +22,19 @@ type SearchStorageDiagnostic struct {
 }
 
 type SearchWriteDiagnostic struct {
-	TransactionCount int64            `json:"transaction_count"`
-	MaxWriteWeight   int              `json:"max_write_weight,omitempty"`
-	RowsInserted     map[string]int64 `json:"rows_inserted,omitempty"`
-	DeleteStatements map[string]int64 `json:"delete_statements,omitempty"`
+	TransactionCount  int64                 `json:"transaction_count"`
+	MaxWriteWeight    int                   `json:"max_write_weight,omitempty"`
+	RowsInserted      map[string]int64      `json:"rows_inserted,omitempty"`
+	DeleteStatements  map[string]int64      `json:"delete_statements,omitempty"`
+	FTSRewriteSkipped int64                 `json:"fts_rewrite_skipped,omitempty"`
+	Query             SearchQueryDiagnostic `json:"query,omitempty"`
+}
+
+type SearchQueryDiagnostic struct {
+	FTSQueries              int64 `json:"fts_queries,omitempty"`
+	ScopedFallbackQueries   int64 `json:"scoped_fallback_queries,omitempty"`
+	RejectedFallbackQueries int64 `json:"rejected_fallback_queries,omitempty"`
+	RowsScanned             int64 `json:"rows_scanned,omitempty"`
 }
 
 type SearchStoreRouter struct {

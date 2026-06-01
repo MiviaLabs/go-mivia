@@ -149,7 +149,7 @@ func astSearchFileStates(ctx context.Context, svc *Service, project projectregis
 			return nil, err
 		}
 		for _, state := range states {
-			if !state.RelativePathSafe || state.Status != FileStatusEligible || !state.Present {
+			if !state.RelativePathSafe || state.Status != FileStatusEligible || !state.Present || state.SkippedReason == SkipReasonSemanticTooLarge {
 				continue
 			}
 			if _, ok := seen[state.RelativePathHash]; ok {
@@ -189,10 +189,10 @@ func astSearchCoverage(ctx context.Context, svc *Service, project projectregistr
 		}
 		coverage.EligibleFiles += len(eligible)
 		oversized, err := svc.state.ListFileStates(ctx, project.ID, FileStateFilter{
-			Status:        FileStatusSkipped,
+			Status:        FileStatusEligible,
 			Extension:     extension,
 			PathPrefix:    options.PathPrefix,
-			SkippedReason: SkipReasonFileTooLarge,
+			SkippedReason: SkipReasonSemanticTooLarge,
 			Present:       &present,
 		})
 		if err != nil {

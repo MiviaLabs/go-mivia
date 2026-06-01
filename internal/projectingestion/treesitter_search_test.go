@@ -143,7 +143,7 @@ func TestASTQueryCatalogAndCoverage(t *testing.T) {
 		t.Fatalf("missing expected dart query metadata: %#v", catalog.Queries)
 	}
 	coverage := astCoverageForLanguage(t, catalog.Coverage, "typescript")
-	if coverage.EligibleFiles != 1 || coverage.SkippedFileTooLarge != 1 || coverage.CoverageScope != string(SkipReasonFileTooLarge) || coverage.CoverageStatus != "partial" || coverage.CoveragePartialCause != string(SkipReasonFileTooLarge) {
+	if coverage.EligibleFiles != 2 || coverage.SkippedFileTooLarge != 1 || coverage.CoverageScope != string(SkipReasonFileTooLarge) || coverage.CoverageStatus != "partial" || coverage.CoveragePartialCause != string(SkipReasonFileTooLarge) {
 		t.Fatalf("unexpected AST catalog coverage: %#v", coverage)
 	}
 	body := marshalASTResults(t, catalog)

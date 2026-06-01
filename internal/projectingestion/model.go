@@ -67,6 +67,7 @@ const (
 	SkipReasonUnsafePath        SkipReason = "unsafe_path"
 	SkipReasonDeniedPath        SkipReason = "denied_path"
 	SkipReasonFileTooLarge      SkipReason = "file_too_large"
+	SkipReasonSemanticTooLarge  SkipReason = "semantic_too_large"
 	SkipReasonBinaryContent     SkipReason = "binary_content"
 	SkipReasonNULByte           SkipReason = "nul_byte"
 	SkipReasonInvalidUTF8       SkipReason = "invalid_utf8"
@@ -104,6 +105,10 @@ type Chunk struct {
 	ByteEnd       int
 	Text          string
 	ContentSHA256 string
+}
+
+type ExtractorFingerprintProvider interface {
+	Fingerprint() string
 }
 
 type SymbolKind string

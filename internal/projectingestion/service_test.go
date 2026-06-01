@@ -80,6 +80,73 @@ func TestIngestProject_StoresEligibleContentGraphState(t *testing.T) {
 	}
 }
 
+func TestIngestProject_PreservesChunksWhenExtractorFails(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "src", "broken.fail"), "searchable text\n")
+
+	svc, graph, state := newTestService(t, root)
+	svc.extractors = NewExtractorRegistry(staticExtractor{
+		name:    "failing-test",
+		version: "1",
+		supports: func(relative string) bool {
+			return strings.HasSuffix(relative, ".fail")
+		},
+		parse: func(context.Context, string, []byte) (ExtractorResult, error) {
+			return ExtractorResult{}, errors.New("synthetic parse failure")
+		},
+	})
+
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if run.FilesIngested != 1 || run.FilesSkipped != 0 || run.ChunksStored != 1 {
+		t.Fatalf("expected chunk-preserving ingest, got %#v", run)
+	}
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	fileState := findState(t, states, "src/broken.fail")
+	chunkNode, err := graph.GetNode(ctx, "ContentChunk", contentChunkID(fileVersionID(repoFileID("example_ns", fileState.RelativePathHash), fileState.ContentSHA256), 0))
+	if err != nil {
+		t.Fatalf("get content chunk: %v", err)
+	}
+	if !strings.Contains(chunkNode.Properties["text"], "searchable text") {
+		t.Fatalf("expected searchable chunk text, got %#v", chunkNode.Properties)
+	}
+}
+
+func TestIngestProject_ChunksLargeTextAndDisablesSemanticExtraction(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "logs", "large.count"), strings.Repeat("searchable line\n", 400))
+
+	svc, _, state := newTestService(t, root)
+	extractor := &countingExtractor{name: "counting", version: "1"}
+	svc.extractors = NewExtractorRegistry(extractor)
+
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if run.FilesIngested != 1 || run.FilesSkipped != 0 || run.ChunksStored < 2 {
+		t.Fatalf("expected large text chunks, got %#v", run)
+	}
+	if extractor.calls != 0 {
+		t.Fatalf("expected semantic extraction disabled for oversized file, got %d calls", extractor.calls)
+	}
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		t.Fatalf("list states: %v", err)
+	}
+	fileState := findState(t, states, "logs/large.count")
+	if fileState.ContentSHA256 == "" || fileState.SizeBytes <= 4096 {
+		t.Fatalf("expected eligible oversized file state, got %#v", fileState)
+	}
+}
+
 func TestIngestProject_ProcessesFilesConcurrentlyWithinFullScan(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -712,7 +779,7 @@ func caseneedle() {}
 	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
 		t.Fatalf("ingest project: %v", err)
 	}
-	literal, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "helper* OR Beta", PageSize: MaxPageSize, MaxSnippetBytes: 32})
+	literal, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "helper* OR Beta", Extension: ".go", PageSize: MaxPageSize, MaxSnippetBytes: 32})
 	if err != nil {
 		t.Fatalf("search literal operator-like query: %v", err)
 	}
@@ -1261,19 +1328,63 @@ func TestIngestProject_InvalidGoSyntaxDoesNotFailFullScan(t *testing.T) {
 	if run.Status != RunStatusCompleted || run.ErrorCategory != "file_errors" {
 		t.Fatalf("expected completed run with file-local errors, got %#v", run)
 	}
-	if run.FilesIngested != 1 || run.FilesSkipped != 1 {
+	if run.FilesIngested != 2 || run.FilesSkipped != 0 {
 		t.Fatalf("unexpected run counts: %#v", run)
 	}
 
-	skipped, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusSkipped})
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
 	if err != nil {
-		t.Fatalf("list skipped states: %v", err)
+		t.Fatalf("list eligible states: %v", err)
 	}
-	if len(skipped) != 1 || skipped[0].SkippedReason != SkipReasonParseError {
-		t.Fatalf("expected one parse-error state, got %#v", skipped)
+	bad := findState(t, states, "cmd/bad.go")
+	if bad.ContentSHA256 == "" || bad.SkippedReason != SkipReasonNone {
+		t.Fatalf("parse-error file should preserve eligible content state, got %#v", bad)
 	}
-	if skipped[0].ContentSHA256 != "" {
-		t.Fatalf("parse-error state must not store content hash: %#v", skipped[0])
+}
+
+func TestIngestProject_ParseErrorKeepsSafeTextSearchable(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cmd", "bad.go"), "package main\n\nfunc Broken(\n")
+
+	svc, graph, state := newTestService(t, root)
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("ingest project: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.ErrorCategory != "file_errors" {
+		t.Fatalf("expected completed run with file-local error, got %#v", run)
+	}
+	if run.FilesIngested != 1 || run.FilesSkipped != 0 || run.SymbolsStored != 0 || run.ChunksStored == 0 {
+		t.Fatalf("expected parse-error file chunks to be ingested without symbols, got %#v", run)
+	}
+	if run.ReasonCounts[string(SkipReasonParseError)] != 1 {
+		t.Fatalf("expected parse error reason count, got %#v", run.ReasonCounts)
+	}
+
+	states, err := state.ListFileStates(ctx, "example-service", FileStateFilter{Status: FileStatusEligible})
+	if err != nil {
+		t.Fatalf("list eligible states: %v", err)
+	}
+	fileState := findState(t, states, "cmd/bad.go")
+	if fileState.ContentSHA256 == "" || fileState.SkippedReason != SkipReasonNone {
+		t.Fatalf("expected eligible parse-error file to keep content state, got %#v", fileState)
+	}
+	repoFileID := repoFileID("example_ns", fileState.RelativePathHash)
+	versionID := fileVersionID(repoFileID, fileState.ContentSHA256)
+	chunk, err := graph.GetNode(ctx, "ContentChunk", contentChunkID(versionID, 0))
+	if err != nil {
+		t.Fatalf("expected parse-error chunk to stay in graph: %v", err)
+	}
+	if !strings.Contains(chunk.Properties["text"], "func Broken") {
+		t.Fatalf("expected stored chunk text, got %#v", chunk.Properties)
+	}
+	search, err := svc.SearchText(ctx, "example-service", TextSearchOptions{Query: "Broken", PageSize: 10})
+	if err != nil {
+		t.Fatalf("search text: %v", err)
+	}
+	if len(search.Results) == 0 {
+		t.Fatalf("expected parse-error file text to remain searchable")
 	}
 }
 

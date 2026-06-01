@@ -3,10 +3,12 @@ package ladybug_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
@@ -248,6 +250,150 @@ func TestPersistentGraph_RejectsInvalidStore(t *testing.T) {
 	_, err := ladybug.OpenPersistentGraph(path)
 	if err == nil {
 		t.Fatal("expected corrupt graph store error")
+	}
+}
+
+func TestPersistentGraph_IgnoresPartialTrailingJournalRecord(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "graph.lbug")
+
+	graph, err := ladybug.OpenPersistentGraph(path)
+	if err != nil {
+		t.Fatalf("open graph: %v", err)
+	}
+	if err := graph.Bootstrap(ctx, schema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	if err := graph.PutNode(ctx, ladybug.Node{
+		Label: "Project",
+		ID:    "project-1",
+		Properties: map[string]string{
+			"id": "project-1",
+		},
+	}); err != nil {
+		t.Fatalf("put project node: %v", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open journal for partial append: %v", err)
+	}
+	if _, err := file.WriteString(`{"op":"put_node","node":`); err != nil {
+		t.Fatalf("write partial record: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	reopened, err := ladybug.OpenPersistentGraph(path)
+	if err != nil {
+		t.Fatalf("reopen graph with partial trailing record: %v", err)
+	}
+	if _, err := reopened.GetNode(ctx, "Project", "project-1"); err != nil {
+		t.Fatalf("expected complete records to replay: %v", err)
+	}
+	if diagnostics := reopened.Diagnostics(); diagnostics.IgnoredPartialJournalRecords != 1 {
+		t.Fatalf("expected one ignored partial record, got %#v", diagnostics)
+	}
+}
+
+func TestPersistentGraph_IgnoresOnlyPartialFirstJournalRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "graph.lbug")
+	if err := os.WriteFile(path, []byte(`{"op":"put_node","node":`), 0o600); err != nil {
+		t.Fatalf("write partial journal: %v", err)
+	}
+
+	graph, err := ladybug.OpenPersistentGraph(path)
+	if err != nil {
+		t.Fatalf("open partial journal: %v", err)
+	}
+	if diagnostics := graph.Diagnostics(); diagnostics.IgnoredPartialJournalRecords != 1 {
+		t.Fatalf("expected one ignored partial record, got %#v", diagnostics)
+	}
+}
+
+func TestPersistentGraph_RejectsCorruptJournalRecordWithNewline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "graph.lbug")
+	bootstrap, err := json.Marshal(map[string]any{
+		"op":     "bootstrap",
+		"schema": schema.BootstrapSchema(),
+	})
+	if err != nil {
+		t.Fatalf("encode bootstrap operation: %v", err)
+	}
+	journal := append(append(bootstrap, '\n'), []byte("{invalid\n")...)
+	if err := os.WriteFile(path, journal, 0o600); err != nil {
+		t.Fatalf("write corrupt journal: %v", err)
+	}
+
+	_, err = ladybug.OpenPersistentGraph(path)
+	if err == nil {
+		t.Fatal("expected corrupt journal error")
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("expected error to avoid raw graph path, got %q", err.Error())
+	}
+}
+
+func TestPersistentGraph_RewritesLegacySnapshotThroughAtomicJournalReplace(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "graph.lbug")
+	snapshot := map[string]any{
+		"schema": schema.BootstrapSchema(),
+		"nodes": []ladybug.Node{{
+			Label: "Project",
+			ID:    "project-1",
+			Properties: map[string]string{
+				"id": "project-1",
+			},
+		}},
+		"relationships": []ladybug.Relationship{},
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("encode legacy snapshot: %v", err)
+	}
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatalf("write legacy snapshot: %v", err)
+	}
+
+	graph, err := ladybug.OpenPersistentGraph(path)
+	if err != nil {
+		t.Fatalf("open legacy snapshot: %v", err)
+	}
+	if err := graph.PutNode(ctx, ladybug.Node{
+		Label: "RepoFile",
+		ID:    "file-1",
+		Properties: map[string]string{
+			"project_id": "project-1",
+		},
+	}); err != nil {
+		t.Fatalf("put file node: %v", err)
+	}
+
+	reopened, err := ladybug.OpenPersistentGraph(path)
+	if err != nil {
+		t.Fatalf("reopen rewritten journal: %v", err)
+	}
+	if _, err := reopened.GetNode(ctx, "Project", "project-1"); err != nil {
+		t.Fatalf("expected snapshot node to survive rewrite: %v", err)
+	}
+	if _, err := reopened.GetNode(ctx, "RepoFile", "file-1"); err != nil {
+		t.Fatalf("expected new node to persist through rewrite: %v", err)
+	}
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read rewritten journal: %v", err)
+	}
+	if !bytes.Contains(rewritten, []byte(`"op"`)) || bytes.Contains(rewritten, []byte(`"nodes"`)) {
+		t.Fatalf("expected legacy snapshot to be replaced by journal operations, got %s", rewritten)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".ladybug-graph-*.tmp"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no leftover rewrite temp files, got %#v", matches)
 	}
 }
 

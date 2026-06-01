@@ -117,6 +117,7 @@ var statements = []string{
 		content_sha256 TEXT NOT NULL,
 		extractor_name TEXT NOT NULL,
 		extractor_version TEXT NOT NULL,
+		extractor_fingerprint TEXT NOT NULL DEFAULT '',
 		symbols_json TEXT NOT NULL DEFAULT '[]',
 		headings_json TEXT NOT NULL DEFAULT '[]',
 		references_json TEXT NOT NULL DEFAULT '[]',
@@ -381,6 +382,10 @@ var configuredProjectColumns = []columnDefinition{
 }
 
 var extractorCacheColumns = []columnDefinition{
+	{
+		Name:       "extractor_fingerprint",
+		Definition: "extractor_fingerprint TEXT NOT NULL DEFAULT ''",
+	},
 	{
 		Name:       "references_json",
 		Definition: "references_json TEXT NOT NULL DEFAULT '[]'",

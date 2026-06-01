@@ -1,6 +1,9 @@
 package projectingestion
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBuildChunks_SplitsEligibleTextByByteCapAndLineRange(t *testing.T) {
 	content := []byte("alpha\nbeta\ngamma\n")
@@ -30,6 +33,29 @@ func TestBuildChunks_SplitsEligibleTextByByteCapAndLineRange(t *testing.T) {
 		}
 		if chunk.ContentSHA256 != chunkSet.ContentSHA256 {
 			t.Fatalf("expected chunk content hash to match set hash")
+		}
+	}
+}
+
+func TestBuildChunksFromReader_ChunksLargeTextWithoutMaxFileBytesSkip(t *testing.T) {
+	content := strings.Repeat("searchable line\n", 20)
+	chunkSet, safety, err := BuildChunksFromReader("logs/large.txt", strings.NewReader(content), int64(len(content)), SafetyOptions{
+		MaxFileBytes:          32,
+		MaxChunkBytes:         40,
+		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
+	})
+	if err != nil {
+		t.Fatalf("build streaming chunks: %v", err)
+	}
+	if !safety.Eligible || safety.Reason != SkipReasonNone {
+		t.Fatalf("expected eligible large text, got %#v", safety)
+	}
+	if chunkSet.ContentSHA256 == "" || len(chunkSet.Chunks) < 2 {
+		t.Fatalf("expected hashed searchable chunks, got %#v", chunkSet)
+	}
+	for _, chunk := range chunkSet.Chunks {
+		if len([]byte(chunk.Text)) > 40 {
+			t.Fatalf("chunk exceeded cap: %#v", chunk)
 		}
 	}
 }

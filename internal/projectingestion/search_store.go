@@ -103,18 +103,24 @@ func (store *SQLiteStore) UpsertSearchFilesBatch(ctx context.Context, project pr
 	if err != nil {
 		return sanitizeSearchError(err)
 	}
+	var rewritesSkipped int64
 	for _, file := range files {
-		if err := upsertSearchFileTx(ctx, tx, project, file.State, file.Chunks, file.Symbols, file.References, file.Calls); err != nil {
+		skippedRewrite, err := upsertSearchFileTx(ctx, tx, project, file.State, file.Chunks, file.Symbols, file.References, file.Calls)
+		if err != nil {
 			_ = tx.Rollback()
 			unlock()
 			_ = store.MarkSearchIndexDegraded(ctx, project.ID, "search_index_write_failed")
 			return sanitizeSearchError(err)
+		}
+		if skippedRewrite {
+			rewritesSkipped++
 		}
 	}
 	err = tx.Commit()
 	unlock()
 	if err == nil {
 		store.recordSearchWrite(project.ID, weight, insertedRows, deleteStatements)
+		store.recordSearchRewriteSkipped(project.ID, rewritesSkipped)
 	}
 	return sanitizeSearchError(err)
 }
@@ -241,6 +247,7 @@ func (store *SQLiteStore) applySearchFileBatchTx(ctx context.Context, project pr
 	}
 	defer unlock()
 	defer tx.Rollback()
+	var rewritesSkipped int64
 	for _, result := range results {
 		switch {
 		case result.unchanged:
@@ -248,8 +255,12 @@ func (store *SQLiteStore) applySearchFileBatchTx(ctx context.Context, project pr
 				return sanitizeSearchError(err)
 			}
 		case result.state.Status == FileStatusEligible:
-			if err := upsertSearchFileTx(ctx, tx, project, result.state, result.chunks, result.symbols, result.references, result.calls); err != nil {
+			skippedRewrite, err := upsertSearchFileTx(ctx, tx, project, result.state, result.chunks, result.symbols, result.references, result.calls)
+			if err != nil {
 				return sanitizeSearchError(err)
+			}
+			if skippedRewrite {
+				rewritesSkipped++
 			}
 		default:
 			if err := deleteSearchFileTx(ctx, tx, project.ID, repoFileID(project.GraphNamespace, result.state.RelativePathHash)); err != nil {
@@ -261,28 +272,36 @@ func (store *SQLiteStore) applySearchFileBatchTx(ctx context.Context, project pr
 		return sanitizeSearchError(err)
 	}
 	store.recordSearchWrite(project.ID, weight, insertedRows, deleteStatements)
+	store.recordSearchRewriteSkipped(project.ID, rewritesSkipped)
 	return nil
 }
 
-func upsertSearchFileTx(ctx context.Context, tx *sql.Tx, project projectregistry.Project, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call) error {
+func upsertSearchFileTx(ctx context.Context, tx *sql.Tx, project projectregistry.Project, state FileState, chunks []Chunk, symbols []Symbol, references []Reference, calls []Call) (bool, error) {
 	if state.Status != FileStatusEligible || !state.Present || !state.RelativePathSafe || state.ContentSHA256 == "" {
-		return deleteSearchFileTx(ctx, tx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash))
+		return false, deleteSearchFileTx(ctx, tx, project.ID, repoFileID(project.GraphNamespace, state.RelativePathHash))
 	}
 	fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
 	versionID := fileVersionID(fileID, state.ContentSHA256)
 	extension := strings.ToLower(path.Ext(state.RelativePath))
 	symbolIDs := symbolIDIndex(fileID, symbols)
+	current, err := searchFileVersionCurrentTx(ctx, tx, project.ID, fileID, state)
+	if err != nil {
+		return false, err
+	}
+	if current && len(symbols) == 0 && len(references) == 0 && len(calls) == 0 {
+		return true, updateSearchFileMetadataTx(ctx, tx, project, state)
+	}
 	if err := deleteSearchFileTx(ctx, tx, project.ID, fileID); err != nil {
-		return err
+		return false, err
 	}
 	if err := upsertSearchFileVersionTx(ctx, tx, project.ID, fileID, state); err != nil {
-		return err
+		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO project_search_files_fts (
 		project_id, file_id, relative_path, extension, size_bytes, modified_at
 	) VALUES (?, ?, ?, ?, ?, ?)`,
 		project.ID, fileID, state.RelativePath, extension, strconv.FormatInt(state.SizeBytes, 10), formatTime(state.ModifiedAt)); err != nil {
-		return err
+		return false, err
 	}
 	for _, chunk := range chunks {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO project_search_chunks_fts (
@@ -293,7 +312,7 @@ func upsertSearchFileTx(ctx context.Context, tx *sql.Tx, project projectregistry
 			strconv.FormatInt(state.SizeBytes, 10), formatTime(state.ModifiedAt),
 			strconv.Itoa(chunk.Index), strconv.Itoa(chunk.StartLine), strconv.Itoa(chunk.EndLine),
 			strconv.Itoa(chunk.ByteStart), strconv.Itoa(chunk.ByteEnd), chunk.Text); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for _, symbol := range symbols {
@@ -304,7 +323,7 @@ func upsertSearchFileTx(ctx context.Context, tx *sql.Tx, project projectregistry
 			project.ID, fileID, codeSymbolID(fileID, symbol), state.RelativePath, extension, string(symbol.Kind), symbol.Name,
 			symbol.PackageName, symbol.ImportPath, symbol.Receiver, strconv.Itoa(symbol.StartLine), strconv.Itoa(symbol.EndLine),
 			strconv.Itoa(symbol.StartByte), strconv.Itoa(symbol.EndByte), strconv.Itoa(symbol.StartColumn), strconv.Itoa(symbol.EndColumn)); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for index, ref := range references {
@@ -330,7 +349,7 @@ func upsertSearchFileTx(ctx context.Context, tx *sql.Tx, project projectregistry
 			ref.TargetName, targetID, ref.PackageName, ref.Receiver, ref.ImportPath, enclosingID, ref.EnclosingSymbolName,
 			strconv.Itoa(ref.StartLine), strconv.Itoa(ref.EndLine), strconv.Itoa(ref.StartByte), strconv.Itoa(ref.EndByte),
 			strconv.Itoa(ref.StartColumn), strconv.Itoa(ref.EndColumn), status, confidence); err != nil {
-			return err
+			return false, err
 		}
 	}
 	for index, call := range calls {
@@ -356,10 +375,10 @@ func upsertSearchFileTx(ctx context.Context, tx *sql.Tx, project projectregistry
 			call.CallerName, call.CalleeName, call.Receiver, call.ImportPath, strconv.Itoa(call.StartLine), strconv.Itoa(call.EndLine),
 			strconv.Itoa(call.StartByte), strconv.Itoa(call.EndByte), strconv.Itoa(call.StartColumn), strconv.Itoa(call.EndColumn),
 			status, confidence); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (store *SQLiteStore) HasSearchFileVersion(ctx context.Context, project projectregistry.Project, state FileState) (bool, error) {
@@ -367,35 +386,43 @@ func (store *SQLiteStore) HasSearchFileVersion(ctx context.Context, project proj
 		return false, nil
 	}
 	fileID := repoFileID(project.GraphNamespace, state.RelativePathHash)
-	var contentSHA256, status string
-	var present int
-	err := store.db.QueryRowContext(ctx, `SELECT content_sha256, status, present
-		FROM project_search_file_versions
-		WHERE project_id = ? AND file_id = ?`, project.ID, fileID).Scan(&contentSHA256, &status, &present)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, sanitizeSearchError(err)
-	}
-	if contentSHA256 != state.ContentSHA256 || status != string(FileStatusEligible) || present != 1 {
-		return false, nil
-	}
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, sanitizeSearchError(err)
 	}
 	defer tx.Rollback()
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_search_files_fts WHERE project_id = ? AND file_id = ?`, project.ID, fileID).Scan(&count); err != nil {
+	current, err := searchFileVersionCurrentTx(ctx, tx, project.ID, fileID, state)
+	if err != nil {
 		return false, sanitizeSearchError(err)
+	}
+	return current, nil
+}
+
+func searchFileVersionCurrentTx(ctx context.Context, tx *sql.Tx, projectID string, fileID string, state FileState) (bool, error) {
+	var contentSHA256, status string
+	var present int
+	err := tx.QueryRowContext(ctx, `SELECT content_sha256, status, present
+		FROM project_search_file_versions
+		WHERE project_id = ? AND file_id = ?`, projectID, fileID).Scan(&contentSHA256, &status, &present)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if contentSHA256 != state.ContentSHA256 || status != string(FileStatusEligible) || present != 1 {
+		return false, nil
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_search_files_fts WHERE project_id = ? AND file_id = ?`, projectID, fileID).Scan(&count); err != nil {
+		return false, err
 	}
 	if count != 1 {
 		return false, nil
 	}
-	needsRepair, err := searchFileNeedsRepair(ctx, tx, project.ID, fileID, state)
+	needsRepair, err := searchFileNeedsRepair(ctx, tx, projectID, fileID, state)
 	if err != nil {
-		return false, sanitizeSearchError(err)
+		return false, err
 	}
 	return !needsRepair, nil
 }
@@ -925,6 +952,16 @@ func (store *SQLiteStore) SearchText(ctx context.Context, project projectregistr
 	if resultLimit <= offset {
 		return TextSearchResultList{Results: []TextSearchResult{}, MaxSnippetBytes: options.MaxSnippetBytes}, nil
 	}
+	match, usesFTS := ftsLiteralQuery(options.Query)
+	if !usesFTS && options.Extension == "" && options.PathPrefix == "" {
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{RejectedFallbackQueries: 1})
+		return TextSearchResultList{}, fmt.Errorf("%w: text search query requires indexed literal syntax or a scoped extension/path prefix", ErrInvalidInput)
+	}
+	if usesFTS {
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{FTSQueries: 1})
+	} else {
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{ScopedFallbackQueries: 1})
+	}
 
 	where := []string{"project_id = ?"}
 	args := []any{project.ID}
@@ -936,22 +973,29 @@ func (store *SQLiteStore) SearchText(ctx context.Context, project projectregistr
 		where = append(where, "relative_path LIKE ? ESCAPE '\\'")
 		args = append(args, likePrefix(options.PathPrefix))
 	}
-	if match, ok := ftsLiteralQuery(options.Query); ok {
+	if usesFTS {
 		where = append(where, "project_search_chunks_fts MATCH ?")
 		args = append(args, match)
+	} else {
+		where = append(where, "text LIKE ? ESCAPE '\\'")
+		args = append(args, likeContains(options.Query))
 	}
+	args = append(args, resultLimit)
 	rows, err := store.db.QueryContext(ctx, `SELECT
 		file_id, chunk_id, relative_path, extension, size_bytes, modified_at, chunk_index, start_line, end_line, byte_start, byte_end, text
 		FROM project_search_chunks_fts
 		WHERE `+strings.Join(where, " AND ")+`
-		ORDER BY relative_path ASC, CAST(chunk_index AS INTEGER) ASC, chunk_id ASC`, args...)
+		ORDER BY relative_path ASC, CAST(chunk_index AS INTEGER) ASC, chunk_id ASC
+		LIMIT ?`, args...)
 	if err != nil {
 		return TextSearchResultList{}, sanitizeSearchError(err)
 	}
 	defer rows.Close()
 
 	results := make([]TextSearchResult, 0)
+	var rowsScanned int64
 	for rows.Next() {
+		rowsScanned++
 		var row searchChunkRow
 		if err := rows.Scan(&row.FileID, &row.ChunkID, &row.RelativePath, &row.Extension, &row.SizeBytes, &row.ModifiedAt, &row.ChunkIndex, &row.StartLine, &row.EndLine, &row.ByteStart, &row.ByteEnd, &row.Text); err != nil {
 			return TextSearchResultList{}, sanitizeSearchError(err)
@@ -986,6 +1030,7 @@ func (store *SQLiteStore) SearchText(ctx context.Context, project projectregistr
 	if err := rows.Err(); err != nil {
 		return TextSearchResultList{}, sanitizeSearchError(err)
 	}
+	store.recordSearchQuery(project.ID, SearchQueryDiagnostic{RowsScanned: rowsScanned})
 	sort.Slice(results, func(i, j int) bool {
 		left := results[i]
 		right := results[j]
@@ -1031,6 +1076,11 @@ func (store *SQLiteStore) SearchFiles(ctx context.Context, project projectregist
 	if match, ok := ftsLiteralQuery(options.PathContains); ok {
 		where = append(where, "project_search_files_fts MATCH ?")
 		args = append(args, match)
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{FTSQueries: 1})
+	} else if options.PathContains != "" {
+		where = append(where, "relative_path LIKE ? ESCAPE '\\'")
+		args = append(args, likeContains(options.PathContains))
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{ScopedFallbackQueries: 1})
 	}
 	args = append(args, pageSize+1, offset)
 	rows, err := store.db.QueryContext(ctx, `SELECT file_id, relative_path, extension, size_bytes, modified_at
@@ -1043,7 +1093,9 @@ func (store *SQLiteStore) SearchFiles(ctx context.Context, project projectregist
 	}
 	defer rows.Close()
 	files := make([]FileMetadata, 0, pageSize+1)
+	var rowsScanned int64
 	for rows.Next() {
+		rowsScanned++
 		var fileID, relativePath, extension, sizeRaw, modifiedRaw string
 		if err := rows.Scan(&fileID, &relativePath, &extension, &sizeRaw, &modifiedRaw); err != nil {
 			return FileList{}, sanitizeSearchError(err)
@@ -1071,6 +1123,7 @@ func (store *SQLiteStore) SearchFiles(ctx context.Context, project projectregist
 	if err := rows.Err(); err != nil {
 		return FileList{}, sanitizeSearchError(err)
 	}
+	store.recordSearchQuery(project.ID, SearchQueryDiagnostic{RowsScanned: rowsScanned})
 	nextToken := ""
 	if len(files) > pageSize {
 		nextToken = strconv.Itoa(offset + pageSize)
@@ -1080,6 +1133,10 @@ func (store *SQLiteStore) SearchFiles(ctx context.Context, project projectregist
 }
 
 func (store *SQLiteStore) SearchSymbols(ctx context.Context, project projectregistry.Project, filter SymbolFilter, pagination Pagination) (SymbolList, error) {
+	pageSize, offset, err := paginationWindow(pagination)
+	if err != nil {
+		return SymbolList{}, err
+	}
 	where := []string{"project_id = ?"}
 	args := []any{project.ID}
 	if filter.Kind != "" {
@@ -1098,9 +1155,36 @@ func (store *SQLiteStore) SearchSymbols(ctx context.Context, project projectregi
 		where = append(where, "package = ?")
 		args = append(args, filter.Package)
 	}
+	usesFTS := false
 	if match, ok := ftsLiteralQuery(firstNonEmpty(filter.NameContains, filter.NamePrefix, filter.Receiver)); ok {
 		where = append(where, "project_search_symbols_fts MATCH ?")
 		args = append(args, match)
+		usesFTS = true
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{FTSQueries: 1})
+	}
+	if canPageSymbolsInSQL(filter, usesFTS) {
+		args = append(args, pageSize+1, offset)
+		rows, err := store.db.QueryContext(ctx, `SELECT
+			symbol_id, file_id, relative_path, extension, kind, name, package, import_path, receiver, start_line, end_line, start_byte, end_byte, start_column, end_column
+			FROM project_search_symbols_fts
+			WHERE `+strings.Join(where, " AND ")+`
+			ORDER BY name ASC, symbol_id ASC
+			LIMIT ? OFFSET ?`, args...)
+		if err != nil {
+			return SymbolList{}, sanitizeSearchError(err)
+		}
+		defer rows.Close()
+		symbols, err := scanSymbolRows(rows, project.ID)
+		if err != nil {
+			return SymbolList{}, err
+		}
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{RowsScanned: int64(len(symbols))})
+		nextToken := ""
+		if len(symbols) > pageSize {
+			nextToken = strconv.Itoa(offset + pageSize)
+			symbols = symbols[:pageSize]
+		}
+		return SymbolList{Symbols: symbols, NextPageToken: nextToken}, nil
 	}
 	rows, err := store.db.QueryContext(ctx, `SELECT
 		symbol_id, file_id, relative_path, extension, kind, name, package, import_path, receiver, start_line, end_line, start_byte, end_byte, start_column, end_column
@@ -1110,8 +1194,10 @@ func (store *SQLiteStore) SearchSymbols(ctx context.Context, project projectregi
 		return SymbolList{}, sanitizeSearchError(err)
 	}
 	defer rows.Close()
+	var rowsScanned int64
 	symbols := make([]SymbolMetadata, 0)
 	for rows.Next() {
+		rowsScanned++
 		var symbol SymbolMetadata
 		var startLine, endLine, startByte, endByte, startColumn, endColumn string
 		if err := rows.Scan(&symbol.ID, &symbol.FileID, &symbol.RelativePath, &symbol.Extension, &symbol.Kind, &symbol.Name, &symbol.PackageName, &symbol.ImportPath, &symbol.Receiver, &startLine, &endLine, &startByte, &endByte, &startColumn, &endColumn); err != nil {
@@ -1138,13 +1224,14 @@ func (store *SQLiteStore) SearchSymbols(ctx context.Context, project projectregi
 	if err := rows.Err(); err != nil {
 		return SymbolList{}, sanitizeSearchError(err)
 	}
+	store.recordSearchQuery(project.ID, SearchQueryDiagnostic{RowsScanned: rowsScanned})
 	sort.Slice(symbols, func(i, j int) bool {
 		if symbols[i].Name == symbols[j].Name {
 			return symbols[i].ID < symbols[j].ID
 		}
 		return symbols[i].Name < symbols[j].Name
 	})
-	window, nextToken, err := paginate(symbols, pagination)
+	window, nextToken, err := paginate(symbols, Pagination{PageSize: pageSize, PageToken: pagination.PageToken})
 	if err != nil {
 		return SymbolList{}, err
 	}
@@ -1152,12 +1239,48 @@ func (store *SQLiteStore) SearchSymbols(ctx context.Context, project projectregi
 }
 
 func (store *SQLiteStore) SearchReferences(ctx context.Context, project projectregistry.Project, options ReferenceSearchOptions) (SymbolReferenceList, error) {
+	pageSize, offset, err := paginationWindow(Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
+	if err != nil {
+		return SymbolReferenceList{}, err
+	}
 	where := []string{"project_id = ?"}
 	args := []any{project.ID}
 	addReferenceFilters(&where, &args, options)
+	usesContainsFilter := firstNonEmpty(options.NameContains, options.TargetNameContains, options.EnclosingContains) != ""
 	if match, ok := ftsLiteralQuery(firstNonEmpty(options.NameContains, options.TargetNameContains, options.EnclosingContains)); ok {
 		where = append(where, "project_search_references_fts MATCH ?")
 		args = append(args, match)
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{FTSQueries: 1})
+	}
+	if !usesContainsFilter {
+		args = append(args, pageSize+1, offset)
+		rows, err := store.db.QueryContext(ctx, `SELECT
+			reference_id, file_id, relative_path, kind, name, target_name, target_symbol_id, package, receiver, import_path,
+			enclosing_symbol_id, enclosing_symbol_name, start_line, end_line, start_byte, end_byte, start_column, end_column,
+			resolution_status, confidence
+			FROM project_search_references_fts
+			WHERE `+strings.Join(where, " AND ")+`
+			ORDER BY relative_path ASC, CAST(start_line AS INTEGER) ASC, reference_id ASC
+			LIMIT ? OFFSET ?`, args...)
+		if err != nil {
+			return SymbolReferenceList{}, sanitizeSearchError(err)
+		}
+		defer rows.Close()
+		refs, err := scanReferenceRows(rows)
+		if err != nil {
+			return SymbolReferenceList{}, err
+		}
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{RowsScanned: int64(len(refs))})
+		nextToken := ""
+		if len(refs) > pageSize {
+			nextToken = strconv.Itoa(offset + pageSize)
+			refs = refs[:pageSize]
+		}
+		out := make([]SymbolReferenceMetadata, 0, len(refs))
+		for _, row := range refs {
+			out = append(out, row.metadata(project.ID))
+		}
+		return SymbolReferenceList{References: out, NextPageToken: nextToken}, nil
 	}
 	rows, err := store.db.QueryContext(ctx, `SELECT
 		reference_id, file_id, relative_path, kind, name, target_name, target_symbol_id, package, receiver, import_path,
@@ -1169,8 +1292,10 @@ func (store *SQLiteStore) SearchReferences(ctx context.Context, project projectr
 		return SymbolReferenceList{}, sanitizeSearchError(err)
 	}
 	defer rows.Close()
+	var rowsScanned int64
 	refs := make([]referenceSearchRow, 0)
 	for rows.Next() {
+		rowsScanned++
 		var ref referenceSearchRow
 		if err := rows.Scan(&ref.ID, &ref.FileID, &ref.RelativePath, &ref.Kind, &ref.Name, &ref.TargetName, &ref.TargetSymbolID, &ref.PackageName,
 			&ref.Receiver, &ref.ImportPath, &ref.EnclosingSymbolID, &ref.EnclosingSymbolName, &ref.StartLine, &ref.EndLine,
@@ -1185,6 +1310,7 @@ func (store *SQLiteStore) SearchReferences(ctx context.Context, project projectr
 	if err := rows.Err(); err != nil {
 		return SymbolReferenceList{}, sanitizeSearchError(err)
 	}
+	store.recordSearchQuery(project.ID, SearchQueryDiagnostic{RowsScanned: rowsScanned})
 	sort.Slice(refs, func(i, j int) bool { return refs[i].less(refs[j]) })
 	window, nextToken, err := paginate(refs, Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
 	if err != nil {
@@ -1198,12 +1324,47 @@ func (store *SQLiteStore) SearchReferences(ctx context.Context, project projectr
 }
 
 func (store *SQLiteStore) SearchCalls(ctx context.Context, project projectregistry.Project, options ReferenceSearchOptions) (SymbolCallEdgeList, error) {
+	pageSize, offset, err := paginationWindow(Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
+	if err != nil {
+		return SymbolCallEdgeList{}, err
+	}
 	where := []string{"project_id = ?"}
 	args := []any{project.ID}
 	addCallFilters(&where, &args, options)
+	usesContainsFilter := firstNonEmpty(options.NameContains, options.CallerNameContains, options.CalleeNameContains) != ""
 	if match, ok := ftsLiteralQuery(firstNonEmpty(options.NameContains, options.CallerNameContains, options.CalleeNameContains)); ok {
 		where = append(where, "project_search_calls_fts MATCH ?")
 		args = append(args, match)
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{FTSQueries: 1})
+	}
+	if !usesContainsFilter {
+		args = append(args, pageSize+1, offset)
+		rows, err := store.db.QueryContext(ctx, `SELECT
+			call_id, file_id, relative_path, caller_symbol_id, callee_symbol_id, caller_name, callee_name, receiver, import_path,
+			start_line, end_line, start_byte, end_byte, start_column, end_column, resolution_status, confidence
+			FROM project_search_calls_fts
+			WHERE `+strings.Join(where, " AND ")+`
+			ORDER BY relative_path ASC, CAST(start_line AS INTEGER) ASC, call_id ASC
+			LIMIT ? OFFSET ?`, args...)
+		if err != nil {
+			return SymbolCallEdgeList{}, sanitizeSearchError(err)
+		}
+		defer rows.Close()
+		calls, err := scanCallRows(rows)
+		if err != nil {
+			return SymbolCallEdgeList{}, err
+		}
+		store.recordSearchQuery(project.ID, SearchQueryDiagnostic{RowsScanned: int64(len(calls))})
+		nextToken := ""
+		if len(calls) > pageSize {
+			nextToken = strconv.Itoa(offset + pageSize)
+			calls = calls[:pageSize]
+		}
+		out := make([]SymbolCallEdge, 0, len(calls))
+		for _, row := range calls {
+			out = append(out, row.metadata(project.ID))
+		}
+		return SymbolCallEdgeList{Edges: out, NextPageToken: nextToken}, nil
 	}
 	rows, err := store.db.QueryContext(ctx, `SELECT
 		call_id, file_id, relative_path, caller_symbol_id, callee_symbol_id, caller_name, callee_name, receiver, import_path,
@@ -1214,8 +1375,10 @@ func (store *SQLiteStore) SearchCalls(ctx context.Context, project projectregist
 		return SymbolCallEdgeList{}, sanitizeSearchError(err)
 	}
 	defer rows.Close()
+	var rowsScanned int64
 	calls := make([]callSearchRow, 0)
 	for rows.Next() {
+		rowsScanned++
 		var call callSearchRow
 		if err := rows.Scan(&call.ID, &call.FileID, &call.RelativePath, &call.CallerSymbolID, &call.CalleeSymbolID, &call.CallerName,
 			&call.CalleeName, &call.Receiver, &call.ImportPath, &call.StartLine, &call.EndLine, &call.StartByte, &call.EndByte,
@@ -1230,6 +1393,7 @@ func (store *SQLiteStore) SearchCalls(ctx context.Context, project projectregist
 	if err := rows.Err(); err != nil {
 		return SymbolCallEdgeList{}, sanitizeSearchError(err)
 	}
+	store.recordSearchQuery(project.ID, SearchQueryDiagnostic{RowsScanned: rowsScanned})
 	sort.Slice(calls, func(i, j int) bool { return calls[i].less(calls[j]) })
 	window, nextToken, err := paginate(calls, Pagination{PageSize: options.PageSize, PageToken: options.PageToken})
 	if err != nil {
@@ -1255,6 +1419,70 @@ type searchChunkRow struct {
 	ByteStart    string
 	ByteEnd      string
 	Text         string
+}
+
+func canPageSymbolsInSQL(filter SymbolFilter, usesFTS bool) bool {
+	if usesFTS {
+		return false
+	}
+	return filter.NamePrefix == "" && filter.NameContains == "" && filter.Receiver == ""
+}
+
+func scanSymbolRows(rows *sql.Rows, projectID string) ([]SymbolMetadata, error) {
+	symbols := make([]SymbolMetadata, 0)
+	for rows.Next() {
+		var symbol SymbolMetadata
+		var startLine, endLine, startByte, endByte, startColumn, endColumn string
+		if err := rows.Scan(&symbol.ID, &symbol.FileID, &symbol.RelativePath, &symbol.Extension, &symbol.Kind, &symbol.Name, &symbol.PackageName, &symbol.ImportPath, &symbol.Receiver, &startLine, &endLine, &startByte, &endByte, &startColumn, &endColumn); err != nil {
+			return nil, sanitizeSearchError(err)
+		}
+		symbol.ProjectID = projectID
+		symbol.StartLine = atoiDefault(startLine)
+		symbol.EndLine = atoiDefault(endLine)
+		symbol.StartByte = atoiDefault(startByte)
+		symbol.EndByte = atoiDefault(endByte)
+		symbol.StartColumn = atoiDefault(startColumn)
+		symbol.EndColumn = atoiDefault(endColumn)
+		symbols = append(symbols, symbol)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, sanitizeSearchError(err)
+	}
+	return symbols, nil
+}
+
+func scanReferenceRows(rows *sql.Rows) ([]referenceSearchRow, error) {
+	refs := make([]referenceSearchRow, 0)
+	for rows.Next() {
+		var ref referenceSearchRow
+		if err := rows.Scan(&ref.ID, &ref.FileID, &ref.RelativePath, &ref.Kind, &ref.Name, &ref.TargetName, &ref.TargetSymbolID, &ref.PackageName,
+			&ref.Receiver, &ref.ImportPath, &ref.EnclosingSymbolID, &ref.EnclosingSymbolName, &ref.StartLine, &ref.EndLine,
+			&ref.StartByte, &ref.EndByte, &ref.StartColumn, &ref.EndColumn, &ref.ResolutionStatus, &ref.Confidence); err != nil {
+			return nil, sanitizeSearchError(err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, sanitizeSearchError(err)
+	}
+	return refs, nil
+}
+
+func scanCallRows(rows *sql.Rows) ([]callSearchRow, error) {
+	calls := make([]callSearchRow, 0)
+	for rows.Next() {
+		var call callSearchRow
+		if err := rows.Scan(&call.ID, &call.FileID, &call.RelativePath, &call.CallerSymbolID, &call.CalleeSymbolID, &call.CallerName,
+			&call.CalleeName, &call.Receiver, &call.ImportPath, &call.StartLine, &call.EndLine, &call.StartByte, &call.EndByte,
+			&call.StartColumn, &call.EndColumn, &call.ResolutionStatus, &call.Confidence); err != nil {
+			return nil, sanitizeSearchError(err)
+		}
+		calls = append(calls, call)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, sanitizeSearchError(err)
+	}
+	return calls, nil
 }
 
 func (row searchChunkRow) fileMetadata(projectID string) FileMetadata {
@@ -1458,16 +1686,19 @@ func ftsLiteralQuery(value string) (string, bool) {
 		return "", false
 	}
 	for _, r := range value {
-		if r == ' ' || r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			continue
+		if r < 0x20 || r == 0x7f {
+			return "", false
 		}
-		return "", false
 	}
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`, true
 }
 
 func likePrefix(value string) string {
 	return escapeLike(value) + "%"
+}
+
+func likeContains(value string) string {
+	return "%" + escapeLike(value) + "%"
 }
 
 func escapeLike(value string) string {

@@ -139,6 +139,10 @@ func (extractor treeSitterExtractor) Version() string {
 	return extractor.version
 }
 
+func (extractor treeSitterExtractor) Fingerprint() string {
+	return extractorFingerprint(extractor.name, extractor.version, extractor.query)
+}
+
 func (extractor treeSitterExtractor) Supports(relative string) bool {
 	_, ok := extractor.extensions[strings.ToLower(path.Ext(relative))]
 	return ok
@@ -188,9 +192,6 @@ func (extractor treeSitterExtractor) Parse(ctx context.Context, relative string,
 	if root == nil || root.HasError() {
 		return ExtractorResult{}, fmt.Errorf("tree-sitter parse error")
 	}
-	if err := runTreeSitterQuery(language, extractor.query, root, content); err != nil {
-		return ExtractorResult{}, err
-	}
 	var symbols []Symbol
 	var references []Reference
 	var calls []Call
@@ -211,21 +212,6 @@ func (extractor treeSitterExtractor) Parse(ctx context.Context, relative string,
 		implementations = extractJavaScriptFamilyImplementations(root, content)
 	}
 	return ExtractorResult{Symbols: dedupeSymbols(symbols), References: dedupeReferences(references), Calls: dedupeCalls(calls), Implementations: dedupeImplementations(implementations)}, nil
-}
-
-func runTreeSitterQuery(language *tree_sitter.Language, querySource string, root *tree_sitter.Node, content []byte) error {
-	query, queryErr := tree_sitter.NewQuery(language, querySource)
-	if queryErr != nil {
-		return fmt.Errorf("tree-sitter query unavailable")
-	}
-	defer query.Close()
-	cursor := tree_sitter.NewQueryCursor()
-	defer cursor.Close()
-	matches := cursor.Matches(query, root, content)
-	for matches.Next() != nil {
-		break
-	}
-	return nil
 }
 
 func extractJavaScriptFamilySymbols(root *tree_sitter.Node, content []byte) []Symbol {

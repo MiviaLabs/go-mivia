@@ -75,14 +75,44 @@ func TestExtractorCache(t *testing.T) {
 	}
 }
 
+func TestExtractorCacheFingerprintInvalidatesSameVersion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "src", "cached.count"), "safe content\n")
+
+	svc, _, _ := newTestService(t, root)
+	extractor := &countingExtractor{name: "counting", version: "1", fingerprint: "fp-1"}
+	svc.extractors = NewExtractorRegistry(extractor)
+
+	if _, err := svc.IngestProject(ctx, "example-service", TriggerManual); err != nil {
+		t.Fatalf("initial ingest: %v", err)
+	}
+	if extractor.calls != 1 {
+		t.Fatalf("expected first ingest to parse once, got %d", extractor.calls)
+	}
+
+	extractor.fingerprint = "fp-2"
+	run, err := svc.IngestProject(ctx, "example-service", TriggerManual)
+	if err != nil {
+		t.Fatalf("fingerprint-changed ingest: %v", err)
+	}
+	if run.FilesIngested != 1 || run.FilesUnchanged != 0 {
+		t.Fatalf("expected extractor fingerprint change to reingest, got %#v", run)
+	}
+	if extractor.calls != 2 {
+		t.Fatalf("expected fingerprint change to reparse, got %d calls", extractor.calls)
+	}
+}
+
 func syntheticSensitiveMarker() string {
 	return "access" + "_token = placeholder\n"
 }
 
 type countingExtractor struct {
-	name    string
-	version string
-	calls   int
+	name        string
+	version     string
+	fingerprint string
+	calls       int
 }
 
 func (extractor *countingExtractor) Name() string {
@@ -91,6 +121,10 @@ func (extractor *countingExtractor) Name() string {
 
 func (extractor *countingExtractor) Version() string {
 	return extractor.version
+}
+
+func (extractor *countingExtractor) Fingerprint() string {
+	return extractor.fingerprint
 }
 
 func (extractor *countingExtractor) Supports(relative string) bool {
