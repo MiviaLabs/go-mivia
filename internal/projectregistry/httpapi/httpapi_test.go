@@ -120,6 +120,21 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 		t.Fatalf("expected ready context health, got %s", health.Body.String())
 	}
 
+	dashboard := httptest.NewRecorder()
+	mux.ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/dashboard-summary", nil))
+	if dashboard.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", dashboard.Code, dashboard.Body.String())
+	}
+	assertDoesNotLeak(t, dashboard.Body.String(), root, "package main", "content_sha256", "root_path")
+	for _, expected := range []string{`"project"`, `"context_health"`, `"graph"`, `"by_extension"`, `"by_kind"`, `"ast_coverage"`, `"limits"`} {
+		if !strings.Contains(dashboard.Body.String(), expected) {
+			t.Fatalf("expected dashboard summary to contain %s, got %s", expected, dashboard.Body.String())
+		}
+	}
+	if strings.Contains(dashboard.Body.String(), `"text":`) || strings.Contains(dashboard.Body.String(), `"diff":`) {
+		t.Fatalf("dashboard summary must not include source text or diffs: %s", dashboard.Body.String())
+	}
+
 	impactReq := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/impact/analyze", bytes.NewBufferString(`{"changed_paths":["internal/projectregistry/httpapi/httpapi.go","internal/agentcontrol/model/model.go"]}`))
 	impactReq.Header.Set("Content-Type", "application/json")
 	impact := httptest.NewRecorder()

@@ -61,21 +61,12 @@ async function loadProjectDetail(projectID) {
   summary.textContent = projectID;
 
   try {
-    const [project, health, latest, files] = await Promise.allSettled([
-      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}`, 4000),
-      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/context-health`, 4000),
-      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/ingestion-runs/latest`, 4000),
-      fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/files?page_size=6`, 4000),
-    ]);
-
-    if (project.status === "rejected") throw project.reason;
-
-    const projectData = project.value;
-    const healthData = settledValue(health);
-    const latestData = settledValue(latest);
-    const filesData = settledValue(files);
+    const dashboard = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/dashboard-summary`, 5000);
+    const projectData = dashboard.project;
+    const healthData = dashboard.context_health;
+    const latestData = dashboard.latest_run;
     summary.textContent = projectData.display_name || projectData.id;
-    renderProjectDetail(projectData, healthData, latestData, filesData);
+    renderProjectDetail(projectData, healthData, latestData, dashboard);
   } catch (error) {
     summary.textContent = "Project unavailable";
     statusBox.textContent = error.message;
@@ -144,21 +135,27 @@ function renderProjects(projects) {
   }));
 }
 
-function renderProjectDetail(project, health, latest, files) {
-  const fileItems = Array.isArray(files?.files) ? files.files : [];
+function renderProjectDetail(project, health, latest, dashboard) {
+  const graph = dashboard?.graph || {};
+  const fileItems = Array.isArray(graph.files?.sample) ? graph.files.sample : [];
   detail.innerHTML = `
     <aside class="detail-rail">
       ${renderBasicInfoSection(project)}
-      ${renderStatsSection(health)}
+      ${renderStatsSection(health, graph, dashboard?.workspace)}
       ${renderAliasesSection(project)}
+      ${renderControlPlaneSection()}
     </aside>
     <section class="detail-main">
       ${renderHeroSection(project, health)}
-      ${renderPipelineSection(project, health, latest, fileItems)}
+      ${renderPipelineSection(project, health, latest, graph, dashboard)}
+      ${renderGraphStatsSection(graph)}
       ${renderContextHealthSection(project, health)}
       ${renderLatestIngestionSection(latest)}
+      ${renderWorkspaceSection(dashboard?.workspace)}
+      ${renderASTCoverageSection(graph.ast_coverage)}
       ${renderRecentFilesSection(fileItems)}
-      ${renderIntegrationsSection(project)}
+      ${renderIntegrationsSection(project, dashboard?.integrations)}
+      ${renderWarningsSection(dashboard?.warnings)}
     </section>
   `;
 }
@@ -174,12 +171,14 @@ function renderBasicInfoSection(project) {
   ]));
 }
 
-function renderStatsSection(health) {
+function renderStatsSection(health, graph, workspace) {
   return panel("Stats", infoList([
     ["Health", health?.status || "unavailable"],
     ["Files", numberValue(health?.eligible_file_count)],
     ["Symbols", numberValue(health?.indexed_symbol_count)],
     ["Chunks", numberValue(health?.indexed_chunk_count)],
+    ["Headings", numberValue(graph?.headings?.sampled_count)],
+    ["Dirty sampled", numberValue(workspace?.sampled_dirty_count ?? 0)],
     ["Search", health?.search_index?.status || "unknown"],
     ["Git", health?.workspace_git_available ? "available" : "unavailable"],
   ]));
@@ -187,6 +186,15 @@ function renderStatsSection(health) {
 
 function renderAliasesSection(project) {
   return panel("Aliases", aliasesList(project.aliases));
+}
+
+function renderControlPlaneSection() {
+  return panel("Control plane", infoList([
+    ["Task runs", "create/get by ID"],
+    ["Research runs", "create/get by ID"],
+    ["Agent runs", "create/get by ID"],
+    ["Aggregates", "list/count API not exposed"],
+  ]));
 }
 
 function renderHeroSection(project, health) {
@@ -206,8 +214,19 @@ function renderHeroSection(project, health) {
   `;
 }
 
-function renderPipelineSection(project, health, latest, files) {
-  return panel("Data pipeline", projectPipelineDiagram(project, health, latest, files));
+function renderPipelineSection(project, health, latest, graph, dashboard) {
+  return panel("Data pipeline", projectPipelineDiagram(project, health, latest, graph, dashboard));
+}
+
+function renderGraphStatsSection(graph) {
+  return panel("Graph stats", `
+    <div class="split-grid">
+      ${countBlock("Files by extension", graph?.files?.by_extension)}
+      ${countBlock("Symbols by kind", graph?.symbols?.by_kind)}
+      ${countBlock("Top packages", graph?.symbols?.by_package)}
+      ${countBlock("Headings by level", graph?.headings?.by_level)}
+    </div>
+  `);
 }
 
 function renderContextHealthSection(project, health) {
@@ -218,15 +237,63 @@ function renderLatestIngestionSection(latest) {
   return panel("Latest ingestion", latestRun(latest));
 }
 
+function renderWorkspaceSection(workspace) {
+  if (!workspace) return panel("Workspace", `<p class="empty">Workspace git status unavailable.</p>`);
+  return panel("Workspace", `
+    <div class="split-grid">
+      ${infoList([
+        ["Branch", workspace.branch || "unknown"],
+        ["Head", workspace.head_oid_short || "unknown"],
+        ["Dirty sampled", numberValue(workspace.sampled_dirty_count)],
+        ["Truncated", workspace.truncated ? "yes" : "no"],
+      ])}
+      ${countBlock("Status", workspace.by_status)}
+    </div>
+    ${gitSample(workspace.sample)}
+  `);
+}
+
+function renderASTCoverageSection(coverage) {
+  if (!Array.isArray(coverage) || coverage.length === 0) return panel("AST coverage", `<p class="empty">AST coverage unavailable.</p>`);
+  return panel("AST coverage", `
+    <div class="coverage-grid">
+      ${coverage.map((item) => `
+        <div class="coverage-row">
+          <strong>${escapeHTML(item.language || "unknown")}</strong>
+          <span>${escapeHTML(item.coverage_status || "unknown")}</span>
+          <small>${numberValue(item.eligible_files)} files / ${escapeHTML((item.extensions || []).join(", ") || "no extensions")}</small>
+        </div>
+      `).join("")}
+    </div>
+  `);
+}
+
 function renderRecentFilesSection(files) {
   return panel("Recent files", recentFiles(files));
 }
 
-function renderIntegrationsSection(project) {
-  return panel("Integrations", integrations(project.integrations));
+function renderIntegrationsSection(project, integrationSummary) {
+  const providerStatus = Array.isArray(integrationSummary?.providers) ? integrationSummary.providers : [];
+  const counts = Array.isArray(integrationSummary?.counts) ? integrationSummary.counts : [];
+  return panel("Integrations", `
+    ${integrations(project.integrations)}
+    ${providerStatus.length ? `<div class="integration-grid">${providerStatus.map((provider) => `
+      <div class="integration-row">
+        <strong>${escapeHTML(provider.provider)}</strong>
+        <span>${provider.enabled ? "enabled" : "disabled"} / ${provider.ingestion_enabled ? "ingest on" : "ingest off"}</span>
+        <small>${escapeHTML(provider.allowlist_kind || "allowlist")} ${numberValue(provider.allowlist_count)} scopes, source ${provider.source_persisted ? "persisted" : "not persisted"}</small>
+      </div>
+    `).join("")}</div>` : `<p class="empty">No live integration status returned.</p>`}
+    ${counts.length ? countBlock("Indexed integration items", counts.map((item) => ({ key: item.provider, count: item.count }))) : ""}
+  `);
 }
 
-function projectPipelineDiagram(project, health, latest, files) {
+function renderWarningsSection(warnings) {
+  if (!Array.isArray(warnings) || warnings.length === 0) return "";
+  return panel("Partial data", `<div class="tag-list">${warnings.map((warning) => `<span>${escapeHTML(warning)}</span>`).join("")}</div>`);
+}
+
+function projectPipelineDiagram(project, health, latest, graph, dashboard) {
   const nodes = [
     {
       title: "Project config",
@@ -249,22 +316,27 @@ function projectPipelineDiagram(project, health, latest, files) {
       tone: health?.indexed_symbol_count > 0 ? "ok" : "muted",
     },
     {
-      title: "Search index",
-      detail: health?.search_index?.status || "unknown",
-      tone: health?.search_index?.status === "ok" ? "ok" : "warn",
+      title: "Graph stats",
+      detail: `${numberValue(graph?.files?.sampled_count)} files sampled`,
+      tone: graph?.files?.sampled_count > 0 ? "ok" : "muted",
     },
     {
-      title: "MCP/REST",
-      detail: `${numberValue(health?.eligible_file_count)} files, ${files.length} sampled`,
+      title: "Search index",
+      detail: graph?.search_index?.status || health?.search_index?.status || "unknown",
+      tone: (graph?.search_index?.status || health?.search_index?.status) === "ok" ? "ok" : "warn",
+    },
+    {
+      title: "REST summary",
+      detail: `${numberValue(dashboard?.limits?.files_max)} file cap`,
       tone: health?.indexed_content_available ? "ok" : "warn",
     },
   ];
-  const width = 1060;
+  const width = 1220;
   const height = 230;
-  const boxWidth = 152;
+  const boxWidth = 146;
   const boxHeight = 74;
   const startX = 22;
-  const gap = 22;
+  const gap = 16;
   const y = 74;
   const statusText = health?.status ? `Context ${health.status}` : "Context unavailable";
 
@@ -277,7 +349,7 @@ function projectPipelineDiagram(project, health, latest, files) {
           </marker>
         </defs>
         <text x="${startX}" y="30" fill="currentColor" font-size="15" font-weight="700">${escapeHTML(statusText)}</text>
-        <text x="${startX}" y="52" fill="currentColor" opacity="0.68" font-size="12">Uses project, context-health, latest ingestion, and small files metadata only.</text>
+        <text x="${startX}" y="52" fill="currentColor" opacity="0.68" font-size="12">One bounded REST summary: graph metadata, AST coverage, git status, integration status. No source text or diffs.</text>
         ${nodes.map((node, index) => pipelineNode(node, startX + index * (boxWidth + gap), y, boxWidth, boxHeight)).join("")}
         ${nodes.slice(0, -1).map((_, index) => pipelineArrow(startX + index * (boxWidth + gap) + boxWidth, y + boxHeight / 2, startX + (index + 1) * (boxWidth + gap), y + boxHeight / 2)).join("")}
       </svg>
@@ -361,6 +433,30 @@ function recentFiles(files) {
   `;
 }
 
+function countBlock(title, items) {
+  if (!Array.isArray(items) || items.length === 0) return `<div><h3>${escapeHTML(title)}</h3><p class="empty">No data.</p></div>`;
+  return `
+    <div>
+      <h3>${escapeHTML(title)}</h3>
+      ${items.map((item) => `<div class="reason-row"><span>${escapeHTML(item.key || item.provider || "unknown")}</span><strong>${numberValue(item.count)}</strong></div>`).join("")}
+    </div>
+  `;
+}
+
+function gitSample(items) {
+  if (!Array.isArray(items) || items.length === 0) return `<p class="empty">No working tree changes.</p>`;
+  return `
+    <div class="file-list">
+      ${items.map((item) => `
+        <div class="file-row">
+          <strong>${escapeHTML(item.relative_path)}</strong>
+          <span>${escapeHTML(item.status || "unknown")}</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 async function loadOptionalStatus(projects) {
   await Promise.all(projects.map(async (project) => {
     const cell = document.querySelector(`tr[data-project-id="${cssEscape(project.id)}"] .context`);
@@ -404,10 +500,6 @@ function selectedProjectID() {
   if (!hash) return "";
   const params = new URLSearchParams(hash);
   return params.get("project") || "";
-}
-
-function settledValue(result) {
-  return result.status === "fulfilled" ? result.value : null;
 }
 
 function panel(title, body) {

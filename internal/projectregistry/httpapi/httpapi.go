@@ -11,12 +11,14 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
 	"github.com/MiviaLabs/go-mivia/internal/projectcontext"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
 const workspaceGitStatusTimeout = 30 * time.Second
+const dashboardSummaryTimeout = 3 * time.Second
 
 func RegisterRoutes(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService) {
 	RegisterRoutesWithIngestion(mux, registry, digest, nil)
@@ -27,10 +29,15 @@ func RegisterRoutesWithIngestion(mux *http.ServeMux, registry *projectregistry.R
 }
 
 func RegisterRoutesWithWorkspace(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, workspace projectworkspace.API) {
+	RegisterRoutesWithWorkspaceAndIntegrations(mux, registry, digest, ingestion, workspace, nil)
+}
+
+func RegisterRoutesWithWorkspaceAndIntegrations(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, workspace projectworkspace.API, integrations *projectintegrations.Service) {
 	mux.Handle("GET /api/v1/projects", listProjectsHandler(registry))
 	mux.Handle("GET /api/v1/projects/{id}", getProjectHandler(registry))
 	mux.Handle("POST /api/v1/projects/{id}/digest-runs", createDigestRunHandler(digest))
 	if ingestion != nil {
+		mux.Handle("GET /api/v1/projects/{id}/dashboard-summary", getDashboardSummaryHandler(registry, ingestion, workspace, integrations))
 		mux.Handle("POST /api/v1/projects/{id}/ingestion-runs", createIngestionRunHandler(ingestion))
 		mux.Handle("POST /api/v1/projects/{id}/search-index/rebuild", rebuildSearchIndexHandler(ingestion))
 		mux.Handle("GET /api/v1/projects/{id}/context-health", getContextHealthHandler(registry, ingestion, workspace))

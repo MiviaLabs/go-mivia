@@ -431,6 +431,36 @@ td div span {
   gap: 2px;
 }
 
+.coverage-grid,
+.integration-grid {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.coverage-row,
+.integration-row {
+  display: grid;
+  gap: 4px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.coverage-row:last-child,
+.integration-row:last-child {
+  border-bottom: 0;
+}
+
+.coverage-row span,
+.integration-row span,
+.coverage-row small,
+.integration-row small {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .file-row {
   display: grid;
   justify-content: initial;

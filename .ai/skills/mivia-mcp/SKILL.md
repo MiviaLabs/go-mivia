@@ -48,7 +48,7 @@ Know or discover:
 - MCP endpoint, default `http://127.0.0.1:8080/mcp`.
 - Project ID, from the user or `projects.list`. Project-scoped tools also accept safe aliases returned by `projects.list` / `projects.get`, including configured repo/module aliases and auto-discovered Go module paths.
 - Host repository rules, tests, and privacy/security boundaries.
-- Release examples in docs, Docker Compose, and devcontainer snippets must stay on the current public release pair: Go module tag `v0.1.6` and container tag `0.1.6`.
+- Release examples in docs, Docker Compose, and devcontainer snippets must stay on the current public release pair: Go module tag `v0.1.7` and container tag `0.1.7`.
 
 Do not assume the current repository is the server repo. Do not assume any specific language or directory layout.
 
