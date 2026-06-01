@@ -9,6 +9,43 @@ import (
 
 var ErrProviderRequestFailed = errors.New("integration provider request failed")
 
+type ToolErrorReason string
+
+const (
+	ToolErrorReasonBadProjectID        ToolErrorReason = "bad_project_id"
+	ToolErrorReasonNotIndexed          ToolErrorReason = "not_indexed"
+	ToolErrorReasonProviderUnavailable ToolErrorReason = "provider_unavailable"
+	ToolErrorReasonBadArgument         ToolErrorReason = "bad_argument"
+)
+
+type IntegrationToolError struct {
+	Code        string          `json:"code"`
+	Reason      ToolErrorReason `json:"reason"`
+	ProjectID   string          `json:"project_id,omitempty"`
+	Provider    Provider        `json:"provider,omitempty"`
+	Key         string          `json:"key,omitempty"`
+	Remediation []string        `json:"remediation,omitempty"`
+}
+
+func (err *IntegrationToolError) Error() string {
+	if err == nil {
+		return ErrInvalidInput.Error()
+	}
+	return fmt.Sprintf("%s: %s", err.Code, err.Reason)
+}
+
+func (err *IntegrationToolError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	switch err.Reason {
+	case ToolErrorReasonBadArgument:
+		return ErrInvalidInput
+	default:
+		return ErrNotFound
+	}
+}
+
 type ErrorCategory string
 
 const (

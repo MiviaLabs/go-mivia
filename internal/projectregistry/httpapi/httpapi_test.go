@@ -169,8 +169,11 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", claims.Code, claims.Body.String())
 	}
 	assertDoesNotLeak(t, claims.Body.String(), root, "package main", "content_sha256", "root_path", "local.md")
-	if !strings.Contains(claims.Body.String(), `"claim":"projects.context_health"`) || !strings.Contains(claims.Body.String(), `"claim":"projects.verifiers.recommend"`) || !strings.Contains(claims.Body.String(), `"status":"stale"`) {
-		t.Fatalf("expected claim statuses, got %s", claims.Body.String())
+	if strings.Contains(claims.Body.String(), `"claim":"projects.context_health"`) || strings.Contains(claims.Body.String(), `"status":"verified"`) {
+		t.Fatalf("expected default claims response to omit verified claims, got %s", claims.Body.String())
+	}
+	if !strings.Contains(claims.Body.String(), `"claim":"projects.verifiers.recommend"`) || !strings.Contains(claims.Body.String(), `"status":"stale"`) || !strings.Contains(claims.Body.String(), `"verified_omitted":1`) {
+		t.Fatalf("expected actionable claim statuses and omitted verified count, got %s", claims.Body.String())
 	}
 
 	files := httptest.NewRecorder()

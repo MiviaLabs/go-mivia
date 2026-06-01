@@ -18,6 +18,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry/mcpapi"
+	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
@@ -235,6 +236,44 @@ func TestCallToolWithIngestion_ContextHealthIsSafe(t *testing.T) {
 	}
 }
 
+func TestCallToolWithIngestion_ContextHealthLatestRunKeepsDeltaCounts(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+	firstRun, err := ingestion.IngestProject(context.Background(), "example-service", projectingestion.TriggerManual)
+	if err != nil {
+		t.Fatalf("first ingest project: %v", err)
+	}
+	if firstRun.ChunksStored == 0 || firstRun.SymbolsStored == 0 {
+		t.Fatalf("test fixture did not store initial inventory: %#v", firstRun)
+	}
+	secondRun, err := ingestion.IngestProject(context.Background(), "example-service", projectingestion.TriggerManual)
+	if err != nil {
+		t.Fatalf("second ingest project: %v", err)
+	}
+	if secondRun.ChunksStored != 0 || secondRun.SymbolsStored != 0 {
+		t.Fatalf("expected unchanged second run to store zero delta counts, got %#v", secondRun)
+	}
+
+	for _, name := range []string{"projects.context_health", "projects.graph_status"} {
+		result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, name, json.RawMessage(`{"id":"example-service"}`))
+		if err != nil {
+			t.Fatalf("call %s: %v", name, err)
+		}
+		health := result["structuredContent"].(projectreliability.ContextHealth)
+		if health.LatestRun == nil {
+			t.Fatalf("%s missing latest_run: %#v", name, health)
+		}
+		if health.LatestRun.ID != secondRun.ID {
+			t.Fatalf("%s returned wrong latest run: got %s want %s", name, health.LatestRun.ID, secondRun.ID)
+		}
+		if health.LatestRun.ChunksStored != 0 || health.LatestRun.SymbolsStored != 0 {
+			t.Fatalf("%s latest_run used inventory counts instead of run delta counts: %#v", name, health.LatestRun)
+		}
+		if health.IndexedChunkCount == 0 || health.IndexedSymbolCount == 0 {
+			t.Fatalf("%s did not expose existing inventory in top-level indexed counts: %#v", name, health)
+		}
+	}
+}
+
 func TestCallToolWithIngestion_ImpactAnalyzeMapsPaths(t *testing.T) {
 	registry, digest, ingestion := newIngestionServices(t)
 	if !hasToolDefinition(mcpapi.ToolDefinitionsWithIngestion(true), "projects.impact.analyze") {
@@ -289,11 +328,26 @@ func TestCallToolWithIngestion_ClaimsCheckFlagsStaleTool(t *testing.T) {
 		t.Fatalf("call claims check: %v", err)
 	}
 	body := marshalResult(t, result)
-	if !strings.Contains(body, `"claim":"projects.context_health"`) || !strings.Contains(body, `"status":"verified"`) || !strings.Contains(body, `"claim":"projects.verifiers.recommend"`) || !strings.Contains(body, `"status":"stale"`) {
-		t.Fatalf("expected verified and stale claims, got %s", body)
+	if strings.Contains(body, `"claim":"projects.context_health"`) || strings.Contains(body, `"status":"verified"`) {
+		t.Fatalf("expected default claim check output to omit verified claims, got %s", body)
+	}
+	if !strings.Contains(body, `"claim":"projects.verifiers.recommend"`) || !strings.Contains(body, `"status":"stale"`) || !strings.Contains(body, `"verified_omitted":1`) {
+		t.Fatalf("expected stale claim and omitted verified count, got %s", body)
 	}
 	if strings.Contains(body, "local.md") {
 		t.Fatalf("claim checker leaked task link tail: %s", body)
+	}
+}
+
+func TestCallToolWithIngestion_ClaimsCheckIncludesVerifiedWhenRequested(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+	result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_claims_check", json.RawMessage(`{"id":"example-service","include_verified":true,"documents":[{"path":"README.md","text":"Use projects.context_health."}]}`))
+	if err != nil {
+		t.Fatalf("call claims check: %v", err)
+	}
+	body := marshalResult(t, result)
+	if !strings.Contains(body, `"claim":"projects.context_health"`) || !strings.Contains(body, `"status":"verified"`) || strings.Contains(body, `"verified_omitted"`) {
+		t.Fatalf("expected include_verified to return verified claims, got %s", body)
 	}
 }
 

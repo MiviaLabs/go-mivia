@@ -36,6 +36,7 @@ type RichContentGraphResult struct {
 type RichContentReadOptions struct {
 	MaxChunkBytes int
 	MaxChunks     int
+	ChunkOffset   int
 }
 
 type RichContentSearchOptions struct {
@@ -78,9 +79,10 @@ type RichContentChunkView struct {
 }
 
 type RichContentReadResult struct {
-	Artifact        RichContentArtifact
-	Chunks          []RichContentChunkView
-	ChunksTruncated bool
+	Artifact        RichContentArtifact    `json:"artifact"`
+	Chunks          []RichContentChunkView `json:"chunks"`
+	ChunksTruncated bool                   `json:"chunks_truncated"`
+	NextChunkOffset int                    `json:"next_chunk_offset,omitempty"`
 }
 
 type RichContentSearchResult struct {
@@ -162,11 +164,11 @@ func (store *RichContentGraphStore) GetRichContentItem(ctx context.Context, proj
 	if err != nil {
 		return RichContentReadResult{}, err
 	}
-	chunks, truncated, err := chunksFromNodes(chunkNodes, options.MaxChunkBytes, options.MaxChunks)
+	chunks, truncated, nextOffset, err := chunksFromNodes(chunkNodes, options.MaxChunkBytes, options.MaxChunks, options.ChunkOffset)
 	if err != nil {
 		return RichContentReadResult{}, err
 	}
-	return RichContentReadResult{Artifact: artifact, Chunks: chunks, ChunksTruncated: truncated}, nil
+	return RichContentReadResult{Artifact: artifact, Chunks: chunks, ChunksTruncated: truncated, NextChunkOffset: nextOffset}, nil
 }
 
 func (store *RichContentGraphStore) findArtifactNode(ctx context.Context, projectID string, provider Provider, itemIDOrKey string) (ladybug.Node, error) {
@@ -469,10 +471,13 @@ func artifactFromNode(node ladybug.Node) (RichContentArtifact, error) {
 	}, nil
 }
 
-func chunksFromNodes(nodes []ladybug.Node, maxChunkBytes int, maxChunks int) ([]RichContentChunkView, bool, error) {
+func chunksFromNodes(nodes []ladybug.Node, maxChunkBytes int, maxChunks int, chunkOffset int) ([]RichContentChunkView, bool, int, error) {
 	limit, err := boundedReadChunkLimit(maxChunks)
 	if err != nil {
-		return nil, false, err
+		return nil, false, 0, err
+	}
+	if chunkOffset < 0 {
+		return nil, false, 0, ErrInvalidInput
 	}
 	sort.Slice(nodes, func(i, j int) bool {
 		leftIndex := atoiDefault(nodes[i].Properties["chunk_index"])
@@ -482,19 +487,25 @@ func chunksFromNodes(nodes []ladybug.Node, maxChunkBytes int, maxChunks int) ([]
 		}
 		return nodes[i].ID < nodes[j].ID
 	})
+	if chunkOffset > len(nodes) {
+		chunkOffset = len(nodes)
+	}
+	nodes = nodes[chunkOffset:]
 	truncated := len(nodes) > limit
+	nextOffset := 0
 	if truncated {
+		nextOffset = chunkOffset + limit
 		nodes = nodes[:limit]
 	}
 	chunks := make([]RichContentChunkView, 0, len(nodes))
 	for _, node := range nodes {
 		chunk, err := chunkFromNode(node, maxChunkBytes)
 		if err != nil {
-			return nil, false, err
+			return nil, false, 0, err
 		}
 		chunks = append(chunks, chunk)
 	}
-	return chunks, truncated, nil
+	return chunks, truncated, nextOffset, nil
 }
 
 func chunkFromNode(node ladybug.Node, maxChunkBytes int) (RichContentChunkView, error) {
@@ -549,7 +560,7 @@ func boundedReadChunkLimit(value int) (int, error) {
 		return 0, ErrInvalidInput
 	}
 	if value == 0 {
-		return 50, nil
+		return 3, nil
 	}
 	if value > 200 {
 		return 200, nil
@@ -601,7 +612,7 @@ func richSnippet(text string, start int, end int, maxBytes int) (string, bool) {
 
 func truncateRichTextForResponse(text string, maxBytes int) (string, bool) {
 	if maxBytes <= 0 {
-		maxBytes = defaultRichContentMaxChunkBytes
+		maxBytes = 2048
 	}
 	if len([]byte(text)) <= maxBytes {
 		return text, false

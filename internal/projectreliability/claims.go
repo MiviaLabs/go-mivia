@@ -10,11 +10,12 @@ import (
 )
 
 type ClaimCheckRequest struct {
-	ProjectID     string          `json:"project_id,omitempty"`
-	Documents     []ClaimDocument `json:"documents,omitempty"`
-	SelectedPaths []string        `json:"selected_paths,omitempty"`
-	KnownTools    []string        `json:"known_tools,omitempty"`
-	KnownRoutes   []string        `json:"known_routes,omitempty"`
+	ProjectID       string          `json:"project_id,omitempty"`
+	Documents       []ClaimDocument `json:"documents,omitempty"`
+	SelectedPaths   []string        `json:"selected_paths,omitempty"`
+	KnownTools      []string        `json:"known_tools,omitempty"`
+	KnownRoutes     []string        `json:"known_routes,omitempty"`
+	IncludeVerified bool            `json:"include_verified,omitempty"`
 }
 
 type ClaimDocument struct {
@@ -23,8 +24,18 @@ type ClaimDocument struct {
 }
 
 type ClaimCheckResult struct {
-	ProjectID string         `json:"project_id,omitempty"`
-	Claims    []ClaimFinding `json:"claims"`
+	ProjectID       string            `json:"project_id,omitempty"`
+	Summary         ClaimCheckSummary `json:"summary"`
+	Claims          []ClaimFinding    `json:"claims"`
+	VerifiedOmitted int               `json:"verified_omitted,omitempty"`
+	AllVerified     bool              `json:"all_verified"`
+}
+
+type ClaimCheckSummary struct {
+	Total      int            `json:"total"`
+	Verified   int            `json:"verified"`
+	Actionable int            `json:"actionable"`
+	ByStatus   map[string]int `json:"by_status,omitempty"`
 }
 
 type ClaimFinding struct {
@@ -45,7 +56,7 @@ func NewClaimChecker(workspace projectworkspace.API) *ClaimChecker {
 	return &ClaimChecker{workspace: workspace}
 }
 
-var toolClaimPattern = regexp.MustCompile(`\b(?:projects|agent_runs|tasks|research_runs)\.[a-zA-Z0-9_.*]+`)
+var toolClaimPattern = regexp.MustCompile(`\b(?:projects|agent_runs|tasks|research_runs)(?:\.|_)[a-zA-Z0-9_.*]+`)
 var routeClaimPattern = regexp.MustCompile(`/api/v1/[a-zA-Z0-9_./{}*-]+`)
 
 func (checker *ClaimChecker) Check(ctx context.Context, request ClaimCheckRequest) (ClaimCheckResult, error) {
@@ -77,10 +88,11 @@ func (checker *ClaimChecker) Check(ctx context.Context, request ClaimCheckReques
 	}
 
 	result := ClaimCheckResult{ProjectID: strings.TrimSpace(request.ProjectID)}
+	allClaims := []ClaimFinding{}
 	for _, doc := range docs {
 		path := strings.TrimSpace(strings.ReplaceAll(doc.Path, "\\", "/"))
 		if !claimPathAllowed(path) {
-			result.Claims = append(result.Claims, ClaimFinding{
+			allClaims = append(allClaims, ClaimFinding{
 				Path:        path,
 				Line:        0,
 				Kind:        "path",
@@ -90,7 +102,7 @@ func (checker *ClaimChecker) Check(ctx context.Context, request ClaimCheckReques
 			continue
 		}
 		if strings.TrimSpace(doc.Text) == "" {
-			result.Claims = append(result.Claims, ClaimFinding{
+			allClaims = append(allClaims, ClaimFinding{
 				Path:        path,
 				Line:        0,
 				Kind:        "document",
@@ -99,15 +111,45 @@ func (checker *ClaimChecker) Check(ctx context.Context, request ClaimCheckReques
 			})
 			continue
 		}
-		result.Claims = append(result.Claims, checkDocumentClaims(path, doc.Text, knownTools, knownRoutes)...)
+		allClaims = append(allClaims, checkDocumentClaims(path, doc.Text, knownTools, knownRoutes)...)
 	}
-	sort.SliceStable(result.Claims, func(i, j int) bool {
-		if result.Claims[i].Path != result.Claims[j].Path {
-			return result.Claims[i].Path < result.Claims[j].Path
+	sort.SliceStable(allClaims, func(i, j int) bool {
+		if allClaims[i].Path != allClaims[j].Path {
+			return allClaims[i].Path < allClaims[j].Path
 		}
-		return result.Claims[i].Line < result.Claims[j].Line
+		return allClaims[i].Line < allClaims[j].Line
 	})
+	result.Summary = summarizeClaims(allClaims)
+	result.AllVerified = result.Summary.Actionable == 0
+	if request.IncludeVerified {
+		result.Claims = allClaims
+		return result, nil
+	}
+	for _, claim := range allClaims {
+		if claim.Status == "verified" {
+			result.VerifiedOmitted++
+			continue
+		}
+		result.Claims = append(result.Claims, claim)
+	}
 	return result, nil
+}
+
+func summarizeClaims(claims []ClaimFinding) ClaimCheckSummary {
+	summary := ClaimCheckSummary{ByStatus: map[string]int{}}
+	for _, claim := range claims {
+		summary.Total++
+		summary.ByStatus[claim.Status]++
+		if claim.Status == "verified" {
+			summary.Verified++
+		} else {
+			summary.Actionable++
+		}
+	}
+	if len(summary.ByStatus) == 0 {
+		summary.ByStatus = nil
+	}
+	return summary
 }
 
 func checkDocumentClaims(path string, text string, knownTools map[string]struct{}, knownRoutes map[string]struct{}) []ClaimFinding {
@@ -115,7 +157,8 @@ func checkDocumentClaims(path string, text string, knownTools map[string]struct{
 	lines := strings.Split(text, "\n")
 	for index, line := range lines {
 		lineNo := index + 1
-		if strings.Contains(line, ".ai/tasks/") {
+		plainLine := stripInlineCodeSpans(line)
+		if strings.Contains(plainLine, ".ai/tasks/") && shouldFlagTaskLink(path) {
 			findings = append(findings, ClaimFinding{
 				Path:        path,
 				Line:        lineNo,
@@ -127,12 +170,12 @@ func checkDocumentClaims(path string, text string, knownTools map[string]struct{
 		}
 		for _, tool := range toolClaimPattern.FindAllString(line, -1) {
 			tool = normalizeToolClaim(tool)
+			if shouldIgnoreToolClaim(tool, knownTools) {
+				continue
+			}
 			status := "verified"
 			evidence := "known MCP tool"
-			if strings.Contains(tool, "*") {
-				status = "unverified"
-				evidence = "wildcard tool claim"
-			} else if _, ok := knownTools[tool]; !ok {
+			if _, ok := knownTools[tool]; !ok {
 				status = "stale"
 				evidence = "tool not registered"
 			}
@@ -166,6 +209,40 @@ func checkDocumentClaims(path string, text string, knownTools map[string]struct{
 		}
 	}
 	return findings
+}
+
+func stripInlineCodeSpans(line string) string {
+	var out strings.Builder
+	inCode := false
+	for _, r := range line {
+		if r == '`' {
+			inCode = !inCode
+			continue
+		}
+		if !inCode {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+func shouldFlagTaskLink(path string) bool {
+	return path != ".ai/skills/mivia-mcp/SKILL.md"
+}
+
+func shouldIgnoreToolClaim(tool string, knownTools map[string]struct{}) bool {
+	if strings.Contains(tool, "*") {
+		return true
+	}
+	if _, ok := knownTools[tool]; ok {
+		return false
+	}
+	for known := range knownTools {
+		if strings.HasPrefix(tool, known+".") || strings.HasPrefix(tool, known+"_") {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeToolClaim(tool string) string {
@@ -206,12 +283,12 @@ func setFrom(values []string) map[string]struct{} {
 }
 
 func defaultKnownTools() []string {
-	return []string{
+	return withToolAliases([]string{
 		"tasks.create", "tasks.get",
 		"research_runs.create", "research_runs.get",
-		"agent_runs.create", "agent_runs.step_append", "agent_runs.complete", "agent_runs.get",
+		"agent_runs.create", "agent_runs.step_append", "agent_runs.promote_artifact", "agent_runs.complete", "agent_runs.get",
 		"projects.list", "projects.get", "projects.digest", "projects.ingest",
-		"projects.context_health", "projects.impact.analyze", "projects.claims.check",
+		"projects.context_health", "projects.graph_status", "projects.impact.analyze", "projects.context_pack.build", "projects.claims.check",
 		"projects.search_index.rebuild", "projects.ingestion_status", "projects.ingestion_status_latest",
 		"projects.files.list", "projects.files.get", "projects.file.chunks", "projects.symbols.list",
 		"projects.search.text", "projects.search.files", "projects.search.symbols", "projects.search.references", "projects.search.calls",
@@ -219,7 +296,24 @@ func defaultKnownTools() []string {
 		"projects.symbol.callers", "projects.symbol.callees", "projects.symbol.call_graph", "projects.headings.list", "projects.file.outline",
 		"projects.workspace.git_status", "projects.workspace.git_diff", "projects.workspace.file_read", "projects.workspace.file_edit",
 		"projects.diagnostics.ingestion",
+		"projects.integrations.list", "projects.integrations.status", "projects.integrations.counts", "projects.integrations.poll",
+		"projects.integrations.poll_status", "projects.integrations.search", "projects.jira.issue.get", "projects.confluence.page.get",
+	})
+}
+
+func withToolAliases(tools []string) []string {
+	out := make([]string, 0, len(tools)*2)
+	seen := map[string]struct{}{}
+	for _, tool := range tools {
+		for _, name := range []string{tool, strings.ReplaceAll(tool, ".", "_")} {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			out = append(out, name)
+		}
 	}
+	return out
 }
 
 func defaultKnownRoutes() []string {

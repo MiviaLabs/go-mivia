@@ -239,7 +239,7 @@ Input schema:
 }
 ```
 
-Output: deterministic context readiness and freshness metadata for one project, including enabled/config state, latest run summary, safe counters, search-index health, and workspace git availability. Status `syncing` means ingestion is active or a bounded probe timed out under local load; `degraded` is reserved for explicit failed ingestion or degraded search-index state. It omits roots, source text, skipped sensitive content, raw errors, prompts, provider payloads, secrets, credentials, and PII.
+Output: deterministic context readiness and freshness metadata for one project, including enabled/config state, latest run summary, safe counters, search-index health, and workspace git availability. `latest_run.chunks_stored` and `latest_run.symbols_stored` keep the same per-run delta semantics as `projects.ingestion_status_latest`; existing graph inventory is exposed through top-level `indexed_chunk_count` and `indexed_symbol_count`. Status `syncing` means ingestion is active or a bounded probe timed out under local load; `degraded` is reserved for explicit failed ingestion or degraded search-index state. It omits roots, source text, skipped sensitive content, raw errors, prompts, provider payloads, secrets, credentials, and PII.
 
 ### `projects.impact.analyze`
 
@@ -257,9 +257,9 @@ The tool composes existing local indexed context only. It does not create storag
 
 ### `projects.claims.check`
 
-Input schema: `id`, optional inline `documents`, optional `selected_paths`, and optional known REST/MCP name overrides. Selected paths are limited to stable docs/contracts (`README.md`, `docs/`, `api/`, and `.ai/skills/mivia-mcp/SKILL.md`).
+Input schema: `id`, optional inline `documents`, optional `selected_paths`, optional known REST/MCP name overrides, and optional `include_verified`. Selected paths are limited to stable docs/contracts (`README.md`, `docs/`, `api/`, and `.ai/skills/mivia-mcp/SKILL.md`).
 
-Output: line-level claim findings for registered MCP tool names, registered REST route patterns, and forbidden `.ai/tasks/` links in stable docs. The checker is deterministic and does not use LLM judgment, broad crawling, or document-content echoing.
+Output: summary counts plus actionable line-level claim findings for registered MCP tool names, registered REST route patterns, and forbidden `.ai/tasks/` links in stable docs. Verified findings are omitted by default and counted in `verified_omitted`; pass `include_verified: true` only for audit/debug output. The checker is deterministic and does not use LLM judgment, broad crawling, or document-content echoing.
 
 ### Workspace Tools
 
@@ -311,7 +311,7 @@ Input schema:
 }
 ```
 
-Output: redacted config-derived provider status plus local source/sync metadata when available. Cursor presence may be reported as a boolean, but raw cursors are not returned.
+Output: redacted config-derived provider status plus local source/sync metadata when available. The response separates `coverage`, `sync_state`, `last_run`, and `active_run` so an empty incremental run does not imply zero local corpus coverage. Cursor presence may be reported as a boolean, but raw cursors are not returned.
 
 ### `projects.integrations.counts`
 
@@ -403,12 +403,15 @@ Input schema:
     "id": { "type": "string", "minLength": 1 },
     "key": { "type": "string", "minLength": 1 },
     "max_chunk_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 },
-    "max_chunks": { "type": "integer", "minimum": 1, "maximum": 200 }
+    "max_chunks": { "type": "integer", "minimum": 1, "maximum": 200 },
+    "chunk_offset": { "type": "integer", "minimum": 0 }
   }
 }
 ```
 
-Output: one locally ingested Jira issue artifact and bounded chunks by issue key or ID. Chunk text is capped by `max_chunk_bytes`; returned chunk count defaults to 50 and is capped by `max_chunks`. The tool reads local graph state only.
+Output: one locally ingested Jira issue artifact and bounded chunks by issue key. Chunk text is capped by `max_chunk_bytes`; returned chunk count defaults to 3 and is capped by `max_chunks`. If more chunks are available, `chunks_truncated` is true and `next_chunk_offset` can be passed as `chunk_offset` for the next local page. The tool reads local graph state only.
+
+Recoverable local misses return an MCP tool result with `isError: true` and structured `reason` values: `bad_project_id`, `not_indexed`, `provider_unavailable`, or `bad_argument`. `id` is the Mivia project slug, not a Jira numeric issue ID. A `not_indexed` miss does not prove upstream absence; inspect `projects.integrations.status`, queue an explicit `projects.integrations.poll` only when approved, then check `projects.integrations.poll_status`.
 
 ### `projects.confluence.page.get`
 
@@ -423,12 +426,13 @@ Input schema:
     "id": { "type": "string", "minLength": 1 },
     "page_id": { "type": "string", "minLength": 1 },
     "max_chunk_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 },
-    "max_chunks": { "type": "integer", "minimum": 1, "maximum": 200 }
+    "max_chunks": { "type": "integer", "minimum": 1, "maximum": 200 },
+    "chunk_offset": { "type": "integer", "minimum": 0 }
   }
 }
 ```
 
-Output: one locally ingested Confluence page artifact and bounded chunks by page ID. Chunk text is capped by `max_chunk_bytes`; returned chunk count defaults to 50 and is capped by `max_chunks`. The tool reads local graph state only.
+Output: one locally ingested Confluence page artifact and bounded chunks by page ID. Chunk text is capped by `max_chunk_bytes`; returned chunk count defaults to 3 and is capped by `max_chunks`. If more chunks are available, `chunks_truncated` is true and `next_chunk_offset` can be passed as `chunk_offset` for the next local page. The tool reads local graph state only. Recoverable local misses use the same `isError: true` typed local-only error shape as Jira issue reads.
 
 ### `projects.ingest`
 

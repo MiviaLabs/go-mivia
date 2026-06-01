@@ -410,6 +410,8 @@ func TestContextHealth_ActiveSyncStillReportsGraphInventory(t *testing.T) {
 		latest: RunSummary{
 			ID:             "run-1",
 			Status:         runStatusCompleted,
+			ChunksStored:   2,
+			SymbolsStored:  3,
 			LastProgressAt: testNow.Add(-time.Hour),
 		},
 		eligible: 42,
@@ -431,8 +433,8 @@ func TestContextHealth_ActiveSyncStillReportsGraphInventory(t *testing.T) {
 	if health.LatestRun == nil || health.LatestRun.ID != "run-1" {
 		t.Fatalf("expected active sync to keep latest run context, got %#v", health)
 	}
-	if health.LatestRun.SymbolsStored != 100 || health.LatestRun.ChunksStored != 60 {
-		t.Fatalf("expected latest run summary to carry indexed inventory, got %#v", health.LatestRun)
+	if health.LatestRun.SymbolsStored != 3 || health.LatestRun.ChunksStored != 2 {
+		t.Fatalf("expected latest run summary to keep run delta counts, got %#v", health.LatestRun)
 	}
 }
 

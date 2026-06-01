@@ -1613,6 +1613,7 @@ components:
         status_reason:
           type: string
         latest_run:
+          description: Latest ingestion run summary. chunks_stored and symbols_stored are per-run delta counts, matching latest ingestion run semantics.
           $ref: '#/components/schemas/ContextRunSummary'
         active_run_id:
           type: string
@@ -1620,9 +1621,11 @@ components:
           type: integer
           minimum: 0
         indexed_symbol_count:
+          description: Current indexed symbol inventory for the graph.
           type: integer
           minimum: 0
         indexed_chunk_count:
+          description: Current indexed chunk inventory for the graph.
           type: integer
           minimum: 0
         search_index:
@@ -1650,8 +1653,14 @@ components:
         files_ingested: {type: integer, minimum: 0}
         files_skipped: {type: integer, minimum: 0}
         files_unchanged: {type: integer, minimum: 0}
-        chunks_stored: {type: integer, minimum: 0}
-        symbols_stored: {type: integer, minimum: 0}
+        chunks_stored:
+          type: integer
+          minimum: 0
+          description: Chunks stored by this run only, not total graph inventory.
+        symbols_stored:
+          type: integer
+          minimum: 0
+          description: Symbols stored by this run only, not total graph inventory.
         error_category: {type: string}
         reason_counts:
           type: object
@@ -1847,6 +1856,9 @@ components:
         known_routes:
           type: array
           items: {type: string}
+        include_verified:
+          type: boolean
+          description: Include verified line-level findings. Defaults to false so responses contain actionable findings plus summary counts.
     ClaimDocument:
       type: object
       additionalProperties: false
@@ -1859,14 +1871,37 @@ components:
     ClaimCheckResult:
       type: object
       additionalProperties: false
-      required: [claims]
+      required: [summary, claims, all_verified]
       properties:
         project_id:
           type: string
+        summary:
+          $ref: '#/components/schemas/ClaimCheckSummary'
         claims:
+          description: Actionable findings by default. Verified findings are included only when include_verified is true.
           type: array
           items:
             $ref: '#/components/schemas/ClaimFinding'
+        verified_omitted:
+          type: integer
+          minimum: 0
+          description: Number of verified findings omitted from the concise default response.
+        all_verified:
+          type: boolean
+          description: True when every detected claim is verified and there are no actionable findings.
+    ClaimCheckSummary:
+      type: object
+      additionalProperties: false
+      required: [total, verified, actionable]
+      properties:
+        total: {type: integer, minimum: 0}
+        verified: {type: integer, minimum: 0}
+        actionable: {type: integer, minimum: 0}
+        by_status:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
     ClaimFinding:
       type: object
       additionalProperties: false

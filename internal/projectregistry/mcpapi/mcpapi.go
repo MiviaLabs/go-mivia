@@ -243,11 +243,12 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		return toolResult(pack), err
 	case "projects.claims.check", "projects_claims_check":
 		var input struct {
-			ID            string                             `json:"id"`
-			ProjectID     string                             `json:"project_id,omitempty"`
-			Documents     []projectreliability.ClaimDocument `json:"documents,omitempty"`
-			SelectedPaths []string                           `json:"selected_paths,omitempty"`
-			Meta          json.RawMessage                    `json:"_meta,omitempty"`
+			ID              string                             `json:"id"`
+			ProjectID       string                             `json:"project_id,omitempty"`
+			Documents       []projectreliability.ClaimDocument `json:"documents,omitempty"`
+			SelectedPaths   []string                           `json:"selected_paths,omitempty"`
+			IncludeVerified bool                               `json:"include_verified,omitempty"`
+			Meta            json.RawMessage                    `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid claim check arguments", projectregistry.ErrInvalidInput)
@@ -257,9 +258,10 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			projectID = strings.TrimSpace(input.ProjectID)
 		}
 		claims, err := projectreliability.NewClaimChecker(workspace).Check(ctx, projectreliability.ClaimCheckRequest{
-			ProjectID:     projectID,
-			Documents:     input.Documents,
-			SelectedPaths: input.SelectedPaths,
+			ProjectID:       projectID,
+			Documents:       input.Documents,
+			SelectedPaths:   input.SelectedPaths,
+			IncludeVerified: input.IncludeVerified,
 		})
 		return toolResult(claims), err
 	case "projects.search_index.rebuild", "projects_search_index_rebuild":
@@ -968,9 +970,10 @@ func ingestionToolDefinitions() []map[string]any {
 			"title":       "Check Project Claims",
 			"description": "Check selected docs and contracts for deterministic MCP tool, REST route, and ignored .ai/tasks link claims without returning raw document content.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":             map[string]any{"type": "string", "minLength": 1},
-				"project_id":     map[string]any{"type": "string"},
-				"selected_paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 50},
+				"id":               map[string]any{"type": "string", "minLength": 1},
+				"project_id":       map[string]any{"type": "string"},
+				"include_verified": map[string]any{"type": "boolean", "description": "When true, include verified line-level claims. Defaults to false so output contains only actionable findings plus summary counts."},
+				"selected_paths":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 50},
 				"documents": map[string]any{
 					"type":     "array",
 					"maxItems": 50,

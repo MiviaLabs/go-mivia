@@ -379,6 +379,11 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCResult(w, id, result)
 		return
 	}
+	var integrationToolErr *projectintegrations.IntegrationToolError
+	if errors.As(err, &integrationToolErr) {
+		writeJSONRPCResult(w, id, toolErrorResult(integrationToolErr))
+		return
+	}
 	if errors.Is(err, service.ErrInvalidInput) {
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
@@ -628,6 +633,17 @@ func toolResult(value any) map[string]any {
 		},
 		"structuredContent": value,
 		"isError":           false,
+	}
+}
+
+func toolErrorResult(value any) map[string]any {
+	encoded, _ := json.Marshal(value)
+	return map[string]any{
+		"content": []map[string]string{
+			{"type": "text", "text": string(encoded)},
+		},
+		"structuredContent": value,
+		"isError":           true,
 	}
 }
 

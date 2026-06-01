@@ -134,7 +134,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 - `projects.context_health`: readiness/freshness summary for one configured project using safe config, ingestion, search-index, indexed file/symbol/chunk counts, active/latest run metadata, and workspace-git metadata. A `syncing` response with `indexed_content_available=true` means MCP indexed tools can still be used with the active-sync caveat.
 - `projects.impact.analyze`: deterministic changed-path impact analysis. It may use governed workspace diff file metadata but must not return raw diff content. During active ingestion it may return partial `index_syncing` metadata instead of waiting behind busy graph/search stores.
 - `projects.context_pack.build`: bounded context package from existing indexed search, file metadata, symbol metadata, and optional impact analysis. It does not create storage, call providers, return roots, return raw diffs, or include full chunk text.
-- `projects.claims.check`: deterministic stale-claim check for selected stable docs/contracts. It does not use LLM judgment, broad crawling, or document-content echoing.
+- `projects.claims.check`: deterministic stale-claim check for selected stable docs/contracts. Default output is concise: summary counts plus actionable findings only; pass `include_verified: true` only when a full audit/debug list is needed. It does not use LLM judgment, broad crawling, or document-content echoing.
 - `projects.ingest`: queue bounded content-graph ingestion. Always poll with `projects.ingestion_status`.
 - `projects.search_index.rebuild`: repair degraded local search index only when asked or when degradation blocks the task. Always poll with `projects.ingestion_status`.
 - `projects.ingestion_status`: read one ingestion/rebuild run by `run_id`.
@@ -163,13 +163,13 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 - `projects.workspace.file_edit`: exact token-guarded edit only. Do not use for broad rewrites, generated files, or arbitrary patches.
 - `projects.diagnostics.ingestion`: redacted scheduler/watcher/runtime/storage diagnostics. Use when ingestion/search behavior is suspect; switch to logs only if runtime proof is required.
 - `projects.integrations.list`: discover configured Jira/Confluence providers and redacted config metadata for one project.
-- `projects.integrations.status`: provider sync state, last/active run metadata, polling config, and cursor presence only.
+- `projects.integrations.status`: provider coverage, sync state, last run, active run, polling config, and cursor presence only.
 - `projects.integrations.counts`: total locally ingested item counts by configured provider. Counts are local-store counts, not live provider totals.
 - `projects.integrations.poll`: queue manual local integration polling. This may call Atlassian Cloud in the background using configured credentials; response remains redacted.
 - `projects.integrations.poll_status`: fetch one local poll run by `run_id`.
 - `projects.integrations.search`: search already-ingested local Jira/Confluence chunks only.
-- `projects.jira.issue.get`: read one locally ingested Jira issue by key or ID with bounded chunks.
-- `projects.confluence.page.get`: read one locally ingested Confluence page by page ID with bounded chunks.
+- `projects.jira.issue.get`: read one locally ingested Jira issue by issue key with bounded chunks. Default page is 3 chunks; pass `chunk_offset` from `next_chunk_offset` to continue.
+- `projects.confluence.page.get`: read one locally ingested Confluence page by page ID with bounded chunks. Default page is 3 chunks; pass `chunk_offset` from `next_chunk_offset` to continue.
 
 ## Indexed Metadata Contract
 
@@ -257,6 +257,7 @@ Polling:
 Local graph search/read:
 
 - `projects.integrations.search` searches already-ingested local integration chunks only.
-- `projects.jira.issue.get` reads one locally ingested Jira issue by key or ID.
+- `projects.jira.issue.get` reads one locally ingested Jira issue by issue key.
 - `projects.confluence.page.get` reads one locally ingested Confluence page by page ID.
 - These search/read tools do not call Atlassian and must return only bounded local graph content.
+- A local miss returns a typed MCP tool error such as `not_indexed`; it does not prove upstream absence. For read tools, `id` is the Mivia project slug, not a Jira numeric issue ID.

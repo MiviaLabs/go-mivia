@@ -326,7 +326,7 @@ func TestRichContentGraphStore_GetRichContentItemCapsReturnedChunkCount(t *testi
 	if err != nil {
 		t.Fatalf("get default-capped content: %v", err)
 	}
-	if len(defaultRead.Chunks) != 50 || !defaultRead.ChunksTruncated {
+	if len(defaultRead.Chunks) != 3 || !defaultRead.ChunksTruncated || defaultRead.NextChunkOffset != 3 {
 		t.Fatalf("expected default chunk cap with truncation flag, got len=%d truncated=%t", len(defaultRead.Chunks), defaultRead.ChunksTruncated)
 	}
 	twoChunks, err := store.GetRichContentItem(ctx, "example-service", ProviderConfluence, "20001", RichContentReadOptions{MaxChunks: 2})

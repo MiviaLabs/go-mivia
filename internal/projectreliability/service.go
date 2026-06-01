@@ -188,10 +188,6 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		probeTimedOut = probeTimedOut || errors.Is(err, context.DeadlineExceeded)
 	}
 	health.IndexedContentAvailable = health.EligibleFileCount > 0 || health.IndexedSymbolCount > 0 || health.IndexedChunkCount > 0
-	if health.LatestRun != nil {
-		health.LatestRun.ChunksStored = max(health.LatestRun.ChunksStored, health.IndexedChunkCount)
-		health.LatestRun.SymbolsStored = max(health.LatestRun.SymbolsStored, health.IndexedSymbolCount)
-	}
 
 	searchIndex, err := contextHealthProbe(ctx, svc.probeTimeout, func(probeCtx context.Context) (SearchIndexHealth, error) {
 		return svc.context.SearchIndexHealth(probeCtx, project.ID)

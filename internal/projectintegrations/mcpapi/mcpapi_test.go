@@ -67,7 +67,7 @@ func TestCallToolStatusIncludesSyncMetadataWithoutRawCursor(t *testing.T) {
 		t.Fatalf("integration status: %v", err)
 	}
 	body := mustJSON(t, result)
-	for _, expected := range []string{`"Provider":"jira"`, `"CursorHashPresent":true`, `"Status":"no_op"`, `"EmptyPoll":true`} {
+	for _, expected := range []string{`"Provider":"jira"`, `"CursorHashPresent":true`, `"Status":"no_op"`, `"EmptyPoll":true`, `"coverage"`, `"sync_state"`, `"last_run"`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected %q in status response: %s", expected, body)
 		}
@@ -110,7 +110,7 @@ func TestCallToolStatusIncludesActiveRunMetadata(t *testing.T) {
 		t.Fatalf("integration status: %v", err)
 	}
 	body := mustJSON(t, result)
-	for _, expected := range []string{`"ID":"run-active"`, `"Kind":"initial_full"`, `"Status":"running"`, `"ItemsSeen":4`, `"LastRunID":"run-completed"`} {
+	for _, expected := range []string{`"ID":"run-active"`, `"Kind":"initial_full"`, `"Status":"running"`, `"ItemsSeen":4`, `"LastRunID":"run-completed"`, `"active_run"`, `"last_run"`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected %q in status response: %s", expected, body)
 		}
@@ -263,11 +263,11 @@ func TestCallToolReadsLocalJiraAndConfluenceContent(t *testing.T) {
 	}
 	service := newIntegrationServiceWithRunnerAndRichContent(t, nil, nil, rich)
 
-	result, err := mcpapi.CallTool(context.Background(), service, "projects.jira.issue.get", json.RawMessage(`{"id":"project-1","key":"LOCAL-1","max_chunk_bytes":64}`))
+	result, err := mcpapi.CallTool(context.Background(), service, "projects.jira.issue.get", json.RawMessage(`{"id":"project-1","key":"LOCAL-1","max_chunk_bytes":64,"max_chunks":2,"chunk_offset":3}`))
 	if err != nil {
 		t.Fatalf("read jira content: %v", err)
 	}
-	if rich.readInput.ProjectID != "project-1" || rich.readInput.Provider != projectintegrations.ProviderJira || rich.readInput.ItemIDOrKey != "LOCAL-1" || rich.readInput.MaxChunkBytes != 64 {
+	if rich.readInput.ProjectID != "project-1" || rich.readInput.Provider != projectintegrations.ProviderJira || rich.readInput.ItemIDOrKey != "LOCAL-1" || rich.readInput.MaxChunkBytes != 64 || rich.readInput.MaxChunks != 2 || rich.readInput.ChunkOffset != 3 {
 		t.Fatalf("unexpected jira read input: %#v", rich.readInput)
 	}
 	body := mustJSON(t, result)
@@ -283,6 +283,39 @@ func TestCallToolReadsLocalJiraAndConfluenceContent(t *testing.T) {
 	if rich.readInput.Provider != projectintegrations.ProviderConfluence || rich.readInput.ItemIDOrKey != "20001" {
 		t.Fatalf("unexpected confluence read input: %#v", rich.readInput)
 	}
+}
+
+func TestCallToolReadLocalMissReturnsTypedToolErrorResult(t *testing.T) {
+	rich := &fakeRichContentReader{err: projectintegrations.ErrNotFound}
+	service := newIntegrationServiceWithRunnerAndRichContent(t, nil, nil, rich)
+
+	result, err := mcpapi.CallTool(context.Background(), service, "projects.jira.issue.get", json.RawMessage(`{"id":"project-1","key":"LOCAL-404"}`))
+	if err != nil {
+		t.Fatalf("expected tool error result, got error %v", err)
+	}
+	body := mustJSON(t, result)
+	for _, expected := range []string{`"isError":true`, `"reason":"not_indexed"`, `"project_id":"project-1"`, `"provider":"jira"`, "projects.integrations.status"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in typed miss response: %s", expected, body)
+		}
+	}
+	assertOmits(t, body, append(forbiddenIntegrationStrings(), "exists_upstream", "tenant.atlassian.net", "/home/mac")...)
+}
+
+func TestCallToolReadBadIDGuidesProjectSlug(t *testing.T) {
+	service := newIntegrationServiceWithRunnerAndRichContent(t, nil, nil, &fakeRichContentReader{})
+
+	result, err := mcpapi.CallTool(context.Background(), service, "projects.jira.issue.get", json.RawMessage(`{"id":"10001","key":"LOCAL-1"}`))
+	if err != nil {
+		t.Fatalf("expected tool error result, got error %v", err)
+	}
+	body := mustJSON(t, result)
+	for _, expected := range []string{`"isError":true`, `"reason":"bad_project_id"`, "Mivia project slug", "projects.list"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected %q in bad id response: %s", expected, body)
+		}
+	}
+	assertOmits(t, body, forbiddenIntegrationStrings()...)
 }
 
 func TestCallToolMissingErrorsAreStableAndRedacted(t *testing.T) {
@@ -472,6 +505,8 @@ func (reader *fakeRichContentReader) GetRichContentItem(_ context.Context, proje
 		Provider:      provider,
 		ItemIDOrKey:   itemIDOrKey,
 		MaxChunkBytes: options.MaxChunkBytes,
+		MaxChunks:     options.MaxChunks,
+		ChunkOffset:   options.ChunkOffset,
 	}
 	if reader.err != nil {
 		return projectintegrations.RichContentReadResult{}, reader.err

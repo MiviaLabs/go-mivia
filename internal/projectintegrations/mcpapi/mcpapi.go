@@ -75,12 +75,13 @@ func ToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.jira.issue.get",
 			"title":       "Read Local Jira Issue Content",
-			"description": "Read one locally ingested Jira issue by key or ID. Does not call Jira or resolve credentials.",
+			"description": "Read one locally ingested Jira issue by issue key. Does not call Jira or resolve credentials.",
 			"inputSchema": objectSchema(map[string]any{
 				"id":              map[string]any{"type": "string", "minLength": 1},
 				"key":             map[string]any{"type": "string", "minLength": 1},
 				"max_chunk_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 16384},
 				"max_chunks":      map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
+				"chunk_offset":    map[string]any{"type": "integer", "minimum": 0},
 			}, []string{"id", "key"}),
 		},
 		{
@@ -92,6 +93,7 @@ func ToolDefinitions() []map[string]any {
 				"page_id":         map[string]any{"type": "string", "minLength": 1},
 				"max_chunk_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 16384},
 				"max_chunks":      map[string]any{"type": "integer", "minimum": 1, "maximum": 200},
+				"chunk_offset":    map[string]any{"type": "integer", "minimum": 0},
 			}, []string{"id", "page_id"}),
 		},
 	}
@@ -99,7 +101,14 @@ func ToolDefinitions() []map[string]any {
 
 func CallTool(ctx context.Context, service *projectintegrations.Service, name string, arguments json.RawMessage) (map[string]any, error) {
 	if service == nil {
-		return nil, fmt.Errorf("%w: integration service is not configured", projectintegrations.ErrNotFound)
+		return integrationToolErrorResult(&projectintegrations.IntegrationToolError{
+			Code:   "integration_service_unavailable",
+			Reason: projectintegrations.ToolErrorReasonProviderUnavailable,
+			Remediation: []string{
+				"Project integration service is not configured for this local server.",
+				"Use projects.list and projects.integrations.list/status on a server with local integrations enabled.",
+			},
+		})
 	}
 	switch name {
 	case "projects.integrations.list", "projects_integrations_list":
@@ -203,6 +212,7 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			Key           string          `json:"key"`
 			MaxChunkBytes int             `json:"max_chunk_bytes,omitempty"`
 			MaxChunks     int             `json:"max_chunks,omitempty"`
+			ChunkOffset   int             `json:"chunk_offset,omitempty"`
 			Meta          json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -214,9 +224,10 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			ItemIDOrKey:   strings.TrimSpace(input.Key),
 			MaxChunkBytes: input.MaxChunkBytes,
 			MaxChunks:     input.MaxChunks,
+			ChunkOffset:   input.ChunkOffset,
 		})
 		if err != nil {
-			return nil, err
+			return integrationToolErrorResult(err)
 		}
 		return toolResult(result), nil
 	case "projects.confluence.page.get", "projects_confluence_page_get":
@@ -225,6 +236,7 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			PageID        string          `json:"page_id"`
 			MaxChunkBytes int             `json:"max_chunk_bytes,omitempty"`
 			MaxChunks     int             `json:"max_chunks,omitempty"`
+			ChunkOffset   int             `json:"chunk_offset,omitempty"`
 			Meta          json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -236,9 +248,10 @@ func CallTool(ctx context.Context, service *projectintegrations.Service, name st
 			ItemIDOrKey:   strings.TrimSpace(input.PageID),
 			MaxChunkBytes: input.MaxChunkBytes,
 			MaxChunks:     input.MaxChunks,
+			ChunkOffset:   input.ChunkOffset,
 		})
 		if err != nil {
-			return nil, err
+			return integrationToolErrorResult(err)
 		}
 		return toolResult(result), nil
 	default:
@@ -264,6 +277,21 @@ func toolResult(value any) map[string]any {
 		"structuredContent": value,
 		"isError":           false,
 	}
+}
+
+func integrationToolErrorResult(err error) (map[string]any, error) {
+	var toolErr *projectintegrations.IntegrationToolError
+	if !errors.As(err, &toolErr) {
+		return nil, err
+	}
+	encoded, _ := json.Marshal(toolErr)
+	return map[string]any{
+		"content": []map[string]string{
+			{"type": "text", "text": string(encoded)},
+		},
+		"structuredContent": toolErr,
+		"isError":           true,
+	}, nil
 }
 
 func decodeRaw(raw json.RawMessage, dst any) error {

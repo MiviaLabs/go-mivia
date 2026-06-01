@@ -86,6 +86,17 @@ type ProviderStatus struct {
 	SourceAllowlistCount int
 	SyncState            *SyncStateStatus
 	LastRun              *SyncRunStatusView
+	Coverage             ProviderCoverage   `json:"coverage"`
+	SyncStateSplit       *SyncStateStatus   `json:"sync_state,omitempty"`
+	LastRunSplit         *SyncRunStatusView `json:"last_run,omitempty"`
+	ActiveRun            *SyncRunStatusView `json:"active_run,omitempty"`
+}
+
+type ProviderCoverage struct {
+	LocalItemCount       int  `json:"local_item_count"`
+	LocalItemCountKnown  bool `json:"local_item_count_known"`
+	SourcePersisted      bool `json:"source_persisted"`
+	SourceAllowlistCount int  `json:"source_allowlist_count"`
 }
 
 type SyncStateStatus struct {
@@ -158,6 +169,7 @@ type LocalReadInput struct {
 	ItemIDOrKey   string
 	MaxChunkBytes int
 	MaxChunks     int
+	ChunkOffset   int
 }
 
 func NewService(projects []config.Project, store Store) (*Service, error) {
@@ -425,22 +437,40 @@ func (service *Service) ReadLocalContent(ctx context.Context, input LocalReadInp
 		return RichContentReadResult{}, fmt.Errorf("%w: service is nil", ErrInvalidInput)
 	}
 	if service.richContent == nil {
-		return RichContentReadResult{}, fmt.Errorf("%w: integration rich content unavailable", ErrNotFound)
+		return RichContentReadResult{}, providerUnavailableToolError(input.ProjectID, input.Provider)
 	}
 	project, err := service.project(input.ProjectID)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return RichContentReadResult{}, badProjectIDToolError(input.ProjectID, input.Provider)
+		}
 		return RichContentReadResult{}, err
 	}
-	if strings.TrimSpace(input.ItemIDOrKey) == "" {
-		return RichContentReadResult{}, ErrInvalidInput
+	input.ItemIDOrKey = strings.TrimSpace(input.ItemIDOrKey)
+	if input.ItemIDOrKey == "" || input.ChunkOffset < 0 {
+		return RichContentReadResult{}, badArgumentToolError(project.ID, input.Provider, input.ItemIDOrKey)
+	}
+	if input.Provider == ProviderJira && !isJiraIssueKey(input.ItemIDOrKey) {
+		return RichContentReadResult{}, badArgumentToolError(project.ID, input.Provider, input.ItemIDOrKey)
 	}
 	if _, err := providerStatusConfig(project, input.Provider); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return RichContentReadResult{}, providerUnavailableToolError(project.ID, input.Provider)
+		}
 		return RichContentReadResult{}, err
 	}
-	return service.richContent.GetRichContentItem(ctx, project.ID, input.Provider, input.ItemIDOrKey, RichContentReadOptions{
+	result, err := service.richContent.GetRichContentItem(ctx, project.ID, input.Provider, input.ItemIDOrKey, RichContentReadOptions{
 		MaxChunkBytes: input.MaxChunkBytes,
 		MaxChunks:     input.MaxChunks,
+		ChunkOffset:   input.ChunkOffset,
 	})
+	if errors.Is(err, ErrNotFound) {
+		return RichContentReadResult{}, notIndexedToolError(project.ID, input.Provider, input.ItemIDOrKey)
+	}
+	if errors.Is(err, ErrInvalidInput) {
+		return RichContentReadResult{}, badArgumentToolError(project.ID, input.Provider, input.ItemIDOrKey)
+	}
+	return result, err
 }
 
 func (service *Service) project(projectID string) (config.Project, error) {
@@ -463,14 +493,24 @@ func (status *ProviderStatus) addStoredMetadata(ctx context.Context, store Store
 		if source.Provider == status.Provider {
 			status.SourcePersisted = true
 			status.SourceAllowlistCount = source.AllowlistCount
+			status.Coverage.SourcePersisted = true
+			status.Coverage.SourceAllowlistCount = source.AllowlistCount
 			break
 		}
+	}
+	if countStore, ok := store.(ItemCountStore); ok {
+		count, err := countStore.CountItems(ctx, status.ProjectID, status.Provider)
+		if err != nil {
+			return err
+		}
+		status.Coverage.LocalItemCount = count
+		status.Coverage.LocalItemCountKnown = true
 	}
 	if activeStore, ok := store.(ActiveSyncRunStore); ok {
 		run, err := activeStore.GetActiveSyncRun(ctx, status.ProjectID, status.Provider)
 		if err == nil {
 			runStatus := syncRunStatusView(run)
-			status.LastRun = &runStatus
+			status.ActiveRun = &runStatus
 		} else if !errors.Is(err, ErrNotFound) {
 			return err
 		}
@@ -484,10 +524,8 @@ func (status *ProviderStatus) addStoredMetadata(ctx context.Context, store Store
 	}
 	stateStatus := syncStateStatus(state)
 	status.SyncState = &stateStatus
+	status.SyncStateSplit = &stateStatus
 	if state.LastRunID == "" {
-		return nil
-	}
-	if status.LastRun != nil {
 		return nil
 	}
 	run, err := store.GetSyncRun(ctx, status.ProjectID, status.Provider, state.LastRunID)
@@ -498,8 +536,93 @@ func (status *ProviderStatus) addStoredMetadata(ctx context.Context, store Store
 		return err
 	}
 	runStatus := syncRunStatusView(run)
-	status.LastRun = &runStatus
+	status.LastRunSplit = &runStatus
+	if status.LastRun == nil {
+		status.LastRun = &runStatus
+	}
 	return nil
+}
+
+func isJiraIssueKey(value string) bool {
+	dash := strings.LastIndex(value, "-")
+	if dash <= 0 || dash == len(value)-1 {
+		return false
+	}
+	for index, char := range value[:dash] {
+		if index == 0 && (char < 'A' || char > 'Z') {
+			return false
+		}
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	for index, char := range value[dash+1:] {
+		if char < '0' || char > '9' {
+			return false
+		}
+		if index == 0 && char == '0' {
+			return false
+		}
+	}
+	return true
+}
+
+func badProjectIDToolError(projectID string, provider Provider) *IntegrationToolError {
+	return &IntegrationToolError{
+		Code:      "integration_local_read_miss",
+		Reason:    ToolErrorReasonBadProjectID,
+		ProjectID: strings.TrimSpace(projectID),
+		Provider:  provider,
+		Remediation: []string{
+			"id is the Mivia project slug, not a Jira numeric issue ID.",
+			"Call projects.list and retry with the returned project id.",
+		},
+	}
+}
+
+func notIndexedToolError(projectID string, provider Provider, key string) *IntegrationToolError {
+	return &IntegrationToolError{
+		Code:      "integration_local_read_miss",
+		Reason:    ToolErrorReasonNotIndexed,
+		ProjectID: projectID,
+		Provider:  provider,
+		Key:       key,
+		Remediation: []string{
+			"This read is local-indexed only and does not check upstream existence.",
+			"Inspect projects.integrations.status, queue projects.integrations.poll if explicitly approved, then check projects.integrations.poll_status.",
+		},
+	}
+}
+
+func providerUnavailableToolError(projectID string, provider Provider) *IntegrationToolError {
+	return &IntegrationToolError{
+		Code:      "integration_local_read_miss",
+		Reason:    ToolErrorReasonProviderUnavailable,
+		ProjectID: strings.TrimSpace(projectID),
+		Provider:  provider,
+		Remediation: []string{
+			"Confirm the project has this provider configured and local integration storage is available.",
+			"Call projects.integrations.status after correcting configuration.",
+		},
+	}
+}
+
+func badArgumentToolError(projectID string, provider Provider, key string) *IntegrationToolError {
+	keyGuidance := "Use a Jira issue key like PROJECT-123 for projects.jira.issue.get."
+	if provider == ProviderConfluence {
+		keyGuidance = "Use a Confluence page id for projects.confluence.page.get."
+	}
+	return &IntegrationToolError{
+		Code:      "integration_bad_argument",
+		Reason:    ToolErrorReasonBadArgument,
+		ProjectID: strings.TrimSpace(projectID),
+		Provider:  provider,
+		Key:       strings.TrimSpace(key),
+		Remediation: []string{
+			"id is the Mivia project slug, not a Jira numeric issue ID.",
+			keyGuidance,
+		},
+	}
 }
 
 func syncStateStatus(state SyncState) SyncStateStatus {

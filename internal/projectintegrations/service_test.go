@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
+	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 )
 
 func TestService_ListProvidersIncludesConfiguredJiraAndConfluence(t *testing.T) {
@@ -315,8 +317,14 @@ func TestService_StatusIncludesSyncStateAndLastRunWithoutRawCursor(t *testing.T)
 	if status.SyncState == nil || !status.SyncState.CursorHashPresent || status.SyncState.EmptyPollCount != 1 {
 		t.Fatalf("unexpected sync state: %#v", status.SyncState)
 	}
+	if status.SyncStateSplit == nil || status.SyncStateSplit.LastRunID != "run-1" {
+		t.Fatalf("expected split sync_state, got %#v", status.SyncStateSplit)
+	}
 	if status.LastRun == nil || status.LastRun.Status != SyncRunStatusNoOp || !status.LastRun.EmptyPoll {
 		t.Fatalf("unexpected last run: %#v", status.LastRun)
+	}
+	if status.LastRunSplit == nil || status.LastRunSplit.ID != "run-1" {
+		t.Fatalf("expected split last_run, got %#v", status.LastRunSplit)
 	}
 	assertOmits(t, mustJSON(t, status), "raw-provider-cursor-token", "sha256:")
 }
@@ -368,13 +376,96 @@ func TestService_StatusPrefersActiveRunOverLastCompletedState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if status.LastRun == nil || status.LastRun.ID != active.ID || status.LastRun.Status != SyncRunStatusRunning || status.LastRun.ItemsSeen != 3 {
-		t.Fatalf("expected active run status, got %#v", status.LastRun)
+	if status.LastRun == nil || status.LastRun.ID != completed.ID || status.LastRun.Status != SyncRunStatusCompleted {
+		t.Fatalf("expected compatibility last run to remain latest completed state, got %#v", status.LastRun)
+	}
+	if status.ActiveRun == nil || status.ActiveRun.ID != active.ID {
+		t.Fatalf("expected split active_run status, got %#v", status.ActiveRun)
+	}
+	if status.LastRunSplit == nil || status.LastRunSplit.ID != completed.ID {
+		t.Fatalf("expected split last_run to remain latest completed state, got %#v", status.LastRunSplit)
 	}
 	if status.SyncState == nil || status.SyncState.LastRunID != completed.ID || !status.SyncState.CursorHashPresent {
 		t.Fatalf("expected prior completed sync state to remain visible, got %#v", status.SyncState)
 	}
 	assertOmits(t, mustJSON(t, status), "raw-provider-cursor-token", "sha256:", "tenant.atlassian.net", "ACME", "/home/mac")
+}
+
+func TestService_StatusIncludesCoverageSeparateFromRunDeltas(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t)
+	service := newTestService(t, store, testIntegrationProject())
+	if _, err := service.UpsertConfiguredSources(ctx, "project-1"); err != nil {
+		t.Fatalf("upsert sources: %v", err)
+	}
+	if _, err := store.UpsertItem(ctx, ItemMetadataInput{ProjectID: "project-1", Provider: ProviderJira, ItemID: "10001", ItemKey: "LOCAL-1", ItemType: "Task", ItemUpdatedAt: testTime()}); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+	run := SyncRun{ID: "run-empty", ProjectID: "project-1", Provider: ProviderJira, Kind: SyncKindIncremental, Status: SyncRunStatusNoOp, EmptyPoll: true}
+	if err := store.CreateSyncRun(ctx, run); err != nil {
+		t.Fatalf("create sync run: %v", err)
+	}
+	if _, err := store.UpdateSyncState(ctx, SyncStateInput{ProjectID: "project-1", Provider: ProviderJira, LastRunID: run.ID, UpdatedAt: testTime()}); err != nil {
+		t.Fatalf("update sync state: %v", err)
+	}
+
+	status, err := service.Status(ctx, "project-1", ProviderJira)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !status.Coverage.LocalItemCountKnown || status.Coverage.LocalItemCount != 1 {
+		t.Fatalf("expected corpus coverage independent of empty run, got %#v", status.Coverage)
+	}
+	if status.LastRunSplit == nil || !status.LastRunSplit.EmptyPoll {
+		t.Fatalf("expected empty last run metadata, got %#v", status.LastRunSplit)
+	}
+}
+
+func TestService_ReadLocalContentReturnsTypedLocalMisses(t *testing.T) {
+	service := newTestServiceWithOptions(t, nil, ServiceOptions{RichContent: &fakeRichContentReader{err: ErrNotFound}}, testIntegrationProject())
+
+	_, err := service.ReadLocalContent(context.Background(), LocalReadInput{ProjectID: "project-1", Provider: ProviderJira, ItemIDOrKey: "LOCAL-1"})
+	var toolErr *IntegrationToolError
+	if !errors.As(err, &toolErr) || toolErr.Reason != ToolErrorReasonNotIndexed {
+		t.Fatalf("expected typed not_indexed error, got %#v", err)
+	}
+	if !strings.Contains(strings.Join(toolErr.Remediation, " "), "local-indexed only") {
+		t.Fatalf("expected local-only remediation, got %#v", toolErr.Remediation)
+	}
+
+	_, err = service.ReadLocalContent(context.Background(), LocalReadInput{ProjectID: "10001", Provider: ProviderJira, ItemIDOrKey: "LOCAL-1"})
+	if !errors.As(err, &toolErr) || toolErr.Reason != ToolErrorReasonBadProjectID {
+		t.Fatalf("expected bad_project_id error, got %#v", err)
+	}
+
+	assertOmits(t, mustJSON(t, toolErr), "tenant.atlassian.net", "ACME", "MIVIA_ATLASSIAN", "/home/mac")
+}
+
+func TestRichContentReadChunksDefaultLimitAndContinuation(t *testing.T) {
+	nodes := []ladybug.Node{
+		testChunkNode("chunk-0", 0, strings.Repeat("a", 3000)),
+		testChunkNode("chunk-1", 1, "bravo"),
+		testChunkNode("chunk-2", 2, "charlie"),
+		testChunkNode("chunk-3", 3, "delta"),
+	}
+
+	chunks, truncated, nextOffset, err := chunksFromNodes(nodes, 0, 0, 0)
+	if err != nil {
+		t.Fatalf("chunks from nodes: %v", err)
+	}
+	if len(chunks) != 3 || !truncated || nextOffset != 3 {
+		t.Fatalf("expected default 3 chunk page and continuation, got len=%d truncated=%v next=%d", len(chunks), truncated, nextOffset)
+	}
+	if len([]byte(chunks[0].Text)) > 2048 {
+		t.Fatalf("expected default chunk byte cap, got %d", len([]byte(chunks[0].Text)))
+	}
+	chunks, truncated, nextOffset, err = chunksFromNodes(nodes, 0, 0, nextOffset)
+	if err != nil {
+		t.Fatalf("chunks from next page: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].Index != 3 || truncated || nextOffset != 0 {
+		t.Fatalf("unexpected continuation page: %#v truncated=%v next=%d", chunks, truncated, nextOffset)
+	}
 }
 
 func TestService_MissingProjectAndProviderErrorsAreStableAndRedacted(t *testing.T) {
@@ -521,5 +612,38 @@ func assertOmits(t *testing.T, value string, forbidden ...string) {
 		if raw != "" && strings.Contains(value, raw) {
 			t.Fatalf("value leaked %q: %s", raw, value)
 		}
+	}
+}
+
+type fakeRichContentReader struct {
+	err error
+}
+
+func (reader *fakeRichContentReader) GetRichContentItem(context.Context, string, Provider, string, RichContentReadOptions) (RichContentReadResult, error) {
+	return RichContentReadResult{}, reader.err
+}
+
+func (reader *fakeRichContentReader) SearchRichContent(context.Context, string, RichContentSearchOptions) ([]RichContentSearchResult, error) {
+	return nil, reader.err
+}
+
+func testChunkNode(id string, index int, text string) ladybug.Node {
+	return ladybug.Node{
+		Label: "IntegrationContentChunk",
+		ID:    id,
+		Properties: map[string]string{
+			"artifact_id": id + "-artifact",
+			"project_id":  "project-1",
+			"provider":    string(ProviderJira),
+			"item_id":     "10001",
+			"item_key":    "LOCAL-1",
+			"item_type":   "Task",
+			"field_name":  "summary",
+			"label":       "summary",
+			"chunk_index": fmt.Sprintf("%d", index),
+			"byte_start":  "0",
+			"byte_end":    fmt.Sprintf("%d", len(text)),
+			"text":        text,
+		},
 	}
 }
