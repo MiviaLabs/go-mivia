@@ -521,6 +521,9 @@ func (store *GraphStore) ListSymbols(ctx context.Context, project projectregistr
 		}
 		symbols = append(symbols, symbol)
 	}
+	if err := store.attachSymbolFileMetadata(ctx, project, symbols); err != nil {
+		return SymbolList{}, err
+	}
 	return SymbolList{Symbols: symbols, NextPageToken: nextToken}, nil
 }
 
@@ -820,7 +823,15 @@ func (store *GraphStore) GetSymbol(ctx context.Context, project projectregistry.
 	if node.Properties["project_id"] != project.ID {
 		return SymbolMetadata{}, ErrIngestionNotFound
 	}
-	return symbolMetadataFromNode(node)
+	symbol, err := symbolMetadataFromNode(node)
+	if err != nil {
+		return SymbolMetadata{}, err
+	}
+	symbols := []SymbolMetadata{symbol}
+	if err := store.attachSymbolFileMetadata(ctx, project, symbols); err != nil {
+		return SymbolMetadata{}, err
+	}
+	return symbols[0], nil
 }
 
 func (store *GraphStore) GetSymbolSource(ctx context.Context, project projectregistry.Project, symbolID string, maxSourceBytes int) (SymbolSource, error) {
@@ -1054,6 +1065,9 @@ func (store *GraphStore) GetSymbolCallGraph(ctx context.Context, project project
 	for _, node := range nodes {
 		nodeList = append(nodeList, node)
 	}
+	if err := store.attachSymbolFileMetadata(ctx, project, nodeList); err != nil {
+		return SymbolCallGraph{}, err
+	}
 	sort.Slice(nodeList, func(i, j int) bool {
 		if nodeList[i].Name == nodeList[j].Name {
 			return nodeList[i].ID < nodeList[j].ID
@@ -1066,6 +1080,31 @@ func (store *GraphStore) GetSymbolCallGraph(ctx context.Context, project project
 	}
 	sort.Slice(edgeList, func(i, j int) bool { return edgeList[i].ID < edgeList[j].ID })
 	return SymbolCallGraph{Symbol: root, Direction: options.Direction, MaxDepth: options.MaxDepth, MaxNodes: options.MaxNodes, Nodes: nodeList, Edges: edgeList, Truncated: truncated}, nil
+}
+
+func (store *GraphStore) attachSymbolFileMetadata(ctx context.Context, project projectregistry.Project, symbols []SymbolMetadata) error {
+	files := make(map[string]FileMetadata)
+	for i := range symbols {
+		fileID := symbols[i].FileID
+		if strings.TrimSpace(fileID) == "" {
+			continue
+		}
+		file, ok := files[fileID]
+		if !ok {
+			metadata, err := store.GetFile(ctx, project, fileID)
+			if errors.Is(err, ErrIngestionNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			file = metadata
+			files[fileID] = file
+		}
+		symbols[i].RelativePath = file.RelativePath
+		symbols[i].Extension = file.Extension
+	}
+	return nil
 }
 
 func (store *GraphStore) putReferences(ctx context.Context, projectID string, repoFileID string, versionID string, chunks []Chunk, references []Reference, symbols symbolIndex) error {

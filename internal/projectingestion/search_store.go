@@ -1103,7 +1103,7 @@ func (store *SQLiteStore) SearchSymbols(ctx context.Context, project projectregi
 		args = append(args, match)
 	}
 	rows, err := store.db.QueryContext(ctx, `SELECT
-		symbol_id, file_id, kind, name, package, import_path, receiver, start_line, end_line, start_byte, end_byte, start_column, end_column
+		symbol_id, file_id, relative_path, extension, kind, name, package, import_path, receiver, start_line, end_line, start_byte, end_byte, start_column, end_column
 		FROM project_search_symbols_fts
 		WHERE `+strings.Join(where, " AND "), args...)
 	if err != nil {
@@ -1114,7 +1114,7 @@ func (store *SQLiteStore) SearchSymbols(ctx context.Context, project projectregi
 	for rows.Next() {
 		var symbol SymbolMetadata
 		var startLine, endLine, startByte, endByte, startColumn, endColumn string
-		if err := rows.Scan(&symbol.ID, &symbol.FileID, &symbol.Kind, &symbol.Name, &symbol.PackageName, &symbol.ImportPath, &symbol.Receiver, &startLine, &endLine, &startByte, &endByte, &startColumn, &endColumn); err != nil {
+		if err := rows.Scan(&symbol.ID, &symbol.FileID, &symbol.RelativePath, &symbol.Extension, &symbol.Kind, &symbol.Name, &symbol.PackageName, &symbol.ImportPath, &symbol.Receiver, &startLine, &endLine, &startByte, &endByte, &startColumn, &endColumn); err != nil {
 			return SymbolList{}, sanitizeSearchError(err)
 		}
 		if filter.NamePrefix != "" && !strings.HasPrefix(symbol.Name, filter.NamePrefix) {

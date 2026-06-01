@@ -283,6 +283,94 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 	}
 }
 
+func TestProjectDashboardSummary_SymbolModulesUseSafeMetadataFallback(t *testing.T) {
+	mux, projectID, root := newIngestionMuxWithFiles(t, map[string]string{
+		"cmd/main.go":       "package main\n\nfunc Run() {}\n",
+		"src/app.py":        "def run():\n    return 1\n",
+		"web/app.js":        "function run() { return 1 }\n",
+		"web/app.jsx":       "function App() { return <div /> }\n",
+		"web/app.ts":        "function run(): number { return 1 }\n",
+		"web/app.tsx":       "function App(): JSX.Element { return <div /> }\n",
+		"services/App.cs":   "namespace Demo { class App { void Run() {} } }\n",
+		"mobile/app.dart":   "class Home { Widget build(BuildContext context) { return Container(); } }\n",
+		"config/app.yaml":   "service:\n  enabled: true\n",
+		"docker/Dockerfile": "FROM alpine AS runtime\n",
+	}, []string{"**/*.go", "**/*.py", "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.cs", "**/*.dart", "**/*.yaml", "**/Dockerfile"})
+
+	created := httptest.NewRecorder()
+	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/ingestion-runs", nil))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", created.Code, created.Body.String())
+	}
+	var run projectingestion.RunMetadata
+	if err := json.Unmarshal(created.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	waitIngestionRun(t, mux, projectID, run.ID)
+
+	dashboard := httptest.NewRecorder()
+	mux.ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/dashboard-summary", nil))
+	if dashboard.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", dashboard.Code, dashboard.Body.String())
+	}
+	body := dashboard.Body.String()
+	assertDoesNotLeak(t, body, root, "def run", "function run", "namespace Demo", "content_sha256", "root_path")
+	if !strings.Contains(body, `"by_package"`) || !strings.Contains(body, `"by_module"`) {
+		t.Fatalf("expected package and module symbol concentration, got %s", body)
+	}
+	if !strings.Contains(body, `"by_language"`) {
+		t.Fatalf("expected symbol language distribution, got %s", body)
+	}
+	if strings.Contains(body, "unmapped file") {
+		t.Fatalf("dashboard summary should not fall back to unmapped file when symbol file metadata is available: %s", body)
+	}
+
+	var summary struct {
+		Graph struct {
+			Symbols struct {
+				ByModule []struct {
+					Key   string `json:"key"`
+					Count int    `json:"count"`
+				} `json:"by_module"`
+				ByLanguage []struct {
+					Key   string `json:"key"`
+					Count int    `json:"count"`
+				} `json:"by_language"`
+			} `json:"symbols"`
+		} `json:"graph"`
+	}
+	if err := json.Unmarshal(dashboard.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("decode dashboard summary: %v", err)
+	}
+	hasPathFallback := false
+	for _, item := range summary.Graph.Symbols.ByModule {
+		if (item.Key == "src" || item.Key == "web" || item.Key == "services" || item.Key == "mobile" || item.Key == "config" || item.Key == "docker") && item.Count > 0 {
+			hasPathFallback = true
+			break
+		}
+	}
+	if !hasPathFallback {
+		t.Fatalf("expected safe path module fallback for symbols without package metadata: %#v", summary.Graph.Symbols.ByModule)
+	}
+	for _, item := range summary.Graph.Symbols.ByModule {
+		if strings.HasPrefix(item.Key, "file:") {
+			t.Fatalf("module concentration should not expose opaque file IDs when safe path metadata is available: %#v", summary.Graph.Symbols.ByModule)
+		}
+	}
+	for _, language := range []string{"Go", "Python", "JavaScript", "JSX", "TypeScript", "TSX", "C#", "Dart", "YAML", "Dockerfile"} {
+		found := false
+		for _, item := range summary.Graph.Symbols.ByLanguage {
+			if item.Key == language && item.Count > 0 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected language %q in symbol language distribution: %#v", language, summary.Graph.Symbols.ByLanguage)
+		}
+	}
+}
+
 func TestProjectIngestionRoutes_SubmitsAsyncWithoutWaitingForScan(t *testing.T) {
 	registry, digest := newRegistryDigest(t)
 	runner := newBlockingAsyncRunner()

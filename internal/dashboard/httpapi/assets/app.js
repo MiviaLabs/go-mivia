@@ -224,7 +224,8 @@ function renderOperationalVisualsSection(project, health, latest, graph, dashboa
     <div class="split-grid">
       ${renderIngestionFlowVisual(project, health, latest, graph)}
       ${renderGraphCompositionVisual(health, graph)}
-      ${renderPackageConcentrationVisual(graph?.symbols?.by_package)}
+      ${renderSymbolConcentrationVisual(graph?.symbols)}
+      ${countBlock("Symbols by language", graph?.symbols?.by_language, { bars: true })}
       ${renderWorkspaceDirtyVisual(dashboard?.workspace)}
       ${renderIntegrationProviderVisual(project, dashboard?.integrations)}
     </div>
@@ -238,7 +239,8 @@ function renderGraphStatsSection(graph) {
     <div class="split-grid">
       ${countBlock("Files by extension", graph?.files?.by_extension, { bars: true })}
       ${countBlock("Symbols by kind", graph?.symbols?.by_kind, { bars: true })}
-      ${countBlock("Top packages", graph?.symbols?.by_package, { bars: true })}
+      ${symbolConcentrationBlock(graph?.symbols)}
+      ${countBlock("Symbols by language", graph?.symbols?.by_language, { bars: true })}
       ${countBlock("Headings by level", graph?.headings?.by_level, { bars: true })}
     </div>
   `);
@@ -354,22 +356,65 @@ function renderGraphCompositionVisual(health, graph) {
   `;
 }
 
-function renderPackageConcentrationVisual(items) {
-  const values = normalizeCounts(items).slice(0, 8);
-  if (!values.length) return `<div><h3>Package concentration</h3><p class="empty">No package data.</p></div>`;
+function renderSymbolConcentrationVisual(symbols) {
+  const source = symbolConcentrationSource(symbols);
+  const values = normalizeCounts(source.items).slice(0, 8);
+  if (!values.length) return `<div><h3>Symbol concentration</h3><p class="empty">No package, module, or path-bucket data.</p></div>`;
   const total = values.reduce((sum, item) => sum + item.count, 0);
   const leader = values[0];
   return `
     <div>
-      <h3>Package concentration</h3>
+      <h3>${escapeHTML(source.title)}</h3>
       <div class="metric" style="min-height:auto; margin-bottom:8px; box-shadow:none;">
-        <span>Top package share</span>
+        <span>${escapeHTML(source.leaderLabel)}</span>
         <strong>${percent(leader.count, total)}</strong>
         <small>${escapeHTML(leader.key)} / ${numberValue(total)} sampled symbols</small>
       </div>
       ${distributionBars(values)}
     </div>
   `;
+}
+
+function symbolConcentrationSource(symbols) {
+  if (!symbols || typeof symbols !== "object") {
+    return {
+      title: "Symbol concentration",
+      leaderLabel: "Top symbol bucket share",
+      items: [],
+    };
+  }
+  if (normalizeCounts(symbols.by_module).length) {
+    return {
+      title: "Module concentration",
+      leaderLabel: "Top module share",
+      items: symbols.by_module,
+    };
+  }
+  if (normalizeCounts(symbols.by_package).length) {
+    return {
+      title: "Package concentration",
+      leaderLabel: "Top package share",
+      items: symbols.by_package,
+    };
+  }
+  const pathBuckets = symbols.by_path_bucket || symbols.by_path || symbols.by_directory;
+  if (normalizeCounts(pathBuckets).length) {
+    return {
+      title: "Path bucket concentration",
+      leaderLabel: "Top path bucket share",
+      items: pathBuckets,
+    };
+  }
+  return {
+    title: "Symbol concentration",
+    leaderLabel: "Top symbol bucket share",
+    items: [],
+  };
+}
+
+function symbolConcentrationBlock(symbols) {
+  const source = symbolConcentrationSource(symbols);
+  return countBlock(source.title, source.items, { bars: true });
 }
 
 function renderWorkspaceDirtyVisual(workspace) {

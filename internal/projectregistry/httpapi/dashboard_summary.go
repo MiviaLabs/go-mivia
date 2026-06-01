@@ -58,6 +58,8 @@ type dashboardSymbolSummary struct {
 	SampleTruncated bool             `json:"sample_truncated"`
 	ByKind          []dashboardCount `json:"by_kind"`
 	ByPackage       []dashboardCount `json:"by_package,omitempty"`
+	ByModule        []dashboardCount `json:"by_module,omitempty"`
+	ByLanguage      []dashboardCount `json:"by_language,omitempty"`
 	Sample          []symbolSample   `json:"sample,omitempty"`
 }
 
@@ -103,10 +105,12 @@ type fileSample struct {
 }
 
 type symbolSample struct {
-	Name        string `json:"name,omitempty"`
-	Kind        string `json:"kind,omitempty"`
-	PackageName string `json:"package,omitempty"`
-	FileID      string `json:"file_id,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	PackageName  string `json:"package,omitempty"`
+	RelativePath string `json:"relative_path,omitempty"`
+	Extension    string `json:"extension,omitempty"`
+	FileID       string `json:"file_id,omitempty"`
 }
 
 type headingSample struct {
@@ -227,6 +231,8 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 	result := dashboardSymbolSummary{}
 	byKind := map[string]int{}
 	byPackage := map[string]int{}
+	byModule := map[string]int{}
+	byLanguage := map[string]int{}
 	page, err := ingestion.ListSymbols(ctx, projectID, projectingestion.SymbolFilter{}, projectingestion.Pagination{PageSize: dashboardSymbolsPageSize})
 	if err != nil {
 		*warnings = append(*warnings, "symbols_unavailable")
@@ -238,14 +244,118 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 		if symbol.PackageName != "" {
 			byPackage[symbol.PackageName]++
 		}
+		if key := symbolModuleKey(symbol); key != "" {
+			byModule[key]++
+		}
+		if language := symbolLanguageKey(symbol); language != "" {
+			byLanguage[language]++
+		}
 		if len(result.Sample) < 12 {
-			result.Sample = append(result.Sample, symbolSample{Name: symbol.Name, Kind: symbol.Kind, PackageName: symbol.PackageName, FileID: symbol.FileID})
+			result.Sample = append(result.Sample, symbolSample{
+				Name:         symbol.Name,
+				Kind:         symbol.Kind,
+				PackageName:  symbol.PackageName,
+				RelativePath: symbol.RelativePath,
+				Extension:    symbol.Extension,
+				FileID:       symbol.FileID,
+			})
 		}
 	}
 	result.SampleTruncated = page.NextPageToken != ""
 	result.ByKind = sortedCounts(byKind, 12)
 	result.ByPackage = sortedCounts(byPackage, 12)
+	result.ByModule = sortedCounts(byModule, 12)
+	result.ByLanguage = sortedCounts(byLanguage, 12)
 	return result
+}
+
+func symbolModuleKey(symbol projectingestion.SymbolMetadata) string {
+	if strings.TrimSpace(symbol.RelativePath) != "" {
+		if value := fileModuleKey(symbol.RelativePath, symbol.Extension); value != "" {
+			return value
+		}
+	}
+	if value := strings.TrimSpace(symbol.PackageName); value != "" {
+		return value
+	}
+	if symbol.Kind == string(projectingestion.SymbolKindPackage) {
+		if value := strings.TrimSpace(symbol.Name); value != "" {
+			return value
+		}
+	}
+	if isImportLikeSymbol(symbol) {
+		if value := strings.TrimSpace(symbol.ImportPath); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func symbolLanguageKey(symbol projectingestion.SymbolMetadata) string {
+	switch strings.ToLower(strings.TrimSpace(symbol.Extension)) {
+	case ".go":
+		return "Go"
+	case ".py":
+		return "Python"
+	case ".js":
+		return "JavaScript"
+	case ".jsx":
+		return "JSX"
+	case ".ts":
+		return "TypeScript"
+	case ".tsx":
+		return "TSX"
+	case ".cs":
+		return "C#"
+	case ".dart":
+		return "Dart"
+	case ".md", ".mdx":
+		return "Markdown"
+	case ".yaml", ".yml":
+		return "YAML"
+	case ".json":
+		return "JSON"
+	case ".toml":
+		return "TOML"
+	case ".xml":
+		return "XML"
+	case ".sh", ".bash", ".zsh":
+		return "Shell"
+	case "":
+		if strings.EqualFold(strings.TrimSpace(symbol.RelativePath), "Dockerfile") || strings.HasSuffix(strings.TrimSpace(symbol.RelativePath), "/Dockerfile") {
+			return "Dockerfile"
+		}
+		return ""
+	default:
+		return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(symbol.Extension)), ".")
+	}
+}
+
+func isImportLikeSymbol(symbol projectingestion.SymbolMetadata) bool {
+	switch strings.ToLower(strings.TrimSpace(symbol.Kind)) {
+	case string(projectingestion.SymbolKindImport), "export":
+		return true
+	default:
+		return false
+	}
+}
+
+func fileModuleKey(relativePath string, extension string) string {
+	relativePath = strings.Trim(strings.ReplaceAll(relativePath, "\\", "/"), "/")
+	if relativePath == "" {
+		return emptyKey(extension)
+	}
+	parts := strings.Split(relativePath, "/")
+	if len(parts) == 1 {
+		if extension = strings.TrimSpace(extension); extension != "" {
+			return "root " + extension
+		}
+		return "root"
+	}
+	if len(parts) == 2 {
+		return parts[0]
+	}
+	return strings.Join(parts[:2], "/")
 }
 
 func dashboardHeadings(ctx context.Context, ingestion projectingestion.API, projectID string, warnings *[]string) dashboardHeadingSummary {

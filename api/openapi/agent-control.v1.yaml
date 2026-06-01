@@ -2476,6 +2476,12 @@ components:
           type: string
         name:
           type: string
+        relative_path:
+          type: string
+          description: Safe project-relative path for the indexed file that declares this symbol, omitted when unavailable or unsafe.
+        extension:
+          type: string
+          description: Lowercase file extension for the indexed file that declares this symbol, omitted when unavailable.
         package:
           type: string
         import_path:

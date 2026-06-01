@@ -172,20 +172,22 @@ type ChunkList struct {
 }
 
 type SymbolMetadata struct {
-	ID          string `json:"id"`
-	FileID      string `json:"file_id"`
-	ProjectID   string `json:"project_id"`
-	Kind        string `json:"kind"`
-	Name        string `json:"name"`
-	PackageName string `json:"package,omitempty"`
-	ImportPath  string `json:"import_path,omitempty"`
-	Receiver    string `json:"receiver,omitempty"`
-	StartLine   int    `json:"start_line"`
-	EndLine     int    `json:"end_line"`
-	StartByte   int    `json:"start_byte,omitempty"`
-	EndByte     int    `json:"end_byte,omitempty"`
-	StartColumn int    `json:"start_column,omitempty"`
-	EndColumn   int    `json:"end_column,omitempty"`
+	ID           string `json:"id"`
+	FileID       string `json:"file_id"`
+	ProjectID    string `json:"project_id"`
+	Kind         string `json:"kind"`
+	Name         string `json:"name"`
+	RelativePath string `json:"relative_path,omitempty"`
+	Extension    string `json:"extension,omitempty"`
+	PackageName  string `json:"package,omitempty"`
+	ImportPath   string `json:"import_path,omitempty"`
+	Receiver     string `json:"receiver,omitempty"`
+	StartLine    int    `json:"start_line"`
+	EndLine      int    `json:"end_line"`
+	StartByte    int    `json:"start_byte,omitempty"`
+	EndByte      int    `json:"end_byte,omitempty"`
+	StartColumn  int    `json:"start_column,omitempty"`
+	EndColumn    int    `json:"end_column,omitempty"`
 }
 
 type SymbolList struct {
