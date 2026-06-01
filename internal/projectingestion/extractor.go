@@ -163,6 +163,9 @@ func (extractor staticExtractor) Parse(ctx context.Context, relative string, con
 func supportsInfraLightweight(relative string) bool {
 	extension := strings.ToLower(path.Ext(relative))
 	base := strings.ToLower(path.Base(relative))
+	if extension == ".asmdef" {
+		return true
+	}
 	switch base {
 	case "dockerfile", "containerfile", "makefile",
 		"openapi.yaml", "openapi.yml", "openapi.json",
@@ -180,6 +183,10 @@ func supportsInfraLightweight(relative string) bool {
 func parseInfraLightweight(_ context.Context, relative string, content []byte) (ExtractorResult, error) {
 	extension := strings.ToLower(path.Ext(relative))
 	base := strings.ToLower(path.Base(relative))
+	if extension == ".asmdef" {
+		symbols, err := ParseUnityAsmdefSymbols(content)
+		return ExtractorResult{Symbols: symbols}, err
+	}
 	switch base {
 	case "dockerfile", "containerfile":
 		symbols, err := ParseDockerfileSymbols(content)

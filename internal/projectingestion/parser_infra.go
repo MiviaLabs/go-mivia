@@ -115,6 +115,23 @@ func ParseSQLMigrationSymbols(relative string, source []byte) ([]Symbol, error) 
 	return []Symbol{{Kind: SymbolKindMigration, Name: name, StartLine: 1, EndLine: lineCount(source)}}, nil
 }
 
+func ParseUnityAsmdefSymbols(source []byte) ([]Symbol, error) {
+	if !utf8.Valid(source) {
+		return nil, fmt.Errorf("invalid utf-8 content")
+	}
+	var decoded struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(source, &decoded); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(decoded.Name)
+	if name == "" {
+		return nil, nil
+	}
+	return []Symbol{{Kind: SymbolKindAssembly, Name: name, StartLine: 1, EndLine: lineCount(source)}}, nil
+}
+
 func ParseJSONTopLevelKeys(source []byte) ([]Symbol, error) {
 	if !utf8.Valid(source) {
 		return nil, fmt.Errorf("invalid utf-8 content")

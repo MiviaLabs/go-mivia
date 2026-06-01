@@ -124,6 +124,7 @@ const (
 	SymbolKindPath               SymbolKind = "path"
 	SymbolKindKey                SymbolKind = "key"
 	SymbolKindMigration          SymbolKind = "migration"
+	SymbolKindAssembly           SymbolKind = "assembly"
 )
 
 type Symbol struct {

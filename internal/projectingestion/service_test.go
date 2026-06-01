@@ -2035,6 +2035,9 @@ func TestInfraParsers_ExtractDependencyFreeSymbols(t *testing.T) {
 			return ParseOpenAPIPathSymbols([]byte("openapi: 3.0.0\npaths:\n  /healthz:\n    get: {}\n"))
 		}, want: "/healthz", wantKind: SymbolKindPath},
 		{name: "json", parse: func() ([]Symbol, error) { return ParseJSONTopLevelKeys([]byte(`{"scripts":{},"name":"app"}`)) }, want: "name", wantKind: SymbolKindKey},
+		{name: "asmdef", parse: func() ([]Symbol, error) {
+			return ParseUnityAsmdefSymbols([]byte(`{"name":"Game.Runtime","references":["Unity.TextMeshPro"]}`))
+		}, want: "Game.Runtime", wantKind: SymbolKindAssembly},
 		{name: "config", parse: func() ([]Symbol, error) { return ParseConfigTopLevelKeys([]byte("services:\n  api: {}\n")) }, want: "services", wantKind: SymbolKindKey},
 		{name: "sql", parse: func() ([]Symbol, error) {
 			return ParseSQLMigrationSymbols("db/001_create_users.sql", []byte("create table users(id int);\n"))

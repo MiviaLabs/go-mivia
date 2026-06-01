@@ -359,18 +359,21 @@ function renderGraphCompositionVisual(health, graph) {
 function renderSymbolConcentrationVisual(symbols) {
   const source = symbolConcentrationSource(symbols);
   const values = normalizeCounts(source.items).slice(0, 8);
-  if (!values.length) return `<div><h3>Symbol concentration</h3><p class="empty">No package, module, or path-bucket data.</p></div>`;
-  const total = values.reduce((sum, item) => sum + item.count, 0);
+  if (!values.length) return `<div><h3>Symbol concentration</h3><p class="empty">No concentration data.</p></div>`;
+  const displayedTotal = values.reduce((sum, item) => sum + item.count, 0);
+  const denominatorCount = Number.isFinite(source.denominatorCount) && source.denominatorCount > 0 ? source.denominatorCount : displayedTotal;
   const leader = values[0];
+  const denominator = source.denominatorLabel || `sample of ${numberValue(denominatorCount)} symbols`;
+  const scopeNote = symbols?.sample_truncated ? "Full indexed graph" : "Current indexed graph";
   return `
     <div>
       <h3>${escapeHTML(source.title)}</h3>
       <div class="metric" style="min-height:auto; margin-bottom:8px; box-shadow:none;">
-        <span>${escapeHTML(source.leaderLabel)}</span>
-        <strong>${percent(leader.count, total)}</strong>
-        <small>${escapeHTML(leader.key)} / ${numberValue(total)} sampled symbols</small>
+        <span>${escapeHTML(source.leaderLabel)} · ${escapeHTML(scopeNote)}</span>
+        <strong>${percent(leader.count, denominatorCount)}</strong>
+        <small>${escapeHTML(leader.key)} / ${escapeHTML(denominator)}</small>
       </div>
-      ${distributionBars(values)}
+      ${distributionBars(values, { total: denominatorCount })}
     </div>
   `;
 }
@@ -379,42 +382,79 @@ function symbolConcentrationSource(symbols) {
   if (!symbols || typeof symbols !== "object") {
     return {
       title: "Symbol concentration",
-      leaderLabel: "Top symbol bucket share",
+      leaderLabel: "Top code area share",
       items: [],
+      denominatorLabel: "0 indexed symbols",
     };
   }
-  if (normalizeCounts(symbols.by_module).length) {
-    return {
-      title: "Module concentration",
-      leaderLabel: "Top module share",
-      items: symbols.by_module,
-    };
-  }
-  if (normalizeCounts(symbols.by_package).length) {
-    return {
-      title: "Package concentration",
-      leaderLabel: "Top package share",
-      items: symbols.by_package,
-    };
-  }
-  const pathBuckets = symbols.by_path_bucket || symbols.by_path || symbols.by_directory;
-  if (normalizeCounts(pathBuckets).length) {
-    return {
-      title: "Path bucket concentration",
-      leaderLabel: "Top path bucket share",
-      items: pathBuckets,
-    };
+  const basis = symbols.concentration_basis || {};
+  const sources = symbolConcentrationCandidates(symbols, basis);
+  for (const source of sources) {
+    if (source.enabled && normalizeCounts(source.items).length) {
+      const basisDenominator = Number.isFinite(basis.denominator_count) && basis.denominator_count > 0 ? basis.denominator_count : 0;
+      return {
+        title: source.title,
+        leaderLabel: source.leaderLabel,
+        items: source.items,
+        denominatorLabel: source.denominatorLabel || `${numberValue(basisDenominator || symbols.total_count || symbols.sampled_count)} indexed symbols`,
+        denominatorCount: basisDenominator || symbols.total_count || symbols.sampled_count,
+      };
+    }
   }
   return {
     title: "Symbol concentration",
-    leaderLabel: "Top symbol bucket share",
+    leaderLabel: "Top code area share",
     items: [],
+    denominatorLabel: "0 indexed symbols",
   };
+}
+
+function symbolConcentrationCandidates(symbols, basis) {
+  const preferred = {
+    by_module: {
+      enabled: basis.source !== "relative_path_bucket",
+      items: symbols.by_module,
+      title: "Module concentration",
+      leaderLabel: "Top module share",
+      denominatorLabel: `${numberValue(basis.denominator_count)} indexed JS/TS symbols`,
+    },
+    by_namespace: {
+      enabled: true,
+      items: symbols.by_namespace,
+      title: "Namespace concentration",
+      leaderLabel: "Top namespace share",
+      denominatorLabel: `${numberValue(basis.denominator_count)} indexed C# namespace symbols`,
+    },
+    by_assembly: {
+      enabled: true,
+      items: symbols.by_assembly,
+      title: "Assembly concentration",
+      leaderLabel: "Top assembly share",
+      denominatorLabel: `${numberValue(basis.denominator_count)} indexed Unity C# symbols`,
+    },
+    by_package: {
+      enabled: true,
+      items: symbols.by_package,
+      title: "Package concentration",
+      leaderLabel: "Top package share",
+      denominatorLabel: `${numberValue(basis.denominator_count)} indexed package symbols`,
+    },
+    by_code_area: {
+      enabled: true,
+      items: symbols.by_code_area || symbols.by_path_bucket || symbols.by_directory || symbols.by_path,
+      title: "Code area concentration",
+      leaderLabel: "Top code area share",
+      denominatorLabel: `${numberValue(basis.denominator_count || symbols.total_count)} indexed symbols`,
+    },
+  };
+  const orderedKeys = ["by_module", "by_namespace", "by_assembly", "by_package", "by_code_area"];
+  const primary = preferred[basis.primary_field];
+  return primary ? [primary, ...orderedKeys.filter((key) => key !== basis.primary_field).map((key) => preferred[key])] : orderedKeys.map((key) => preferred[key]);
 }
 
 function symbolConcentrationBlock(symbols) {
   const source = symbolConcentrationSource(symbols);
-  return countBlock(source.title, source.items, { bars: true });
+  return countBlock(source.title, source.items, { bars: true, total: source.denominatorCount });
 }
 
 function renderWorkspaceDirtyVisual(workspace) {
@@ -673,7 +713,7 @@ function countBlock(title, items, options = {}) {
     return `
       <div>
         <h3>${escapeHTML(title)}</h3>
-        ${distributionBars(items)}
+        ${distributionBars(items, { total: options.total })}
       </div>
     `;
   }
@@ -685,18 +725,20 @@ function countBlock(title, items, options = {}) {
   `;
 }
 
-function distributionBars(items) {
+function distributionBars(items, options = {}) {
   const values = normalizeCounts(items);
   if (!values.length) return `<p class="empty">No data.</p>`;
   const max = Math.max(...values.map((item) => item.count), 1);
+  const total = Number.isFinite(options.total) && options.total > 0 ? options.total : 0;
   return `
     <div class="content-list">
       ${values.map((item) => {
         const width = Math.max(4, Math.round((item.count / max) * 100));
+        const countLabel = total ? `${numberValue(item.count)} · ${percent(item.count, total)}` : numberValue(item.count);
         return `
           <div class="reason-row">
             <span>${escapeHTML(item.key)}</span>
-            <strong>${numberValue(item.count)}</strong>
+            <strong>${escapeHTML(countLabel)}</strong>
             <span style="grid-column:1 / -1; display:block; height:6px; margin-top:2px; border-radius:999px; background:linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--node) 58%, var(--accent))) left / ${width}% 100% no-repeat, var(--bar-track);"></span>
           </div>
         `;

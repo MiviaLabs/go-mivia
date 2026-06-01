@@ -34,6 +34,50 @@ public class Service
 	assertSymbol(t, result.Symbols, SymbolKindMethod, "Service", "", "", 12, 12)
 	assertSymbol(t, result.Symbols, SymbolKindMethod, "Name", "", "", 13, 13)
 	assertSymbol(t, result.Symbols, SymbolKindMethod, "Run", "", "", 14, 14)
+
+	for _, expectation := range []struct {
+		kind SymbolKind
+		name string
+	}{
+		{SymbolKindType, "IWorker"},
+		{SymbolKindType, "Job"},
+		{SymbolKindType, "Result"},
+		{SymbolKindType, "State"},
+		{SymbolKindClass, "Service"},
+		{SymbolKindMethod, "Service"},
+		{SymbolKindMethod, "Name"},
+		{SymbolKindMethod, "Run"},
+	} {
+		assertSymbolPackage(t, result.Symbols, expectation.kind, expectation.name, "Example.Product")
+	}
+}
+
+func TestTreeSitterCSharpExtractsBlockNamespaceSymbolPackages(t *testing.T) {
+	result := parseWithExtractor(t, newTreeSitterCSharpExtractor(), "src/Service.cs", []byte(`
+namespace Example.Outer
+{
+	using System.Text;
+	public class OuterService
+	{
+		public void Run() {}
+	}
+
+	namespace Inner
+	{
+		public interface IInner {}
+	}
+}
+
+public class GlobalService {}
+`))
+
+	assertSymbol(t, result.Symbols, SymbolKindPackage, "Example.Outer", "", "", 2, 14)
+	assertSymbol(t, result.Symbols, SymbolKindPackage, "Example.Outer.Inner", "", "", 10, 13)
+	assertSymbolPackage(t, result.Symbols, SymbolKindImport, "System.Text", "Example.Outer")
+	assertSymbolPackage(t, result.Symbols, SymbolKindClass, "OuterService", "Example.Outer")
+	assertSymbolPackage(t, result.Symbols, SymbolKindMethod, "Run", "Example.Outer")
+	assertSymbolPackage(t, result.Symbols, SymbolKindType, "IInner", "Example.Outer.Inner")
+	assertSymbolPackage(t, result.Symbols, SymbolKindClass, "GlobalService", "")
 }
 
 func TestTreeSitterCSharpExtractsReferencesAndCalls(t *testing.T) {
@@ -86,4 +130,17 @@ func TestBadCSharpSyntaxRecordsParseError(t *testing.T) {
 	if len(skipped) != 1 || skipped[0].SkippedReason != SkipReasonParseError || skipped[0].ContentSHA256 != "" {
 		t.Fatalf("expected parse-error skip without content hash, got %#v", skipped)
 	}
+}
+
+func assertSymbolPackage(t *testing.T, symbols []Symbol, kind SymbolKind, name string, packageName string) {
+	t.Helper()
+	for _, symbol := range symbols {
+		if symbol.Kind == kind && symbol.Name == name {
+			if symbol.PackageName != packageName {
+				t.Fatalf("expected package %q for %#v", packageName, symbol)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing symbol %s %s in %#v", kind, name, symbols)
 }

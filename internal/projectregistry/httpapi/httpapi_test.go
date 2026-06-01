@@ -286,19 +286,22 @@ func TestProjectIngestionRoutes_ControlAndQueriesAreBounded(t *testing.T) {
 	}
 }
 
-func TestProjectDashboardSummary_SymbolModulesUseSafeMetadataFallback(t *testing.T) {
+func TestProjectDashboardSummary_SymbolConcentrationUsesExplicitCodeAreaFallback(t *testing.T) {
 	mux, projectID, root := newIngestionMuxWithFiles(t, map[string]string{
-		"cmd/main.go":       "package main\n\nfunc Run() {}\n",
-		"src/app.py":        "def run():\n    return 1\n",
-		"web/app.js":        "function run() { return 1 }\n",
-		"web/app.jsx":       "function App() { return <div /> }\n",
-		"web/app.ts":        "function run(): number { return 1 }\n",
-		"web/app.tsx":       "function App(): JSX.Element { return <div /> }\n",
-		"services/App.cs":   "namespace Demo { class App { void Run() {} } }\n",
-		"mobile/app.dart":   "class Home { Widget build(BuildContext context) { return Container(); } }\n",
-		"config/app.yaml":   "service:\n  enabled: true\n",
-		"docker/Dockerfile": "FROM alpine AS runtime\n",
-	}, []string{"**/*.go", "**/*.py", "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.cs", "**/*.dart", "**/*.yaml", "**/Dockerfile"})
+		"cmd/main.go":                  "package main\n\nfunc Run() {}\n",
+		"src/app.py":                   "def run():\n    return 1\n",
+		"web/app.js":                   "function run() { return 1 }\n",
+		"web/app.jsx":                  "function App() { return <div /> }\n",
+		"web/src/app.ts":               "function run(): number { return 1 }\n",
+		"web/app.tsx":                  "function App(): JSX.Element { return <div /> }\n",
+		"services/api/App.cs":          "namespace Demo { class App { void Run() {} } }\n",
+		"Assets/Scripts/Controller.cs": "namespace Game.Runtime { class Controller { void Tick() {} } }\n",
+		"Assets/Editor/Tool.cs":        "namespace Game.Editor { class Tool { void Run() {} } }\n",
+		"mobile/app.dart":              "class Home { Widget build(BuildContext context) { return Container(); } }\n",
+		"Assets/Scripts/Game.asmdef":   `{"name":"Game.Runtime"}`,
+		"config/app.yaml":              "service:\n  enabled: true\n",
+		"docker/Dockerfile":            "FROM alpine AS runtime\n",
+	}, []string{"**/*.go", "**/*.py", "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.cs", "**/*.dart", "**/*.asmdef", "**/*.yaml", "**/Dockerfile"})
 
 	created := httptest.NewRecorder()
 	mux.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/ingestion-runs", nil))
@@ -318,8 +321,11 @@ func TestProjectDashboardSummary_SymbolModulesUseSafeMetadataFallback(t *testing
 	}
 	body := dashboard.Body.String()
 	assertDoesNotLeak(t, body, root, "def run", "function run", "namespace Demo", "content_sha256", "root_path")
-	if !strings.Contains(body, `"by_package"`) || !strings.Contains(body, `"by_module"`) {
-		t.Fatalf("expected package and module symbol concentration, got %s", body)
+	if !strings.Contains(body, `"by_package"`) || !strings.Contains(body, `"by_code_area"`) || !strings.Contains(body, `"by_path_bucket"`) {
+		t.Fatalf("expected package and code-area symbol concentration, got %s", body)
+	}
+	if strings.Contains(body, `"primary_field":"by_module"`) && !strings.Contains(body, `"source":"relative_file_module"`) {
+		t.Fatalf("by_module must be backed by semantic file-module metadata, got %s", body)
 	}
 	if !strings.Contains(body, `"by_language"`) {
 		t.Fatalf("expected symbol language distribution, got %s", body)
@@ -331,10 +337,37 @@ func TestProjectDashboardSummary_SymbolModulesUseSafeMetadataFallback(t *testing
 	var summary struct {
 		Graph struct {
 			Symbols struct {
+				TotalCount         int `json:"total_count"`
+				ConcentrationBasis struct {
+					PrimaryField     string `json:"primary_field"`
+					Source           string `json:"source"`
+					Denominator      string `json:"denominator"`
+					DenominatorCount int    `json:"denominator_count"`
+				} `json:"concentration_basis"`
+				ByPackage []struct {
+					Key   string `json:"key"`
+					Count int    `json:"count"`
+				} `json:"by_package"`
 				ByModule []struct {
 					Key   string `json:"key"`
 					Count int    `json:"count"`
 				} `json:"by_module"`
+				ByNamespace []struct {
+					Key   string `json:"key"`
+					Count int    `json:"count"`
+				} `json:"by_namespace"`
+				ByAssembly []struct {
+					Key   string `json:"key"`
+					Count int    `json:"count"`
+				} `json:"by_assembly"`
+				ByCodeArea []struct {
+					Key   string `json:"key"`
+					Count int    `json:"count"`
+				} `json:"by_code_area"`
+				ByPathBucket []struct {
+					Key   string `json:"key"`
+					Count int    `json:"count"`
+				} `json:"by_path_bucket"`
 				ByLanguage []struct {
 					Key   string `json:"key"`
 					Count int    `json:"count"`
@@ -345,19 +378,52 @@ func TestProjectDashboardSummary_SymbolModulesUseSafeMetadataFallback(t *testing
 	if err := json.Unmarshal(dashboard.Body.Bytes(), &summary); err != nil {
 		t.Fatalf("decode dashboard summary: %v", err)
 	}
+	if summary.Graph.Symbols.ConcentrationBasis.PrimaryField != "by_module" || summary.Graph.Symbols.ConcentrationBasis.Source != "relative_file_module" || summary.Graph.Symbols.ConcentrationBasis.Denominator != "indexed_js_ts_symbols" {
+		t.Fatalf("expected semantic module concentration basis: %#v", summary.Graph.Symbols.ConcentrationBasis)
+	}
+	if summary.Graph.Symbols.ConcentrationBasis.DenominatorCount <= 0 || summary.Graph.Symbols.ConcentrationBasis.DenominatorCount >= summary.Graph.Symbols.TotalCount {
+		t.Fatalf("expected module denominator to cover JS/TS symbols only in mixed fixture: %#v total=%d", summary.Graph.Symbols.ConcentrationBasis, summary.Graph.Symbols.TotalCount)
+	}
+	hasGoPackage := false
+	for _, item := range summary.Graph.Symbols.ByPackage {
+		if item.Key == "main" && item.Count > 0 {
+			hasGoPackage = true
+			break
+		}
+	}
+	if !hasGoPackage {
+		t.Fatalf("expected real parsed Go package metadata in by_package: %#v", summary.Graph.Symbols.ByPackage)
+	}
+	assertDashboardCount(t, summary.Graph.Symbols.ByModule, "web/src/app", "expected TS source file module in by_module")
+	assertDashboardCountAtLeast(t, summary.Graph.Symbols.ByNamespace, "Demo", 2, "expected parsed C# namespace metadata in by_namespace")
+	assertDashboardCountAtLeast(t, summary.Graph.Symbols.ByAssembly, "Game.Runtime", 2, "expected Unity asmdef to group symbols under its directory")
+	assertDashboardCountAtLeast(t, summary.Graph.Symbols.ByAssembly, "Assembly-CSharp-Editor", 1, "expected Unity predefined editor assembly fallback")
+	if summary.Graph.Symbols.TotalCount <= 12 {
+		t.Fatalf("expected dashboard concentration denominator to cover all indexed symbols, got %d", summary.Graph.Symbols.TotalCount)
+	}
 	hasPathFallback := false
-	for _, item := range summary.Graph.Symbols.ByModule {
+	for _, item := range summary.Graph.Symbols.ByCodeArea {
 		if (item.Key == "src" || item.Key == "web" || item.Key == "services" || item.Key == "mobile" || item.Key == "config" || item.Key == "docker") && item.Count > 0 {
 			hasPathFallback = true
 			break
 		}
 	}
 	if !hasPathFallback {
-		t.Fatalf("expected safe path module fallback for symbols without package metadata: %#v", summary.Graph.Symbols.ByModule)
+		t.Fatalf("expected safe code-area path fallback for symbols without package metadata: %#v", summary.Graph.Symbols.ByCodeArea)
 	}
-	for _, item := range summary.Graph.Symbols.ByModule {
+	hasPathBucket := false
+	for _, item := range summary.Graph.Symbols.ByPathBucket {
+		if (item.Key == "web/src" || item.Key == "services/api") && item.Count > 0 {
+			hasPathBucket = true
+			break
+		}
+	}
+	if !hasPathBucket {
+		t.Fatalf("expected explicit path buckets for non-Go symbols without package metadata: %#v", summary.Graph.Symbols.ByPathBucket)
+	}
+	for _, item := range summary.Graph.Symbols.ByCodeArea {
 		if strings.HasPrefix(item.Key, "file:") {
-			t.Fatalf("module concentration should not expose opaque file IDs when safe path metadata is available: %#v", summary.Graph.Symbols.ByModule)
+			t.Fatalf("code-area concentration should not expose opaque file IDs when safe path metadata is available: %#v", summary.Graph.Symbols.ByCodeArea)
 		}
 	}
 	for _, language := range []string{"Go", "Python", "JavaScript", "JSX", "TypeScript", "TSX", "C#", "Dart", "YAML", "Dockerfile"} {
@@ -372,6 +438,32 @@ func TestProjectDashboardSummary_SymbolModulesUseSafeMetadataFallback(t *testing
 			t.Fatalf("expected language %q in symbol language distribution: %#v", language, summary.Graph.Symbols.ByLanguage)
 		}
 	}
+}
+
+func assertDashboardCount(t *testing.T, items []struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
+}, key string, message string) {
+	t.Helper()
+	for _, item := range items {
+		if item.Key == key && item.Count > 0 {
+			return
+		}
+	}
+	t.Fatalf("%s: %#v", message, items)
+}
+
+func assertDashboardCountAtLeast(t *testing.T, items []struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
+}, key string, minimum int, message string) {
+	t.Helper()
+	for _, item := range items {
+		if item.Key == key && item.Count >= minimum {
+			return
+		}
+	}
+	t.Fatalf("%s: %#v", message, items)
 }
 
 func TestProjectIngestionRoutes_SubmitsAsyncWithoutWaitingForScan(t *testing.T) {

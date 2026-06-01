@@ -18,7 +18,7 @@ import (
 
 const (
 	dashboardFilesPageSize    = 50
-	dashboardSymbolsPageSize  = 50
+	dashboardSymbolsPageSize  = 100
 	dashboardHeadingsPageSize = 50
 	dashboardGitPageSize      = 25
 )
@@ -54,13 +54,28 @@ type dashboardFileSummary struct {
 }
 
 type dashboardSymbolSummary struct {
-	SampledCount    int              `json:"sampled_count"`
-	SampleTruncated bool             `json:"sample_truncated"`
-	ByKind          []dashboardCount `json:"by_kind"`
-	ByPackage       []dashboardCount `json:"by_package,omitempty"`
-	ByModule        []dashboardCount `json:"by_module,omitempty"`
-	ByLanguage      []dashboardCount `json:"by_language,omitempty"`
-	Sample          []symbolSample   `json:"sample,omitempty"`
+	SampledCount       int                               `json:"sampled_count"`
+	TotalCount         int                               `json:"total_count"`
+	SampleTruncated    bool                              `json:"sample_truncated"`
+	ConcentrationBasis dashboardSymbolConcentrationBasis `json:"concentration_basis"`
+	ByKind             []dashboardCount                  `json:"by_kind"`
+	ByPackage          []dashboardCount                  `json:"by_package,omitempty"`
+	ByModule           []dashboardCount                  `json:"by_module,omitempty"`
+	ByNamespace        []dashboardCount                  `json:"by_namespace,omitempty"`
+	ByAssembly         []dashboardCount                  `json:"by_assembly,omitempty"`
+	ByCodeArea         []dashboardCount                  `json:"by_code_area,omitempty"`
+	ByPathBucket       []dashboardCount                  `json:"by_path_bucket,omitempty"`
+	ByLanguage         []dashboardCount                  `json:"by_language,omitempty"`
+	Sample             []symbolSample                    `json:"sample,omitempty"`
+}
+
+type dashboardSymbolConcentrationBasis struct {
+	PrimaryField     string `json:"primary_field"`
+	Source           string `json:"source"`
+	Label            string `json:"label"`
+	Description      string `json:"description"`
+	Denominator      string `json:"denominator"`
+	DenominatorCount int    `json:"denominator_count"`
 }
 
 type dashboardHeadingSummary struct {
@@ -232,25 +247,57 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 	byKind := map[string]int{}
 	byPackage := map[string]int{}
 	byModule := map[string]int{}
+	byNamespace := map[string]int{}
+	byAssembly := map[string]int{}
+	byCodeArea := map[string]int{}
 	byLanguage := map[string]int{}
-	page, err := ingestion.ListSymbols(ctx, projectID, projectingestion.SymbolFilter{}, projectingestion.Pagination{PageSize: dashboardSymbolsPageSize})
-	if err != nil {
-		*warnings = append(*warnings, "symbols_unavailable")
-		return result
+	moduleCount := 0
+	namespaceCount := 0
+	assemblyCount := 0
+	packageCount := 0
+	symbols := []projectingestion.SymbolMetadata{}
+	nextPageToken := ""
+	for {
+		page, err := ingestion.ListSymbols(ctx, projectID, projectingestion.SymbolFilter{}, projectingestion.Pagination{PageSize: dashboardSymbolsPageSize, PageToken: nextPageToken})
+		if err != nil {
+			*warnings = append(*warnings, "symbols_unavailable")
+			return result
+		}
+		symbols = append(symbols, page.Symbols...)
+		nextPageToken = page.NextPageToken
+		if nextPageToken == "" {
+			break
+		}
 	}
-	for _, symbol := range page.Symbols {
-		result.SampledCount++
+	namespaceByFile := csharpNamespaceByFile(symbols)
+	assemblyByDir := unityAssemblyByDir(symbols)
+	for _, symbol := range symbols {
+		result.TotalCount++
 		byKind[emptyKey(symbol.Kind)]++
 		if symbol.PackageName != "" {
 			byPackage[symbol.PackageName]++
+			packageCount++
 		}
 		if key := symbolModuleKey(symbol); key != "" {
 			byModule[key]++
+			moduleCount++
+		}
+		if key := symbolNamespaceKey(symbol, namespaceByFile); key != "" {
+			byNamespace[key]++
+			namespaceCount++
+		}
+		if key := symbolAssemblyKey(symbol, assemblyByDir); key != "" {
+			byAssembly[key]++
+			assemblyCount++
+		}
+		if key := symbolCodeAreaKey(symbol); key != "" {
+			byCodeArea[key]++
 		}
 		if language := symbolLanguageKey(symbol); language != "" {
 			byLanguage[language]++
 		}
 		if len(result.Sample) < 12 {
+			result.SampledCount++
 			result.Sample = append(result.Sample, symbolSample{
 				Name:         symbol.Name,
 				Kind:         symbol.Kind,
@@ -261,34 +308,243 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 			})
 		}
 	}
-	result.SampleTruncated = page.NextPageToken != ""
+	result.SampleTruncated = result.TotalCount > len(result.Sample)
 	result.ByKind = sortedCounts(byKind, 12)
 	result.ByPackage = sortedCounts(byPackage, 12)
 	result.ByModule = sortedCounts(byModule, 12)
+	result.ByNamespace = sortedCounts(byNamespace, 12)
+	result.ByAssembly = sortedCounts(byAssembly, 12)
+	result.ByCodeArea = sortedCounts(byCodeArea, 12)
+	result.ByPathBucket = result.ByCodeArea
 	result.ByLanguage = sortedCounts(byLanguage, 12)
+	result.ConcentrationBasis = symbolConcentrationBasis(result, moduleCount, namespaceCount, assemblyCount, packageCount)
 	return result
 }
 
-func symbolModuleKey(symbol projectingestion.SymbolMetadata) string {
-	if strings.TrimSpace(symbol.RelativePath) != "" {
-		if value := fileModuleKey(symbol.RelativePath, symbol.Extension); value != "" {
-			return value
+func symbolConcentrationBasis(symbols dashboardSymbolSummary, moduleCount int, namespaceCount int, assemblyCount int, packageCount int) dashboardSymbolConcentrationBasis {
+	if len(symbols.ByModule) > 0 {
+		return dashboardSymbolConcentrationBasis{
+			PrimaryField:     "by_module",
+			Source:           "relative_file_module",
+			Label:            "Module concentration",
+			Description:      "Share of indexed JavaScript and TypeScript symbols grouped by source file module identity; this is not package-manager workspace ownership.",
+			Denominator:      "indexed_js_ts_symbols",
+			DenominatorCount: moduleCount,
 		}
 	}
-	if value := strings.TrimSpace(symbol.PackageName); value != "" {
+	if len(symbols.ByNamespace) > 0 {
+		return dashboardSymbolConcentrationBasis{
+			PrimaryField:     "by_namespace",
+			Source:           "csharp_package_metadata",
+			Label:            "Namespace concentration",
+			Description:      "Share of indexed C# symbols grouped by namespace metadata assigned during extraction.",
+			Denominator:      "indexed_csharp_namespace_symbols",
+			DenominatorCount: namespaceCount,
+		}
+	}
+	if len(symbols.ByAssembly) > 0 {
+		return dashboardSymbolConcentrationBasis{
+			PrimaryField:     "by_assembly",
+			Source:           "unity_asmdef_directory_or_predefined_path_bucket",
+			Label:            "Unity assembly concentration",
+			Description:      "Share of indexed Unity C# symbols grouped by the nearest parsed .asmdef name in path ancestry, or by documented Unity predefined assembly buckets inferred from Assets path segments.",
+			Denominator:      "indexed_unity_csharp_symbols",
+			DenominatorCount: assemblyCount,
+		}
+	}
+	if len(symbols.ByPackage) > 0 {
+		return dashboardSymbolConcentrationBasis{
+			PrimaryField:     "by_package",
+			Source:           "parsed_symbol_package",
+			Label:            "Package concentration",
+			Description:      "Share of indexed symbols grouped by parsed package metadata.",
+			Denominator:      "indexed_symbols_with_package_metadata",
+			DenominatorCount: packageCount,
+		}
+	}
+	return dashboardSymbolConcentrationBasis{
+		PrimaryField:     "by_code_area",
+		Source:           "relative_path_bucket",
+		Label:            "Code area concentration",
+		Description:      "Share of indexed symbols grouped by repository path bucket because no semantic module, namespace, assembly, or package metadata is available.",
+		Denominator:      "indexed_symbols",
+		DenominatorCount: symbols.TotalCount,
+	}
+}
+
+func symbolModuleKey(symbol projectingestion.SymbolMetadata) string {
+	switch strings.ToLower(strings.TrimSpace(symbol.Extension)) {
+	case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts":
+		return sourceFileModuleKey(symbol.RelativePath)
+	default:
+		return ""
+	}
+}
+
+func csharpNamespaceByFile(symbols []projectingestion.SymbolMetadata) map[string]string {
+	byFile := map[string]string{}
+	for _, symbol := range symbols {
+		if strings.ToLower(strings.TrimSpace(symbol.Extension)) != ".cs" || symbol.Kind != string(projectingestion.SymbolKindPackage) {
+			continue
+		}
+		if name := strings.TrimSpace(symbol.Name); name != "" {
+			byFile[symbolFileKey(symbol)] = name
+		}
+	}
+	return byFile
+}
+
+func unityAssemblyByDir(symbols []projectingestion.SymbolMetadata) map[string]string {
+	byDir := map[string]string{}
+	for _, symbol := range symbols {
+		if symbol.Kind != string(projectingestion.SymbolKindAssembly) {
+			continue
+		}
+		if name := strings.TrimSpace(symbol.Name); name != "" {
+			byDir[pathDir(symbol.RelativePath)] = name
+		}
+	}
+	return byDir
+}
+
+func symbolNamespaceKey(symbol projectingestion.SymbolMetadata, namespaceByFile map[string]string) string {
+	if strings.ToLower(strings.TrimSpace(symbol.Extension)) != ".cs" {
+		return ""
+	}
+	if namespace := strings.TrimSpace(symbol.PackageName); namespace != "" {
+		return namespace
+	}
+	return strings.TrimSpace(namespaceByFile[symbolFileKey(symbol)])
+}
+
+func symbolAssemblyKey(symbol projectingestion.SymbolMetadata, assemblyByDir map[string]string) string {
+	if symbol.Kind == string(projectingestion.SymbolKindAssembly) {
+		return strings.TrimSpace(symbol.Name)
+	}
+	if strings.ToLower(strings.TrimSpace(symbol.Extension)) != ".cs" {
+		return ""
+	}
+	if name := nearestAssemblyName(symbol.RelativePath, assemblyByDir); name != "" {
+		return name
+	}
+	return unityPredefinedAssemblyName(symbol.RelativePath)
+}
+
+func symbolFileKey(symbol projectingestion.SymbolMetadata) string {
+	if value := strings.TrimSpace(symbol.FileID); value != "" {
 		return value
 	}
-	if symbol.Kind == string(projectingestion.SymbolKindPackage) {
-		if value := strings.TrimSpace(symbol.Name); value != "" {
-			return value
+	return strings.Trim(strings.ReplaceAll(symbol.RelativePath, "\\", "/"), "/")
+}
+
+func nearestAssemblyName(relativePath string, assemblyByDir map[string]string) string {
+	relativePath = strings.Trim(strings.ReplaceAll(relativePath, "\\", "/"), "/")
+	if relativePath == "" {
+		return ""
+	}
+	dir := pathDir(relativePath)
+	for {
+		if name := strings.TrimSpace(assemblyByDir[dir]); name != "" {
+			return name
+		}
+		if dir == "" {
+			return ""
+		}
+		dir = pathDir(dir)
+	}
+}
+
+func unityPredefinedAssemblyName(relativePath string) string {
+	parts := normalizedPathParts(relativePath)
+	assetsIndex := pathPartIndex(parts, "assets")
+	if assetsIndex < 0 {
+		return ""
+	}
+	parts = parts[assetsIndex+1:]
+	if len(parts) == 0 {
+		return ""
+	}
+	firstpass := hasLeadingUnityFirstpassFolder(parts)
+	editor := containsPathPart(parts, "editor")
+	switch {
+	case firstpass && editor:
+		return "Assembly-CSharp-Editor-firstpass"
+	case firstpass:
+		return "Assembly-CSharp-firstpass"
+	case editor:
+		return "Assembly-CSharp-Editor"
+	default:
+		return "Assembly-CSharp"
+	}
+}
+
+func hasLeadingUnityFirstpassFolder(parts []string) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	return equalPathPart(parts[0], "plugins") ||
+		equalPathPart(parts[0], "standard assets") ||
+		equalPathPart(parts[0], "pro standard assets")
+}
+
+func normalizedPathParts(relativePath string) []string {
+	relativePath = strings.Trim(strings.ReplaceAll(relativePath, "\\", "/"), "/")
+	if relativePath == "" {
+		return nil
+	}
+	raw := strings.Split(relativePath, "/")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		if part = strings.TrimSpace(part); part != "" {
+			parts = append(parts, part)
 		}
 	}
-	if isImportLikeSymbol(symbol) {
-		if value := strings.TrimSpace(symbol.ImportPath); value != "" {
+	return parts
+}
+
+func pathPartIndex(parts []string, target string) int {
+	for index, part := range parts {
+		if equalPathPart(part, target) {
+			return index
+		}
+	}
+	return -1
+}
+
+func containsPathPart(parts []string, target string) bool {
+	return pathPartIndex(parts, target) >= 0
+}
+
+func equalPathPart(part string, target string) bool {
+	return strings.EqualFold(strings.TrimSpace(part), target)
+}
+
+func symbolCodeAreaKey(symbol projectingestion.SymbolMetadata) string {
+	if strings.TrimSpace(symbol.RelativePath) != "" {
+		if value := filePathBucketKey(symbol.RelativePath, symbol.Extension); value != "" {
 			return value
 		}
 	}
 	return ""
+}
+
+func sourceFileModuleKey(relativePath string) string {
+	relativePath = strings.Trim(strings.ReplaceAll(relativePath, "\\", "/"), "/")
+	if relativePath == "" {
+		return ""
+	}
+	extension := pathExtension(relativePath)
+	if extension != "" {
+		relativePath = strings.TrimSuffix(relativePath, extension)
+	}
+	switch {
+	case strings.HasSuffix(relativePath, "/index"):
+		return strings.TrimSuffix(relativePath, "/index")
+	case strings.HasSuffix(relativePath, "/main"):
+		return strings.TrimSuffix(relativePath, "/main")
+	default:
+		return relativePath
+	}
 }
 
 func symbolLanguageKey(symbol projectingestion.SymbolMetadata) string {
@@ -331,16 +587,7 @@ func symbolLanguageKey(symbol projectingestion.SymbolMetadata) string {
 	}
 }
 
-func isImportLikeSymbol(symbol projectingestion.SymbolMetadata) bool {
-	switch strings.ToLower(strings.TrimSpace(symbol.Kind)) {
-	case string(projectingestion.SymbolKindImport), "export":
-		return true
-	default:
-		return false
-	}
-}
-
-func fileModuleKey(relativePath string, extension string) string {
+func filePathBucketKey(relativePath string, extension string) string {
 	relativePath = strings.Trim(strings.ReplaceAll(relativePath, "\\", "/"), "/")
 	if relativePath == "" {
 		return emptyKey(extension)
@@ -352,10 +599,31 @@ func fileModuleKey(relativePath string, extension string) string {
 		}
 		return "root"
 	}
-	if len(parts) == 2 {
-		return parts[0]
+	dirs := parts[:len(parts)-1]
+	if len(dirs) == 0 {
+		return "root"
 	}
-	return strings.Join(parts[:2], "/")
+	if len(dirs) > 2 {
+		dirs = dirs[:2]
+	}
+	return strings.Join(dirs, "/")
+}
+
+func pathExtension(relativePath string) string {
+	index := strings.LastIndex(relativePath, ".")
+	if index < 0 || strings.Contains(relativePath[index:], "/") {
+		return ""
+	}
+	return relativePath[index:]
+}
+
+func pathDir(relativePath string) string {
+	relativePath = strings.Trim(strings.ReplaceAll(relativePath, "\\", "/"), "/")
+	index := strings.LastIndex(relativePath, "/")
+	if index < 0 {
+		return ""
+	}
+	return relativePath[:index]
 }
 
 func dashboardHeadings(ctx context.Context, ingestion projectingestion.API, projectID string, warnings *[]string) dashboardHeadingSummary {

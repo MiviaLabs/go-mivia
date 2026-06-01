@@ -288,7 +288,7 @@ paths:
     get:
       operationId: getProjectDashboardSummary
       summary: Get bounded project dashboard summary
-      description: Returns one bounded aggregate for dashboard rendering, including project metadata, context health, latest ingestion metadata, graph statistics, AST coverage, workspace git status summary, and integration status/counts when available. It omits roots, source text, raw diffs, provider payloads, secrets, and PII.
+      description: Returns one bounded aggregate for dashboard rendering, including project metadata, context health, latest ingestion metadata, graph statistics, AST coverage, workspace git status summary, and integration status/counts when available. Symbol concentration aggregates all indexed symbols for each applicable bucket, while the sample array remains bounded for display. `concentration_basis.denominator_count` is the exact denominator for the selected primary bucket, such as indexed JS/TS module symbols, indexed C# namespace symbols, indexed Unity C# symbols, indexed symbols with package metadata, or all indexed symbols for code-area fallback. It exposes semantic buckets when reliable (`by_module` for JavaScript/TypeScript source-file modules, `by_namespace` for C# symbols carrying parsed namespace metadata, `by_assembly` for Unity symbols grouped by nearest parsed `.asmdef` or documented predefined assembly rules, and `by_package` for parsed package metadata) plus explicit `by_code_area` / `by_path_bucket` path buckets. Path buckets must not be interpreted as language modules, Go modules, TypeScript modules, C# namespaces, or Unity assemblies. It omits roots, source text, raw diffs, provider payloads, secrets, and PII.
       parameters:
         - $ref: '#/components/parameters/ID'
       responses:
@@ -1570,7 +1570,7 @@ components:
           $ref: '#/components/schemas/IngestionRun'
         graph:
           type: object
-          description: Bounded file, symbol, heading, AST coverage, and search-index metadata for dashboards. It never contains source text or raw diff content.
+          description: Bounded file, symbol, heading, AST coverage, and search-index metadata for dashboards. Symbol summaries include `total_count` for all indexed symbols, bounded display `sampled_count` / `sample`, semantic buckets (`by_module`, `by_namespace`, `by_assembly`, `by_package`) when reliable parsed metadata exists, and `by_code_area` / `by_path_bucket` for repository-relative path buckets over all indexed symbols. `concentration_basis` identifies which bucket is primary, what metadata source backs it, and the exact `denominator_count` for percentages. Path buckets are approximate code areas, not language-level module/package/namespace/assembly boundaries. It never contains source text or raw diff content.
         workspace:
           type: object
           description: Bounded workspace git status summary with counts and sampled relative paths only.

@@ -66,7 +66,7 @@ func newTreeSitterJavaScriptExtractor() Extractor {
 func newTreeSitterCSharpExtractor() Extractor {
 	return treeSitterExtractor{
 		name:       string(ExtractorTreeSitterCSharp),
-		version:    extractorVersionTwo,
+		version:    "3",
 		extensions: extensionSet(".cs"),
 		query:      csharpQuery,
 		languageFunc: func() *tree_sitter.Language {
@@ -306,42 +306,88 @@ func extractCSharpSymbols(root *tree_sitter.Node, content []byte) []Symbol {
 		return nil
 	}
 	var symbols []Symbol
-	var visit func(node *tree_sitter.Node)
-	visit = func(node *tree_sitter.Node) {
+	rootNamespace := csharpFileScopedNamespace(root, content)
+	var visit func(node *tree_sitter.Node, namespace string) string
+	visit = func(node *tree_sitter.Node, namespace string) string {
 		if node == nil {
-			return
+			return namespace
 		}
+		currentNamespace := namespace
 		switch node.Kind() {
 		case "namespace_declaration", "file_scoped_namespace_declaration":
 			if symbol, ok := namedSymbolFromNode(node, content, SymbolKindPackage); ok {
+				symbol.Name = csharpQualifiedNamespace(namespace, symbol.Name)
 				symbols = append(symbols, symbol)
+				currentNamespace = symbol.Name
 			}
 		case "using_directive":
 			if symbol, ok := csharpImportSymbolFromNode(node, content); ok {
+				symbol.PackageName = namespace
 				symbols = append(symbols, symbol)
 			}
 		case "class_declaration":
 			if symbol, ok := namedSymbolFromNode(node, content, SymbolKindClass); ok {
+				symbol.PackageName = namespace
 				symbols = append(symbols, symbol)
 			}
 		case "interface_declaration", "struct_declaration", "record_declaration", "record_struct_declaration", "enum_declaration":
 			if symbol, ok := namedSymbolFromNode(node, content, SymbolKindType); ok {
+				symbol.PackageName = namespace
 				symbols = append(symbols, symbol)
 			}
 		case "method_declaration", "constructor_declaration", "property_declaration":
 			if symbol, ok := namedSymbolFromNode(node, content, SymbolKindMethod); ok {
+				symbol.PackageName = namespace
 				symbols = append(symbols, symbol)
 			}
 		}
 		childCursor := node.Walk()
 		defer childCursor.Close()
+		nextNamespace := currentNamespace
 		for _, child := range node.NamedChildren(childCursor) {
 			child := child
-			visit(&child)
+			childNamespace := currentNamespace
+			if node.Kind() == "translation_unit" {
+				childNamespace = nextNamespace
+			}
+			updatedNamespace := visit(&child, childNamespace)
+			if node.Kind() == "translation_unit" && child.Kind() == "file_scoped_namespace_declaration" {
+				nextNamespace = updatedNamespace
+			}
+		}
+		return currentNamespace
+	}
+	visit(root, rootNamespace)
+	return symbols
+}
+
+func csharpQualifiedNamespace(parent string, name string) string {
+	parent = strings.TrimSpace(parent)
+	name = strings.TrimSpace(name)
+	if parent == "" || name == "" {
+		return name
+	}
+	if name == parent || strings.HasPrefix(name, parent+".") {
+		return name
+	}
+	return parent + "." + name
+}
+
+func csharpFileScopedNamespace(root *tree_sitter.Node, content []byte) string {
+	if root == nil {
+		return ""
+	}
+	cursor := root.Walk()
+	defer cursor.Close()
+	for _, child := range root.NamedChildren(cursor) {
+		if child.Kind() != "file_scoped_namespace_declaration" {
+			continue
+		}
+		if symbol, ok := namedSymbolFromNode(&child, content, SymbolKindPackage); ok {
+			return symbol.Name
 		}
 	}
-	visit(root)
-	return symbols
+	return ""
 }
 
 func extractCSharpImplementations(root *tree_sitter.Node, content []byte) []Implementation {
