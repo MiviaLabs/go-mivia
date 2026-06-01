@@ -6,7 +6,7 @@ Generic Go microservices monorepo for AI-agent work.
 
 ## Overview
 
-This repository contains the local Mivia service platform. The current service is `mivia-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, redacted agent-run metadata, promotion-gate decisions, research metadata, project registry, project ingestion, reliability checks, context packs, and semantic code-context workflows.
+This repository contains the local Mivia service platform. The current service is `mivia-server`, a Go HTTP server that exposes REST APIs under `/api/v1` and MCP Streamable HTTP under `/mcp` for local agent-control, redacted agent-run metadata, promotion-gate decisions, research metadata, project registry, project ingestion, reliability checks, context packs, and semantic code-context workflows. The dashboard also includes a persistent, redacted Agent Activity stream so engineers can inspect recent MCP calls, reconnect without losing events, and see policy guard events without persisting raw payloads by default.
 
 The platform is local-first and localhost-only by default. It stores local metadata through the Ladybug graph abstraction and SQLite app-configuration store, supports optional local project configuration, and can run manual metadata-only project digests plus explicitly opted-in local content graph ingestion with governed FTS, named AST search, git status/diff, and exact token-guarded file edits. It also supports approved local Jira/Confluence project integrations with polling-only ingestion and bounded local graph search/read. It does not call live AI or browsing providers, expose public APIs, run embeddings/vector storage, crawl arbitrary roots, expose arbitrary shell, or use production database infrastructure.
 
@@ -28,6 +28,7 @@ flowchart TB
   MCP["MCP /mcp"]
   Tasks["Tasks and research metadata"]
   AgentRuns["Redacted agent-run metadata"]
+  Activity["Agent Activity: persistent redacted SSE, reconnect replay, policy events"]
   Registry["Local project registry"]
   Reliability["Reliability checks: context health, impact analysis, stale claims"]
   ContextPack["Context packs: search hits, files, symbols, impact"]
@@ -56,6 +57,8 @@ flowchart TB
   MCP --> Tasks
   REST --> AgentRuns
   MCP --> AgentRuns
+  REST --> Activity
+  MCP --> Activity
   AgentRuns --> Promotion
   REST --> Registry
   MCP --> Registry
