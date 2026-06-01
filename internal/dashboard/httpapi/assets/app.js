@@ -2,6 +2,7 @@ const projectsBody = document.querySelector("#projects");
 const summary = document.querySelector("#summary");
 const statusBox = document.querySelector("#status");
 const refresh = document.querySelector("#refresh");
+const metrics = document.querySelector("#metrics");
 
 refresh.addEventListener("click", loadDashboard);
 
@@ -10,6 +11,7 @@ loadDashboard();
 async function loadDashboard() {
   refresh.disabled = true;
   statusBox.textContent = "";
+  metrics.innerHTML = "";
   projectsBody.innerHTML = "";
   summary.textContent = "Loading projects";
 
@@ -17,6 +19,7 @@ async function loadDashboard() {
     const data = await fetchJSON("/api/v1/projects", 4000);
     const projects = Array.isArray(data.projects) ? data.projects : [];
     summary.textContent = `${projects.length} configured project${projects.length === 1 ? "" : "s"}`;
+    renderMetrics(projects);
     renderProjects(projects);
     await loadOptionalStatus(projects);
   } catch (error) {
@@ -25,6 +28,31 @@ async function loadDashboard() {
   } finally {
     refresh.disabled = false;
   }
+}
+
+function renderMetrics(projects) {
+  const enabled = projects.filter((project) => project.enabled).length;
+  const valid = projects.filter((project) => project.validation_status === "valid").length;
+  const live = projects.filter((project) => project.update_policy === "live").length;
+  const editable = projects.filter((project) => project.workspace_mode === "edit").length;
+
+  metrics.replaceChildren(
+    metricCard("Projects", projects.length, `${enabled} enabled`),
+    metricCard("Validation", valid, `${projects.length - valid} need attention`),
+    metricCard("Live graphs", live, `${projects.length - live} manual or disabled`),
+    metricCard("Workspace edit", editable, `${projects.length - editable} read-only`),
+  );
+}
+
+function metricCard(label, value, note) {
+  const card = document.createElement("article");
+  card.className = "metric";
+  card.innerHTML = `
+    <span>${escapeHTML(label)}</span>
+    <strong>${escapeHTML(value)}</strong>
+    <small>${escapeHTML(note)}</small>
+  `;
+  return card;
 }
 
 function renderProjects(projects) {
