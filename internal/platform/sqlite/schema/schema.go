@@ -7,7 +7,7 @@ import (
 )
 
 const Component = "sqlite_app_config"
-const Version = 16
+const Version = 17
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS app_settings (
@@ -359,12 +359,15 @@ var statements = []string{
 	`CREATE TABLE IF NOT EXISTS agent_activity_events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		occurred_at TEXT NOT NULL,
+		event_kind TEXT NOT NULL DEFAULT 'mcp_activity',
 		project_id TEXT NOT NULL DEFAULT '',
 		method TEXT NOT NULL,
 		tool_name TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL,
 		duration_ms INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
 		failure_category TEXT NOT NULL DEFAULT '',
+		policy_category TEXT NOT NULL DEFAULT '',
+		relative_path TEXT NOT NULL DEFAULT '',
 		request_id TEXT NOT NULL DEFAULT '',
 		client_class TEXT NOT NULL DEFAULT '',
 		input_summary_hash TEXT NOT NULL DEFAULT '',
@@ -489,6 +492,21 @@ var integrationItemColumns = []columnDefinition{
 	},
 }
 
+var agentActivityColumns = []columnDefinition{
+	{
+		Name:       "event_kind",
+		Definition: "event_kind TEXT NOT NULL DEFAULT 'mcp_activity'",
+	},
+	{
+		Name:       "policy_category",
+		Definition: "policy_category TEXT NOT NULL DEFAULT ''",
+	},
+	{
+		Name:       "relative_path",
+		Definition: "relative_path TEXT NOT NULL DEFAULT ''",
+	},
+}
+
 var integrationSyncRunColumns = []columnDefinition{
 	{
 		Name:       "items_changed",
@@ -538,6 +556,9 @@ func Bootstrap(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
 	}
 	if err := ensureColumns(ctx, db, "project_integration_items", integrationItemColumns); err != nil {
+		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
+	}
+	if err := ensureColumns(ctx, db, "agent_activity_events", agentActivityColumns); err != nil {
 		return fmt.Errorf("bootstrap sqlite app-config schema: %w", err)
 	}
 	for _, stmt := range postColumnStatements {

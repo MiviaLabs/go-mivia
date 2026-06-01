@@ -16,6 +16,7 @@ const defaultCapacity = 500
 type Event struct {
 	ID                 int64           `json:"id"`
 	Timestamp          time.Time       `json:"timestamp"`
+	EventKind          string          `json:"event_kind,omitempty"`
 	ProjectID          string          `json:"project_id,omitempty"`
 	Method             string          `json:"method"`
 	ToolName           string          `json:"tool_name,omitempty"`
@@ -23,6 +24,8 @@ type Event struct {
 	DurationMS         int64           `json:"duration_ms"`
 	Error              string          `json:"error,omitempty"`
 	FailureCategory    string          `json:"failure_category,omitempty"`
+	PolicyCategory     string          `json:"policy_category,omitempty"`
+	RelativePath       string          `json:"relative_path,omitempty"`
 	RequestID          string          `json:"request_id,omitempty"`
 	RemoteAddr         string          `json:"remote_addr,omitempty"`
 	UserAgent          string          `json:"user_agent,omitempty"`
@@ -35,6 +38,12 @@ type Event struct {
 	RawParams          json.RawMessage `json:"raw_params,omitempty"`
 	RawArgs            json.RawMessage `json:"raw_arguments,omitempty"`
 	RawResult          json.RawMessage `json:"raw_result,omitempty"`
+}
+
+type PolicyEvent struct {
+	ProjectID string
+	Category  string
+	Path      string
 }
 
 type Store interface {
@@ -114,6 +123,26 @@ func (recorder *Recorder) Record(event Event) Event {
 		}
 	}
 	return event
+}
+
+func (recorder *Recorder) RecordPolicyEvent(event PolicyEvent) Event {
+	if recorder == nil {
+		return Event{}
+	}
+	category := safePolicyCategory(event.Category)
+	if category == "" {
+		category = "policy_denied"
+	}
+	return recorder.Record(Event{
+		EventKind:       "policy_event",
+		ProjectID:       safeProjectID(event.ProjectID),
+		Method:          "policy_event",
+		ToolName:        category,
+		Status:          "denied",
+		FailureCategory: category,
+		PolicyCategory:  category,
+		RelativePath:    safeRelativePath(event.Path),
+	})
 }
 
 func (recorder *Recorder) Recent(projectID string, limit int) []Event {
@@ -233,6 +262,9 @@ func enrichEvent(event Event) Event {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
 	}
+	if event.EventKind == "" {
+		event.EventKind = "mcp_activity"
+	}
 	if event.ClientClass == "" {
 		event.ClientClass = classifyClient(event.UserAgent)
 	}
@@ -249,6 +281,42 @@ func enrichEvent(event Event) Event {
 		event.OutputSummaryClass = "error"
 	}
 	return event
+}
+
+func safeProjectID(value string) string {
+	return safeIdentifierLike(value, 200)
+}
+
+func safePolicyCategory(value string) string {
+	return safeIdentifierLike(value, 100)
+}
+
+func safeRelativePath(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	if value == "" || len(value) > 300 || strings.HasPrefix(value, "/") || strings.Contains(value, "..") {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == '/' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func safeIdentifierLike(value string, maxLength int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > maxLength {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == '/' {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 func firstRaw(values ...json.RawMessage) json.RawMessage {
