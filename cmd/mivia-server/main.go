@@ -98,14 +98,15 @@ func run() error {
 			return err
 		}
 	}
-	metadataPersistentGraph, err := ladybug.OpenPersistentGraph(cfg.LadybugPath + ".metadata")
+	metadataPersistentGraph, err := ladybug.OpenPebbleGraph(ladybug.PebbleGraphPath(cfg.LadybugPath + ".metadata"))
 	if err != nil {
 		return err
 	}
-	projectPersistentGraphs, err := openProjectPersistentGraphs(projectRegistry, cfg.LadybugPath)
+	projectPersistentGraphs, closeProjectGraphs, err := openProjectPersistentGraphs(projectRegistry, cfg.LadybugPath)
 	if err != nil {
 		return err
 	}
+	defer closeProjectGraphs()
 	projectGraph := projectregistry.NewProjectScopedGraphRouter(projectRegistry, ladybug.NewMemoryGraph(), projectPersistentGraphs)
 	if err := projectGraph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
 		return err
@@ -311,31 +312,50 @@ func run() error {
 	}
 }
 
-func openProjectPersistentGraphs(registry *projectregistry.Registry, baseLadybugPath string) ([]projectregistry.ProjectGraphBackend, error) {
+func openProjectPersistentGraphs(registry *projectregistry.Registry, baseLadybugPath string) ([]projectregistry.ProjectGraphBackend, func(), error) {
 	backends := make([]projectregistry.ProjectGraphBackend, 0)
+	graphLRU := ladybug.NewPebbleGraphLRU(projectPersistentGraphMaxOpen(registry))
+	closeGraphs := func() { _ = graphLRU.CloseAll() }
 	for _, project := range registry.List() {
 		if !project.Enabled || project.DigestMode != projectregistry.DigestModeContentGraph || project.GraphStorage != projectregistry.GraphStoragePersistent {
 			continue
 		}
 		path, err := projectregistry.ProjectGraphPath(baseLadybugPath, project.ID)
 		if err != nil {
-			return nil, err
+			closeGraphs()
+			return nil, nil, err
 		}
 		storageKey, err := projectregistry.ProjectGraphStorageKey(project.ID)
 		if err != nil {
-			return nil, err
-		}
-		graph, err := ladybug.OpenPersistentGraph(path)
-		if err != nil {
-			return nil, err
+			closeGraphs()
+			return nil, nil, err
 		}
 		backends = append(backends, projectregistry.ProjectGraphBackend{
 			ProjectID:  project.ID,
-			Graph:      graph,
+			Graph:      ladybug.NewLazyPebbleGraph(ladybug.PebbleGraphPath(path), graphLRU),
 			StorageKey: storageKey,
 		})
 	}
-	return backends, nil
+	return backends, closeGraphs, nil
+}
+
+func projectPersistentGraphMaxOpen(registry *projectregistry.Registry) int {
+	if registry == nil {
+		return 1
+	}
+	count := 0
+	for _, project := range registry.List() {
+		if project.Enabled && project.DigestMode == projectregistry.DigestModeContentGraph && project.GraphStorage == projectregistry.GraphStoragePersistent {
+			count++
+		}
+	}
+	if count <= 0 {
+		return 1
+	}
+	if count <= ladybug.DefaultPebbleGraphMaxOpen {
+		return count
+	}
+	return ladybug.DefaultPebbleGraphMaxOpen
 }
 
 func openProjectSearchStores(registry *projectregistry.Registry, baseLadybugPath string, sqliteCfg config.SQLite, stateStore *projectingestion.SQLiteStore) ([]projectingestion.SearchStoreBackend, func(), error) {

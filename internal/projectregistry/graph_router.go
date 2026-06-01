@@ -26,9 +26,18 @@ type ProjectGraphBackend struct {
 }
 
 type GraphStorageDiagnostic struct {
-	ProjectID  string `json:"project_id"`
-	Backend    string `json:"backend"`
-	StorageKey string `json:"storage_key,omitempty"`
+	ProjectID    string `json:"project_id"`
+	Backend      string `json:"backend"`
+	StorageKey   string `json:"storage_key,omitempty"`
+	Open         bool   `json:"open,omitempty"`
+	Leases       int    `json:"leases,omitempty"`
+	OpenTotal    int    `json:"open_total,omitempty"`
+	CloseTotal   int    `json:"close_total,omitempty"`
+	BlockedClose int    `json:"blocked_close,omitempty"`
+}
+
+type graphLifecycleDiagnostics interface {
+	Diagnostics() ladybug.LazyPebbleGraphDiagnostics
 }
 
 func NewProjectGraphRouter(registry *Registry, memory ladybug.Graph, persistent ladybug.Graph) *ProjectGraphRouter {
@@ -303,13 +312,30 @@ func (router *ProjectGraphRouter) GraphStorageDiagnostics() []GraphStorageDiagno
 		}
 		if project.Enabled && project.DigestMode == DigestModeContentGraph && project.GraphStorage == GraphStoragePersistent {
 			if storageKey := strings.TrimSpace(router.storageKeyByProject[project.ID]); storageKey != "" {
-				diagnostic.Backend = "persistent_project"
+				diagnostic.Backend = "persistent_pebble_project"
 				diagnostic.StorageKey = storageKey
+				if backend := router.persistentByProject[project.ID]; backend != nil {
+					diagnostic.applyLifecycleDiagnostics(backend)
+				}
 			} else if router.persistent != nil {
 				diagnostic.Backend = "persistent_shared"
+				diagnostic.applyLifecycleDiagnostics(router.persistent)
 			}
 		}
 		diagnostics = append(diagnostics, diagnostic)
 	}
 	return diagnostics
+}
+
+func (diagnostic *GraphStorageDiagnostic) applyLifecycleDiagnostics(graph ladybug.Graph) {
+	lifecycle, ok := graph.(graphLifecycleDiagnostics)
+	if !ok {
+		return
+	}
+	state := lifecycle.Diagnostics()
+	diagnostic.Open = state.Open
+	diagnostic.Leases = state.Leases
+	diagnostic.OpenTotal = state.OpenTotal
+	diagnostic.CloseTotal = state.CloseTotal
+	diagnostic.BlockedClose = state.BlockedClose
 }

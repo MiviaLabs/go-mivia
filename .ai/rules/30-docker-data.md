@@ -10,21 +10,22 @@ Local runtime:
 
 Database posture:
 
-- Use embedded LadybugDB as the bootstrap graph persistence store through `github.com/LadybugDB/go-ladybug`.
+- Use the internal Ladybug graph abstraction for graph persistence. Durable content-graph storage uses the lazy-opened Pebble-backed Ladybug implementation behind the existing `graph_storage = "persistent"` setting.
 - Use SQLite as the local app-configuration store.
 - Do not configure PostgreSQL, pgvector, Neo4j, Docker Compose database services, database secret files, or database volumes during bootstrap.
-- Store local database files under a configurable path such as `MIVIA_LADYBUG_PATH`, defaulting to an ignored local `data/` directory.
+- Store local graph database files under a configurable path such as `MIVIA_LADYBUG_PATH`, defaulting to an ignored local `data/` directory.
 - Store SQLite configuration data under a configurable path such as `MIVIA_SQLITE_PATH`, defaulting to an ignored local `data/` directory.
 - Use in-memory LadybugDB for unit tests where possible.
 - Use in-memory SQLite for unit tests where possible.
 - Model schema changes as idempotent bootstrap queries; no destructive resets, truncation, or drop-and-recreate flows.
 - Do not hardcode vector dimension until an ADR approves the embedding provider, storage model, and dimension.
 
-LadybugDB runtime:
+Ladybug runtime:
 
-- LadybugDB is CGO-backed. Do not import it into normal build paths until native library setup is documented and automated.
-- Do not commit `lib-ladybug/`, local database files, generated runtime artifacts, or seed data.
+- Do not expose Pebble, JSONL, native LadybugDB, or SQLite raw query execution over REST or MCP.
+- Do not commit `lib-ladybug/`, Pebble data directories, local database files, generated runtime artifacts, or seed data.
 - Do not store PII, raw prompts, raw fetched content, credentials, tokens, or personal data in database fixtures.
+- No migration from legacy JSONL graph files or legacy project search SQLite files is supported for the Pebble-backed content graph epoch. Stop the server, delete ignored local graph/search files if desired, and run full reingestion.
 
 SQLite runtime:
 

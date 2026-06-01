@@ -7,7 +7,7 @@ import (
 )
 
 const projectGraphFilename = "mivialabs.lbug"
-const projectSearchFilename = "mivialabs-search.sqlite"
+const projectSearchFilename = "mivialabs-pebble-search.sqlite"
 
 func ProjectGraphStorageKey(projectID string) (string, error) {
 	projectID = strings.TrimSpace(projectID)

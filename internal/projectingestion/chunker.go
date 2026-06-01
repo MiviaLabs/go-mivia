@@ -59,7 +59,7 @@ func BuildChunksFromReader(relativePath string, reader io.Reader, sizeBytes int6
 	scanner := bufio.NewReaderSize(reader, options.MaxChunkBytes)
 	var sample []byte
 	sampleChecked := false
-	var tail []byte
+	sensitive := newStreamingSensitiveScanner()
 	var total int64
 	for {
 		r, width, err := scanner.ReadRune()
@@ -92,11 +92,7 @@ func BuildChunksFromReader(relativePath string, reader io.Reader, sizeBytes int6
 			}
 		}
 		hasher.Write(piece)
-		tail = append(tail, piece...)
-		if len(tail) > 4096 {
-			tail = tail[len(tail)-4096:]
-		}
-		if containsSensitiveContent(tail) {
+		if sensitive.Write(piece) {
 			return ChunkSet{}, skipped(SkipReasonSensitiveContent, normalizedPath, true, int(total)), nil
 		}
 		if err := builder.appendRune(r, piece); err != nil {

@@ -14,6 +14,7 @@ import (
 
 var ErrRunNotFound = errors.New("ingestion run not found")
 var ErrExtractorCacheMiss = errors.New("extractor cache miss")
+var ErrExtractorCacheLegacyFingerprint = errors.New("extractor cache legacy empty fingerprint")
 
 type FileStateFilter struct {
 	Status        FileStatus
@@ -597,9 +598,31 @@ func (store *SQLiteStore) GetExtractorCacheWithFingerprint(ctx context.Context, 
 	)
 	entry, err := scanExtractorCacheEntry(row)
 	if errors.Is(err, sql.ErrNoRows) {
+		if store.hasLegacyExtractorCacheEntry(ctx, projectID, relativePathHash, contentSHA256, extractorName, extractorVersion) {
+			return ExtractorCacheEntry{}, errors.Join(ErrExtractorCacheMiss, ErrExtractorCacheLegacyFingerprint)
+		}
 		return ExtractorCacheEntry{}, ErrExtractorCacheMiss
 	}
 	return entry, err
+}
+
+func (store *SQLiteStore) hasLegacyExtractorCacheEntry(ctx context.Context, projectID string, relativePathHash string, contentSHA256 string, extractorName string, extractorVersion string) bool {
+	var value string
+	err := store.db.QueryRowContext(ctx, `SELECT extractor_fingerprint
+	FROM project_extractor_cache
+	WHERE project_id = ?
+		AND relative_path_hash = ?
+		AND content_sha256 = ?
+		AND extractor_name = ?
+		AND extractor_version = ?
+	LIMIT 1`,
+		projectID,
+		relativePathHash,
+		contentSHA256,
+		extractorName,
+		extractorVersion,
+	).Scan(&value)
+	return err == nil && strings.TrimSpace(value) == ""
 }
 
 func (store *SQLiteStore) SaveExtractorCache(ctx context.Context, entry ExtractorCacheEntry) error {

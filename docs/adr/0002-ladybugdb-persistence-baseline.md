@@ -1,30 +1,31 @@
-# ADR-0002: LadybugDB And SQLite Persistence Baseline
+# ADR-0002: Ladybug Graph And SQLite Persistence Baseline
 
-Status: Accepted for bootstrap
+Status: Accepted for bootstrap; amended 2026-06-02 for Pebble-backed content graph persistence
 Date: 2026-05-30
 
 ## Context
 
-The bootstrap plan originally considered PostgreSQL with pgvector and Neo4j. That direction is now removed from bootstrap scope. The selected baseline is embedded LadybugDB for graph persistence plus SQLite for local app configuration.
+The bootstrap plan originally considered PostgreSQL with pgvector and Neo4j. That direction is now removed from bootstrap scope. The selected baseline is the internal Ladybug graph abstraction for graph persistence plus SQLite for local app configuration.
 
 The repository currently has only the root Go module, dependency anchor, docs, and agent workflow files. There is no service code, schema, migration runner, Docker runtime, REST API, MCP endpoint, or approved PII processing.
 
 ## Decision
 
-Use LadybugDB as the bootstrap graph persistence store and SQLite as the local app-configuration store.
+Use the internal Ladybug graph abstraction as the bootstrap graph persistence boundary and SQLite as the local app-configuration store. For durable content-graph projects, `graph_storage = "persistent"` uses the Pebble-backed Ladybug graph implementation.
 
-- Use `github.com/LadybugDB/go-ladybug` from the root module.
+- Keep `github.com/LadybugDB/go-ladybug` only as the native dependency anchor until native usage is explicitly re-approved.
+- Use `github.com/cockroachdb/pebble/v2` for durable content-graph storage under the Ladybug abstraction.
 - Use `modernc.org/sqlite` as the bootstrap SQLite driver.
 - Keep PostgreSQL, pgvector, Neo4j, and database Docker Compose out of bootstrap.
 - Start with one local embedded database path configured by `MIVIA_LADYBUG_PATH`.
 - Start with one local SQLite path configured by `MIVIA_SQLITE_PATH`.
 - Default local runtime data to an ignored `data/` directory.
-- Use in-memory LadybugDB for tests where possible.
+- Use in-memory Ladybug graphs for tests where possible.
 - Use in-memory SQLite for tests where possible.
 - Keep schema initialization idempotent and forward-only.
 - Do not expose raw LadybugDB or SQLite query execution over REST or MCP.
 
-`go-ladybug` is CGO-backed. Before any normal build path imports it, add a controlled native library setup path for local development and CI. The native library directory must remain ignored and uncommitted.
+`go-ladybug` is CGO-backed. Before any normal build path imports native LadybugDB, add a controlled native library setup path for local development and CI. The native library directory must remain ignored and uncommitted. Pebble is pure Go and is now the durable content-graph persistence implementation.
 
 ## Initial Data Shape
 
@@ -59,16 +60,19 @@ SQLite must not store real secrets, credentials, tokens, raw prompts, raw fetche
 ## Consequences
 
 - The first service can run without external database containers.
+- Content-graph writes avoid JSONL snapshot/replay scaling limits.
 - App configuration is local and lightweight without mixing settings into graph data.
-- CI must account for native LadybugDB libraries before service packages import `go-ladybug`.
+- CI does not need native LadybugDB libraries for the Pebble-backed content graph.
 - Vector search is not part of the bootstrap until a later ADR approves embedding provider, vector dimension, and storage model.
 - Backups, compaction, concurrency limits, and production-readiness remain open decisions before any production use.
+- No migration is supported from legacy JSONL graph data to Pebble. Stop the server, delete ignored local graph files, and run full reingestion.
 
 ## Verification
 
 Phase 3 verification:
 
 - `go list -m github.com/LadybugDB/go-ladybug`
+- `go list -m github.com/cockroachdb/pebble/v2`
 - `go mod tidy`
 - `go test ./...`
 - Confirm no PostgreSQL, pgvector, Neo4j, Compose database runtime, database secret files, or database migrations exist.

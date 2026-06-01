@@ -72,7 +72,7 @@ Defaults:
 - Content graph ingestion: `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true`
 - Live updates: `MIVIA_INGESTION_LIVE_UPDATES_ENABLED=true`
 - Global workspace gate: `MIVIA_WORKSPACE_ENABLED=true`
-- Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`; persistent project graph/search stores live under `/var/lib/mivia/projects/<project-id>/`
+- Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`; persistent project graph/search stores live under `/var/lib/mivia/projects/<project-id>/`, with search SQLite filenames tied to the Pebble graph storage epoch.
 - Container storage: named Compose volume `mivia-data`
 - Config file: `configs/mivia-server.compose.toml`
 

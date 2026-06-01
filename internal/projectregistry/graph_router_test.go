@@ -460,10 +460,54 @@ func TestProjectGraphRouter_GraphStorageDiagnosticsAreRedacted(t *testing.T) {
 	if len(diagnostics) != 2 {
 		t.Fatalf("expected two diagnostics, got %#v", diagnostics)
 	}
-	if diagnostics[0].Backend != "persistent_project" || diagnostics[0].StorageKey != "persistent-project" {
+	if diagnostics[0].Backend != "persistent_pebble_project" || diagnostics[0].StorageKey != "persistent-project" {
 		t.Fatalf("unexpected persistent diagnostic: %#v", diagnostics[0])
 	}
 	if diagnostics[1].Backend != "in_memory_shared" || diagnostics[1].StorageKey != "" {
 		t.Fatalf("unexpected memory diagnostic: %#v", diagnostics[1])
+	}
+}
+
+func TestProjectGraphRouter_GraphStorageDiagnosticsIncludeLazyLifecycleState(t *testing.T) {
+	ctx := context.Background()
+	registry, err := NewRegistry([]config.Project{
+		{
+			ID:             "persistent-project",
+			DisplayName:    "Persistent Project",
+			RootPath:       t.TempDir(),
+			Enabled:        true,
+			GraphNamespace: "persistent",
+			GraphStorage:   GraphStoragePersistent,
+			DigestMode:     DigestModeContentGraph,
+			UpdatePolicy:   UpdatePolicyManual,
+		},
+	}, Options{
+		ContentGraphEnabled:          true,
+		ContentGraphApprovalAccepted: true,
+		LadybugPath:                  filepath.Join(t.TempDir(), "graph.lbug"),
+		SQLitePath:                   ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+
+	backend := ladybug.NewLazyPebbleGraph(t.TempDir(), ladybug.NewPebbleGraphLRU(1))
+	if err := backend.PutNode(ctx, ladybug.Node{
+		Label:      "RepoFile",
+		ID:         "persistent:file",
+		Properties: map[string]string{"project_id": "persistent-project"},
+	}); err != nil {
+		t.Fatalf("open lazy backend: %v", err)
+	}
+	router := NewProjectScopedGraphRouter(registry, ladybug.NewMemoryGraph(), []ProjectGraphBackend{
+		{ProjectID: "persistent-project", Graph: backend, StorageKey: "persistent-project"},
+	})
+
+	diagnostics := router.GraphStorageDiagnostics()
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic, got %#v", diagnostics)
+	}
+	if diagnostics[0].StorageKey != "persistent-project" || !diagnostics[0].Open || diagnostics[0].Leases != 0 || diagnostics[0].OpenTotal != 1 {
+		t.Fatalf("unexpected lazy lifecycle diagnostic: %#v", diagnostics[0])
 	}
 }

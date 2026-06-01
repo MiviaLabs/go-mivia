@@ -60,6 +60,21 @@ func TestBuildChunksFromReader_ChunksLargeTextWithoutMaxFileBytesSkip(t *testing
 	}
 }
 
+func TestBuildChunksFromReader_DetectsSensitiveMarkerAcrossChunkBoundaries(t *testing.T) {
+	content := strings.Repeat("safe text\n", 40) + "api_key = synthetic_secret_value\n"
+	_, safety, err := BuildChunksFromReader("logs/large.txt", strings.NewReader(content), int64(len(content)), SafetyOptions{
+		MaxFileBytes:          32,
+		MaxChunkBytes:         17,
+		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
+	})
+	if err != nil {
+		t.Fatalf("build streaming chunks: %v", err)
+	}
+	if safety.Reason != SkipReasonSensitiveContent {
+		t.Fatalf("expected sensitive content skip, got %#v", safety)
+	}
+}
+
 func TestBuildChunks_RejectsSkippedContentBeforeHashing(t *testing.T) {
 	chunkSet, safety, err := BuildChunks("docs/synthetic.md", []byte("password = synthetic_marker_value\n"), SafetyOptions{
 		MaxFileBytes:          1024,

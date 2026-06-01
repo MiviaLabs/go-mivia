@@ -2,6 +2,7 @@ package projectingestion
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -101,6 +102,27 @@ func TestExtractorCacheFingerprintInvalidatesSameVersion(t *testing.T) {
 	}
 	if extractor.calls != 2 {
 		t.Fatalf("expected fingerprint change to reparse, got %d calls", extractor.calls)
+	}
+}
+
+func TestExtractorCacheWithFingerprintReportsLegacyEmptyFingerprintMiss(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	entry := ExtractorCacheEntry{
+		ProjectID:            "project",
+		RelativePathHash:     "hash",
+		ContentSHA256:        "sha256:content",
+		ExtractorName:        "extractor",
+		ExtractorVersion:     "1",
+		Symbols:              []Symbol{{Kind: SymbolKindFunction, Name: "Old"}},
+		ExtractorFingerprint: "",
+	}
+	if err := store.SaveExtractorCache(ctx, entry); err != nil {
+		t.Fatalf("save legacy cache: %v", err)
+	}
+	_, err := store.GetExtractorCacheWithFingerprint(ctx, entry.ProjectID, entry.RelativePathHash, entry.ContentSHA256, entry.ExtractorName, entry.ExtractorVersion, "sha256:new")
+	if !errors.Is(err, ErrExtractorCacheMiss) || !errors.Is(err, ErrExtractorCacheLegacyFingerprint) {
+		t.Fatalf("expected legacy fingerprint cache miss, got %v", err)
 	}
 }
 
