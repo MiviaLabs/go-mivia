@@ -300,6 +300,31 @@ paths:
                 $ref: '#/components/schemas/ProjectDashboardSummary'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/agent-activity/stream:
+    get:
+      operationId: streamProjectAgentActivity
+      summary: Stream project-scoped MCP activity
+      description: Streams recent and live in-memory MCP activity events for one local project as server-sent events. Full raw request, params, and argument payloads may be present for local debugging and are not persisted by this endpoint.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: recent
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 500
+      responses:
+        '200':
+          description: Server-sent MCP activity stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /projects/{id}/impact/analyze:
     post:
       operationId: analyzeProjectImpact

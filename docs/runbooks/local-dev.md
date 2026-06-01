@@ -60,10 +60,10 @@ Official setup reference: [Docker Desktop WSL 2 backend](https://docs.docker.com
 The default Compose file builds from this checkout. After the first public image is published, the Compose file includes a commented pull example:
 
 ```yaml
-# image: ghcr.io/mivialabs/go-mivia:0.1.10
+# image: ghcr.io/mivialabs/go-mivia:0.1.11
 ```
 
-Go module releases and container images are versioned in different registries. The Go module release tag should be `v0.1.10`; the container image tag can be `0.1.10` when the release workflow publishes it that way.
+Go module releases and container images are versioned in different registries. The Go module release tag should be `v0.1.11`; the container image tag can be `0.1.11` when the release workflow publishes it that way.
 
 Defaults:
 
@@ -195,6 +195,12 @@ curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/files/<file_id>
 ```
 
 Content graph responses are bounded and must not include absolute roots, skipped sensitive content, matched sensitive text, secrets, PII, raw prompts, provider payloads, or raw database query results.
+
+## Dashboard Activity
+
+Open `http://127.0.0.1:8080/dashboard/`, select a project, then use `Agent activity` on the project details page to watch project-scoped MCP calls. The drawer streams recent and live activity over `GET /api/v1/projects/{id}/agent-activity/stream` and shows method/tool, status, duration, request/client metadata, a collapsed call summary with inputs and outputs, and collapsed full request/params/arguments/result payloads.
+
+The drawer is for localhost debugging. Full payloads may include source snippets, prompts, secrets, or personal data if a caller sent them. Do not paste full payloads into docs, commits, issue trackers, Slack, or agent-run metadata unless the task explicitly requires that exposure.
 
 ## MCP Smoke
 

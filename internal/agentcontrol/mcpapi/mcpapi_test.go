@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/mcpapi"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
@@ -110,6 +111,53 @@ func TestToolsCall_CreateAndGetTask(t *testing.T) {
 	}
 	if !bytes.Contains(get.Body.Bytes(), []byte(taskID)) {
 		t.Fatalf("expected fetched task id, got %s", get.Body.String())
+	}
+}
+
+func TestToolsCall_RecordsProjectScopedActivityWithRawPayload(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	registry, err := projectregistry.NewRegistry([]config.Project{{
+		ID:             "example-service",
+		DisplayName:    "Example Service",
+		RootPath:       t.TempDir(),
+		Enabled:        true,
+		Classification: projectregistry.ClassificationInternal,
+		GraphNamespace: "example-service",
+		DigestMode:     projectregistry.DigestModeContentGraph,
+		UpdatePolicy:   projectregistry.UpdatePolicyManual,
+		WorkspaceMode:  projectregistry.WorkspaceModeReadOnly,
+		Include:        []string{"**/*.go"},
+		MaxFileBytes:   4096,
+		MaxChunkBytes:  1024,
+	}}, projectregistry.Options{
+		ContentGraphEnabled:          true,
+		ContentGraphApprovalAccepted: true,
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(t.Context(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	activity := agentactivity.NewRecorder(10)
+	handler := mcpapi.NewHandlerWithActivity(svc, nil, registry, projectregistry.NewDigestService(registry, graph), nil, nil, nil, nil, activity, slog.Default())
+
+	res := postMCP(t, handler, `{"jsonrpc":"2.0","id":"abc","method":"tools/call","params":{"name":"projects.get","arguments":{"id":"example-service"}}}`)
+	if bytes.Contains(res.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected project tool success, got %s", res.Body.String())
+	}
+	events := activity.Recent("example-service", 10)
+	if len(events) != 1 {
+		t.Fatalf("expected one project-scoped activity event, got %#v", events)
+	}
+	event := events[0]
+	if event.ToolName != "projects.get" || event.RequestID != "abc" || event.Status != "ok" {
+		t.Fatalf("unexpected activity event %#v", event)
+	}
+	if !bytes.Contains(event.RawArgs, []byte("example-service")) {
+		t.Fatalf("expected raw arguments to be retained for collapsed details, got %s", string(event.RawArgs))
 	}
 }
 

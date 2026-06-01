@@ -321,7 +321,7 @@ func defaultKnownRoutes() []string {
 		"/api/v1/tasks", "/api/v1/tasks/*",
 		"/api/v1/research-runs", "/api/v1/research-runs/*",
 		"/api/v1/agent-runs", "/api/v1/agent-runs/*", "/api/v1/agent-runs/*/steps", "/api/v1/agent-runs/*/complete",
-		"/api/v1/projects", "/api/v1/projects/*", "/api/v1/projects/*/digest-runs", "/api/v1/projects/*/dashboard-summary",
+		"/api/v1/projects", "/api/v1/projects/*", "/api/v1/projects/*/digest-runs", "/api/v1/projects/*/dashboard-summary", "/api/v1/projects/*/agent-activity/stream",
 		"/api/v1/projects/*/context-health", "/api/v1/projects/*/impact/analyze", "/api/v1/projects/*/claims/check",
 		"/api/v1/projects/*/ingestion-runs", "/api/v1/projects/*/ingestion-runs/latest", "/api/v1/projects/*/ingestion-runs/*",
 		"/api/v1/projects/*/search-index/rebuild", "/api/v1/projects/*/files", "/api/v1/projects/*/files/*",

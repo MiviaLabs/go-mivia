@@ -67,6 +67,10 @@ func Timeout(timeout time.Duration) Middleware {
 	return func(next http.Handler) http.Handler {
 		timeoutHandler := http.TimeoutHandler(next, timeout, `{"error":{"code":"timeout","message":"request timed out"}}`)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/agent-activity/stream") && strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+				next.ServeHTTP(w, r)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			timeoutHandler.ServeHTTP(w, r)
 		})

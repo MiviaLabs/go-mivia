@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/httpapi"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/mcpapi"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
@@ -222,6 +223,7 @@ func run() error {
 		projectWorkspaceService = projectworkspace.NewService(projectRegistry, projectIngestionScheduler, projectworkspace.Options{Enabled: true})
 	}
 	agentService := service.New(agentStore, agentStore)
+	activityRecorder := agentactivity.NewRecorder(500)
 
 	checker := health.NewChecker(
 		health.Check{
@@ -248,7 +250,7 @@ func run() error {
 	mux.Handle("GET /readyz", health.ReadinessHandler(checker, logger))
 	httpapi.RegisterRoutes(mux, agentService)
 	researchhttpapi.RegisterRoutes(mux, researchService)
-	projecthttpapi.RegisterRoutesWithWorkspaceAndIntegrations(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService)
+	projecthttpapi.RegisterRoutesWithWorkspaceIntegrationsAndActivity(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, activityRecorder)
 	var diagnosticsService *diagnostics.Service
 	if diagnostics.Enabled(cfg.Debug.Enabled, cfg.HTTPAddr) {
 		diagnosticsService = diagnostics.NewService(projectingestion.DiagnosticsSource{
@@ -260,7 +262,7 @@ func run() error {
 		}, diagnostics.RuntimeOptions{Enabled: cfg.Debug.RuntimeMetricsEnabled})
 		diagnostics.RegisterRoutes(mux, diagnosticsService)
 	}
-	mux.Handle("/mcp", mcpapi.NewHandlerWithResearchProjectsIngestionWorkspaceIntegrationsAndDiagnostics(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, diagnosticsService, logger))
+	mux.Handle("/mcp", mcpapi.NewHandlerWithActivity(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, diagnosticsService, activityRecorder, logger))
 
 	handler := httpserver.Chain(
 		mux,

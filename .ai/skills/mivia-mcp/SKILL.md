@@ -48,7 +48,7 @@ Know or discover:
 - MCP endpoint, default `http://127.0.0.1:8080/mcp`.
 - Project ID, from the user or `projects.list`. Project-scoped tools also accept safe aliases returned by `projects.list` / `projects.get`, including configured repo/module aliases and auto-discovered Go module paths.
 - Host repository rules, tests, and privacy/security boundaries.
-- Release examples in docs, Docker Compose, and devcontainer snippets must stay on the current public release pair: Go module tag `v0.1.7` and container tag `0.1.7`.
+- Release examples in docs, Docker Compose, and devcontainer snippets must stay on the current public release pair: Go module tag `v0.1.11` and container tag `0.1.11`.
 
 Do not assume the current repository is the server repo. Do not assume any specific language or directory layout.
 
@@ -64,6 +64,7 @@ Do not assume the current repository is the server repo. Do not assume any speci
 | Bounded task context package | `projects.context_pack.build` | Manual broad scans, raw diffs, provider calls, full chunk dumps |
 | Redacted agent-run metadata and promotion decisions | `agent_runs.*` | Raw prompts, completions, source dumps, raw stderr, roots, secrets, provider payloads, or PII |
 | Configured Jira/Confluence status, poll, search, or read | Mivia MCP integration tools | Jira/Confluence connectors, provider dashboards, live Atlassian reads during local search/read |
+| Live project MCP activity inspection | Local dashboard `Agent activity` drawer or `GET /api/v1/projects/{id}/agent-activity/stream` | Persistent logs or external telemetry by default |
 | Current tests/runtime state, builds, logs, generated files, process control, arbitrary commands, non-opted-in repos | Shell or host tooling | MCP as proof of those runtime facts |
 
 If unclear:
@@ -211,6 +212,8 @@ Use raw HTTP only when no native MCP client is available:
 - Optional `MCP-Protocol-Version: 2025-06-18`
 
 Start with `tools/list`, then use `tools/call`. Do not use raw HTTP to bypass MCP boundaries.
+
+The local dashboard exposes a project-scoped `Agent activity` drawer backed by `GET /api/v1/projects/{id}/agent-activity/stream`. It streams in-memory MCP activity for the selected project, including method/tool, status, duration, request/client metadata, a collapsed input/output summary, and collapsed raw request/params/arguments/result payloads for localhost debugging. Treat the full payload as sensitive: it is useful for local inspection, but do not copy it into docs, commits, agent-run metadata, or external tools unless the task explicitly requires that exposure.
 
 ## A/B Agent Tests
 

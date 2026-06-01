@@ -5,10 +5,10 @@ SHELL := /usr/bin/env bash
 check: lint test
 
 lint:
-	./scripts/lint.sh
+	bash scripts/lint.sh
 
 test:
-	./scripts/test.sh
+	bash scripts/test.sh
 
 tidy:
 	go mod tidy

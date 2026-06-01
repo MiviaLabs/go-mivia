@@ -17,6 +17,13 @@ Classification: Internal; local project-integration rich-content exception only
 - Tool-call `arguments` may be an object or a JSON-encoded object string.
 - The server accepts both dotted tool names, for example `tasks.create`, and Codex-style underscore aliases, for example `tasks_create`.
 
+## Local Dashboard Activity
+
+- The REST dashboard exposes `GET /api/v1/projects/{id}/agent-activity/stream` as a project-scoped SSE stream for MCP activity.
+- The stream replays recent in-memory events and then sends live `mcp_activity` events for the selected project.
+- Events include method/tool, status, duration, request/client metadata, raw request/params/arguments, and raw tool result payloads for localhost debugging.
+- Raw payloads may include source snippets, prompts, secrets, provider payloads, or personal data if a caller sent them. They are not persisted by the activity recorder and should not be copied into durable artifacts without explicit intent.
+
 ## Tools
 
 ### `tasks.create`

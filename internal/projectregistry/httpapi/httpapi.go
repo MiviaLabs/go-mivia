@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
 	"github.com/MiviaLabs/go-mivia/internal/projectcontext"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
@@ -33,9 +34,16 @@ func RegisterRoutesWithWorkspace(mux *http.ServeMux, registry *projectregistry.R
 }
 
 func RegisterRoutesWithWorkspaceAndIntegrations(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, workspace projectworkspace.API, integrations *projectintegrations.Service) {
+	RegisterRoutesWithWorkspaceIntegrationsAndActivity(mux, registry, digest, ingestion, workspace, integrations, nil)
+}
+
+func RegisterRoutesWithWorkspaceIntegrationsAndActivity(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService, ingestion projectingestion.API, workspace projectworkspace.API, integrations *projectintegrations.Service, activity *agentactivity.Recorder) {
 	mux.Handle("GET /api/v1/projects", listProjectsHandler(registry))
 	mux.Handle("GET /api/v1/projects/{id}", getProjectHandler(registry))
 	mux.Handle("POST /api/v1/projects/{id}/digest-runs", createDigestRunHandler(digest))
+	if activity != nil {
+		mux.Handle("GET /api/v1/projects/{id}/agent-activity/stream", agentactivity.ProjectStreamHandler(activity))
+	}
 	if ingestion != nil {
 		mux.Handle("GET /api/v1/projects/{id}/dashboard-summary", getDashboardSummaryHandler(registry, ingestion, workspace, integrations))
 		mux.Handle("POST /api/v1/projects/{id}/ingestion-runs", createIngestionRunHandler(ingestion))

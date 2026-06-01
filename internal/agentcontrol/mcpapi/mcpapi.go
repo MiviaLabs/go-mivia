@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/model"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/service"
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
@@ -52,6 +54,7 @@ type Handler struct {
 	projectWork   projectworkspace.API
 	integrations  *projectintegrations.Service
 	diagnostics   *diagnostics.Service
+	activity      *agentactivity.Recorder
 	logger        *slog.Logger
 }
 
@@ -87,6 +90,10 @@ func NewHandlerWithResearchProjectsIngestionWorkspaceAndIntegrations(service *se
 }
 
 func NewHandlerWithResearchProjectsIngestionWorkspaceIntegrationsAndDiagnostics(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, logger *slog.Logger) http.Handler {
+	return NewHandlerWithActivity(service, research, projects, projectDigest, projectIngest, projectWork, integrations, diagnosticsService, nil, logger)
+}
+
+func NewHandlerWithActivity(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:       service,
 		research:      research,
@@ -96,6 +103,7 @@ func NewHandlerWithResearchProjectsIngestionWorkspaceIntegrationsAndDiagnostics(
 		projectWork:   projectWork,
 		integrations:  integrations,
 		diagnostics:   diagnosticsService,
+		activity:      activity,
 		logger:        logger,
 	}
 }
@@ -149,6 +157,7 @@ func (handler *Handler) handlePost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (handler *Handler) dispatch(w http.ResponseWriter, r *http.Request, req jsonRPCRequest) {
+	started := time.Now()
 	switch req.Method {
 	case "initialize":
 		writeJSONRPCResult(w, req.ID, map[string]any{
@@ -163,24 +172,51 @@ func (handler *Handler) dispatch(w http.ResponseWriter, r *http.Request, req jso
 			},
 			"instructions": ServerInstructions,
 		})
+		handler.recordActivity(r, req, activityFields{Status: "ok", Duration: time.Since(started)})
 	case "tools/list":
 		writeJSONRPCResult(w, req.ID, map[string]any{"tools": handler.toolDefinitions()})
+		handler.recordActivity(r, req, activityFields{Status: "ok", Duration: time.Since(started)})
 	case "tools/call":
-		result, err := handler.callTool(r, req.Params)
+		result, params, err := handler.callTool(r, req.Params)
 		writeToolOrError(w, req.ID, result, err)
+		fields := activityFields{
+			ProjectID:  projectIDFromArgs(params.Arguments),
+			ToolName:   params.Name,
+			RawArgs:    params.Arguments,
+			Status:     "ok",
+			Duration:   time.Since(started),
+			Error:      "",
+			RawParams:  req.Params,
+			RequestID:  requestIDString(req.ID),
+			RemoteAddr: r.RemoteAddr,
+			UserAgent:  r.UserAgent(),
+		}
+		if result != nil {
+			fields.RawResult, _ = json.Marshal(result)
+		}
+		if err != nil {
+			fields.Status = "error"
+			fields.Error = err.Error()
+		}
+		handler.recordActivity(r, req, fields)
 	case "resources/list":
 		writeJSONRPCResult(w, req.ID, map[string]any{"resources": []any{}})
+		handler.recordActivity(r, req, activityFields{Status: "ok", Duration: time.Since(started)})
 	case "resources/templates/list":
 		writeJSONRPCResult(w, req.ID, map[string]any{"resourceTemplates": handler.resourceTemplates()})
+		handler.recordActivity(r, req, activityFields{Status: "ok", Duration: time.Since(started)})
 	case "resources/read":
 		result, err := handler.readResource(r, req.Params)
 		if err != nil {
 			writeJSONRPCError(w, req.ID, -32002, "resource not found")
+			handler.recordActivity(r, req, activityFields{Status: "error", Duration: time.Since(started), Error: err.Error(), RawParams: req.Params, RequestID: requestIDString(req.ID), RemoteAddr: r.RemoteAddr, UserAgent: r.UserAgent()})
 			return
 		}
 		writeJSONRPCResult(w, req.ID, result)
+		handler.recordActivity(r, req, activityFields{Status: "ok", Duration: time.Since(started), RawParams: req.Params, RequestID: requestIDString(req.ID), RemoteAddr: r.RemoteAddr, UserAgent: r.UserAgent()})
 	default:
 		writeJSONRPCError(w, req.ID, -32601, "method not found")
+		handler.recordActivity(r, req, activityFields{Status: "error", Duration: time.Since(started), Error: "method not found", RawParams: req.Params, RequestID: requestIDString(req.ID), RemoteAddr: r.RemoteAddr, UserAgent: r.UserAgent()})
 	}
 }
 
@@ -190,11 +226,103 @@ type toolsCallParams struct {
 	Meta      json.RawMessage `json:"_meta,omitempty"`
 }
 
-func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[string]any, error) {
+type activityFields struct {
+	ProjectID  string
+	ToolName   string
+	Status     string
+	Duration   time.Duration
+	Error      string
+	RequestID  string
+	RemoteAddr string
+	UserAgent  string
+	RawParams  json.RawMessage
+	RawArgs    json.RawMessage
+	RawResult  json.RawMessage
+}
+
+func (handler *Handler) recordActivity(r *http.Request, req jsonRPCRequest, fields activityFields) {
+	if handler.activity == nil {
+		return
+	}
+	rawRequest, _ := json.Marshal(req)
+	if fields.RequestID == "" {
+		fields.RequestID = requestIDString(req.ID)
+	}
+	if fields.RemoteAddr == "" {
+		fields.RemoteAddr = r.RemoteAddr
+	}
+	if fields.UserAgent == "" {
+		fields.UserAgent = r.UserAgent()
+	}
+	handler.activity.Record(agentactivity.Event{
+		Timestamp:  time.Now().UTC(),
+		ProjectID:  fields.ProjectID,
+		Method:     req.Method,
+		ToolName:   fields.ToolName,
+		Status:     fields.Status,
+		DurationMS: fields.Duration.Milliseconds(),
+		Error:      fields.Error,
+		RequestID:  fields.RequestID,
+		RemoteAddr: fields.RemoteAddr,
+		UserAgent:  fields.UserAgent,
+		RawRequest: rawRequest,
+		RawParams:  fields.RawParams,
+		RawArgs:    fields.RawArgs,
+		RawResult:  fields.RawResult,
+	})
+}
+
+func projectIDFromArgs(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		var encoded string
+		if stringErr := json.Unmarshal(raw, &encoded); stringErr != nil {
+			return ""
+		}
+		if err := json.Unmarshal([]byte(encoded), &payload); err != nil {
+			return ""
+		}
+	}
+	for _, key := range []string{"project_id", "id"} {
+		var value string
+		if rawValue, ok := payload[key]; ok && json.Unmarshal(rawValue, &value) == nil {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func requestIDString(id any) string {
+	if id == nil {
+		return ""
+	}
+	switch value := id.(type) {
+	case string:
+		return value
+	case float64:
+		return fmt.Sprintf("%.0f", value)
+	default:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprint(value)
+		}
+		return string(encoded)
+	}
+}
+
+func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[string]any, toolsCallParams, error) {
 	var params toolsCallParams
 	if err := decodeRaw(raw, &params); err != nil {
-		return nil, fmt.Errorf("%w: invalid tool params", service.ErrInvalidInput)
+		return nil, params, fmt.Errorf("%w: invalid tool params", service.ErrInvalidInput)
 	}
+	result, err := handler.callToolParams(r, params)
+	return result, params, err
+}
+
+func (handler *Handler) callToolParams(r *http.Request, params toolsCallParams) (map[string]any, error) {
 	switch params.Name {
 	case "tasks.create", "tasks_create":
 		var input struct {

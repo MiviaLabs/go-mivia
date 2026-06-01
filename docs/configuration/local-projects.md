@@ -84,10 +84,10 @@ The commented local override template at the bottom of `docker-compose.yml` show
 The default Compose path builds locally. For the future public release, `docker-compose.yml` carries a commented image example using a container registry tag:
 
 ```yaml
-# image: ghcr.io/mivialabs/go-mivia:0.1.10
+# image: ghcr.io/mivialabs/go-mivia:0.1.11
 ```
 
-Do not treat that as a Go module proxy path. Go module publication uses repository semantic-version tags such as `v0.1.10`; container publication uses registry image tags such as `0.1.10` when the release workflow chooses that tag.
+Do not treat that as a Go module proxy path. Go module publication uses repository semantic-version tags such as `v0.1.11`; container publication uses registry image tags such as `0.1.11` when the release workflow chooses that tag.
 
 ## Field Reference
 

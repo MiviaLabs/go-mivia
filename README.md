@@ -117,6 +117,7 @@ flowchart TB
 | Query APIs | Files, chunks, outlines, text/file/symbol/reference/call search, AST query catalog, named AST search, symbols, symbol source, references, callers, callees, call graph | Explicit pagination and source caps; skipped sensitive content is not returned; raw FTS and raw Tree-sitter syntax are not exposed |
 | Workspace APIs | Governed git status/diff, current eligible file read, token-guarded exact byte-span edits | Disabled by default; requires global workspace gate plus per-project `workspace_mode`; no arbitrary shell, raw patch, or git commit/push/reset/checkout tools |
 | Project integrations | Jira/Confluence configured provider status, manual/scheduled polling, local rich-content graph search/read | Atlassian Cloud only; polling-only; env/file credential refs; explicit project/space allowlists; rich content stays in ignored local stores |
+| Dashboard agent activity | Project details `Agent activity` drawer streams recent/live MCP calls over SSE with method/tool/status/duration, collapsed input/output summaries, and collapsed raw payload details | Localhost debug surface only; events are in-memory and raw payloads may contain source, prompts, secrets, or personal data |
 
 ## Start Here
 
@@ -195,9 +196,10 @@ What this enables:
 - Agents can record promotion-gate decisions for existing run artifacts using `candidate`, `validated`, `promoted`, and `rejected` states without promoting raw runtime payloads into knowledge.
 - Agents can ask local MCP tools for configured integration status, trigger a one-shot provider poll, search locally ingested Jira/Confluence chunks, and read bounded Jira issue or Confluence page content without calling Atlassian during search/read.
 - Agents can use MCP/REST for governed git status/diff and exact current-file edits on opted-in workspaces; shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories.
+- Engineers can open the project details dashboard `Agent activity` drawer to watch project-scoped MCP calls in real time. The stream shows method/tool names, status, duration, request/client metadata, collapsed input/output summaries, and collapsed full request/params/arguments/results for local debugging.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
 - Local graph/search state persists per project when `graph_storage = "persistent"` using `<ladybug_path parent>/projects/<project-id>/mivialabs.lbug` and `<ladybug_path parent>/projects/<project-id>/mivialabs-pebble-search.sqlite`, or stays process-local/shared fallback with `graph_storage = "in_memory"`.
-- v0.1.10 keeps `full_scan_batch_size` as a hard file-count cap and also flushes earlier by graph/search write weight so heavy files do not create multi-minute per-project storage writes.
+- v0.1.11 keeps `full_scan_batch_size` as a hard file-count cap and also flushes earlier by graph/search write weight so heavy files do not create multi-minute per-project storage writes.
 - The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, AI provider calls, embeddings, vectors, arbitrary shell, raw patches, git commit/push/reset/checkout tools, skipped sensitive content, secrets, raw prompts, and raw provider payload blobs. Approved Jira/Confluence rich content and possible PII are limited to ignored local stores and bounded local MCP responses.
 
 ## Agent Reliability Model
@@ -389,7 +391,7 @@ MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug
 MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite
 ```
 
-Persistent project graph/search files live under `/var/lib/mivia/projects/<project-id>/`; agent and research metadata remain separate from project graph storage. v0.1.10 bounds heavy per-project graph/search flushes during ingestion; tune `full_scan_batch_size` in the mounted TOML as the hard file-count cap if a local disk still needs smaller write units.
+Persistent project graph/search files live under `/var/lib/mivia/projects/<project-id>/`; agent and research metadata remain separate from project graph storage. v0.1.11 bounds heavy per-project graph/search flushes during ingestion; tune `full_scan_batch_size` in the mounted TOML as the hard file-count cap if a local disk still needs smaller write units.
 
 Override `MIVIA_HOST_BIND`, `MIVIA_HOST_PORT`, and feature flags from the host environment when needed. Compose loads `configs/mivia-server.compose.toml`, which mirrors the local global runtime defaults without project roots, project names, Jira/Confluence URLs, or credential refs. It enables content graph ingestion, live updates, diagnostics, runtime metrics, and the global workspace gate by default. Per-project `workspace_mode` still controls whether a configured project exposes workspace tools. Mount ignored local configs or secrets only in an ignored `.docker-compose.local.yml` override when needed.
 

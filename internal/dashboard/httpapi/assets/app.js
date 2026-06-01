@@ -48,6 +48,11 @@ const POLL_MS = 3000;
 const ACTIVE_HEALTH = new Set(["syncing", "running", "warming_up"]);
 const ACTIVE_RUN = new Set(["running", "queued", "pending", "syncing"]);
 let pollHandle = null;
+let activitySource = null;
+let activityDrawer = null;
+let activityList = null;
+let activityStatus = null;
+let activityEvents = [];
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -165,6 +170,7 @@ function selectTab(tab) {
 // ---------------------------------------------------------------------------
 async function loadDashboard() {
   stopPolling();
+  closeActivityDrawer();
   refresh.disabled = true;
   back.classList.add("hidden");
   statusBox.textContent = "";
@@ -531,6 +537,12 @@ function hero(project, health) {
       el("p", { class: "hero__desc", text: project.description || "No description configured" }),
     ),
     el("div", { class: "hero__status" },
+      el("button", {
+        class: "secondary compact",
+        type: "button",
+        title: "Show live MCP activity for this project.",
+        onClick: () => openActivityDrawer(project.id),
+      }, "Agent activity"),
       contextHealthPill(health),
       projectValidationPill(project),
       projectEnabledPill(project),
@@ -553,6 +565,129 @@ function kpiStrip(health, graph, latest) {
       el("strong", { class: "kpi__value", text: value }),
     )),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Agent activity drawer
+// ---------------------------------------------------------------------------
+function openActivityDrawer(projectID) {
+  closeActivityDrawer();
+  activityEvents = [];
+  activityDrawer = el("aside", { class: "activity-drawer", role: "dialog", "aria-modal": "false", "aria-label": "Agent activity" },
+    el("div", { class: "activity-drawer__head" },
+      el("div", {},
+        el("span", { class: "eyebrow", text: "MCP" }),
+        el("h2", { class: "activity-drawer__title", text: "Agent activity" }),
+      ),
+      el("button", { class: "secondary compact", type: "button", onClick: closeActivityDrawer, title: "Close activity drawer" }, "Close"),
+    ),
+    el("p", { class: "activity-drawer__note", text: "Raw payloads are available inside collapsed details and are not downloaded automatically." }),
+    el("div", { class: "activity-toolbar" },
+      el("button", { class: "secondary compact", type: "button", onClick: () => renderActivityEvents([]) }, "Clear"),
+      el("button", { class: "secondary compact", type: "button", onClick: copyVisibleActivity }, "Copy JSONL"),
+    ),
+    activityStatus = el("div", { class: "activity-status", text: "Connecting..." }),
+    activityList = el("div", { class: "activity-list" }),
+  );
+  document.body.append(activityDrawer);
+  activitySource = new EventSource(`/api/v1/projects/${encodeURIComponent(projectID)}/agent-activity/stream?recent=50`);
+  activitySource.addEventListener("open", () => {
+    if (activityStatus) activityStatus.textContent = "Connected";
+  });
+  activitySource.addEventListener("mcp_activity", (event) => {
+    try {
+      activityEvents.push(JSON.parse(event.data));
+      if (activityEvents.length > 200) activityEvents = activityEvents.slice(-200);
+      renderActivityEvents(activityEvents);
+    } catch {
+      if (activityStatus) activityStatus.textContent = "Received malformed activity event";
+    }
+  });
+  activitySource.addEventListener("error", () => {
+    if (activityStatus) activityStatus.textContent = "Stream disconnected or unavailable";
+  });
+}
+
+function closeActivityDrawer() {
+  if (activitySource) {
+    activitySource.close();
+    activitySource = null;
+  }
+  if (activityDrawer) {
+    activityDrawer.remove();
+    activityDrawer = null;
+  }
+  activityList = null;
+  activityStatus = null;
+  activityEvents = [];
+}
+
+function renderActivityEvents(events) {
+  activityEvents = events;
+  if (!activityList) return;
+  clear(activityList);
+  if (!events.length) {
+    activityList.append(emptyText("No MCP activity captured for this project yet."));
+    return;
+  }
+  events.slice().reverse().forEach((event) => activityList.append(activityEventRow(event)));
+}
+
+function activityEventRow(event) {
+  const statusTone = event.status === "ok" ? "ok" : "warn";
+  return el("article", { class: "activity-event" },
+    el("div", { class: "activity-event__summary" },
+      el("div", { class: "activity-event__main" },
+        el("strong", { text: event.tool_name || event.method || "mcp" }),
+        el("span", { class: "muted-text", text: formatDate(event.timestamp) }),
+      ),
+      el("div", { class: "activity-event__badges" },
+        pill(event.status || "unknown", statusTone),
+        el("span", { class: "tag", text: `${numberValue(event.duration_ms)} ms` }),
+      ),
+    ),
+    event.error ? el("p", { class: "activity-event__error", text: event.error }) : null,
+    el("details", { class: "activity-details activity-details--summary" },
+      el("summary", { text: "Call summary" }),
+      el("div", { class: "activity-summary-grid" },
+        activityPayloadBlock("Inputs", event.raw_arguments || event.raw_params || {}),
+        activityPayloadBlock("Outputs", event.raw_result || (event.error ? { error: event.error } : {})),
+      ),
+    ),
+    el("details", { class: "activity-details" },
+      el("summary", { text: "Full payload" }),
+      el("pre", { text: prettyJSON({
+        id: event.id,
+        request_id: event.request_id,
+        project_id: event.project_id,
+        method: event.method,
+        tool_name: event.tool_name,
+        remote_addr: event.remote_addr,
+        user_agent: event.user_agent,
+        raw_request: event.raw_request,
+        raw_params: event.raw_params,
+        raw_arguments: event.raw_arguments,
+        raw_result: event.raw_result,
+      }) }),
+    ),
+  );
+}
+
+function activityPayloadBlock(title, payload) {
+  return el("div", { class: "activity-payload" },
+    el("strong", { text: title }),
+    el("pre", { text: prettyJSON(payload) }),
+  );
+}
+
+function copyVisibleActivity() {
+  if (!activityEvents.length || !navigator.clipboard) return;
+  const jsonl = activityEvents.map((event) => JSON.stringify(event)).join("\n");
+  navigator.clipboard.writeText(jsonl).then(() => {
+    if (activityStatus) activityStatus.textContent = "Copied visible activity as JSONL";
+  }).catch(() => {
+    if (activityStatus) activityStatus.textContent = "Copy failed";
+  });
 }
 
 function buildTabs(project, health, latest, graph, dashboard) {
@@ -1105,6 +1240,10 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "unknown";
   return date.toLocaleString();
+}
+
+function prettyJSON(value) {
+  return JSON.stringify(value, null, 2);
 }
 
 async function fetchJSON(url, timeoutMs) {
