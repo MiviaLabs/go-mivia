@@ -634,15 +634,58 @@ function renderActivityEvents(events) {
     activityList.append(emptyText("No agent activity captured for this project yet."));
     return;
   }
-  events.slice().reverse().forEach((event) => activityList.append(activityEventRow(event)));
+  visibleActivityRows(events).forEach((event) => activityList.append(activityEventRow(event)));
+}
+
+function visibleActivityRows(events) {
+  const rows = [];
+  const reversed = events.slice().reverse();
+  for (const event of reversed) {
+    if (!isPolicyEvent(event)) {
+      rows.push(event);
+      continue;
+    }
+    const key = policyEventKey(event);
+    const previous = rows[rows.length - 1];
+    if (previous && previous._policy_group_key === key) {
+      previous._policy_group_count += 1;
+      previous._policy_group_ids.push(event.id);
+      if (!previous.relative_path && event.relative_path) previous.relative_path = event.relative_path;
+      continue;
+    }
+    rows.push({
+      ...event,
+      _policy_group_key: key,
+      _policy_group_count: 1,
+      _policy_group_ids: [event.id],
+    });
+  }
+  return rows;
+}
+
+function isPolicyEvent(event) {
+  return event?.event_kind === "policy_event";
+}
+
+function policyEventKey(event) {
+  return [
+    event.project_id || "",
+    event.policy_category || event.tool_name || "",
+    event.relative_path || "",
+  ].join("\u0000");
 }
 
 function activityEventRow(event) {
   const statusTone = event.status === "ok" || event.status === "completed" || event.status === "validated" || event.status === "promoted" ? "ok" : "warn";
   const title = event.tool_name || event.method || event.event_kind || "activity";
+  const groupedCount = event._policy_group_count || 1;
+  const subtitle = groupedCount > 1
+    ? `${formatDate(event.timestamp)} · ${groupedCount} repeated policy events`
+    : formatDate(event.timestamp);
   const badges = [
     pill(event.status || "unknown", statusTone),
     event.event_kind ? pill(event.event_kind, event.event_kind === "mcp_activity" ? "muted" : "ok") : null,
+    groupedCount > 1 ? el("span", { class: "tag", text: `${groupedCount}x` }) : null,
     event.trace_id ? el("span", { class: "tag", text: `trace ${shortID(event.trace_id)}` }) : null,
     event.run_id ? el("span", { class: "tag", text: `run ${shortID(event.run_id)}` }) : null,
     el("span", { class: "tag", text: `${numberValue(event.duration_ms)} ms` }),
@@ -651,7 +694,7 @@ function activityEventRow(event) {
     el("div", { class: "activity-event__summary" },
       el("div", { class: "activity-event__main" },
         el("strong", { text: title }),
-        el("span", { class: "muted-text", text: formatDate(event.timestamp) }),
+        el("span", { class: "muted-text", text: subtitle }),
       ),
       el("div", { class: "activity-event__badges" }, badges),
     ),
@@ -676,6 +719,10 @@ function activityEventRow(event) {
         correlation_kind: event.correlation_kind,
         method: event.method,
         tool_name: event.tool_name,
+        policy_category: event.policy_category,
+        relative_path: event.relative_path,
+        grouped_event_count: event._policy_group_count,
+        grouped_event_ids: event._policy_group_ids,
         remote_addr: event.remote_addr,
         user_agent: event.user_agent,
         raw_request: event.raw_request,

@@ -51,7 +51,7 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 	if !strings.Contains(app.Body.String(), "/api/v1/projects") {
 		t.Fatalf("expected app to fetch project metadata")
 	}
-	for _, want := range []string{"contextHealthPill", "projectValidationPill", "project enabled", "config ${status}", "latest run ${status}", "EventSource", "agent-activity/stream", "Call summary", "Full payload"} {
+	for _, want := range []string{"contextHealthPill", "projectValidationPill", "project enabled", "config ${status}", "latest run ${status}", "EventSource", "agent-activity/stream", "Call summary", "Full payload", "visibleActivityRows", "policy_category", "grouped_event_count"} {
 		if !strings.Contains(app.Body.String(), want) {
 			t.Fatalf("expected dashboard app to contain explicit status label %q", want)
 		}
