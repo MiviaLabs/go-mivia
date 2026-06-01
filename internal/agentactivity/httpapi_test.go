@@ -15,6 +15,7 @@ import (
 func TestProjectStreamHandlerReplaysProjectEventsAsSSE(t *testing.T) {
 	recorder := NewRecorder(10)
 	recorder.Record(Event{ProjectID: "alpha", Method: "tools/call", Status: "ok", RawArgs: json.RawMessage(`{"id":"alpha"}`)})
+	recorder.RecordPolicyEvent(PolicyEvent{ProjectID: "alpha", Category: "denied_path"})
 	recorder.Record(Event{ProjectID: "beta", Method: "tools/call", Status: "ok", RawArgs: json.RawMessage(`{"id":"beta"}`)})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -35,6 +36,9 @@ func TestProjectStreamHandlerReplaysProjectEventsAsSSE(t *testing.T) {
 	body := res.Body.String()
 	if !strings.Contains(body, "event: mcp_activity") || !strings.Contains(body, `"project_id":"alpha"`) {
 		t.Fatalf("expected alpha SSE event, got %s", body)
+	}
+	if !strings.Contains(body, `"event_kind":"policy_event"`) || !strings.Contains(body, `"policy_category":"denied_path"`) {
+		t.Fatalf("expected policy event on SSE stream, got %s", body)
 	}
 	if strings.Contains(body, `"project_id":"beta"`) {
 		t.Fatalf("unexpected beta event in alpha stream: %s", body)

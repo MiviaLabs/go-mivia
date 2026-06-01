@@ -82,6 +82,43 @@ func TestRecorderPersistsRedactedAuditEvents(t *testing.T) {
 	assertAgentActivityTableOmits(t, db.SQLDB(), "secret", `{"id":"alpha"}`, `{"ok":true}`)
 }
 
+func TestRecorderPersistsPolicyEventWithoutRawPayloads(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestSQLiteStore(t, SQLiteStoreOptions{})
+	recorder := NewRecorderWithStore(10, store)
+
+	recorded := recorder.RecordPolicyEvent(PolicyEvent{
+		ProjectID: "alpha",
+		Category:  "sensitive_content",
+		Path:      "internal/config/example.go",
+	})
+
+	if recorded.EventKind != "policy_event" || recorded.Method != "policy_event" || recorded.PolicyCategory != "sensitive_content" {
+		t.Fatalf("expected normalized policy event, got %#v", recorded)
+	}
+	recent, err := store.Recent(ctx, "alpha", 10)
+	if err != nil {
+		t.Fatalf("recent: %v", err)
+	}
+	if len(recent) != 1 || recent[0].EventKind != "policy_event" || recent[0].RelativePath != "internal/config/example.go" {
+		t.Fatalf("expected persisted policy metadata, got %#v", recent)
+	}
+	assertAgentActivityTableOmits(t, db.SQLDB(), "secret", `{"id":"alpha"}`, `{"ok":true}`)
+}
+
+func TestRecorderPolicyEventDropsUnsafeRelativePath(t *testing.T) {
+	recorder := NewRecorder(10)
+	recorded := recorder.RecordPolicyEvent(PolicyEvent{
+		ProjectID: "alpha",
+		Category:  "denied_path",
+		Path:      "../secrets/.env",
+	})
+
+	if recorded.RelativePath != "" {
+		t.Fatalf("expected unsafe policy path to be omitted, got %#v", recorded)
+	}
+}
+
 func TestSQLiteStoreCanRetainRawPayloadsWhenExplicitlyEnabled(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newTestSQLiteStore(t, SQLiteStoreOptions{RetainRawPayloads: true})
