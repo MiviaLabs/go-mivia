@@ -1055,17 +1055,19 @@ main {
   font-size: 12px;
 }
 
-.integration-preview {
-  min-height: 92px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel-soft);
-}
-
 .integration-chunks {
   display: grid;
   gap: 8px;
+}
+
+.integration-chunk {
+  display: grid;
+  gap: 6px;
+}
+
+.integration-chunk strong {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .integration-chunks pre {
@@ -1102,6 +1104,51 @@ main {
 
 .search-results {
   min-width: 0;
+}
+
+.integration-detail {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 25;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(680px, 100vw);
+  height: 100vh;
+  padding: 16px;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: -18px 0 44px rgb(23 32 42 / 22%);
+}
+
+.integration-detail__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.integration-detail__head div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.integration-detail__head strong,
+.integration-detail__head span {
+  overflow-wrap: anywhere;
+}
+
+.integration-detail__head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.integration-detail__body {
+  min-height: 0;
+  overflow: auto;
+  padding-top: 12px;
 }
 
 /* ------------------------------------------------------------------ tiles */

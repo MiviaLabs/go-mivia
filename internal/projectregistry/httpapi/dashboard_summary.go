@@ -177,6 +177,7 @@ type integrationItemSummary struct {
 	Provider      projectintegrations.Provider `json:"provider"`
 	ItemID        string                       `json:"item_id,omitempty"`
 	ItemKey       string                       `json:"item_key,omitempty"`
+	Title         string                       `json:"title,omitempty"`
 	ItemType      string                       `json:"item_type,omitempty"`
 	ItemStatus    string                       `json:"item_status,omitempty"`
 	ItemUpdatedAt time.Time                    `json:"item_updated_at,omitempty"`
@@ -804,12 +805,11 @@ func dashboardIntegrations(ctx context.Context, integrations *projectintegration
 		return integrations.ListLocalItems(ctx, projectintegrations.LocalItemListInput{
 			ProjectID: projectID,
 			Provider:  projectintegrations.ProviderJira,
-			ItemType:  "issue",
 			PageSize:  8,
 			Sort:      "updated_desc",
 		})
 	}); err == nil {
-		result.RecentJiraIssues = integrationItemSummaries(jira.Items, 8)
+		result.RecentJiraIssues = enrichedIntegrationItemSummaries(ctx, integrations, projectID, projectintegrations.ProviderJira, jira.Items, 8)
 	}
 	if confluence, err := dashboardWithTimeout(ctx, func(ctx context.Context) (projectintegrations.ItemListResult, error) {
 		return integrations.ListLocalItems(ctx, projectintegrations.LocalItemListInput{
@@ -820,7 +820,7 @@ func dashboardIntegrations(ctx context.Context, integrations *projectintegration
 			Sort:      "updated_desc",
 		})
 	}); err == nil {
-		result.ConfluencePages = integrationItemSummaries(confluence.Items, 12)
+		result.ConfluencePages = enrichedIntegrationItemSummaries(ctx, integrations, projectID, projectintegrations.ProviderConfluence, confluence.Items, 12)
 	}
 	return result
 }
@@ -847,6 +847,12 @@ func integrationItemPage(result projectintegrations.ItemListResult) integrationI
 	}
 }
 
+func enrichedIntegrationItemPage(ctx context.Context, integrations *projectintegrations.Service, result projectintegrations.ItemListResult) integrationItemPageResponse {
+	response := integrationItemPage(result)
+	response.Items = enrichedIntegrationItemSummaries(ctx, integrations, result.ProjectID, result.Provider, result.Items, len(result.Items))
+	return response
+}
+
 func integrationCountsResponse(result projectintegrations.ProjectIntegrationCounts) integrationCountsPageResponse {
 	return integrationCountsPageResponse{
 		ProjectID: result.ProjectID,
@@ -867,6 +873,7 @@ func integrationItemSummaries(items []projectintegrations.ItemMetadata, limit in
 			Provider:      item.Provider,
 			ItemID:        item.ItemID,
 			ItemKey:       item.ItemKey,
+			Title:         "",
 			ItemType:      item.ItemType,
 			ItemStatus:    item.ItemStatus,
 			ItemUpdatedAt: item.ItemUpdatedAt,
@@ -874,6 +881,58 @@ func integrationItemSummaries(items []projectintegrations.ItemMetadata, limit in
 		})
 	}
 	return summaries
+}
+
+func enrichedIntegrationItemSummaries(ctx context.Context, integrations *projectintegrations.Service, projectID string, provider projectintegrations.Provider, items []projectintegrations.ItemMetadata, limit int) []integrationItemSummary {
+	summaries := integrationItemSummaries(items, limit)
+	if integrations == nil || len(summaries) == 0 {
+		return summaries
+	}
+	for index := range summaries {
+		key := summaries[index].ItemKey
+		if provider == projectintegrations.ProviderConfluence || strings.TrimSpace(key) == "" {
+			key = summaries[index].ItemID
+		}
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		result, err := integrations.ReadLocalContent(ctx, projectintegrations.LocalReadInput{
+			ProjectID:     projectID,
+			Provider:      provider,
+			ItemIDOrKey:   key,
+			MaxChunks:     2,
+			MaxChunkBytes: 500,
+		})
+		if err != nil {
+			continue
+		}
+		summaries[index].Title = integrationTitleFromContent(provider, result)
+	}
+	return summaries
+}
+
+func integrationTitleFromContent(provider projectintegrations.Provider, result projectintegrations.RichContentReadResult) string {
+	titleFields := map[string]bool{"title": true}
+	if provider == projectintegrations.ProviderJira {
+		titleFields["summary"] = true
+	}
+	for _, chunk := range result.Chunks {
+		if titleFields[strings.ToLower(strings.TrimSpace(chunk.FieldName))] {
+			return firstLine(strings.TrimSpace(chunk.Text), 160)
+		}
+	}
+	return ""
+}
+
+func firstLine(value string, limit int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
+	if index := strings.IndexByte(value, '\n'); index >= 0 {
+		value = strings.TrimSpace(value[:index])
+	}
+	if limit > 0 && len(value) > limit {
+		return strings.TrimSpace(value[:limit])
+	}
+	return value
 }
 
 func sortedCounts(values map[string]int, limit int) []dashboardCount {

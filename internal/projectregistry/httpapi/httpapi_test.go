@@ -618,10 +618,10 @@ func TestProjectIntegrationRoutesExposeLocalDataOnly(t *testing.T) {
 		t.Fatalf("bootstrap sqlite: %v", err)
 	}
 	store := projectintegrations.NewSQLiteStore(db.SQLDB())
-	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, ItemID: "10001", ItemKey: "LOCAL-1", ItemType: "issue", ItemStatus: "open", ItemUpdatedAt: testIntegrationTime().Add(-time.Hour), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
+	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, ItemID: "10001", ItemKey: "LOCAL-1", ItemType: "Task", ItemStatus: "open", ItemUpdatedAt: testIntegrationTime().Add(-time.Hour), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
 		t.Fatalf("upsert old jira item: %v", err)
 	}
-	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, ItemID: "10002", ItemKey: "LOCAL-2", ItemType: "issue", ItemStatus: "done", ItemUpdatedAt: testIntegrationTime(), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
+	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, ItemID: "10002", ItemKey: "LOCAL-2", ItemType: "Bug", ItemStatus: "done", ItemUpdatedAt: testIntegrationTime(), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
 		t.Fatalf("upsert recent jira item: %v", err)
 	}
 	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderConfluence, ItemID: "20001", ItemType: "page", ItemStatus: "current", ItemUpdatedAt: testIntegrationTime(), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
@@ -649,11 +649,17 @@ func TestProjectIntegrationRoutesExposeLocalDataOnly(t *testing.T) {
 	if !strings.Contains(jira.Body.String(), `"sort":"updated_desc"`) || strings.Index(jira.Body.String(), "LOCAL-2") > strings.Index(jira.Body.String(), "LOCAL-1") {
 		t.Fatalf("expected recent jira issues sorted by updated desc, got %s", jira.Body.String())
 	}
+	if !strings.Contains(jira.Body.String(), `"item_type":"Task"`) || !strings.Contains(jira.Body.String(), `"item_type":"Bug"`) {
+		t.Fatalf("expected jira list to include typed Jira issues, got %s", jira.Body.String())
+	}
+	if !strings.Contains(jira.Body.String(), `"title":"Ticket summary for LOCAL-2"`) {
+		t.Fatalf("expected jira list to include local rich-content title, got %s", jira.Body.String())
+	}
 	assertDoesNotLeak(t, jira.Body.String(), "tenant.atlassian.net", "MIVIA_ATLASSIAN", "/home/mac/secret")
 
 	confluence := httptest.NewRecorder()
 	mux.ServeHTTP(confluence, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/confluence/pages", nil))
-	if confluence.Code != http.StatusOK || !strings.Contains(confluence.Body.String(), `"provider":"confluence"`) || !strings.Contains(confluence.Body.String(), `"item_type":"page"`) {
+	if confluence.Code != http.StatusOK || !strings.Contains(confluence.Body.String(), `"provider":"confluence"`) || !strings.Contains(confluence.Body.String(), `"item_type":"page"`) || !strings.Contains(confluence.Body.String(), `"title":"Confluence page title for 20001"`) {
 		t.Fatalf("unexpected confluence pages response %d: %s", confluence.Code, confluence.Body.String())
 	}
 
@@ -1287,6 +1293,12 @@ func (fakeIntegrationRichContent) SearchRichContent(_ context.Context, projectID
 }
 
 func (fakeIntegrationRichContent) GetRichContentItem(_ context.Context, projectID string, provider projectintegrations.Provider, itemIDOrKey string, _ projectintegrations.RichContentReadOptions) (projectintegrations.RichContentReadResult, error) {
+	fieldName := "title"
+	text := "Confluence page title for " + itemIDOrKey
+	if provider == projectintegrations.ProviderJira {
+		fieldName = "summary"
+		text = "Ticket summary for " + itemIDOrKey
+	}
 	return projectintegrations.RichContentReadResult{
 		Artifact: projectintegrations.RichContentArtifact{
 			ID:        "artifact-1",
@@ -1301,7 +1313,9 @@ func (fakeIntegrationRichContent) GetRichContentItem(_ context.Context, projectI
 			Provider:  provider,
 			ItemID:    itemIDOrKey,
 			ItemType:  "page",
-			Text:      "bounded local page text",
+			FieldName: fieldName,
+			Label:     fieldName,
+			Text:      text + "\nbounded local page text",
 		}},
 	}, nil
 }

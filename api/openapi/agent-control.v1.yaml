@@ -3191,6 +3191,8 @@ components:
           type: string
         item_key:
           type: string
+        title:
+          type: string
         item_type:
           type: string
         item_status:

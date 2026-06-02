@@ -86,7 +86,7 @@ func RegisterRoutesWithWorkspaceIntegrationsAndActivity(mux *http.ServeMux, regi
 		mux.Handle("GET /api/v1/projects/{id}/integrations/{provider}/status", integrationStatusHandler(integrations))
 		mux.Handle("GET /api/v1/projects/{id}/integrations/counts", integrationCountsHandler(integrations))
 		mux.Handle("GET /api/v1/projects/{id}/integrations/search", integrationSearchHandler(integrations))
-		mux.Handle("GET /api/v1/projects/{id}/integrations/jira/issues", integrationItemsHandler(integrations, projectintegrations.ProviderJira, "issue"))
+		mux.Handle("GET /api/v1/projects/{id}/integrations/jira/issues", integrationItemsHandler(integrations, projectintegrations.ProviderJira, ""))
 		mux.Handle("GET /api/v1/projects/{id}/integrations/jira/issues/{key}", integrationReadHandler(integrations, projectintegrations.ProviderJira, "key"))
 		mux.Handle("GET /api/v1/projects/{id}/integrations/confluence/pages", integrationItemsHandler(integrations, projectintegrations.ProviderConfluence, "page"))
 		mux.Handle("GET /api/v1/projects/{id}/integrations/confluence/pages/{page_id}", integrationReadHandler(integrations, projectintegrations.ProviderConfluence, "page_id"))
@@ -559,7 +559,7 @@ func integrationItemsHandler(integrations *projectintegrations.Service, provider
 			writeIntegrationResult(w, nil, err, http.StatusOK)
 			return
 		}
-		writeIntegrationResult(w, integrationItemPage(result), nil, http.StatusOK)
+		writeIntegrationResult(w, enrichedIntegrationItemPage(ctx, integrations, result), nil, http.StatusOK)
 	})
 }
 

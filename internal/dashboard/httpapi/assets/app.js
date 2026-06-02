@@ -1103,17 +1103,13 @@ function hasIntegrationProvider(project, providers, counts, provider) {
 
 function integrationBrowser(projectID, provider, collection, initialItems) {
   const listNode = el("div", { class: "rows" });
-  const previewNode = el("div", { class: "integration-preview" }, emptyText("Select an item to preview indexed content."));
-  const node = el("div", { class: "integration-browser", dataset: { provider, collection } },
-    listNode,
-    previewNode,
-  );
-  renderIntegrationItems(projectID, provider, collection, listNode, previewNode, initialItems);
-  loadIntegrationItems(projectID, provider, collection, listNode, previewNode);
+  const node = el("div", { class: "integration-browser", dataset: { provider, collection } }, listNode);
+  renderIntegrationItems(projectID, provider, collection, listNode, initialItems);
+  loadIntegrationItems(projectID, provider, collection, listNode);
   return node;
 }
 
-function renderIntegrationItems(projectID, provider, collection, listNode, previewNode, items) {
+function renderIntegrationItems(projectID, provider, collection, listNode, items) {
   clear(listNode);
   if (!Array.isArray(items) || items.length === 0) {
     listNode.append(emptyText(`No indexed ${provider} ${collection}.`));
@@ -1124,26 +1120,45 @@ function renderIntegrationItems(projectID, provider, collection, listNode, previ
     const title = integrationItemTitle(item);
     const status = integrationItemField(item, "item_status", "ItemStatus") || "unknown";
     const updated = integrationItemField(item, "item_updated_at", "ItemUpdatedAt");
+    const key = integrationItemField(item, "item_key", "ItemKey");
+    const type = integrationItemField(item, "item_type", "ItemType");
     listNode.append(el("button", {
       class: "integration-row",
       type: "button",
       disabled: !id,
-      onClick: () => loadIntegrationPreview(projectID, provider, collection, id, previewNode),
+      onClick: () => openIntegrationDrawer(projectID, provider, collection, id, item),
     },
       el("strong", { text: title }),
-      el("span", { text: `${status} · updated ${formatDate(updated)}` }),
+      el("span", { text: [key && key !== title ? key : "", type, status, `updated ${formatDate(updated)}`].filter(Boolean).join(" · ") }),
     ));
   });
 }
 
-async function loadIntegrationItems(projectID, provider, collection, listNode, previewNode) {
+async function loadIntegrationItems(projectID, provider, collection, listNode) {
   const path = provider === "jira" ? "jira/issues" : "confluence/pages";
   try {
     const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/integrations/${path}?page_size=12&sort=updated_desc`, 5000);
-    renderIntegrationItems(projectID, provider, collection, listNode, previewNode, Array.isArray(data.items) ? data.items : []);
+    renderIntegrationItems(projectID, provider, collection, listNode, Array.isArray(data.items) ? data.items : []);
   } catch (error) {
     if (!listNode.childElementCount) listNode.append(emptyText(`${provider} ${collection} unavailable.`));
   }
+}
+
+function openIntegrationDrawer(projectID, provider, collection, id, item) {
+  document.querySelectorAll(".integration-detail").forEach((node) => node.remove());
+  const body = el("div", { class: "integration-detail__body" }, emptyText("Loading indexed content..."));
+  const drawer = el("aside", { class: "integration-detail", role: "dialog", "aria-modal": "true", "aria-label": "Indexed integration content" },
+    el("div", { class: "integration-detail__head" },
+      el("div", {},
+        el("strong", { text: integrationItemTitle(item) }),
+        el("span", { text: integrationDrawerSubtitle(provider, item) }),
+      ),
+      el("button", { class: "icon-btn", type: "button", title: "Close", "aria-label": "Close", onClick: () => drawer.remove(), text: "x" }),
+    ),
+    body,
+  );
+  document.body.append(drawer);
+  loadIntegrationPreview(projectID, provider, collection, id, body);
 }
 
 async function loadIntegrationPreview(projectID, provider, collection, id, previewNode) {
@@ -1151,17 +1166,19 @@ async function loadIntegrationPreview(projectID, provider, collection, id, previ
   previewNode.replaceChildren(emptyText("Loading indexed preview..."));
   try {
     const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/integrations/${path}?max_chunks=4&max_chunk_bytes=1200`, 5000);
-    const chunks = Array.isArray(data.chunks) ? data.chunks : [];
+    const chunks = Array.isArray(data.chunks) ? data.chunks : Array.isArray(data.Chunks) ? data.Chunks : [];
     previewNode.replaceChildren(
       chunks.length
-        ? el("div", { class: "integration-chunks" }, chunks.map((chunk) => el("pre", { text: chunk.text || "" })))
+        ? el("div", { class: "integration-chunks" }, chunks.map((chunk) => el("section", { class: "integration-chunk" },
+          el("strong", { text: integrationChunkLabel(chunk) }),
+          el("pre", { text: integrationObjectField(chunk, "text", "Text") || "" }),
+        )))
         : emptyText(`No indexed ${collection} content for this item.`),
     );
   } catch (error) {
     previewNode.replaceChildren(emptyText(error.message));
   }
 }
-
 function integrationSearch(projectID) {
   const input = el("input", { type: "search", placeholder: "Search indexed Jira and Confluence", "aria-label": "Search indexed integrations" });
   const provider = el("select", { "aria-label": "Integration provider" },
@@ -1200,13 +1217,14 @@ function renderIntegrationSearchResults(node, results) {
     return;
   }
   node.append(el("div", { class: "rows" }, results.map((result) => {
-    const artifact = result.artifact || {};
-    const provider = artifact.provider || result.provider || "integration";
-    const itemID = artifact.item_id || result.item_id || "";
-    const label = artifact.item_key || itemID || provider;
+    const artifact = result.artifact || result.Artifact || {};
+    const provider = integrationObjectField(artifact, "provider", "Provider") || result.provider || result.Provider || "integration";
+    const itemID = integrationObjectField(artifact, "item_id", "ItemID") || result.item_id || result.ItemID || "";
+    const label = integrationObjectField(artifact, "item_key", "ItemKey") || itemID || provider;
+    const snippet = result.snippet || result.Snippet || "";
     return el("div", { class: "row row--file" },
       el("strong", { text: `${provider}: ${label}` }),
-      el("span", { text: result.snippet || "" }),
+      el("span", { text: snippet }),
     );
   })));
 }
@@ -1220,9 +1238,29 @@ function integrationItemID(item) {
 }
 
 function integrationItemTitle(item) {
-  return integrationItemField(item, "item_key", "ItemKey") ||
-    integrationItemField(item, "item_id", "ItemID") ||
+  const title = integrationItemField(item, "title", "Title");
+  const key = integrationItemField(item, "item_key", "ItemKey");
+  const id = integrationItemField(item, "item_id", "ItemID");
+  if (key && title) return `${key} · ${title}`;
+  return title || key || id ||
     "indexed item";
+}
+
+function integrationDrawerSubtitle(provider, item) {
+  const key = integrationItemField(item, "item_key", "ItemKey");
+  const id = integrationItemField(item, "item_id", "ItemID");
+  const type = integrationItemField(item, "item_type", "ItemType");
+  return [provider, key, id && id !== key ? id : "", type].filter(Boolean).join(" · ");
+}
+
+function integrationObjectField(object, snake, title) {
+  return object?.[snake] ?? object?.[title] ?? "";
+}
+
+function integrationChunkLabel(chunk) {
+  return integrationObjectField(chunk, "label", "Label") ||
+    integrationObjectField(chunk, "field_name", "FieldName") ||
+    "content";
 }
 
 // ---------------------------------------------------------------------------
