@@ -623,6 +623,10 @@ func (reader *fakeRichContentReader) GetRichContentItem(context.Context, string,
 	return RichContentReadResult{}, reader.err
 }
 
+func (reader *fakeRichContentReader) ListRichContentTitles(context.Context, string, Provider, []string) (map[string]string, error) {
+	return map[string]string{}, reader.err
+}
+
 func (reader *fakeRichContentReader) SearchRichContent(context.Context, string, RichContentSearchOptions) ([]RichContentSearchResult, error) {
 	return nil, reader.err
 }

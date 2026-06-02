@@ -338,6 +338,51 @@ func TestRichContentGraphStore_GetRichContentItemCapsReturnedChunkCount(t *testi
 	}
 }
 
+func TestRichContentGraphStore_ListRichContentTitlesBatchLoadsTitleFields(t *testing.T) {
+	ctx := context.Background()
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(ctx, schema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	store := NewRichContentGraphStore(graph)
+	writeRichFixture(t, ctx, store, RichContentItem{
+		ProjectID: "example-service",
+		Provider:  ProviderJira,
+		ItemID:    "10001",
+		ItemKey:   "ACME-1",
+		ItemType:  "Task",
+		Fields: []RichContentField{
+			{Name: "summary", Text: "Fix export title"},
+			{Name: "description", Text: "Description must not become the title"},
+		},
+	})
+	writeRichFixture(t, ctx, store, RichContentItem{
+		ProjectID: "example-service",
+		Provider:  ProviderConfluence,
+		ItemID:    "20001",
+		ItemType:  "page",
+		Fields: []RichContentField{
+			{Name: "title", Text: "Release runbook"},
+			{Name: "body", Text: "Body must not become the title"},
+		},
+	})
+
+	jiraTitles, err := store.ListRichContentTitles(ctx, "example-service", ProviderJira, []string{"10001"})
+	if err != nil {
+		t.Fatalf("list jira titles: %v", err)
+	}
+	if jiraTitles["10001"] != "Fix export title" {
+		t.Fatalf("expected jira summary title, got %#v", jiraTitles)
+	}
+	confluenceTitles, err := store.ListRichContentTitles(ctx, "example-service", ProviderConfluence, []string{"20001"})
+	if err != nil {
+		t.Fatalf("list confluence titles: %v", err)
+	}
+	if confluenceTitles["20001"] != "Release runbook" {
+		t.Fatalf("expected confluence page title, got %#v", confluenceTitles)
+	}
+}
+
 func TestRichContentGraphStore_SearchRichContentFindsProviderScopedMatches(t *testing.T) {
 	ctx := context.Background()
 	graph := ladybug.NewMemoryGraph()

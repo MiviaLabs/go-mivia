@@ -42,6 +42,10 @@ type RichContentReader interface {
 	SearchRichContent(context.Context, string, RichContentSearchOptions) ([]RichContentSearchResult, error)
 }
 
+type RichContentTitleReader interface {
+	ListRichContentTitles(context.Context, string, Provider, []string) (map[string]string, error)
+}
+
 type ServiceOptions struct {
 	Runner      PollRunner
 	RichContent RichContentReader
@@ -441,6 +445,40 @@ func (service *Service) ListLocalItems(ctx context.Context, input LocalItemListI
 		PageToken: input.PageToken,
 		Sort:      input.Sort,
 	})
+}
+
+func (service *Service) ListLocalItemTitles(ctx context.Context, projectID string, provider Provider, items []ItemMetadata) (map[string]string, error) {
+	if service == nil {
+		return nil, fmt.Errorf("%w: service is nil", ErrInvalidInput)
+	}
+	titleReader, ok := service.richContent.(RichContentTitleReader)
+	if !ok {
+		return map[string]string{}, nil
+	}
+	project, err := service.project(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := providerStatusConfig(project, provider); err != nil {
+		return nil, err
+	}
+	itemIDs := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		itemID := strings.TrimSpace(item.ItemID)
+		if itemID == "" {
+			continue
+		}
+		if _, exists := seen[itemID]; exists {
+			continue
+		}
+		seen[itemID] = struct{}{}
+		itemIDs = append(itemIDs, itemID)
+	}
+	if len(itemIDs) == 0 {
+		return map[string]string{}, nil
+	}
+	return titleReader.ListRichContentTitles(ctx, project.ID, provider, itemIDs)
 }
 
 func (service *Service) SearchLocalContent(ctx context.Context, input LocalSearchInput) ([]RichContentSearchResult, error) {

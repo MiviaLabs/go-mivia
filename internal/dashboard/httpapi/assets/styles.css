@@ -1055,6 +1055,12 @@ main {
   font-size: 12px;
 }
 
+.integration-pager {
+  display: flex;
+  justify-content: flex-start;
+  min-height: 32px;
+}
+
 .integration-chunks {
   display: grid;
   gap: 8px;

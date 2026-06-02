@@ -1103,9 +1103,12 @@ function hasIntegrationProvider(project, providers, counts, provider) {
 
 function integrationBrowser(projectID, provider, collection, initialItems) {
   const listNode = el("div", { class: "rows" });
-  const node = el("div", { class: "integration-browser", dataset: { provider, collection } }, listNode);
-  renderIntegrationItems(projectID, provider, collection, listNode, initialItems);
-  loadIntegrationItems(projectID, provider, collection, listNode);
+  const pagerNode = el("div", { class: "integration-pager" });
+  const state = { items: Array.isArray(initialItems) ? initialItems.slice() : [], nextPageToken: "", loading: false };
+  const node = el("div", { class: "integration-browser", dataset: { provider, collection } }, listNode, pagerNode);
+  renderIntegrationItems(projectID, provider, collection, listNode, state.items);
+  renderIntegrationPager(projectID, provider, collection, state, listNode, pagerNode);
+  loadIntegrationItems(projectID, provider, collection, state, listNode, pagerNode, false);
   return node;
 }
 
@@ -1134,14 +1137,40 @@ function renderIntegrationItems(projectID, provider, collection, listNode, items
   });
 }
 
-async function loadIntegrationItems(projectID, provider, collection, listNode) {
+async function loadIntegrationItems(projectID, provider, collection, state, listNode, pagerNode, append) {
   const path = provider === "jira" ? "jira/issues" : "confluence/pages";
+  if (state.loading) return;
+  state.loading = true;
+  renderIntegrationPager(projectID, provider, collection, state, listNode, pagerNode);
   try {
-    const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/integrations/${path}?page_size=12&sort=updated_desc`, 5000);
-    renderIntegrationItems(projectID, provider, collection, listNode, Array.isArray(data.items) ? data.items : []);
+    const params = new URLSearchParams({ page_size: "12", sort: "updated_desc" });
+    if (append && state.nextPageToken) params.set("page_token", state.nextPageToken);
+    const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/integrations/${path}?${params}`, 12000);
+    const items = Array.isArray(data.items) ? data.items : [];
+    state.items = append ? state.items.concat(items) : items;
+    state.nextPageToken = data.next_page_token || data.NextPageToken || "";
+    renderIntegrationItems(projectID, provider, collection, listNode, state.items);
   } catch (error) {
     if (!listNode.childElementCount) listNode.append(emptyText(`${provider} ${collection} unavailable.`));
+  } finally {
+    state.loading = false;
+    renderIntegrationPager(projectID, provider, collection, state, listNode, pagerNode);
   }
+}
+
+function renderIntegrationPager(projectID, provider, collection, state, listNode, pagerNode) {
+  clear(pagerNode);
+  if (state.loading) {
+    pagerNode.append(el("span", { class: "muted-text", text: "Loading indexed entries..." }));
+    return;
+  }
+  if (!state.nextPageToken) return;
+  pagerNode.append(el("button", {
+    type: "button",
+    class: "compact",
+    onClick: () => loadIntegrationItems(projectID, provider, collection, state, listNode, pagerNode, true),
+    text: "Load more",
+  }));
 }
 
 function openIntegrationDrawer(projectID, provider, collection, id, item) {

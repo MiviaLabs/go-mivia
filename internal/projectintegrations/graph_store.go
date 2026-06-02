@@ -171,6 +171,56 @@ func (store *RichContentGraphStore) GetRichContentItem(ctx context.Context, proj
 	return RichContentReadResult{Artifact: artifact, Chunks: chunks, ChunksTruncated: truncated, NextChunkOffset: nextOffset}, nil
 }
 
+func (store *RichContentGraphStore) ListRichContentTitles(ctx context.Context, projectID string, provider Provider, itemIDs []string) (map[string]string, error) {
+	if store == nil || store.graph == nil {
+		return nil, fmt.Errorf("%w: integration graph store unavailable", ErrInvalidInput)
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" || provider == "" {
+		return nil, ErrInvalidInput
+	}
+	wanted := make(map[string]struct{}, len(itemIDs))
+	for _, itemID := range itemIDs {
+		itemID = strings.TrimSpace(itemID)
+		if itemID != "" {
+			wanted[itemID] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return map[string]string{}, nil
+	}
+	nodes, err := store.graph.ListNodes(ctx, "IntegrationContentChunk", map[string]string{
+		"project_id": projectID,
+		"provider":   string(provider),
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		leftIndex := atoiDefault(nodes[i].Properties["chunk_index"])
+		rightIndex := atoiDefault(nodes[j].Properties["chunk_index"])
+		if leftIndex != rightIndex {
+			return leftIndex < rightIndex
+		}
+		return nodes[i].ID < nodes[j].ID
+	})
+	titles := make(map[string]string, len(wanted))
+	for _, node := range nodes {
+		itemID := node.Properties["item_id"]
+		if _, ok := wanted[itemID]; !ok || titles[itemID] != "" {
+			continue
+		}
+		if !isTitleField(provider, node.Properties["field_name"]) {
+			continue
+		}
+		title := firstRichLine(sanitizeRichText(node.Properties["text"]), 240)
+		if title != "" {
+			titles[itemID] = title
+		}
+	}
+	return titles, nil
+}
+
 func (store *RichContentGraphStore) findArtifactNode(ctx context.Context, projectID string, provider Provider, itemIDOrKey string) (ladybug.Node, error) {
 	artifactID := integrationArtifactID(projectID, provider, itemIDOrKey)
 	node, err := store.graph.GetNode(ctx, "IntegrationArtifact", artifactID)
@@ -193,6 +243,22 @@ func (store *RichContentGraphStore) findArtifactNode(ctx context.Context, projec
 		}
 	}
 	return ladybug.Node{}, ErrNotFound
+}
+
+func isTitleField(provider Provider, field string) bool {
+	field = strings.ToLower(strings.TrimSpace(field))
+	return field == "title" || (provider == ProviderJira && field == "summary")
+}
+
+func firstRichLine(value string, limit int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
+	if index := strings.IndexByte(value, '\n'); index >= 0 {
+		value = strings.TrimSpace(value[:index])
+	}
+	if limit > 0 && len(value) > limit {
+		return strings.TrimSpace(value[:limit])
+	}
+	return value
 }
 
 func (store *RichContentGraphStore) SearchRichContent(ctx context.Context, projectID string, options RichContentSearchOptions) ([]RichContentSearchResult, error) {
