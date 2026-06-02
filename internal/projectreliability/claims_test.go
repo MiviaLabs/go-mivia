@@ -21,6 +21,23 @@ func TestClaimChecker_VerifiesKnownToolAndRoute(t *testing.T) {
 	assertClaimStatus(t, result, "/api/v1/projects/{id}/context-health", "verified")
 }
 
+func TestClaimChecker_HandlesConcreteRoutesAndIgnoresFilenames(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		ProjectID:       "example-service",
+		IncludeVerified: true,
+		Documents: []ClaimDocument{{
+			Path: "README.md",
+			Text: "See docs/configuration/local-projects.md and GET /api/v1/projects/go-mivia/context-pack?max_items=2 plus /api/v1/projects/<project_id>/context-health/.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	assertNoClaim(t, result, "projects.md")
+	assertClaimStatus(t, result, "/api/v1/projects/go-mivia/context-pack?max_items=2", "verified")
+	assertClaimStatus(t, result, "/api/v1/projects/<project_id>/context-health/", "verified")
+}
+
 func TestClaimChecker_VerifiesDelegatedMCPToolsAndAliases(t *testing.T) {
 	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
 		ProjectID:       "example-service",
@@ -60,6 +77,23 @@ func TestClaimChecker_FlagsStaleToolAndTaskLink(t *testing.T) {
 	}
 	assertClaimStatus(t, result, "projects.verifiers.recommend", "stale")
 	assertClaimStatus(t, result, ".ai/tasks/*", "stale")
+}
+
+func TestClaimChecker_UsesKnownToolAndRouteOverrides(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		IncludeVerified: true,
+		KnownTools:      []string{"projects.custom.tool"},
+		KnownRoutes:     []string{"/api/v1/projects/*/custom-route"},
+		Documents: []ClaimDocument{{
+			Path: "README.md",
+			Text: "Use projects.custom.tool and GET /api/v1/projects/example-service/custom-route.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	assertClaimStatus(t, result, "projects.custom.tool", "verified")
+	assertClaimStatus(t, result, "/api/v1/projects/example-service/custom-route", "verified")
 }
 
 func TestClaimChecker_DefaultOutputOmitsVerifiedClaims(t *testing.T) {

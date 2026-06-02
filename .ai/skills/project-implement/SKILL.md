@@ -1,3 +1,8 @@
+---
+name: project-implement
+description: Implement exactly one approved repo-local plan phase after revalidating .ai rules, current source, no-go scope, documentation impact, and phase verification.
+---
+
 # Project Implement Skill
 
 Use this skill to implement one approved phase from a plan.

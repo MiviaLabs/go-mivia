@@ -497,6 +497,10 @@ func verifierInputHasURL(verifiers []model.AgentVerifier) bool {
 }
 
 func containsProhibitedData(value string) bool {
+	return containsProhibitedMarker(value) || emailPattern.MatchString(value) || phonePattern.MatchString(value)
+}
+
+func containsProhibitedMarker(value string) bool {
 	normalized := strings.ToLower(value)
 	disallowed := []string{
 		"match (",
@@ -523,7 +527,7 @@ func containsProhibitedData(value string) bool {
 			return true
 		}
 	}
-	return emailPattern.MatchString(value) || phonePattern.MatchString(value)
+	return false
 }
 
 func safeIdentifier(value string, field string) (string, error) {
@@ -557,7 +561,7 @@ func safeRefIdentifier(value string, field string) (string, error) {
 		return "", err
 	}
 	normalized := strings.ReplaceAll(value, "\\", "/")
-	if strings.HasPrefix(normalized, "/") || strings.Contains(normalized, "..") || filepath.IsAbs(normalized) || containsProhibitedData(normalized) {
+	if strings.HasPrefix(normalized, "/") || strings.Contains(normalized, "..") || filepath.IsAbs(normalized) || containsProhibitedMarker(normalized) {
 		return "", fmt.Errorf("%w: %s is unsafe", ErrInvalidInput, field)
 	}
 	return normalized, nil

@@ -1,3 +1,8 @@
+---
+name: project-plan
+description: Create or update repo-local implementation plans after reading .ai rules, verifying current source, scoping phases, documenting risks, and writing local handoff prompts.
+---
+
 # Project Plan Skill
 
 Use this skill to create or update a workspace-local implementation plan for this repository.

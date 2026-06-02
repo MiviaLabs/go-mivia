@@ -1,3 +1,8 @@
+---
+name: project-review
+description: Review repo changes against .ai rules, exact diffs or commit ranges, phase scope, acceptance criteria, security/privacy risk, and missing verification.
+---
+
 # Project Review Skill
 
 Use this skill to review repository changes for correctness, maintainability, and phase compliance.

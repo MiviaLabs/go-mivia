@@ -57,7 +57,7 @@ func NewClaimChecker(workspace projectworkspace.API) *ClaimChecker {
 }
 
 var toolClaimPattern = regexp.MustCompile(`\b(?:projects|agent_runs|tasks|research_runs)(?:\.|_)[a-zA-Z0-9_.*]+`)
-var routeClaimPattern = regexp.MustCompile(`/api/v1/[a-zA-Z0-9_./{}*-]+`)
+var routeClaimPattern = regexp.MustCompile(`/api/v1/[a-zA-Z0-9_./{}*<>=?&-]+`)
 
 func (checker *ClaimChecker) Check(ctx context.Context, request ClaimCheckRequest) (ClaimCheckResult, error) {
 	docs := append([]ClaimDocument(nil), request.Documents...)
@@ -190,6 +190,7 @@ func checkDocumentClaims(path string, text string, knownTools map[string]struct{
 			})
 		}
 		for _, route := range routeClaimPattern.FindAllString(line, -1) {
+			displayRoute := strings.TrimRight(route, ".,)")
 			normalized := normalizeRouteClaim(route)
 			status := "verified"
 			evidence := "known REST route"
@@ -201,7 +202,7 @@ func checkDocumentClaims(path string, text string, knownTools map[string]struct{
 				Path:        path,
 				Line:        lineNo,
 				Kind:        "rest_route",
-				Claim:       route,
+				Claim:       displayRoute,
 				Status:      status,
 				Evidence:    evidence,
 				SafeMessage: "REST route claim checked against registered route patterns",
@@ -234,6 +235,9 @@ func shouldIgnoreToolClaim(tool string, knownTools map[string]struct{}) bool {
 	if strings.Contains(tool, "*") {
 		return true
 	}
+	if looksLikeFilenameClaim(tool) {
+		return true
+	}
 	if _, ok := knownTools[tool]; ok {
 		return false
 	}
@@ -247,6 +251,16 @@ func shouldIgnoreToolClaim(tool string, knownTools map[string]struct{}) bool {
 
 func normalizeToolClaim(tool string) string {
 	return strings.TrimRight(tool, ".,)")
+}
+
+func looksLikeFilenameClaim(tool string) bool {
+	lower := strings.ToLower(strings.TrimRight(tool, ".,)"))
+	for _, suffix := range []string{".md", ".go", ".yaml", ".yml", ".json", ".toml", ".txt"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func claimPathAllowed(path string) bool {
@@ -264,11 +278,42 @@ func claimPathAllowed(path string) bool {
 
 func normalizeRouteClaim(route string) string {
 	route = strings.TrimRight(route, ".,)")
+	if before, _, ok := strings.Cut(route, "?"); ok {
+		route = before
+	}
+	route = strings.TrimRight(route, "/")
+	for _, placeholder := range []string{"id", "project_id", "run_id", "file_id", "symbol_id", "task_id"} {
+		route = strings.ReplaceAll(route, "{"+placeholder+"}", "*")
+		route = strings.ReplaceAll(route, "<"+placeholder+">", "*")
+	}
 	route = strings.ReplaceAll(route, "{id}", "*")
 	route = strings.ReplaceAll(route, "{run_id}", "*")
 	route = strings.ReplaceAll(route, "{file_id}", "*")
 	route = strings.ReplaceAll(route, "{symbol_id}", "*")
+	parts := strings.Split(route, "/")
+	for index, part := range parts {
+		if shouldWildcardRouteSegment(parts, index, part) {
+			parts[index] = "*"
+		}
+	}
+	route = strings.Join(parts, "/")
 	return route
+}
+
+func shouldWildcardRouteSegment(parts []string, index int, segment string) bool {
+	if segment == "" || segment == "*" {
+		return false
+	}
+	previous := ""
+	if index > 0 {
+		previous = parts[index-1]
+	}
+	switch previous {
+	case "projects", "tasks", "research-runs", "agent-runs", "files", "symbols", "ingestion-runs", "digest-runs":
+		return true
+	default:
+		return false
+	}
 }
 
 func setFrom(values []string) map[string]struct{} {
@@ -322,7 +367,7 @@ func defaultKnownRoutes() []string {
 		"/api/v1/research-runs", "/api/v1/research-runs/*",
 		"/api/v1/agent-runs", "/api/v1/agent-runs/*", "/api/v1/agent-runs/*/steps", "/api/v1/agent-runs/*/complete",
 		"/api/v1/projects", "/api/v1/projects/*", "/api/v1/projects/*/digest-runs", "/api/v1/projects/*/dashboard-summary", "/api/v1/projects/*/agent-activity/stream",
-		"/api/v1/projects/*/context-health", "/api/v1/projects/*/impact/analyze", "/api/v1/projects/*/claims/check",
+		"/api/v1/projects/*/context-health", "/api/v1/projects/*/context-pack", "/api/v1/projects/*/impact/analyze", "/api/v1/projects/*/claims/check",
 		"/api/v1/projects/*/ingestion-runs", "/api/v1/projects/*/ingestion-runs/latest", "/api/v1/projects/*/ingestion-runs/*",
 		"/api/v1/projects/*/search-index/rebuild", "/api/v1/projects/*/files", "/api/v1/projects/*/files/*",
 		"/api/v1/projects/*/files/*/chunks", "/api/v1/projects/*/files/*/outline",

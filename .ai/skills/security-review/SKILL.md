@@ -1,3 +1,8 @@
+---
+name: security-review
+description: Review repo changes touching PII, secrets, auth, providers, public APIs, migrations, logs, retention, deletion, auditability, or access control.
+---
+
 # Security Review Skill
 
 Use this skill for changes touching PII, secrets, auth, authorization, external providers, public APIs, migrations, logs, or data retention.

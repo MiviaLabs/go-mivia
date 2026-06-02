@@ -290,6 +290,30 @@ func TestPromoteAgentArtifact_RejectsUnknownUnsafeOrUnverifiedDecisions(t *testi
 	}
 }
 
+func TestPromoteAgentArtifact_AllowsNumericLookingInternalSourceRef(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	run, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+		ProjectID: "example-service",
+		Artifacts: []model.AgentArtifact{{Ref: "artifact-1", Kind: "evidence"}},
+	})
+	if err != nil {
+		t.Fatalf("create agent run: %v", err)
+	}
+
+	run, err = svc.PromoteAgentArtifact(context.Background(), run.ID, model.PromoteAgentArtifactInput{
+		ArtifactRef: "artifact-1",
+		State:       model.PromotionStateCandidate,
+		SourceRef:   "agent_step_12345678901234567890",
+	})
+	if err != nil {
+		t.Fatalf("promote artifact: %v", err)
+	}
+	if len(run.Promotions) != 1 || run.Promotions[0].SourceRef != "agent_step_12345678901234567890" {
+		t.Fatalf("unexpected promotions: %#v", run.Promotions)
+	}
+}
+
 func TestAgentRunArtifactsRejectRootOrTraversalRefs(t *testing.T) {
 	mem := store.NewMemoryStore()
 	svc := service.New(mem, mem)

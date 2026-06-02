@@ -10,6 +10,11 @@ Available skills:
 - `security-review`
 - `mivia-mcp`
 
+Metadata:
+
+- Each `SKILL.md` starts with YAML frontmatter containing `name` and a concise trigger-focused `description`.
+- Keep descriptions behavior-preserving and specific to when the skill should activate.
+
 Usage rules:
 
 - Read `.ai/INDEX.md` before using any local skill.

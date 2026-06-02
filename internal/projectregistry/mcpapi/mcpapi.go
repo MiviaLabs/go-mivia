@@ -247,6 +247,8 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			ProjectID       string                             `json:"project_id,omitempty"`
 			Documents       []projectreliability.ClaimDocument `json:"documents,omitempty"`
 			SelectedPaths   []string                           `json:"selected_paths,omitempty"`
+			KnownTools      []string                           `json:"known_tools,omitempty"`
+			KnownRoutes     []string                           `json:"known_routes,omitempty"`
 			IncludeVerified bool                               `json:"include_verified,omitempty"`
 			Meta            json.RawMessage                    `json:"_meta,omitempty"`
 		}
@@ -261,6 +263,8 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			ProjectID:       projectID,
 			Documents:       input.Documents,
 			SelectedPaths:   input.SelectedPaths,
+			KnownTools:      input.KnownTools,
+			KnownRoutes:     input.KnownRoutes,
 			IncludeVerified: input.IncludeVerified,
 		})
 		return toolResult(claims), err
@@ -1055,6 +1059,8 @@ func ingestionToolDefinitions() []map[string]any {
 				"project_id":       map[string]any{"type": "string"},
 				"include_verified": map[string]any{"type": "boolean", "description": "When true, include verified line-level claims. Defaults to false so output contains only actionable findings plus summary counts."},
 				"selected_paths":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 50},
+				"known_tools":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 200, "description": "Optional additional current MCP tool names to treat as known for this check."},
+				"known_routes":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 200, "description": "Optional additional REST route patterns to treat as known for this check."},
 				"documents": map[string]any{
 					"type":     "array",
 					"maxItems": 50,

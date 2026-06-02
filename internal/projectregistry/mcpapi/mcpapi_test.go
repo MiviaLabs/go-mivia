@@ -352,6 +352,24 @@ func TestCallToolWithIngestion_ClaimsCheckIncludesVerifiedWhenRequested(t *testi
 	}
 }
 
+func TestCallToolWithIngestion_ClaimsCheckForwardsKnownOverrides(t *testing.T) {
+	registry, digest, ingestion := newIngestionServices(t)
+	result, err := mcpapi.CallToolWithIngestion(context.Background(), registry, digest, ingestion, "projects_claims_check", json.RawMessage(`{"id":"example-service","include_verified":true,"known_tools":["projects.custom.tool"],"known_routes":["/api/v1/projects/*/custom-route"],"documents":[{"path":"README.md","text":"Use projects.custom.tool and GET /api/v1/projects/example-service/custom-route."}]}`))
+	if err != nil {
+		t.Fatalf("call claims check: %v", err)
+	}
+	body := marshalResult(t, result)
+	if !strings.Contains(body, `"claim":"projects.custom.tool"`) || !strings.Contains(body, `"claim":"/api/v1/projects/example-service/custom-route"`) || strings.Contains(body, `"status":"stale"`) {
+		t.Fatalf("expected custom known claims to verify, got %s", body)
+	}
+
+	claimsTool := findToolDefinition(t, mcpapi.ToolDefinitionsWithIngestion(true), "projects.claims.check")
+	schemaBody := marshalResult(t, claimsTool)
+	if !strings.Contains(schemaBody, "known_tools") || !strings.Contains(schemaBody, "known_routes") {
+		t.Fatalf("claims check schema did not expose known overrides: %s", schemaBody)
+	}
+}
+
 func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 	root := t.TempDir()
 	fullPath := filepath.Join(root, "main.go")
@@ -910,6 +928,17 @@ func hasToolDefinition(tools []map[string]any, name string) bool {
 		}
 	}
 	return false
+}
+
+func findToolDefinition(t *testing.T, tools []map[string]any, name string) map[string]any {
+	t.Helper()
+	for _, tool := range tools {
+		if tool["name"] == name {
+			return tool
+		}
+	}
+	t.Fatalf("missing tool definition %s", name)
+	return nil
 }
 
 func findSymbol(t *testing.T, symbols []projectingestion.SymbolMetadata, name string) projectingestion.SymbolMetadata {
