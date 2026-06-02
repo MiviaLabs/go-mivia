@@ -493,6 +493,30 @@ func TestCallToolWithWorkspace_CreateAndDeleteAliases(t *testing.T) {
 	}
 }
 
+func TestToolDefinitionsUseClientAdmissibleInputSchemas(t *testing.T) {
+	toolSets := [][]map[string]any{
+		mcpapi.ToolDefinitionsWithIngestion(true),
+		mcpapi.ToolDefinitionsWithWorkspace(true, true),
+	}
+
+	for _, tools := range toolSets {
+		for _, tool := range tools {
+			schema, ok := tool["inputSchema"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s inputSchema is not an object map: %#v", tool["name"], tool["inputSchema"])
+			}
+			if schema["type"] != "object" {
+				t.Fatalf("%s inputSchema type = %#v, want object", tool["name"], schema["type"])
+			}
+			for _, forbidden := range []string{"oneOf", "anyOf", "allOf", "not"} {
+				if _, ok := schema[forbidden]; ok {
+					t.Fatalf("%s inputSchema has top-level %s: %#v", tool["name"], forbidden, schema)
+				}
+			}
+		}
+	}
+}
+
 func TestCallToolWithWorkspace_GitDiffRejectsFilesystemID(t *testing.T) {
 	registry, digest := newServices(t)
 	workspace := projectworkspace.NewService(registry, nil, projectworkspace.Options{Enabled: true})

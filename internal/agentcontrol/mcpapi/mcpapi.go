@@ -435,6 +435,8 @@ func (handler *Handler) callToolParams(r *http.Request, params toolsCallParams) 
 		"projects.workspace.git_diff", "projects_workspace_git_diff",
 		"projects.workspace.file_read", "projects_workspace_file_read",
 		"projects.workspace.file_edit", "projects_workspace_file_edit",
+		"projects.workspace.file_create", "projects_workspace_file_create",
+		"projects.workspace.file_delete", "projects_workspace_file_delete",
 		"projects.diagnostics.ingestion", "projects_diagnostics_ingestion":
 		if handler.projects == nil {
 			return nil, projectregistry.ErrProjectNotFound

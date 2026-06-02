@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -823,8 +824,8 @@ func TestProjectWorkspaceMCPToolsListWhenConfigured(t *testing.T) {
 		GraphNamespace:        "example-service",
 		DigestMode:            projectregistry.DigestModeContentGraph,
 		UpdatePolicy:          projectregistry.UpdatePolicyManual,
-		WorkspaceMode:         projectregistry.WorkspaceModeReadOnly,
-		Include:               []string{"**/*.go"},
+		WorkspaceMode:         projectregistry.WorkspaceModeEdit,
+		Include:               []string{"**/*.go", "**/*.md"},
 		FollowSymlinks:        false,
 		MaxFileBytes:          4096,
 		MaxChunkBytes:         1024,
@@ -845,12 +846,37 @@ func TestProjectWorkspaceMCPToolsListWhenConfigured(t *testing.T) {
 	handler := mcpapi.NewHandlerWithResearchProjectsIngestionAndWorkspace(svc, nil, registry, digest, nil, workspace, slog.Default())
 
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.git_status"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.file_read"`)) {
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.git_status"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.file_read"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.file_create"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.file_delete"`)) {
 		t.Fatalf("expected workspace tools, got %s", list.Body.String())
 	}
 	read := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects_workspace_file_read","arguments":{"id":"example-service","relative_path":"main.go"}}}`)
 	if bytes.Contains(read.Body.Bytes(), []byte(`"error"`)) || bytes.Contains(read.Body.Bytes(), []byte(root)) || bytes.Contains(read.Body.Bytes(), []byte("content_sha256")) {
 		t.Fatalf("unexpected workspace read response: %s", read.Body.String())
+	}
+	var readResponse struct {
+		Result struct {
+			StructuredContent projectworkspace.WorkspaceFile `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(read.Body.Bytes(), &readResponse); err != nil {
+		t.Fatalf("decode workspace read response: %v", err)
+	}
+	if readResponse.Result.StructuredContent.EditToken == "" {
+		t.Fatalf("expected edit token in read response: %s", read.Body.String())
+	}
+
+	create := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects_workspace_file_create","arguments":{"id":"example-service","relative_path":"notes/new.md","text":"dry run only\n","dry_run":true,"create_parent_dirs":true}}}`)
+	if bytes.Contains(create.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(create.Body.Bytes(), []byte(`"applied":false`)) || !bytes.Contains(create.Body.Bytes(), []byte(`"relative_path":"notes/new.md"`)) {
+		t.Fatalf("unexpected workspace create dry-run response: %s", create.Body.String())
+	}
+
+	deleteBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.workspace.file_delete","arguments":{"id":"example-service","relative_path":"main.go","edit_token":%q,"dry_run":true}}}`, readResponse.Result.StructuredContent.EditToken)
+	deleteRes := postMCP(t, handler, deleteBody)
+	if bytes.Contains(deleteRes.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(deleteRes.Body.Bytes(), []byte(`"deleted":false`)) || !bytes.Contains(deleteRes.Body.Bytes(), []byte(`"relative_path":"main.go"`)) {
+		t.Fatalf("unexpected workspace delete dry-run response: %s", deleteRes.Body.String())
 	}
 }
 

@@ -1385,22 +1385,13 @@ func workspaceToolDefinitions() []map[string]any {
 			"name":        "projects.workspace.file_delete",
 			"title":       "Delete Workspace File",
 			"description": "Delete one eligible workspace file by file_id or relative_path after validating a current edit token. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
-			"inputSchema": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"required":             []string{"id", "edit_token"},
-				"anyOf": []map[string]any{
-					{"required": []string{"file_id"}},
-					{"required": []string{"relative_path"}},
-				},
-				"properties": map[string]any{
-					"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
-					"file_id":       map[string]any{"type": "string"},
-					"relative_path": map[string]any{"type": "string"},
-					"edit_token":    map[string]any{"type": "string", "minLength": 1},
-					"dry_run":       map[string]any{"type": "boolean"},
-				},
-			},
+			"inputSchema": objectSchema(map[string]any{
+				"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
+				"file_id":       map[string]any{"type": "string", "description": "Opaque file id returned by project file tools. Either file_id or relative_path must be provided."},
+				"relative_path": map[string]any{"type": "string", "description": "Project-relative path. Either relative_path or file_id must be provided."},
+				"edit_token":    map[string]any{"type": "string", "minLength": 1},
+				"dry_run":       map[string]any{"type": "boolean"},
+			}, []string{"id", "edit_token"}),
 		},
 	}
 }
