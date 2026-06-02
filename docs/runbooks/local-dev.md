@@ -60,10 +60,10 @@ Official setup reference: [Docker Desktop WSL 2 backend](https://docs.docker.com
 The default Compose file builds from this checkout. After the first public image is published, the Compose file includes a commented pull example:
 
 ```yaml
-# image: ghcr.io/mivialabs/go-mivia:0.1.12
+# image: ghcr.io/mivialabs/go-mivia:0.1.16
 ```
 
-Go module releases and container images are versioned in different registries. The Go module release tag should be `v0.1.12`; the container image tag can be `0.1.12` when the release workflow publishes it that way.
+Go module releases and container images are versioned in different registries. The Go module release tag should be `v0.1.16`; the container image tag can be `0.1.16` when the release workflow publishes it that way.
 
 Defaults:
 

@@ -50,7 +50,7 @@ Know or discover:
 - Project ID, from the user or `projects.list`. Project-scoped tools also accept safe aliases returned by `projects.list` / `projects.get`, including configured repo/module aliases and auto-discovered Go module paths.
 - Host repository rules, tests, and privacy/security boundaries.
 - Operator config validation reports are available with `mivia-server config check --config <path> --redacted-json`; use this before hand-inspecting config for support triage when a redacted machine-readable validity report is enough. The report must not expose roots, URLs, Cloud IDs, credential references, or config paths.
-- Release examples in docs, Docker Compose, and devcontainer snippets must stay on the current public release pair: Go module tag `v0.1.12` and container tag `0.1.12`.
+- Release examples in docs, Docker Compose, and devcontainer snippets must stay on the current public release pair: Go module tag `v0.1.16` and container tag `0.1.16`.
 
 Do not assume the current repository is the server repo. Do not assume any specific language or directory layout.
 

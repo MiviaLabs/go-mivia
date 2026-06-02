@@ -15,6 +15,8 @@ type ChunkSet struct {
 	Chunks        []Chunk
 }
 
+const structuredStreamingSafetyMaxBytes = 16 << 20
+
 func BuildChunks(relativePath string, content []byte, options SafetyOptions) (ChunkSet, SafetyResult, error) {
 	options = normalizeSafetyOptions(options)
 	safety := EvaluateSafety(relativePath, content, options)
@@ -59,7 +61,12 @@ func BuildChunksFromReader(relativePath string, reader io.Reader, sizeBytes int6
 	scanner := bufio.NewReaderSize(reader, options.MaxChunkBytes)
 	var sample []byte
 	sampleChecked := false
-	sensitive := newStreamingSensitiveScanner()
+	streamStructuredSafetyAtEOF := structuredConfigKind(normalizedPath) != ""
+	if streamStructuredSafetyAtEOF && sizeBytes > int64(structuredStreamingSafetyMaxBytes) {
+		return ChunkSet{}, skipped(SkipReasonSemanticTooLarge, normalizedPath, true, int(sizeBytes)), nil
+	}
+	sensitive := newStreamingSensitiveScanner(normalizedPath)
+	var structuredContent []byte
 	var total int64
 	for {
 		r, width, err := scanner.ReadRune()
@@ -92,7 +99,15 @@ func BuildChunksFromReader(relativePath string, reader io.Reader, sizeBytes int6
 			}
 		}
 		hasher.Write(piece)
-		if sensitive.Write(piece) {
+		if streamStructuredSafetyAtEOF {
+			structuredContent = append(structuredContent, piece...)
+			if len(structuredContent) > structuredStreamingSafetyMaxBytes {
+				return ChunkSet{}, skipped(SkipReasonSemanticTooLarge, normalizedPath, true, int(total)), nil
+			}
+			if sensitive.WriteHardMarkers(piece) {
+				return ChunkSet{}, skipped(SkipReasonSensitiveContent, normalizedPath, true, int(total)), nil
+			}
+		} else if sensitive.Write(piece) {
 			return ChunkSet{}, skipped(SkipReasonSensitiveContent, normalizedPath, true, int(total)), nil
 		}
 		if err := builder.appendRune(r, piece); err != nil {
@@ -101,6 +116,9 @@ func BuildChunksFromReader(relativePath string, reader io.Reader, sizeBytes int6
 	}
 	if !sampleChecked && looksBinary(sample) {
 		return ChunkSet{}, skipped(SkipReasonBinaryContent, normalizedPath, true, int(total)), nil
+	}
+	if streamStructuredSafetyAtEOF && containsSensitiveContentForPath(normalizedPath, structuredContent) {
+		return ChunkSet{}, skipped(SkipReasonSensitiveContent, normalizedPath, true, int(total)), nil
 	}
 	if sizeBytes >= 0 && total != sizeBytes {
 		sizeBytes = total

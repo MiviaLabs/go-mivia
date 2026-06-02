@@ -204,7 +204,7 @@ What this enables:
 - Engineers can open the project details dashboard `Agent activity` drawer to watch project-scoped MCP calls, agent-run trace events, verifier metadata, promotion decisions, and policy guard events in real time. Agent runs default `trace_id` to the generated run id unless callers provide a safe correlation id. Policy events normalize denied paths, sensitive-content skips, unsafe edits, and invalid verifier URLs into redacted categories with safe relative paths only; startup bind validation still happens before the activity recorder exists.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
 - Local graph/search state persists per project when `graph_storage = "persistent"` using `<ladybug_path parent>/projects/<project-id>/mivialabs.lbug` and `<ladybug_path parent>/projects/<project-id>/mivialabs-pebble-search.sqlite`, or stays process-local/shared fallback with `graph_storage = "in_memory"`.
-- v0.1.12 keeps `full_scan_batch_size` as a hard file-count cap and also flushes earlier by graph/search write weight so heavy files do not create multi-minute per-project storage writes.
+- v0.1.16 keeps `full_scan_batch_size` as a hard file-count cap and also flushes earlier by graph/search write weight so heavy files do not create multi-minute per-project storage writes.
 - The server keeps the boundary localhost-only and blocks raw DB queries, public exposure, AI provider calls, embeddings, vectors, arbitrary shell, raw patches, git commit/push/reset/checkout tools, skipped sensitive content, secrets, raw prompts, and raw provider payload blobs. Approved Jira/Confluence rich content and possible PII are limited to ignored local stores and bounded local MCP responses.
 
 ## Agent Reliability Model
@@ -396,7 +396,7 @@ MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug
 MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite
 ```
 
-Persistent project graph/search files live under `/var/lib/mivia/projects/<project-id>/`; agent and research metadata remain separate from project graph storage. v0.1.12 bounds heavy per-project graph/search flushes during ingestion; tune `full_scan_batch_size` in the mounted TOML as the hard file-count cap if a local disk still needs smaller write units.
+Persistent project graph/search files live under `/var/lib/mivia/projects/<project-id>/`; agent and research metadata remain separate from project graph storage. v0.1.16 bounds heavy per-project graph/search flushes during ingestion; tune `full_scan_batch_size` in the mounted TOML as the hard file-count cap if a local disk still needs smaller write units.
 
 Override `MIVIA_HOST_BIND`, `MIVIA_HOST_PORT`, and feature flags from the host environment when needed. Compose loads `configs/mivia-server.compose.toml`, which mirrors the local global runtime defaults without project roots, project names, Jira/Confluence URLs, or credential refs. It enables content graph ingestion, live updates, diagnostics, runtime metrics, and the global workspace gate by default. Per-project `workspace_mode` still controls whether a configured project exposes workspace tools. Mount ignored local configs or secrets only in an ignored `.docker-compose.local.yml` override when needed.
 

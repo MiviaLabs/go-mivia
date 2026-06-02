@@ -1,6 +1,7 @@
 package projectingestion
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,181 @@ The workspace uses token-guarded exact edits and no raw patch endpoint.
 	result = EvaluateSafety("internal/projectworkspace/service.go", code, DefaultSafetyOptions())
 	if !result.Eligible {
 		t.Fatalf("expected code declaration to be eligible, got %#v", result)
+	}
+}
+
+func sensitiveFixture(parts ...string) string {
+	return strings.Join(parts, "")
+}
+
+func syntheticPhoneFixture() string {
+	return sensitiveFixture("+", "1 202 ", "555 ", "0101")
+}
+
+func TestEvaluateSafety_AllowsSafeUnityGeneratedYAMLScalars(t *testing.T) {
+	content := []byte(sensitiveFixture(`%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1048576000000000000}
+  m_Enabled: 1
+  m_Script: {fileID: 11500000, guid: 0123456789abcdef0123456789abcdef, type: 3}
+  m_Name: ENV_PROP_PANEL_TOKEN_LABEL
+  access_`, "token: 0\n", "  secret", `: false
+  password: null
+  api_key: uuid
+`))
+
+	result := EvaluateSafety("Assets/Generated/ENV_PROP_PANEL_TOKEN_LABEL.prefab", content, DefaultSafetyOptions())
+	if !result.Eligible {
+		t.Fatalf("expected safe Unity YAML to be eligible, got %#v", result)
+	}
+}
+
+func TestEvaluateSafety_AllowsOpenAPIYAMLSensitiveSchemaFieldNames(t *testing.T) {
+	content := []byte(sensitiveFixture(`openapi: 3.0.0
+components:
+  schemas:
+    Account:
+      type: object
+      properties:
+        pass`, "word", `:
+          type: string
+          format: password
+        phone:
+          type: string
+          format: phone
+        access`, "Token", `:
+          type: string
+          nullable: true
+`))
+
+	result := EvaluateSafety("api/openapi.yaml", content, DefaultSafetyOptions())
+	if !result.Eligible {
+		t.Fatalf("expected OpenAPI schema YAML to be eligible, got %#v", result)
+	}
+}
+
+func TestEvaluateSafety_RejectsSensitiveNestedYAMLValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "api key scalar", content: sensitiveFixture("auth:\n  api_", "key: ", "placeholder", "\n")},
+		{name: "token nested value", content: sensitiveFixture("auth:\n  token:\n    value: ", "placeholder", "\n")},
+		{name: "secret sequence", content: sensitiveFixture("items:\n  - secret:\n      - ", "placeholder", "\n")},
+		{name: "password alias", content: sensitiveFixture("shared: &credential ", "placeholder", "\npassword: *credential\n")},
+		{name: "password schema example", content: sensitiveFixture("properties:\n  password:\n    type: string\n    example: ", "placeholder", "\n")},
+		{name: "phone field", content: sensitiveFixture("contact:\n  phone: \"", syntheticPhoneFixture(), "\"\n")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := EvaluateSafety("configs/service.yaml", []byte(test.content), DefaultSafetyOptions())
+			if result.Reason != SkipReasonSensitiveContent {
+				t.Fatalf("expected sensitive YAML skip, got %#v", result)
+			}
+		})
+	}
+}
+
+func TestEvaluateSafety_MalformedYAMLFallsBackToSensitiveAssignment(t *testing.T) {
+	content := []byte(sensitiveFixture("auth:\n  token: \"", "syntheticmarker", "\n"))
+	result := EvaluateSafety("configs/service.yaml", content, DefaultSafetyOptions())
+	if result.Reason != SkipReasonSensitiveContent {
+		t.Fatalf("expected malformed YAML fallback to skip sensitive assignment, got %#v", result)
+	}
+}
+
+func TestEvaluateSafety_RejectsSensitiveYAMLComments(t *testing.T) {
+	content := []byte(sensitiveFixture("service: demo\n# token: ", "syntheticmarker", "\n"))
+	result := EvaluateSafety("configs/service.yaml", content, DefaultSafetyOptions())
+	if result.Reason != SkipReasonSensitiveContent {
+		t.Fatalf("expected sensitive YAML comment to be skipped, got %#v", result)
+	}
+}
+
+func TestEvaluateSafety_AllowsSafeYAMLComments(t *testing.T) {
+	content := []byte("service: demo\n# password: string\n# token: 0\n")
+	result := EvaluateSafety("configs/service.yaml", content, DefaultSafetyOptions())
+	if !result.Eligible {
+		t.Fatalf("expected safe YAML comments to be eligible, got %#v", result)
+	}
+}
+
+func TestEvaluateSafety_DoesNotTreatYAMLBlockScalarLinesAsComments(t *testing.T) {
+	content := []byte(sensitiveFixture("description: |\n  # token: ", "syntheticmarker", "\n  rendered as documentation text\n"))
+	result := EvaluateSafety("configs/service.yaml", content, DefaultSafetyOptions())
+	if !result.Eligible {
+		t.Fatalf("expected YAML block scalar content to be eligible, got %#v", result)
+	}
+}
+
+func TestBuildChunksFromReader_YAMLSafetyMatchesStreamingReader(t *testing.T) {
+	safeContent := []byte(sensitiveFixture(`openapi: 3.0.0
+components:
+  schemas:
+    Account:
+      properties:
+        pass`, "word", `:
+          type: string
+          format: password
+        phone:
+          type: string
+`))
+	chunks, result, err := BuildChunksFromReader("api/openapi.yaml", bytes.NewReader(safeContent), int64(len(safeContent)), SafetyOptions{
+		MaxChunkBytes:         32,
+		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
+	})
+	if err != nil {
+		t.Fatalf("build safe chunks: %v", err)
+	}
+	if !result.Eligible {
+		t.Fatalf("expected safe OpenAPI YAML reader content to be eligible, got %#v", result)
+	}
+	if len(chunks.Chunks) == 0 {
+		t.Fatal("expected safe OpenAPI YAML reader content to produce chunks")
+	}
+
+	sensitiveContent := []byte(sensitiveFixture("auth:\n  token:\n    value: ", "placeholder", "\n"))
+	_, result, err = BuildChunksFromReader("configs/service.yaml", bytes.NewReader(sensitiveContent), int64(len(sensitiveContent)), SafetyOptions{
+		MaxChunkBytes:         16,
+		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
+	})
+	if err != nil {
+		t.Fatalf("build sensitive chunks: %v", err)
+	}
+	if result.Reason != SkipReasonSensitiveContent {
+		t.Fatalf("expected sensitive YAML reader content to be skipped, got %#v", result)
+	}
+}
+
+func TestStreamingSensitiveScanner_HardMarkersDoNotUseStructuredAssignments(t *testing.T) {
+	scanner := newStreamingSensitiveScanner("Assets/Generated/scene.prefab")
+	safeUnityContent := []byte(sensitiveFixture("api_", "key: uuid\n", "token: 0\nm_GameObject: {fileID: 1048576000000000000}\n"))
+	if scanner.WriteHardMarkers(safeUnityContent) {
+		t.Fatal("expected hard-marker scan to ignore safe structured assignment fields")
+	}
+	if !scanner.WriteHardMarkers([]byte("authorization: Bearer abcdefgh12345678\n")) {
+		t.Fatal("expected hard-marker scan to detect bearer marker")
+	}
+}
+
+func TestBuildChunksFromReader_SkipsOversizedStructuredSafetyBuffer(t *testing.T) {
+	content := strings.Repeat("a", structuredStreamingSafetyMaxBytes+1)
+	_, result, err := BuildChunksFromReader("configs/large.yaml", strings.NewReader(content), int64(len(content)), SafetyOptions{
+		MaxChunkBytes:         1024,
+		SensitiveMarkerPolicy: SensitiveMarkerPolicySkipFile,
+	})
+	if err != nil {
+		t.Fatalf("build oversized structured chunks: %v", err)
+	}
+	if result.Reason != SkipReasonSemanticTooLarge {
+		t.Fatalf("expected oversized structured content skip, got %#v", result)
 	}
 }
 
