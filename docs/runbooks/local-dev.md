@@ -72,6 +72,7 @@ Defaults:
 - Content graph ingestion: `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true`
 - Live updates: `MIVIA_INGESTION_LIVE_UPDATES_ENABLED=true`
 - Global workspace gate: `MIVIA_WORKSPACE_ENABLED=true`
+- Container user: `MIVIA_CONTAINER_USER=10001:10001` by default. For local edit-capable bind mounts across mixed WSL/Windows ownership boundaries, use the ignored local override with `MIVIA_CONTAINER_USER=0:0`; the workspace atomic write path preserves original Unix ownership when supported and tolerates chmod-unsupported Windows mounts.
 - Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`; persistent project graph/search stores live under `/var/lib/mivia/projects/<project-id>/`, with search SQLite filenames tied to the Pebble graph storage epoch.
 - Container storage: named Compose volume `mivia-data`
 - Config file: `configs/mivia-server.compose.toml`
@@ -94,7 +95,7 @@ docker compose -f docker-compose.yml -f .docker-compose.local.yml up
 
 Use the commented local override template at the bottom of `docker-compose.yml`, copy it into `.docker-compose.local.yml`, and replace only placeholder paths.
 
-Workspace access still requires a configured project with `workspace_mode = "read_only"` or `"edit"`. Leave project `workspace_mode = "disabled"` for projects that must not expose governed git status/diff/read/edit tools.
+Workspace access still requires a configured project with `workspace_mode = "read_only"` or `"edit"`. Leave project `workspace_mode = "disabled"` for projects that must not expose governed git status/diff/read/create/delete/edit tools. In edit mode, use `file_read` before `file_edit` or `file_delete` on existing eligible files, and use `file_create` for new eligible text files. These tools do not provide recursive delete, arbitrary patch upload, arbitrary shell, or a shell replacement. If exact workspace edits fail while reads and dry-runs succeed, check the container user and bind mount permissions before changing host drive permissions.
 
 ## Optional Local Project Config
 
@@ -186,7 +187,7 @@ curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/workspace/git/d
 curl -fsS 'http://127.0.0.1:8080/api/v1/projects/example-service/workspace/files/read?relative_path=README.md'
 ```
 
-Edit mode requires `workspace_mode = "edit"` and an `edit_token` from the file-read response. There is no arbitrary shell, raw patch, public exposure, provider call, embedding/vector/crawling path, raw DB query endpoint, or git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool.
+Edit mode requires `workspace_mode = "edit"`. Existing eligible files must use `projects.workspace.file_read` first, then `projects.workspace.file_edit` or `projects.workspace.file_delete` with the returned edit token. New eligible text files should use `projects.workspace.file_create`. There is no arbitrary shell, raw patch, recursive delete, public exposure, provider call, embedding/vector/crawling path, raw DB query endpoint, or git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool.
 
 Chunk reads require stable opaque IDs from the file list response:
 
@@ -285,6 +286,8 @@ After registration, new Codex Desktop sessions can discover these tools:
 - `projects.workspace.git_diff`
 - `projects.workspace.file_read`
 - `projects.workspace.file_edit`
+- `projects.workspace.file_create`
+- `projects.workspace.file_delete`
 - `projects.search.ast.queries`
 - `projects.search.ast`
 - `projects.symbol.source`

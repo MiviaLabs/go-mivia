@@ -746,6 +746,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
 		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
 		if workspace == nil {
 			return nil, projectworkspace.ErrWorkspaceDisabled
 		}
@@ -777,6 +780,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
 		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
 		if workspace == nil {
 			return nil, projectworkspace.ErrWorkspaceDisabled
 		}
@@ -801,6 +807,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
 		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
 		if workspace == nil {
 			return nil, projectworkspace.ErrWorkspaceDisabled
 		}
@@ -823,6 +832,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
 		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
 		if workspace == nil {
 			return nil, projectworkspace.ErrWorkspaceDisabled
 		}
@@ -832,6 +844,56 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			EditToken:    input.EditToken,
 			DryRun:       input.DryRun,
 			Edits:        input.Edits,
+		})
+		return toolResult(result), err
+	case "projects.workspace.file_create", "projects_workspace_file_create":
+		var input struct {
+			ID               string          `json:"id"`
+			RelativePath     string          `json:"relative_path"`
+			Text             string          `json:"text"`
+			CreateParentDirs bool            `json:"create_parent_dirs,omitempty"`
+			DryRun           bool            `json:"dry_run,omitempty"`
+			Meta             json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
+		if workspace == nil {
+			return nil, projectworkspace.ErrWorkspaceDisabled
+		}
+		result, err := workspace.CreateFile(ctx, strings.TrimSpace(input.ID), projectworkspace.CreateFileOptions{
+			RelativePath:     input.RelativePath,
+			Text:             input.Text,
+			CreateParentDirs: input.CreateParentDirs,
+			DryRun:           input.DryRun,
+		})
+		return toolResult(result), err
+	case "projects.workspace.file_delete", "projects_workspace_file_delete":
+		var input struct {
+			ID           string          `json:"id"`
+			FileID       string          `json:"file_id,omitempty"`
+			RelativePath string          `json:"relative_path,omitempty"`
+			EditToken    string          `json:"edit_token"`
+			DryRun       bool            `json:"dry_run,omitempty"`
+			Meta         json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
+		if workspace == nil {
+			return nil, projectworkspace.ErrWorkspaceDisabled
+		}
+		result, err := workspace.DeleteFile(ctx, strings.TrimSpace(input.ID), projectworkspace.DeleteFileOptions{
+			FileID:       input.FileID,
+			RelativePath: input.RelativePath,
+			EditToken:    input.EditToken,
+			DryRun:       input.DryRun,
 		})
 		return toolResult(result), err
 	default:
@@ -892,6 +954,25 @@ func ReadResourceWithIngestion(ctx context.Context, registry *projectregistry.Re
 		return resourceResult(uri, outline)
 	}
 	return nil, projectregistry.ErrProjectNotFound
+}
+
+func validateWorkspaceProjectID(id string) error {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return fmt.Errorf("%w: workspace id must be a project id or alias from projects.list, not a filesystem workspace path", projectregistry.ErrInvalidInput)
+	}
+	if strings.HasPrefix(trimmed, "/") ||
+		strings.HasPrefix(trimmed, `\\`) ||
+		strings.HasPrefix(trimmed, "~/") ||
+		strings.Contains(trimmed, `\`) ||
+		(len(trimmed) >= 3 && isASCIIAlpha(trimmed[0]) && trimmed[1] == ':' && (trimmed[2] == '\\' || trimmed[2] == '/')) {
+		return fmt.Errorf("%w: workspace id must be a project id or alias from projects.list, not a filesystem workspace path", projectregistry.ErrInvalidInput)
+	}
+	return nil
+}
+
+func isASCIIAlpha(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
 }
 
 func ingestionToolDefinitions() []map[string]any {
@@ -1233,9 +1314,9 @@ func workspaceToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.workspace.git_status",
 			"title":       "Get Governed Project Git Status",
-			"description": "Return parsed git status for an opted-in local project without roots, raw command lines, or raw stderr.",
+			"description": "Return parsed git status for an opted-in local project. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path. Returns no roots, raw command lines, or raw stderr.",
 			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
-				"id":                map[string]any{"type": "string", "minLength": 1},
+				"id":                map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"include_untracked": map[string]any{"type": "boolean"},
 				"path_prefix":       map[string]any{"type": "string"},
 			}), []string{"id"}),
@@ -1243,9 +1324,9 @@ func workspaceToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.workspace.git_diff",
 			"title":       "Get Governed Project Git Diff",
-			"description": "Return capped safe git diff output for an opted-in local project without arbitrary shell execution.",
+			"description": "Return capped safe git diff output for an opted-in local project without arbitrary shell execution. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":             map[string]any{"type": "string", "minLength": 1},
+				"id":             map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"scope":          map[string]any{"type": "string", "enum": []string{projectworkspace.DiffScopeWorkingTree, projectworkspace.DiffScopeStaged, projectworkspace.DiffScopeHead}},
 				"file_id":        map[string]any{"type": "string"},
 				"relative_path":  map[string]any{"type": "string"},
@@ -1258,20 +1339,20 @@ func workspaceToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.workspace.file_read",
 			"title":       "Read Current Workspace File",
-			"description": "Read one current eligible text file and return an opaque edit token for exact edits.",
+			"description": "Read one current eligible text file and return an opaque edit token for exact edits. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":            map[string]any{"type": "string", "minLength": 1},
+				"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"file_id":       map[string]any{"type": "string"},
 				"relative_path": map[string]any{"type": "string"},
-				"max_bytes":     map[string]any{"type": "integer", "minimum": 1, "maximum": projectworkspace.MaxReadBytes},
+				"max_bytes":     map[string]any{"type": "integer", "minimum": 1, "description": "Requested text byte cap. Values above the server limit are accepted and clamped; use text_truncated to detect partial reads."},
 			}, []string{"id"}),
 		},
 		{
 			"name":        "projects.workspace.file_edit",
 			"title":       "Apply Exact Workspace File Edit",
-			"description": "Apply token-guarded exact byte-span edits to one eligible file and queue path ingestion after successful writes.",
+			"description": "Apply token-guarded exact byte-span edits to one eligible file and queue path ingestion after successful writes. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":            map[string]any{"type": "string", "minLength": 1},
+				"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"file_id":       map[string]any{"type": "string"},
 				"relative_path": map[string]any{"type": "string"},
 				"edit_token":    map[string]any{"type": "string", "minLength": 1},
@@ -1287,6 +1368,30 @@ func workspaceToolDefinitions() []map[string]any {
 					}, []string{"start_byte", "end_byte", "old_text", "new_text"}),
 				},
 			}, []string{"id", "edit_token", "edits"}),
+		},
+		{
+			"name":        "projects.workspace.file_create",
+			"title":       "Create Workspace File",
+			"description": "Create one eligible workspace text file and queue path ingestion after successful writes. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":                 map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
+				"relative_path":      map[string]any{"type": "string", "minLength": 1},
+				"text":               map[string]any{"type": "string"},
+				"create_parent_dirs": map[string]any{"type": "boolean"},
+				"dry_run":            map[string]any{"type": "boolean"},
+			}, []string{"id", "relative_path", "text"}),
+		},
+		{
+			"name":        "projects.workspace.file_delete",
+			"title":       "Delete Workspace File",
+			"description": "Delete one eligible workspace file by file_id or relative_path after validating a current edit token. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
+				"file_id":       map[string]any{"type": "string", "description": "Opaque file id returned by project file tools. Either file_id or relative_path must be provided."},
+				"relative_path": map[string]any{"type": "string", "description": "Project-relative path. Either relative_path or file_id must be provided."},
+				"edit_token":    map[string]any{"type": "string", "minLength": 1},
+				"dry_run":       map[string]any{"type": "boolean"},
+			}, []string{"id", "edit_token"}),
 		},
 	}
 }

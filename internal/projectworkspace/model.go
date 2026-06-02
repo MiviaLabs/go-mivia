@@ -42,6 +42,8 @@ type API interface {
 	GitDiff(ctx context.Context, projectID string, options GitDiffOptions) (GitDiff, error)
 	ReadFile(ctx context.Context, projectID string, options ReadFileOptions) (WorkspaceFile, error)
 	EditFile(ctx context.Context, projectID string, options EditFileOptions) (EditResult, error)
+	CreateFile(ctx context.Context, projectID string, options CreateFileOptions) (CreateFileResult, error)
+	DeleteFile(ctx context.Context, projectID string, options DeleteFileOptions) (DeleteFileResult, error)
 }
 
 type GitStatusOptions struct {
@@ -141,4 +143,32 @@ type EditResult struct {
 	TextTruncated  bool          `json:"text_truncated"`
 	IngestionRunID string        `json:"ingestion_run_id,omitempty"`
 	NewEditToken   string        `json:"new_edit_token,omitempty"`
+}
+
+type CreateFileOptions struct {
+	RelativePath     string
+	Text             string
+	CreateParentDirs bool
+	DryRun           bool
+}
+
+type CreateFileResult struct {
+	Applied        bool          `json:"applied"`
+	File           WorkspaceFile `json:"file"`
+	IngestionRunID string        `json:"ingestion_run_id,omitempty"`
+	NewEditToken   string        `json:"new_edit_token,omitempty"`
+}
+
+type DeleteFileOptions struct {
+	FileID       string
+	RelativePath string
+	EditToken    string
+	DryRun       bool
+}
+
+type DeleteFileResult struct {
+	Deleted        bool   `json:"deleted"`
+	ProjectID      string `json:"project_id"`
+	RelativePath   string `json:"relative_path"`
+	IngestionRunID string `json:"ingestion_run_id,omitempty"`
 }

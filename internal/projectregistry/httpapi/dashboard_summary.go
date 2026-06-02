@@ -172,12 +172,21 @@ func getDashboardSummaryHandler(registry *projectregistry.Registry, ingestion pr
 			CheckedAt: time.Now().UTC(),
 		}
 
+		indexedSymbolCount := -1
 		if health, err := dashboardWithTimeout(r.Context(), func(ctx context.Context) (projectreliability.ContextHealth, error) {
 			return projectreliability.NewServiceFromAPIs(registry, ingestion, workspace, projectreliability.Options{}).ContextHealth(ctx, projectID)
 		}); err == nil {
 			summary.ContextHealth = health
+			indexedSymbolCount = health.IndexedSymbolCount
 		} else {
 			summary.Warnings = append(summary.Warnings, "context_health_unavailable")
+			if count, countErr := dashboardWithTimeout(r.Context(), func(ctx context.Context) (int, error) {
+				return ingestion.IndexedSymbolCount(ctx, projectID)
+			}); countErr == nil {
+				indexedSymbolCount = count
+			} else {
+				summary.Warnings = append(summary.Warnings, "symbol_count_unavailable")
+			}
 		}
 		if latest, err := dashboardWithTimeout(r.Context(), func(ctx context.Context) (projectingestion.RunMetadata, error) {
 			return ingestion.LatestRunMetadata(ctx, projectID)
@@ -192,7 +201,7 @@ func getDashboardSummaryHandler(registry *projectregistry.Registry, ingestion pr
 			summary.Graph.SearchIndex = search
 		}
 		summary.Graph.Files = dashboardFiles(r.Context(), ingestion, projectID, &summary.Warnings)
-		summary.Graph.Symbols = dashboardSymbols(r.Context(), ingestion, projectID, &summary.Warnings)
+		summary.Graph.Symbols = dashboardSymbols(r.Context(), ingestion, projectID, indexedSymbolCount, &summary.Warnings)
 		summary.Graph.Headings = dashboardHeadings(r.Context(), ingestion, projectID, &summary.Warnings)
 		if ast, err := dashboardWithTimeout(r.Context(), func(ctx context.Context) (projectingestion.ASTQueryCatalog, error) {
 			return ingestion.ListASTQueries(ctx, projectID)
@@ -261,7 +270,7 @@ func dashboardFileExtensionCountable(file projectingestion.FileMetadata) bool {
 	return file.Status == string(projectingestion.FileStatusEligible) && file.RelativePathOK
 }
 
-func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, projectID string, warnings *[]string) dashboardSymbolSummary {
+func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, projectID string, indexedSymbolCount int, warnings *[]string) dashboardSymbolSummary {
 	ctx, cancel := context.WithTimeout(ctx, dashboardSectionTimeout)
 	defer cancel()
 	result := dashboardSymbolSummary{}
@@ -276,24 +285,20 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 	namespaceCount := 0
 	assemblyCount := 0
 	packageCount := 0
-	symbols := []projectingestion.SymbolMetadata{}
-	nextPageToken := ""
-	for {
-		page, err := ingestion.ListSymbols(ctx, projectID, projectingestion.SymbolFilter{}, projectingestion.Pagination{PageSize: dashboardSymbolsPageSize, PageToken: nextPageToken})
-		if err != nil {
-			*warnings = append(*warnings, "symbols_unavailable")
-			return result
-		}
-		symbols = append(symbols, page.Symbols...)
-		nextPageToken = page.NextPageToken
-		if nextPageToken == "" {
-			break
-		}
+	page, err := ingestion.ListSymbols(ctx, projectID, projectingestion.SymbolFilter{}, projectingestion.Pagination{PageSize: dashboardSymbolsPageSize})
+	if err != nil {
+		*warnings = append(*warnings, "symbols_unavailable")
+		return result
+	}
+	symbols := page.Symbols
+	if page.NextPageToken != "" {
+		*warnings = append(*warnings, "symbols_sample_truncated")
 	}
 	namespaceByFile := csharpNamespaceByFile(symbols)
 	assemblyByDir := unityAssemblyByDir(symbols)
 	for _, symbol := range symbols {
 		result.TotalCount++
+		result.SampledCount++
 		byKind[emptyKey(symbol.Kind)]++
 		if symbol.PackageName != "" {
 			byPackage[symbol.PackageName]++
@@ -318,7 +323,6 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 			byLanguage[language]++
 		}
 		if len(result.Sample) < 12 {
-			result.SampledCount++
 			result.Sample = append(result.Sample, symbolSample{
 				Name:         symbol.Name,
 				Kind:         symbol.Kind,
@@ -329,7 +333,10 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 			})
 		}
 	}
-	result.SampleTruncated = result.TotalCount > len(result.Sample)
+	if indexedSymbolCount >= 0 && indexedSymbolCount > result.TotalCount {
+		result.TotalCount = indexedSymbolCount
+	}
+	result.SampleTruncated = page.NextPageToken != ""
 	result.ByKind = sortedCounts(byKind, 12)
 	result.ByPackage = sortedCounts(byPackage, 12)
 	result.ByModule = sortedCounts(byModule, 12)
@@ -338,11 +345,21 @@ func dashboardSymbols(ctx context.Context, ingestion projectingestion.API, proje
 	result.ByCodeArea = sortedCounts(byCodeArea, 12)
 	result.ByPathBucket = result.ByCodeArea
 	result.ByLanguage = sortedCounts(byLanguage, 12)
-	result.ConcentrationBasis = symbolConcentrationBasis(result, moduleCount, namespaceCount, assemblyCount, packageCount)
+	result.ConcentrationBasis = symbolConcentrationBasis(result, moduleCount, namespaceCount, assemblyCount, packageCount, indexedSymbolCount >= 0)
 	return result
 }
 
-func symbolConcentrationBasis(symbols dashboardSymbolSummary, moduleCount int, namespaceCount int, assemblyCount int, packageCount int) dashboardSymbolConcentrationBasis {
+func symbolConcentrationBasis(symbols dashboardSymbolSummary, moduleCount int, namespaceCount int, assemblyCount int, packageCount int, totalCountKnown bool) dashboardSymbolConcentrationBasis {
+	if symbols.SampleTruncated && !totalCountKnown {
+		return dashboardSymbolConcentrationBasis{
+			PrimaryField:     "by_code_area",
+			Source:           "relative_path_bucket",
+			Label:            "Code area concentration",
+			Description:      "Share of indexed symbols grouped by repository path bucket because no semantic module, namespace, assembly, or package metadata is available.",
+			Denominator:      "indexed_symbols",
+			DenominatorCount: symbols.SampledCount,
+		}
+	}
 	candidates := []dashboardSymbolConcentrationBasis{}
 	if len(symbols.ByModule) > 0 && moduleCount > 0 {
 		candidates = append(candidates, dashboardSymbolConcentrationBasis{

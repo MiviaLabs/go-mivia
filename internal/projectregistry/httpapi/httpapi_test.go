@@ -513,7 +513,9 @@ func TestProjectWorkspaceRoutes_ReadAndEdit(t *testing.T) {
 			Text:         "package main\n",
 			EditToken:    "opaque-token",
 		},
-		edit: projectworkspace.EditResult{Applied: true, IngestionRunID: "ingest-path-1"},
+		edit:   projectworkspace.EditResult{Applied: true, IngestionRunID: "ingest-path-1"},
+		create: projectworkspace.CreateFileResult{Applied: true, IngestionRunID: "create-path-1"},
+		delete: projectworkspace.DeleteFileResult{Deleted: true, ProjectID: "example-service", RelativePath: "main.go", IngestionRunID: "delete-path-1"},
 	}
 	mux := http.NewServeMux()
 	httpapi.RegisterRoutesWithWorkspace(mux, registry, digest, nil, workspace)
@@ -538,6 +540,24 @@ func TestProjectWorkspaceRoutes_ReadAndEdit(t *testing.T) {
 	if edit.Code != http.StatusOK || !strings.Contains(edit.Body.String(), "ingest-path-1") {
 		t.Fatalf("unexpected workspace edit response %d: %s", edit.Code, edit.Body.String())
 	}
+
+	createBody := `{"relative_path":"new.go","text":"package main\n","create_parent_dirs":true,"dry_run":true}`
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/projects/example-service/workspace/files/create", strings.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	create := httptest.NewRecorder()
+	mux.ServeHTTP(create, req)
+	if create.Code != http.StatusOK || !strings.Contains(create.Body.String(), "create-path-1") {
+		t.Fatalf("unexpected workspace create response %d: %s", create.Code, create.Body.String())
+	}
+
+	deleteBody := `{"relative_path":"main.go","edit_token":"opaque-token","dry_run":true}`
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/projects/example-service/workspace/files/delete", strings.NewReader(deleteBody))
+	req.Header.Set("Content-Type", "application/json")
+	deleteRes := httptest.NewRecorder()
+	mux.ServeHTTP(deleteRes, req)
+	if deleteRes.Code != http.StatusOK || !strings.Contains(deleteRes.Body.String(), "delete-path-1") {
+		t.Fatalf("unexpected workspace delete response %d: %s", deleteRes.Code, deleteRes.Body.String())
+	}
 }
 
 func TestProjectWorkspaceRoutes_GitUnavailableIsExplicit(t *testing.T) {
@@ -558,9 +578,11 @@ func TestProjectWorkspaceRoutes_GitUnavailableIsExplicit(t *testing.T) {
 }
 
 type fakeWorkspaceAPI struct {
-	file projectworkspace.WorkspaceFile
-	edit projectworkspace.EditResult
-	err  error
+	file   projectworkspace.WorkspaceFile
+	edit   projectworkspace.EditResult
+	create projectworkspace.CreateFileResult
+	delete projectworkspace.DeleteFileResult
+	err    error
 }
 
 func (fake *fakeWorkspaceAPI) GitStatus(context.Context, string, projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {
@@ -587,6 +609,14 @@ func (fake *fakeWorkspaceAPI) ReadFile(context.Context, string, projectworkspace
 
 func (fake *fakeWorkspaceAPI) EditFile(context.Context, string, projectworkspace.EditFileOptions) (projectworkspace.EditResult, error) {
 	return fake.edit, nil
+}
+
+func (fake *fakeWorkspaceAPI) CreateFile(context.Context, string, projectworkspace.CreateFileOptions) (projectworkspace.CreateFileResult, error) {
+	return fake.create, nil
+}
+
+func (fake *fakeWorkspaceAPI) DeleteFile(context.Context, string, projectworkspace.DeleteFileOptions) (projectworkspace.DeleteFileResult, error) {
+	return fake.delete, nil
 }
 
 func TestProjectIngestionRoutes_SkippedSensitiveContentDoesNotLeak(t *testing.T) {

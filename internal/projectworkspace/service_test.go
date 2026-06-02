@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
@@ -56,6 +57,211 @@ func TestWorkspaceService_ReadEditAndQueueIngestion(t *testing.T) {
 	}
 }
 
+func TestWorkspaceService_CreateFileCreatesParentsAndQueuesIngestion(t *testing.T) {
+	root := t.TempDir()
+	registry := newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit)
+	ingest := &fakeWorkspaceIngestion{runID: "create-run-1"}
+	svc := NewService(registry, ingest, Options{Enabled: true})
+
+	result, err := svc.CreateFile(context.Background(), "example-service", CreateFileOptions{
+		RelativePath:     "cmd/new/main.go",
+		Text:             "package main\n",
+		CreateParentDirs: true,
+	})
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if result.File.RelativePath != "cmd/new/main.go" || result.File.EditToken == "" || result.NewEditToken == "" {
+		t.Fatalf("unexpected create result: %#v", result)
+	}
+	if result.IngestionRunID != "create-run-1" || ingest.path != "cmd/new/main.go" {
+		t.Fatalf("expected path ingestion for created file, got result=%#v ingest=%#v", result, ingest)
+	}
+	if got := readFixture(t, root, "cmd/new/main.go"); got != "package main\n" {
+		t.Fatalf("unexpected created content: %q", got)
+	}
+}
+
+func TestWorkspaceService_CreateFileDryRunDoesNotWriteOrCreateParents(t *testing.T) {
+	root := t.TempDir()
+	ingest := &fakeWorkspaceIngestion{runID: "create-run-1"}
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), ingest, Options{Enabled: true})
+
+	result, err := svc.CreateFile(context.Background(), "example-service", CreateFileOptions{
+		RelativePath:     "cmd/new/main.go",
+		Text:             "package main\n",
+		CreateParentDirs: true,
+		DryRun:           true,
+	})
+	if err != nil {
+		t.Fatalf("dry-run create file: %v", err)
+	}
+	if result.Applied || result.IngestionRunID != "" || ingest.path != "" || result.File.EditToken == "" {
+		t.Fatalf("unexpected dry-run create result: %#v ingest=%#v", result, ingest)
+	}
+	if _, err := os.Stat(filepath.Join(root, "cmd")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run create mutated parents, stat err=%v", err)
+	}
+}
+
+func TestWorkspaceService_CreateFileRejectsReadOnlyOverwriteAndUnsafeContent(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	readOnly := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly), nil, Options{Enabled: true})
+	_, err := readOnly.CreateFile(context.Background(), "example-service", CreateFileOptions{
+		RelativePath: "other.go",
+		Text:         "package main\n",
+	})
+	if !errors.Is(err, ErrWorkspaceReadOnly) {
+		t.Fatalf("expected read-only error, got %v", err)
+	}
+
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	_, err = svc.CreateFile(context.Background(), "example-service", CreateFileOptions{
+		RelativePath: "main.go",
+		Text:         "package changed\n",
+	})
+	if !errors.Is(err, ErrEditConflict) {
+		t.Fatalf("expected overwrite conflict, got %v", err)
+	}
+	if got := readFixture(t, root, "main.go"); got != "package main\n" {
+		t.Fatalf("create overwrote existing file: %q", got)
+	}
+
+	_, err = svc.CreateFile(context.Background(), "example-service", CreateFileOptions{
+		RelativePath: "secret.go",
+		Text:         "api_key = \"placeholder\"\n",
+	})
+	if !errors.Is(err, ErrUnsafeContent) {
+		t.Fatalf("expected unsafe content rejection, got %v", err)
+	}
+}
+
+func TestWorkspaceService_CreateFileRejectsSymlinkParentTraversal(t *testing.T) {
+	root := t.TempDir()
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(root, "cmd")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+
+	_, err := svc.CreateFile(context.Background(), "example-service", CreateFileOptions{
+		RelativePath:     "cmd/main.go",
+		Text:             "package main\n",
+		CreateParentDirs: true,
+	})
+	if !errors.Is(err, ErrUnsafeContent) {
+		t.Fatalf("expected symlink parent rejection, got %v", err)
+	}
+}
+
+func TestWorkspaceService_DeleteFileRequiresCurrentTokenAndQueuesIngestion(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	registry := newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit)
+	ingest := &fakeWorkspaceIngestion{runID: "delete-run-1"}
+	svc := NewService(registry, ingest, Options{Enabled: true})
+
+	file, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "main.go"})
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	writeFixture(t, root, "main.go", "package changed\n")
+	_, err = svc.DeleteFile(context.Background(), "example-service", DeleteFileOptions{
+		RelativePath: "main.go",
+		EditToken:    file.EditToken,
+	})
+	if !errors.Is(err, ErrEditTokenInvalid) {
+		t.Fatalf("expected stale token rejection, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.go")); err != nil {
+		t.Fatalf("stale-token delete removed file: %v", err)
+	}
+
+	file, err = svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "main.go"})
+	if err != nil {
+		t.Fatalf("read changed file: %v", err)
+	}
+	result, err := svc.DeleteFile(context.Background(), "example-service", DeleteFileOptions{
+		RelativePath: "main.go",
+		EditToken:    file.EditToken,
+	})
+	if err != nil {
+		t.Fatalf("delete file: %v", err)
+	}
+	if !result.Deleted || result.IngestionRunID != "delete-run-1" || ingest.path != "main.go" {
+		t.Fatalf("unexpected delete result: %#v ingest=%#v", result, ingest)
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected file removed, stat err=%v", err)
+	}
+}
+
+func TestWorkspaceService_DeleteFileDryRunDoesNotRemoveOrQueueIngestion(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	ingest := &fakeWorkspaceIngestion{runID: "delete-run-1"}
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), ingest, Options{Enabled: true})
+
+	file, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "main.go"})
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	result, err := svc.DeleteFile(context.Background(), "example-service", DeleteFileOptions{
+		RelativePath: "main.go",
+		EditToken:    file.EditToken,
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("dry-run delete file: %v", err)
+	}
+	if result.Deleted || result.IngestionRunID != "" || ingest.path != "" {
+		t.Fatalf("unexpected dry-run delete result: %#v ingest=%#v", result, ingest)
+	}
+	if got := readFixture(t, root, "main.go"); got != "package main\n" {
+		t.Fatalf("dry-run delete removed or changed file: %q", got)
+	}
+}
+
+func TestWorkspaceService_DeleteFileRejectsReadOnlyDirectoriesAndSymlinks(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	readOnly := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly), nil, Options{Enabled: true})
+	file, err := readOnly.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "main.go"})
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	_, err = readOnly.DeleteFile(context.Background(), "example-service", DeleteFileOptions{
+		RelativePath: "main.go",
+		EditToken:    file.EditToken,
+	})
+	if !errors.Is(err, ErrWorkspaceReadOnly) {
+		t.Fatalf("expected read-only error, got %v", err)
+	}
+
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	_, err = svc.DeleteFile(context.Background(), "example-service", DeleteFileOptions{
+		RelativePath: "cmd",
+		EditToken:    "token",
+	})
+	if !errors.Is(err, ErrInvalidInput) && !errors.Is(err, ErrUnsafeContent) {
+		t.Fatalf("expected directory rejection, got %v", err)
+	}
+
+	target := filepath.Join(root, "main.go")
+	link := filepath.Join(root, "link.go")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, err = svc.DeleteFile(context.Background(), "example-service", DeleteFileOptions{
+		RelativePath: "link.go",
+		EditToken:    "token",
+	})
+	if !errors.Is(err, ErrUnsafeContent) && !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
 func TestWorkspaceService_GitStatusPreservesContextTimeout(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "cmd/main.go", "package main\n")
@@ -89,6 +295,66 @@ func TestWorkspaceService_GitAvailableUsesFastRevParse(t *testing.T) {
 	}
 }
 
+func TestWorkspaceService_ReadGoSourceAllowsOrdinarySensitiveLookingIdentifiers(t *testing.T) {
+	root := t.TempDir()
+	source := `package main
+
+type EditToken struct {
+	Value string
+}
+
+func secret() EditToken {
+	return EditToken{Value: "not-a-credential"}
+}
+
+func NewService() []byte {
+	secret := make([]byte, 32)
+	return secret
+}
+`
+	writeFixture(t, root, "cmd/main.go", source)
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly), nil, Options{Enabled: true})
+
+	file, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "cmd/main.go"})
+	if err != nil {
+		t.Fatalf("read ordinary Go source identifiers: %v", err)
+	}
+	for _, expected := range []string{"type EditToken", "func secret()", "secret := make"} {
+		if !strings.Contains(file.Text, expected) {
+			t.Fatalf("expected %q in read source, got %q", expected, file.Text)
+		}
+	}
+}
+
+func TestWorkspaceService_ReadFileMaxBytesClampsInsteadOfRejecting(t *testing.T) {
+	root := t.TempDir()
+	source := strings.Repeat("a", 20)
+	writeFixture(t, root, "main.go", source)
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly), nil, Options{Enabled: true})
+
+	aboveFileSize, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{
+		RelativePath: "main.go",
+		MaxBytes:     len(source) + 100,
+	})
+	if err != nil {
+		t.Fatalf("read with max_bytes above file size: %v", err)
+	}
+	if aboveFileSize.Text != source || aboveFileSize.TextTruncated {
+		t.Fatalf("expected full untruncated file, got %#v", aboveFileSize)
+	}
+
+	aboveLimit, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{
+		RelativePath: "main.go",
+		MaxBytes:     MaxReadBytes + 1,
+	})
+	if err != nil {
+		t.Fatalf("read with max_bytes above MaxReadBytes: %v", err)
+	}
+	if aboveLimit.Text != source || aboveLimit.TextTruncated {
+		t.Fatalf("expected clamp to read limit without truncating small file, got %#v", aboveLimit)
+	}
+}
+
 func TestWorkspaceService_RejectsReadOnlyAndStaleToken(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package main\n")
@@ -119,6 +385,35 @@ func TestWorkspaceService_RejectsReadOnlyAndStaleToken(t *testing.T) {
 	})
 	if !errors.Is(err, ErrEditTokenInvalid) {
 		t.Fatalf("expected stale token error, got %v", err)
+	}
+}
+
+func TestWorkspaceService_EditConflictAndStaleTokenErrorsStayExplicit(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+
+	file, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "main.go"})
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	_, err = svc.EditFile(context.Background(), "example-service", EditFileOptions{
+		RelativePath: "main.go",
+		EditToken:    file.EditToken,
+		Edits:        []ExactEdit{{StartByte: 0, EndByte: 7, OldText: "module", NewText: "package"}},
+	})
+	if !errors.Is(err, ErrEditConflict) {
+		t.Fatalf("expected explicit edit conflict error, got %v", err)
+	}
+
+	writeFixture(t, root, "main.go", "package changed\n")
+	_, err = svc.EditFile(context.Background(), "example-service", EditFileOptions{
+		RelativePath: "main.go",
+		EditToken:    file.EditToken,
+		Edits:        []ExactEdit{{StartByte: 0, EndByte: 7, OldText: "package", NewText: "module"}},
+	})
+	if !errors.Is(err, ErrEditTokenInvalid) {
+		t.Fatalf("expected explicit stale token error, got %v", err)
 	}
 }
 
@@ -270,6 +565,14 @@ const aws = "AKIA1234567890ABCDEF"
 		if !strings.Contains(body, raw) {
 			t.Fatalf("expected raw value %q in diff: %s", raw, body)
 		}
+	}
+}
+
+func TestAtomicWriteIgnoresUnsupportedChmod(t *testing.T) {
+	err := &os.PathError{Op: "chmod", Path: "/mnt/c/example/.mivia-edit-test", Err: syscall.EPERM}
+
+	if !chmodUnsupported(err) {
+		t.Fatal("expected unsupported chmod error to be tolerated")
 	}
 }
 

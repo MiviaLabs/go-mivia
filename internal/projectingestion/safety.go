@@ -54,9 +54,21 @@ var contentMarkerPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
 }
 
+var workspaceContentMarkerPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|secret|password)\s*(=|:\s*)\s*["'][^"',\s]{4,}["']?`),
+	regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]{8,}`),
+	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----`),
+	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
+}
+
 type SafetyOptions struct {
 	MaxFileBytes          int64
 	MaxChunkBytes         int
+	SensitiveMarkerPolicy string
+}
+
+type WorkspaceSafetyOptions struct {
+	MaxFileBytes          int64
 	SensitiveMarkerPolicy string
 }
 
@@ -77,6 +89,17 @@ func DefaultSafetyOptions() SafetyOptions {
 
 func EvaluateSafety(relativePath string, content []byte, options SafetyOptions) SafetyResult {
 	options = normalizeSafetyOptions(options)
+	return evaluateSafety(relativePath, content, options.MaxFileBytes, options.SensitiveMarkerPolicy, containsSensitiveContent)
+}
+
+func EvaluateWorkspaceSafety(relativePath string, content []byte, options WorkspaceSafetyOptions) SafetyResult {
+	if options.SensitiveMarkerPolicy == "" {
+		options.SensitiveMarkerPolicy = SensitiveMarkerPolicySkipFile
+	}
+	return evaluateSafety(relativePath, content, options.MaxFileBytes, options.SensitiveMarkerPolicy, containsWorkspaceSensitiveContent)
+}
+
+func evaluateSafety(relativePath string, content []byte, maxFileBytes int64, sensitiveMarkerPolicy string, containsSensitive func([]byte) bool) SafetyResult {
 	normalizedPath, ok := normalizeRelativePath(relativePath)
 	if !ok {
 		return skipped(SkipReasonUnsafePath, "", false, len(content))
@@ -84,10 +107,10 @@ func EvaluateSafety(relativePath string, content []byte, options SafetyOptions) 
 	if matchesDeniedPath(normalizedPath) || redaction.ContainsSensitive(normalizedPath) {
 		return skipped(SkipReasonDeniedPath, "", false, len(content))
 	}
-	if options.SensitiveMarkerPolicy != SensitiveMarkerPolicySkipFile {
+	if sensitiveMarkerPolicy != SensitiveMarkerPolicySkipFile {
 		return skipped(SkipReasonUnsupportedPolicy, normalizedPath, true, len(content))
 	}
-	if options.MaxFileBytes > 0 && int64(len(content)) > options.MaxFileBytes {
+	if maxFileBytes > 0 && int64(len(content)) > maxFileBytes {
 		return skipped(SkipReasonFileTooLarge, normalizedPath, true, len(content))
 	}
 	if bytes.IndexByte(content, 0) >= 0 {
@@ -99,7 +122,7 @@ func EvaluateSafety(relativePath string, content []byte, options SafetyOptions) 
 	if !utf8.Valid(content) {
 		return skipped(SkipReasonInvalidUTF8, normalizedPath, true, len(content))
 	}
-	if containsSensitiveContent(content) {
+	if containsSensitive(content) {
 		return skipped(SkipReasonSensitiveContent, normalizedPath, true, len(content))
 	}
 	return SafetyResult{
@@ -224,6 +247,16 @@ func containsSensitiveContent(content []byte) bool {
 		return true
 	}
 	for _, pattern := range contentMarkerPatterns {
+		if pattern.MatchString(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWorkspaceSensitiveContent(content []byte) bool {
+	value := string(content)
+	for _, pattern := range workspaceContentMarkerPatterns {
 		if pattern.MatchString(value) {
 			return true
 		}
