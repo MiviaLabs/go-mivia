@@ -3,6 +3,7 @@ package mcpapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -446,6 +447,20 @@ func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 	result := editResult["structuredContent"].(projectworkspace.EditResult)
 	if result.Applied || result.NewEditToken == "" {
 		t.Fatalf("unexpected dry-run edit result: %#v", result)
+	}
+}
+
+func TestCallToolWithWorkspace_GitDiffRejectsFilesystemID(t *testing.T) {
+	registry, digest := newServices(t)
+	workspace := projectworkspace.NewService(registry, nil, projectworkspace.Options{Enabled: true})
+
+	_, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.git_diff", json.RawMessage(`{"id":"\\\\wsl.localhost\\Ubuntu\\home\\mac\\mivialabs\\mivialabs-agents-monorepo"}`))
+
+	if !errors.Is(err, projectregistry.ErrInvalidInput) {
+		t.Fatalf("expected invalid project id input, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "project id or alias") {
+		t.Fatalf("expected corrective project id guidance, got %v", err)
 	}
 }
 

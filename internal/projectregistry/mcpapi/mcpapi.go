@@ -746,6 +746,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
 		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
 		if workspace == nil {
 			return nil, projectworkspace.ErrWorkspaceDisabled
 		}
@@ -777,6 +780,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
 		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
 		if workspace == nil {
 			return nil, projectworkspace.ErrWorkspaceDisabled
 		}
@@ -801,6 +807,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
 		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
 		if workspace == nil {
 			return nil, projectworkspace.ErrWorkspaceDisabled
 		}
@@ -822,6 +831,9 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
 		}
 		if workspace == nil {
 			return nil, projectworkspace.ErrWorkspaceDisabled
@@ -892,6 +904,25 @@ func ReadResourceWithIngestion(ctx context.Context, registry *projectregistry.Re
 		return resourceResult(uri, outline)
 	}
 	return nil, projectregistry.ErrProjectNotFound
+}
+
+func validateWorkspaceProjectID(id string) error {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return fmt.Errorf("%w: workspace id must be a project id or alias from projects.list, not a filesystem workspace path", projectregistry.ErrInvalidInput)
+	}
+	if strings.HasPrefix(trimmed, "/") ||
+		strings.HasPrefix(trimmed, `\\`) ||
+		strings.HasPrefix(trimmed, "~/") ||
+		strings.Contains(trimmed, `\`) ||
+		(len(trimmed) >= 3 && isASCIIAlpha(trimmed[0]) && trimmed[1] == ':' && (trimmed[2] == '\\' || trimmed[2] == '/')) {
+		return fmt.Errorf("%w: workspace id must be a project id or alias from projects.list, not a filesystem workspace path", projectregistry.ErrInvalidInput)
+	}
+	return nil
+}
+
+func isASCIIAlpha(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
 }
 
 func ingestionToolDefinitions() []map[string]any {
@@ -1233,9 +1264,9 @@ func workspaceToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.workspace.git_status",
 			"title":       "Get Governed Project Git Status",
-			"description": "Return parsed git status for an opted-in local project without roots, raw command lines, or raw stderr.",
+			"description": "Return parsed git status for an opted-in local project. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path. Returns no roots, raw command lines, or raw stderr.",
 			"inputSchema": objectSchema(mergeProperties(pageProperties, map[string]any{
-				"id":                map[string]any{"type": "string", "minLength": 1},
+				"id":                map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"include_untracked": map[string]any{"type": "boolean"},
 				"path_prefix":       map[string]any{"type": "string"},
 			}), []string{"id"}),
@@ -1243,9 +1274,9 @@ func workspaceToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.workspace.git_diff",
 			"title":       "Get Governed Project Git Diff",
-			"description": "Return capped safe git diff output for an opted-in local project without arbitrary shell execution.",
+			"description": "Return capped safe git diff output for an opted-in local project without arbitrary shell execution. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":             map[string]any{"type": "string", "minLength": 1},
+				"id":             map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"scope":          map[string]any{"type": "string", "enum": []string{projectworkspace.DiffScopeWorkingTree, projectworkspace.DiffScopeStaged, projectworkspace.DiffScopeHead}},
 				"file_id":        map[string]any{"type": "string"},
 				"relative_path":  map[string]any{"type": "string"},
@@ -1258,9 +1289,9 @@ func workspaceToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.workspace.file_read",
 			"title":       "Read Current Workspace File",
-			"description": "Read one current eligible text file and return an opaque edit token for exact edits.",
+			"description": "Read one current eligible text file and return an opaque edit token for exact edits. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":            map[string]any{"type": "string", "minLength": 1},
+				"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"file_id":       map[string]any{"type": "string"},
 				"relative_path": map[string]any{"type": "string"},
 				"max_bytes":     map[string]any{"type": "integer", "minimum": 1, "maximum": projectworkspace.MaxReadBytes},
@@ -1269,9 +1300,9 @@ func workspaceToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.workspace.file_edit",
 			"title":       "Apply Exact Workspace File Edit",
-			"description": "Apply token-guarded exact byte-span edits to one eligible file and queue path ingestion after successful writes.",
+			"description": "Apply token-guarded exact byte-span edits to one eligible file and queue path ingestion after successful writes. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":            map[string]any{"type": "string", "minLength": 1},
+				"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"file_id":       map[string]any{"type": "string"},
 				"relative_path": map[string]any{"type": "string"},
 				"edit_token":    map[string]any{"type": "string", "minLength": 1},

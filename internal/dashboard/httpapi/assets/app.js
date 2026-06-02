@@ -378,7 +378,11 @@ async function loadProjectDetail(projectID) {
   summary.textContent = projectID;
 
   try {
-    const dashboard = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/dashboard-summary`, 12000);
+    const dashboard = await loadProjectDetailSkeleton(projectID);
+    if (selectedRoute().projectID !== projectID) {
+      refresh.disabled = false;
+      return;
+    }
     currentDetail = { projectID, dashboard };
     summary.textContent = dashboard.project.display_name || dashboard.project.id;
     renderProjectDetail(dashboard);
@@ -388,9 +392,121 @@ async function loadProjectDetail(projectID) {
     statusBox.textContent = error.message;
     clear(detail);
     detail.append(el("section", { class: "panel empty", text: "Project details could not be loaded." }));
+    refresh.disabled = false;
+    return;
+  }
+
+  refresh.disabled = false;
+
+  try {
+    const fullDashboard = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/dashboard-summary`, 12000);
+    if (!currentDetail || currentDetail.projectID !== projectID || selectedRoute().projectID !== projectID) return;
+    currentDetail.dashboard = mergeDashboard(currentDetail.dashboard, fullDashboard);
+    summary.textContent = currentDetail.dashboard.project.display_name || currentDetail.dashboard.project.id;
+    renderProjectDetail(currentDetail.dashboard);
+    statusBox.textContent = "";
+  } catch (error) {
+    if (!currentDetail || currentDetail.projectID !== projectID || selectedRoute().projectID !== projectID) return;
+    currentDetail.dashboard = withWarning(currentDetail.dashboard, "dashboard_summary_unavailable");
+    statusBox.textContent = error.message;
+    renderHead();
   } finally {
     refresh.disabled = false;
   }
+}
+
+async function loadProjectDetailSkeleton(projectID) {
+  const encoded = encodeURIComponent(projectID);
+  const [projectsResult, healthResult, latestResult] = await Promise.allSettled([
+    loadProjectListForDetail(),
+    fetchJSON(`/api/v1/projects/${encoded}/context-health`, 4000),
+    fetchJSON(`/api/v1/projects/${encoded}/ingestion-runs/latest`, 4000),
+  ]);
+  const projects = projectsResult.status === "fulfilled" ? projectsResult.value : [];
+  const project = findProject(projects, projectID);
+  if (projectsResult.status === "fulfilled" && !project) {
+    throw new Error(`/api/v1/projects/${encoded} returned 404`);
+  }
+  const health = healthResult.status === "fulfilled" ? healthResult.value : null;
+  const latest = latestResult.status === "fulfilled" && latestResult.value?.status ? latestResult.value : null;
+  const warnings = [];
+  if (projectsResult.status !== "fulfilled") warnings.push("project_metadata_unavailable");
+  if (healthResult.status !== "fulfilled") warnings.push("context_health_unavailable");
+  if (latestResult.status !== "fulfilled") warnings.push("latest_ingestion_unavailable");
+  return {
+    project: project || fallbackProject(projectID),
+    context_health: health,
+    latest_run: latest,
+    graph: {},
+    workspace: null,
+    integrations: null,
+    warnings,
+  };
+}
+
+async function loadProjectListForDetail() {
+  if (Array.isArray(cachedProjects)) return cachedProjects;
+  const data = await fetchJSON("/api/v1/projects", 4000);
+  cachedProjects = Array.isArray(data.projects) ? data.projects : [];
+  return cachedProjects;
+}
+
+function findProject(projects, projectID) {
+  if (!Array.isArray(projects)) return null;
+  return projects.find((project) => project.id === projectID || (project.aliases || []).includes(projectID)) || null;
+}
+
+function fallbackProject(projectID) {
+  return {
+    id: projectID,
+    display_name: projectID,
+    description: "",
+    aliases: [],
+    enabled: false,
+    validation_status: "unknown",
+    classification: "unknown",
+    workspace_mode: "unknown",
+    digest_mode: "unknown",
+    update_policy: "unknown",
+    graph_storage: "unknown",
+  };
+}
+
+function mergeDashboard(current, next) {
+  if (!next || typeof next !== "object") return current;
+  return {
+    ...current,
+    ...next,
+    project: next.project || current.project,
+    context_health: next.context_health || current.context_health,
+    latest_run: next.latest_run || current.latest_run,
+    graph: next.graph || current.graph || {},
+    workspace: next.workspace ?? current.workspace,
+    integrations: next.integrations ?? current.integrations,
+    warnings: mergeDashboardWarnings(current, next),
+  };
+}
+
+function withWarning(dashboard, warning) {
+  return {
+    ...dashboard,
+    warnings: mergeWarnings(dashboard.warnings, [warning]),
+  };
+}
+
+function mergeWarnings(first, second) {
+  return [...new Set([...(Array.isArray(first) ? first : []), ...(Array.isArray(second) ? second : [])])];
+}
+
+function mergeDashboardWarnings(current, next) {
+  const warnings = Array.isArray(next.warnings) ? next.warnings.slice() : [];
+  if (!next.context_health && current.warnings?.includes("context_health_unavailable")) {
+    warnings.push("context_health_unavailable");
+  }
+  if (!next.latest_run && current.warnings?.includes("latest_ingestion_unavailable")) {
+    warnings.push("latest_ingestion_unavailable");
+  }
+  return [...new Set(warnings)];
 }
 
 function renderProjectDetail(dashboard) {
