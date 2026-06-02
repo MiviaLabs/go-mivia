@@ -294,7 +294,7 @@ func defaultKnownTools() []string {
 		"projects.search.text", "projects.search.files", "projects.search.symbols", "projects.search.references", "projects.search.calls",
 		"projects.search.ast.queries", "projects.search.ast", "projects.symbol.source", "projects.symbol.references",
 		"projects.symbol.callers", "projects.symbol.callees", "projects.symbol.call_graph", "projects.headings.list", "projects.file.outline",
-		"projects.workspace.git_status", "projects.workspace.git_diff", "projects.workspace.file_read", "projects.workspace.file_edit",
+		"projects.workspace.git_status", "projects.workspace.git_diff", "projects.workspace.file_read", "projects.workspace.file_edit", "projects.workspace.file_create", "projects.workspace.file_delete",
 		"projects.diagnostics.ingestion",
 		"projects.integrations.list", "projects.integrations.status", "projects.integrations.counts", "projects.integrations.poll",
 		"projects.integrations.poll_status", "projects.integrations.search", "projects.jira.issue.get", "projects.confluence.page.get",
@@ -332,5 +332,6 @@ func defaultKnownRoutes() []string {
 		"/api/v1/projects/*/search/references", "/api/v1/projects/*/search/calls", "/api/v1/projects/*/search/ast", "/api/v1/projects/*/search/ast/queries",
 		"/api/v1/projects/*/headings",
 		"/api/v1/projects/*/workspace/git/status", "/api/v1/projects/*/workspace/git/diff", "/api/v1/projects/*/workspace/files/read", "/api/v1/projects/*/workspace/files/edit",
+		"/api/v1/projects/*/workspace/files/create", "/api/v1/projects/*/workspace/files/delete",
 	}
 }

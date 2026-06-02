@@ -4,7 +4,7 @@ Status: Current local guide
 Date: 2026-06-01
 Classification: Internal; PII-prohibited
 
-`mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, context packs, symbol navigation, call graph views, named AST structural search, governed workspace git/read/edit operations, redacted agent-run metadata, promotion-gate decisions, and deterministic reliability checks, and keeps source understanding inside the developer machine.
+`mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, context packs, symbol navigation, call graph views, named AST structural search, governed workspace git/read/create/delete/edit operations, redacted agent-run metadata, promotion-gate decisions, and deterministic reliability checks, and keeps source understanding inside the developer machine.
 
 ## Who It Helps
 
@@ -24,7 +24,7 @@ flowchart LR
   Agent --> Serena["Serena fallback"]
   Agent --> Shell["Shell"]
   MCP --> Indexed["Indexed files, chunks, symbols, refs, calls, AST"]
-  MCP --> Workspace["Governed workspace status/diff/read/edit"]
+  MCP --> Workspace["Governed workspace status/diff/read/create/delete/edit"]
   MCP --> Reliability["Context health, impact analysis, stale-claim checks"]
   MCP --> ContextPack["Context packs"]
   MCP --> AgentRuns["Redacted agent-run metadata"]
@@ -47,9 +47,9 @@ flowchart LR
 
 Mivia MCP, Serena, and shell are complementary:
 
-- Use Mivia MCP first for indexed project context: project metadata, ingestion state, file IDs, outlines, headings, chunks, search, symbols, references, calls, symbol source, call graph, named AST structural search, and governed workspace git status/diff/read/edit when opted in.
+- Use Mivia MCP first for indexed project context: project metadata, ingestion state, file IDs, outlines, headings, chunks, search, symbols, references, calls, symbol source, call graph, named AST structural search, and governed workspace git status/diff/read/create/delete/edit when opted in.
 - Use Serena only when MCP is unavailable, stale, missing the project, or lacks the edit-time semantic operation needed for a precise code change.
-- Use MCP workspace file read before shell reads when a project is opted into `read_only` or `edit`; in `edit` mode, use MCP workspace file edit before shell, `apply_patch`, or manual edits when the change is exact/token-guarded. Treat read maxes as caps/truncation, not fallback permission by themselves. Use shell for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repositories.
+- Use MCP workspace file read before shell reads when a project is opted into `read_only` or `edit`; in `edit` mode, use MCP workspace `file_read` then `file_edit`/`file_delete` for existing eligible files, and `file_create` for new eligible text files before shell, `apply_patch`, or manual file operations. Treat read maxes as caps/truncation, not fallback permission by themselves. These tools do not provide recursive delete, arbitrary patch upload, arbitrary shell, or a shell replacement. Use shell for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repositories.
 
 ## When To Use What
 
@@ -61,7 +61,7 @@ Mivia MCP, Serena, and shell are complementary:
 | Build one bounded package of relevant search/file/symbol/impact context plus manifest-only reproducibility metadata | MCP `projects.context_pack.build` |
 | Read a bounded chunk by opaque file ID | MCP |
 | Check governed git status/diff for an opted-in workspace | MCP workspace tools |
-| Read an eligible current file in `read_only` or `edit`, or exact-edit it in `edit` mode | MCP workspace tools before shell, `apply_patch`, or manual edits |
+| Read an eligible current file in `read_only` or `edit`, exact-edit/delete an existing eligible file in `edit`, or create a new eligible text file in `edit` | MCP workspace tools before shell, `apply_patch`, or manual file operations |
 | Check whether indexed data is fresh enough for the task | MCP or REST |
 | Check configured Jira/Confluence provider status | MCP `projects.integrations.status` |
 | Poll Jira/Confluence for an opted-in project | MCP `projects.integrations.poll`, then `projects.integrations.poll_status` |
@@ -69,6 +69,8 @@ Mivia MCP, Serena, and shell are complementary:
 | Verify tests, builds, logs, process control, generated files, or non-opted-in repo state | Shell |
 | Inspect a file just created or changed in an opted-in workspace | MCP `projects.workspace.file_read` by safe relative path |
 | Edit an eligible current file exactly in an opted-in workspace | MCP `projects.workspace.file_read` then `projects.workspace.file_edit` |
+| Create a new eligible text file in an opted-in workspace | MCP `projects.workspace.file_create` |
+| Delete an eligible current file in an opted-in workspace | MCP `projects.workspace.file_read` then `projects.workspace.file_delete` |
 | Inspect a file outside MCP eligibility or project opt-in | Shell |
 
 ## Surfaces
@@ -121,6 +123,8 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Get capped governed git diff | `GET /projects/{id}/workspace/git/diff` | `projects.workspace.git_diff` |
 | Read current eligible file with edit token | `GET /projects/{id}/workspace/files/read` | `projects.workspace.file_read` |
 | Apply exact token-guarded file edit | `POST /projects/{id}/workspace/files/edit` | `projects.workspace.file_edit` |
+| Create new eligible text file | `POST /projects/{id}/workspace/files/create` | `projects.workspace.file_create` |
+| Delete eligible single file | `POST /projects/{id}/workspace/files/delete` | `projects.workspace.file_delete` |
 | List configured integration providers | Not exposed | `projects.integrations.list` |
 | Get redacted integration status | Not exposed | `projects.integrations.status` |
 | Get local integration counts | Not exposed | `projects.integrations.counts` |
@@ -146,7 +150,7 @@ Search tools are backed by governed indexed state. Text search is literal-only a
 
 `projects.search.ast.queries` returns supported named query IDs, languages, capture names, query versions, matching extensions, and safe per-language `file_too_large` coverage counts. It does not expose raw Tree-sitter query text. `projects.search.ast` accepts named query IDs only, such as `function_declarations`, `class_declarations`, `type_declarations`, `call_expressions`, `imports`, `test_functions`, `assignments`, `error_handling`, `flutter_widgets`, and `flutter_build_methods`. It does not accept raw Tree-sitter query syntax and only runs over eligible indexed chunks.
 
-Workspace tools require `[workspace].enabled = true` plus per-project `workspace_mode = "read_only"` or `"edit"` and `digest_mode = "content_graph"`. `read_only` allows governed git status/diff and current eligible file reads. `edit` additionally allows exact byte-span edits with an opaque token returned by `projects.workspace.file_read`; successful non-dry-run edits queue path ingestion. Prefer this file_read/file_edit path before shell, `apply_patch`, or manual edits when the change is exact/token-guarded. Read maxes are caps that may truncate returned text; page, narrow, or re-read through MCP instead of falling back only because a response was capped. There is no arbitrary shell endpoint, raw patch upload, public exposure, provider call, embedding/vector/crawling path, raw DB query endpoint, or git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool.
+Workspace tools require `[workspace].enabled = true` plus per-project `workspace_mode = "read_only"` or `"edit"` and `digest_mode = "content_graph"`. `read_only` allows governed git status/diff and current eligible file reads. `edit` additionally allows exact byte-span edits and eligible single-file deletes with an opaque token returned by `projects.workspace.file_read`, plus new eligible text-file creation through `projects.workspace.file_create`; successful non-dry-run writes queue path ingestion. Prefer this file_read/file_edit/file_delete path for existing files and file_create path for new eligible text files before shell, `apply_patch`, or manual file operations. Read maxes are caps that may truncate returned text; page, narrow, or re-read through MCP instead of falling back only because a response was capped. There is no arbitrary shell endpoint, raw patch upload, recursive delete, public exposure, provider call, embedding/vector/crawling path, raw DB query endpoint, or git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool.
 
 MCP resources also expose stable IDs:
 
@@ -211,6 +215,6 @@ The server is local-only. It must not expose:
 - Skipped sensitive content or matched sensitive text.
 - Public network access, provider calls, embeddings, vectors, crawling, production deployment, symlink traversal, or auth-model changes.
 
-Use stable opaque IDs from REST or MCP responses. Discovery order for agents is project metadata, latest ingestion status, indexed `projects.search.*` for routine text/path/symbol/reference/call discovery, `projects.search.ast.queries` before named AST search, small `projects.files.list` or `projects.symbols.list`/`projects.headings.list`, `projects.file.outline`, then semantic symbol tools or bounded chunks as needed. For opted-in workspaces, use `projects.workspace.git_status`, `projects.workspace.git_diff`, and `projects.workspace.file_read` before shell for status, diff, and eligible current file reads in `read_only` or `edit` mode. In `edit` mode, use `projects.workspace.file_edit` before shell, `apply_patch`, or manual file edits when the change is exact/token-guarded. Treat read maxes as caps that may truncate returned text; page, narrow, or re-read through MCP instead of falling back only because a response was capped. Live ingestion is the normal freshness path after workspace edits; poll latest ingestion status when search results look unexpected. Use Serena only for edit-time semantic gaps that MCP cannot answer, and `ast-grep` only for structural search or rewrite/codemod tasks not yet covered by indexed search. For common navigation, use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph`; use `resolution_status` and confidence metadata instead of assuming unresolved dynamic-language edges are precise. For large files, call `projects.file.outline` with `kind`, `name_prefix`, `name_contains`, `symbol_page_size`, and `symbol_page_token`. If source context is needed in the same response, set `include_chunk_text=true` with a small `max_chunk_bytes`, use `projects.search.text` for capped snippets, or call `projects.symbol.source` with `max_source_bytes` for one eligible symbol. Do not infer or expose local root paths.
+Use stable opaque IDs from REST or MCP responses. Discovery order for agents is project metadata, latest ingestion status, indexed `projects.search.*` for routine text/path/symbol/reference/call discovery, `projects.search.ast.queries` before named AST search, small `projects.files.list` or `projects.symbols.list`/`projects.headings.list`, `projects.file.outline`, then semantic symbol tools or bounded chunks as needed. For opted-in workspaces, use `projects.workspace.git_status`, `projects.workspace.git_diff`, and `projects.workspace.file_read` before shell for status, diff, and eligible current file reads in `read_only` or `edit` mode. In `edit` mode, use `projects.workspace.file_read` then `projects.workspace.file_edit`/`projects.workspace.file_delete` before shell, `apply_patch`, or manual file operations for existing eligible files, and use `projects.workspace.file_create` for new eligible text files. Treat read maxes as caps that may truncate returned text; page, narrow, or re-read through MCP instead of falling back only because a response was capped. Live ingestion is the normal freshness path after workspace writes; poll latest ingestion status when search results look unexpected. These tools are not recursive delete, arbitrary patch upload, arbitrary shell, or shell-replacement surfaces. Use Serena only for edit-time semantic gaps that MCP cannot answer, and `ast-grep` only for structural search or rewrite/codemod tasks not yet covered by indexed search. For common navigation, use `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, and `projects.symbol.call_graph`; use `resolution_status` and confidence metadata instead of assuming unresolved dynamic-language edges are precise. For large files, call `projects.file.outline` with `kind`, `name_prefix`, `name_contains`, `symbol_page_size`, and `symbol_page_token`. If source context is needed in the same response, set `include_chunk_text=true` with a small `max_chunk_bytes`, use `projects.search.text` for capped snippets, or call `projects.symbol.source` with `max_source_bytes` for one eligible symbol. Do not infer or expose local root paths.
 
 Promoted AST metadata covers Go stdlib AST, Tree-sitter JS/JSX/TS/TSX, Tree-sitter C#, Tree-sitter Python, Tree-sitter Dart/Flutter, Markdown headings, and lightweight infrastructure/config metadata. Dart generated files such as `.g.dart`, `.freezed.dart`, `.mocks.dart`, and similar files are indexed by default unless project config excludes them. Flutter widget classes, state classes, build methods, `setState`, `Navigator`, route calls, and widget constructor call candidates are exposed as symbol/reference/call metadata where the parser can detect them. Unsupported or ambiguous edges remain unresolved rather than guessed. TS/JS/TSX/JSX, C#, Python, and Dart have no regex fallback; parse failures are file-local `parse_error` skips and full scans continue. Sensitive, denied, absent, parse-error, and other skipped files stay unreachable from chunk/source/search responses. Oversized files are reported only as safe coverage gaps through metadata such as `skipped_reason=file_too_large`, size, and ingestion reason counts; source text, chunks, snippets, content hashes, skipped sensitive text, raw parser/SQLite/FTS/Tree-sitter errors, roots, secrets, PII, raw prompts, and provider payloads are not returned. Extractor cache entries store symbols/headings/references/calls only and are removed for skipped or absent files.

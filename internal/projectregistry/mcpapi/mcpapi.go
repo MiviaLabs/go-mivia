@@ -846,6 +846,56 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			Edits:        input.Edits,
 		})
 		return toolResult(result), err
+	case "projects.workspace.file_create", "projects_workspace_file_create":
+		var input struct {
+			ID               string          `json:"id"`
+			RelativePath     string          `json:"relative_path"`
+			Text             string          `json:"text"`
+			CreateParentDirs bool            `json:"create_parent_dirs,omitempty"`
+			DryRun           bool            `json:"dry_run,omitempty"`
+			Meta             json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
+		if workspace == nil {
+			return nil, projectworkspace.ErrWorkspaceDisabled
+		}
+		result, err := workspace.CreateFile(ctx, strings.TrimSpace(input.ID), projectworkspace.CreateFileOptions{
+			RelativePath:     input.RelativePath,
+			Text:             input.Text,
+			CreateParentDirs: input.CreateParentDirs,
+			DryRun:           input.DryRun,
+		})
+		return toolResult(result), err
+	case "projects.workspace.file_delete", "projects_workspace_file_delete":
+		var input struct {
+			ID           string          `json:"id"`
+			FileID       string          `json:"file_id,omitempty"`
+			RelativePath string          `json:"relative_path,omitempty"`
+			EditToken    string          `json:"edit_token"`
+			DryRun       bool            `json:"dry_run,omitempty"`
+			Meta         json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
+		if workspace == nil {
+			return nil, projectworkspace.ErrWorkspaceDisabled
+		}
+		result, err := workspace.DeleteFile(ctx, strings.TrimSpace(input.ID), projectworkspace.DeleteFileOptions{
+			FileID:       input.FileID,
+			RelativePath: input.RelativePath,
+			EditToken:    input.EditToken,
+			DryRun:       input.DryRun,
+		})
+		return toolResult(result), err
 	default:
 		return nil, projectregistry.ErrProjectNotFound
 	}
@@ -1318,6 +1368,39 @@ func workspaceToolDefinitions() []map[string]any {
 					}, []string{"start_byte", "end_byte", "old_text", "new_text"}),
 				},
 			}, []string{"id", "edit_token", "edits"}),
+		},
+		{
+			"name":        "projects.workspace.file_create",
+			"title":       "Create Workspace File",
+			"description": "Create one eligible workspace text file and queue path ingestion after successful writes. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":                 map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
+				"relative_path":      map[string]any{"type": "string", "minLength": 1},
+				"text":               map[string]any{"type": "string"},
+				"create_parent_dirs": map[string]any{"type": "boolean"},
+				"dry_run":            map[string]any{"type": "boolean"},
+			}, []string{"id", "relative_path", "text"}),
+		},
+		{
+			"name":        "projects.workspace.file_delete",
+			"title":       "Delete Workspace File",
+			"description": "Delete one eligible workspace file by file_id or relative_path after validating a current edit token. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"id", "edit_token"},
+				"anyOf": []map[string]any{
+					{"required": []string{"file_id"}},
+					{"required": []string{"relative_path"}},
+				},
+				"properties": map[string]any{
+					"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
+					"file_id":       map[string]any{"type": "string"},
+					"relative_path": map[string]any{"type": "string"},
+					"edit_token":    map[string]any{"type": "string", "minLength": 1},
+					"dry_run":       map[string]any{"type": "boolean"},
+				},
+			},
 		},
 	}
 }

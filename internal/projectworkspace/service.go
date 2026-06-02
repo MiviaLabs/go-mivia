@@ -283,6 +283,115 @@ func (svc *Service) EditFile(ctx context.Context, projectID string, options Edit
 	return result, nil
 }
 
+func (svc *Service) CreateFile(ctx context.Context, projectID string, options CreateFileOptions) (CreateFileResult, error) {
+	project, err := svc.project(projectID, true)
+	if err != nil {
+		return CreateFileResult{}, err
+	}
+	relativePath, err := normalizeAllowedPath(project, strings.TrimSpace(options.RelativePath), []byte(options.Text))
+	if err != nil {
+		return CreateFileResult{}, err
+	}
+	content := []byte(options.Text)
+	if !safeText(project, relativePath, content, project.MaxFileBytes) {
+		svc.recordPolicyEvent(project.ID, "unsafe_create", relativePath)
+		return CreateFileResult{}, ErrUnsafeContent
+	}
+	lock := svc.lockFor(project.ID + "\x00" + relativePath)
+	lock.Lock()
+	defer lock.Unlock()
+	fullPath, err := resolveCreateDiskPath(project, relativePath, options.CreateParentDirs, options.DryRun)
+	if err != nil {
+		return CreateFileResult{}, err
+	}
+	if options.DryRun {
+		info := virtualFileInfo{name: filepath.Base(relativePath), size: int64(len(content)), mode: 0o600, modTime: time.Now().UTC()}
+		file := svc.workspaceFile(project, "", relativePath, content, info, DefaultMaxReadBytes)
+		return CreateFileResult{
+			Applied:      false,
+			File:         file,
+			NewEditToken: file.EditToken,
+		}, nil
+	}
+	if err := atomicCreate(fullPath, content, 0o600); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return CreateFileResult{}, ErrEditConflict
+		}
+		return CreateFileResult{}, ErrInvalidInput
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return CreateFileResult{}, ErrInvalidInput
+	}
+	written, err := os.ReadFile(fullPath)
+	if err != nil {
+		return CreateFileResult{}, ErrInvalidInput
+	}
+	result := CreateFileResult{
+		Applied: true,
+		File:    svc.workspaceFile(project, "", relativePath, written, info, DefaultMaxReadBytes),
+	}
+	result.NewEditToken = result.File.EditToken
+	runID, err := svc.queuePathIngestion(ctx, project.ID, relativePath)
+	if err != nil {
+		return CreateFileResult{}, err
+	}
+	result.IngestionRunID = runID
+	return result, nil
+}
+
+func (svc *Service) DeleteFile(ctx context.Context, projectID string, options DeleteFileOptions) (DeleteFileResult, error) {
+	project, err := svc.project(projectID, true)
+	if err != nil {
+		return DeleteFileResult{}, err
+	}
+	if strings.TrimSpace(options.EditToken) == "" {
+		return DeleteFileResult{}, ErrInvalidInput
+	}
+	relativePath, _, err := svc.resolveSelector(ctx, project, options.FileID, options.RelativePath)
+	if err != nil {
+		return DeleteFileResult{}, err
+	}
+	lock := svc.lockFor(project.ID + "\x00" + relativePath)
+	lock.Lock()
+	defer lock.Unlock()
+	content, info, err := svc.readEligibleFile(project, relativePath)
+	if err != nil {
+		return DeleteFileResult{}, err
+	}
+	if !hmac.Equal([]byte(options.EditToken), []byte(svc.editToken(project, relativePath, content, info))) {
+		return DeleteFileResult{}, ErrEditTokenInvalid
+	}
+	fullPath, err := resolveDiskPath(project, relativePath)
+	if err != nil {
+		return DeleteFileResult{}, err
+	}
+	lstat, err := os.Lstat(fullPath)
+	if err != nil || lstat.IsDir() || lstat.Mode()&os.ModeSymlink != 0 || !lstat.Mode().IsRegular() {
+		return DeleteFileResult{}, ErrInvalidInput
+	}
+	if lstat.Size() != info.Size() || !lstat.ModTime().Equal(info.ModTime()) {
+		return DeleteFileResult{}, ErrEditTokenInvalid
+	}
+	result := DeleteFileResult{
+		Deleted:      !options.DryRun,
+		ProjectID:    project.ID,
+		RelativePath: relativePath,
+	}
+	if options.DryRun {
+		return result, nil
+	}
+	if err := os.Remove(fullPath); err != nil {
+		return DeleteFileResult{}, ErrInvalidInput
+	}
+	runID, err := svc.queuePathIngestion(ctx, project.ID, relativePath)
+	if err != nil {
+		return DeleteFileResult{}, err
+	}
+	result.IngestionRunID = runID
+	return result, nil
+}
+
 func (svc *Service) project(projectID string, requireEdit bool) (projectregistry.Project, error) {
 	if svc == nil || svc.registry == nil || !svc.enabled {
 		return projectregistry.Project{}, ErrWorkspaceDisabled
@@ -445,6 +554,61 @@ func resolveDiskPath(project projectregistry.Project, relativePath string) (stri
 		}
 	}
 	return cleanFull, nil
+}
+
+func resolveCreateDiskPath(project projectregistry.Project, relativePath string, createParentDirs bool, dryRun bool) (string, error) {
+	normalized, err := normalizeAllowedPath(project, relativePath, nil)
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Clean(project.CanonicalRootPath)
+	fullPath := filepath.Join(root, filepath.FromSlash(normalized))
+	cleanFull := filepath.Clean(fullPath)
+	relative, err := filepath.Rel(root, cleanFull)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", ErrInvalidInput
+	}
+	parts := strings.Split(filepath.FromSlash(normalized), string(filepath.Separator))
+	current := root
+	for i, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", ErrUnsafeContent
+			}
+			if i == len(parts)-1 {
+				return "", ErrEditConflict
+			}
+			if !info.IsDir() {
+				return "", ErrInvalidInput
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", ErrInvalidInput
+		}
+		if !createParentDirs && i < len(parts)-1 {
+			return "", ErrInvalidInput
+		}
+		if i < len(parts)-1 {
+			if dryRun {
+				break
+			}
+			if err := os.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+				return "", ErrInvalidInput
+			}
+			if info, err := os.Lstat(current); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return "", ErrUnsafeContent
+			}
+			continue
+		}
+		return cleanFull, nil
+	}
+	if dryRun {
+		return cleanFull, nil
+	}
+	return "", ErrEditConflict
 }
 
 func (svc *Service) workspaceFile(project projectregistry.Project, fileID string, relativePath string, content []byte, info os.FileInfo, maxBytes int) WorkspaceFile {
@@ -754,6 +918,57 @@ func atomicWrite(fullPath string, content []byte, info os.FileInfo) error {
 		_ = dirHandle.Close()
 	}
 	return nil
+}
+
+func atomicCreate(fullPath string, content []byte, mode os.FileMode) error {
+	file, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
+		_ = os.Remove(fullPath)
+		return err
+	}
+	_ = file.Sync()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(fullPath)
+		return err
+	}
+	if err := os.Chmod(fullPath, mode); err != nil && !chmodUnsupported(err) {
+		_ = os.Remove(fullPath)
+		return err
+	}
+	if dirHandle, err := os.Open(filepath.Dir(fullPath)); err == nil {
+		_ = dirHandle.Sync()
+		_ = dirHandle.Close()
+	}
+	return nil
+}
+
+type virtualFileInfo struct {
+	name    string
+	size    int64
+	mode    os.FileMode
+	modTime time.Time
+}
+
+func (info virtualFileInfo) Name() string       { return info.name }
+func (info virtualFileInfo) Size() int64        { return info.size }
+func (info virtualFileInfo) Mode() os.FileMode  { return info.mode }
+func (info virtualFileInfo) ModTime() time.Time { return info.modTime }
+func (info virtualFileInfo) IsDir() bool        { return false }
+func (info virtualFileInfo) Sys() any           { return nil }
+
+func (svc *Service) queuePathIngestion(ctx context.Context, projectID string, relativePath string) (string, error) {
+	if svc.ingest == nil {
+		return "", nil
+	}
+	run, err := svc.ingest.IngestPath(ctx, projectID, relativePath, projectingestion.TriggerLive)
+	if err != nil {
+		return "", ErrIngestionUnsupported
+	}
+	return run.ID, nil
 }
 
 func chmodUnsupported(err error) bool {

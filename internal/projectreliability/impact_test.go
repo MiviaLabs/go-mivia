@@ -283,6 +283,14 @@ func (workspace fakeWorkspace) EditFile(context.Context, string, projectworkspac
 	return projectworkspace.EditResult{}, nil
 }
 
+func (workspace fakeWorkspace) CreateFile(context.Context, string, projectworkspace.CreateFileOptions) (projectworkspace.CreateFileResult, error) {
+	return projectworkspace.CreateFileResult{}, nil
+}
+
+func (workspace fakeWorkspace) DeleteFile(context.Context, string, projectworkspace.DeleteFileOptions) (projectworkspace.DeleteFileResult, error) {
+	return projectworkspace.DeleteFileResult{}, nil
+}
+
 func assertDomain(t *testing.T, result ImpactAnalysis, name string) {
 	t.Helper()
 	for _, domain := range result.AffectedDomains {

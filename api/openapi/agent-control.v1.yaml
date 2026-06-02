@@ -534,6 +534,50 @@ paths:
                 $ref: '#/components/schemas/WorkspaceFileEditResult'
         '400':
           $ref: '#/components/responses/BadRequest'
+  /projects/{id}/workspace/files/create:
+    post:
+      operationId: createProjectWorkspaceFile
+      summary: Create one workspace file
+      description: Creates one eligible workspace text file by project-relative path. Successful non-dry-run creates queue path ingestion.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceFileCreateRequest'
+      responses:
+        '200':
+          description: Create result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileCreateResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/workspace/files/delete:
+    post:
+      operationId: deleteProjectWorkspaceFile
+      summary: Delete one workspace file
+      description: Deletes one eligible workspace file by file_id or project-relative path after validating a current edit token. Successful non-dry-run deletes queue path ingestion.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceFileDeleteRequest'
+      responses:
+        '200':
+          description: Delete result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileDeleteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /projects/{id}/ingestion-runs:
     post:
       operationId: createProjectIngestionRun
@@ -2198,6 +2242,65 @@ components:
         ingestion_run_id:
           type: string
         new_edit_token:
+          type: string
+    WorkspaceFileCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [relative_path, text]
+      properties:
+        relative_path:
+          type: string
+          minLength: 1
+        text:
+          type: string
+        create_parent_dirs:
+          type: boolean
+        dry_run:
+          type: boolean
+          description: Validate the create without writing or queueing ingestion.
+    WorkspaceFileCreateResult:
+      type: object
+      additionalProperties: false
+      required: [applied, file]
+      properties:
+        applied:
+          type: boolean
+        file:
+          $ref: '#/components/schemas/WorkspaceFile'
+        ingestion_run_id:
+          type: string
+        new_edit_token:
+          type: string
+    WorkspaceFileDeleteRequest:
+      type: object
+      additionalProperties: false
+      required: [edit_token]
+      anyOf:
+        - required: [file_id]
+        - required: [relative_path]
+      properties:
+        file_id:
+          type: string
+        relative_path:
+          type: string
+        edit_token:
+          type: string
+          minLength: 1
+        dry_run:
+          type: boolean
+          description: Validate the delete without removing the file or queueing ingestion.
+    WorkspaceFileDeleteResult:
+      type: object
+      additionalProperties: false
+      required: [deleted, project_id, relative_path]
+      properties:
+        deleted:
+          type: boolean
+        project_id:
+          type: string
+        relative_path:
+          type: string
+        ingestion_run_id:
           type: string
     ProjectDigestRun:
       type: object

@@ -450,6 +450,49 @@ func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 	}
 }
 
+func TestCallToolWithWorkspace_CreateAndDeleteAliases(t *testing.T) {
+	registry, digest := newServices(t)
+	workspace := &fakeWorkspaceAPI{}
+
+	tools := mcpapi.ToolDefinitionsWithWorkspace(false, true)
+	for _, name := range []string{"projects.workspace.file_create", "projects.workspace.file_delete"} {
+		if !hasToolDefinition(tools, name) {
+			t.Fatalf("expected %s tool definition", name)
+		}
+	}
+
+	createResult, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects_workspace_file_create", marshalArgs(t, map[string]any{
+		"id":                 "example-service",
+		"relative_path":      "docs/new.md",
+		"text":               "new file\n",
+		"create_parent_dirs": true,
+	}))
+	if err != nil {
+		t.Fatalf("workspace create alias: %v", err)
+	}
+	if workspace.create.ProjectID != "example-service" || workspace.create.Options.RelativePath != "docs/new.md" || workspace.create.Options.Text != "new file\n" || !workspace.create.Options.CreateParentDirs {
+		t.Fatalf("unexpected create dispatch: %#v", workspace.create)
+	}
+	if createResult["structuredContent"].(projectworkspace.CreateFileResult).File.RelativePath != "docs/new.md" {
+		t.Fatalf("unexpected create result: %#v", createResult["structuredContent"])
+	}
+
+	deleteResult, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.file_delete", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "docs/new.md",
+		"edit_token":    "token",
+	}))
+	if err != nil {
+		t.Fatalf("workspace delete tool: %v", err)
+	}
+	if workspace.delete.ProjectID != "example-service" || workspace.delete.Options.RelativePath != "docs/new.md" || workspace.delete.Options.EditToken != "token" {
+		t.Fatalf("unexpected delete dispatch: %#v", workspace.delete)
+	}
+	if !deleteResult["structuredContent"].(projectworkspace.DeleteFileResult).Deleted {
+		t.Fatalf("unexpected delete result: %#v", deleteResult["structuredContent"])
+	}
+}
+
 func TestCallToolWithWorkspace_GitDiffRejectsFilesystemID(t *testing.T) {
 	registry, digest := newServices(t)
 	workspace := projectworkspace.NewService(registry, nil, projectworkspace.Options{Enabled: true})
@@ -865,6 +908,61 @@ type blockingAsyncRunner struct {
 
 type fakeDiagnosticsSnapshotter struct {
 	snapshot projectingestion.DiagnosticsSnapshot
+}
+
+type fakeWorkspaceAPI struct {
+	create struct {
+		ProjectID string
+		Options   projectworkspace.CreateFileOptions
+	}
+	delete struct {
+		ProjectID string
+		Options   projectworkspace.DeleteFileOptions
+	}
+}
+
+func (fake *fakeWorkspaceAPI) GitAvailable(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (fake *fakeWorkspaceAPI) GitStatus(context.Context, string, projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {
+	return projectworkspace.GitStatus{}, nil
+}
+
+func (fake *fakeWorkspaceAPI) GitDiff(context.Context, string, projectworkspace.GitDiffOptions) (projectworkspace.GitDiff, error) {
+	return projectworkspace.GitDiff{}, nil
+}
+
+func (fake *fakeWorkspaceAPI) ReadFile(context.Context, string, projectworkspace.ReadFileOptions) (projectworkspace.WorkspaceFile, error) {
+	return projectworkspace.WorkspaceFile{}, nil
+}
+
+func (fake *fakeWorkspaceAPI) EditFile(context.Context, string, projectworkspace.EditFileOptions) (projectworkspace.EditResult, error) {
+	return projectworkspace.EditResult{}, nil
+}
+
+func (fake *fakeWorkspaceAPI) CreateFile(_ context.Context, projectID string, options projectworkspace.CreateFileOptions) (projectworkspace.CreateFileResult, error) {
+	fake.create.ProjectID = projectID
+	fake.create.Options = options
+	return projectworkspace.CreateFileResult{
+		File: projectworkspace.WorkspaceFile{
+			ProjectID:    projectID,
+			RelativePath: options.RelativePath,
+			Text:         options.Text,
+			EditToken:    "new-token",
+		},
+		NewEditToken: "new-token",
+	}, nil
+}
+
+func (fake *fakeWorkspaceAPI) DeleteFile(_ context.Context, projectID string, options projectworkspace.DeleteFileOptions) (projectworkspace.DeleteFileResult, error) {
+	fake.delete.ProjectID = projectID
+	fake.delete.Options = options
+	return projectworkspace.DeleteFileResult{
+		Deleted:      true,
+		ProjectID:    projectID,
+		RelativePath: options.RelativePath,
+	}, nil
 }
 
 func (fake fakeDiagnosticsSnapshotter) IngestionDiagnostics() projectingestion.DiagnosticsSnapshot {
