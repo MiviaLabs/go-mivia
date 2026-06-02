@@ -499,10 +499,10 @@ paths:
             type: string
         - name: max_bytes
           in: query
+          description: Requested text byte cap. Values above the server limit are accepted and clamped; check text_truncated for partial reads.
           schema:
             type: integer
             minimum: 1
-            maximum: 262144
       responses:
         '200':
           description: Current eligible file text

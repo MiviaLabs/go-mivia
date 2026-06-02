@@ -12,6 +12,10 @@ services:
     image: mivia-server:local
     pull_policy: build
     init: true
+    # Default matches the image's non-root mivia user. Local overrides can set
+    # MIVIA_CONTAINER_USER=0:0 when bind-mounted project workspaces must be
+    # edited across mixed WSL/Windows filesystem ownership boundaries.
+    user: "${MIVIA_CONTAINER_USER:-10001:10001}"
     ports:
       - "${MIVIA_HOST_BIND:-127.0.0.1}:${MIVIA_HOST_PORT:-8080}:8080"
     environment:
@@ -44,6 +48,10 @@ volumes:
 #
 # services:
 #   mivia-server:
+#     # Use 0:0 only for local edit-capable bind mounts. The server preserves
+#     # original file ownership on Unix filesystems when atomic edits replace
+#     # files, and tolerates chmod-unsupported Windows bind mounts.
+#     user: "${MIVIA_CONTAINER_USER:-0:0}"
 #     environment:
 #       MIVIA_CONFIG_PATH: /app/configs/mivia-server.local.toml
 #     volumes:

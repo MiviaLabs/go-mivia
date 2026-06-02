@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -259,7 +260,7 @@ func (svc *Service) EditFile(ctx context.Context, projectID string, options Edit
 	if err != nil {
 		return EditResult{}, err
 	}
-	if err := atomicWrite(fullPath, next, info.Mode()); err != nil {
+	if err := atomicWrite(fullPath, next, info); err != nil {
 		return EditResult{}, ErrInvalidInput
 	}
 	writtenInfo, err := os.Stat(fullPath)
@@ -401,9 +402,7 @@ func safeText(project projectregistry.Project, relativePath string, content []by
 	if maxBytes <= 0 {
 		maxBytes = project.MaxFileBytes
 	}
-	options := safetyOptions(project)
-	options.MaxFileBytes = maxBytes
-	result := projectingestion.EvaluateSafety(relativePath, content, options)
+	result := projectingestion.EvaluateWorkspaceSafety(relativePath, content, workspaceSafetyOptions(project, maxBytes))
 	return result.Eligible && projectregistry.ProjectIncludesRelativePath(project, result.RelativePath)
 }
 
@@ -411,6 +410,13 @@ func safetyOptions(project projectregistry.Project) projectingestion.SafetyOptio
 	return projectingestion.SafetyOptions{
 		MaxFileBytes:          project.MaxFileBytes,
 		MaxChunkBytes:         project.MaxChunkBytes,
+		SensitiveMarkerPolicy: project.SensitiveMarkerPolicy,
+	}
+}
+
+func workspaceSafetyOptions(project projectregistry.Project, maxBytes int64) projectingestion.WorkspaceSafetyOptions {
+	return projectingestion.WorkspaceSafetyOptions{
+		MaxFileBytes:          maxBytes,
 		SensitiveMarkerPolicy: project.SensitiveMarkerPolicy,
 	}
 }
@@ -713,7 +719,7 @@ func applyExactEdits(content []byte, edits []ExactEdit) ([]byte, error) {
 	return next, nil
 }
 
-func atomicWrite(fullPath string, content []byte, mode os.FileMode) error {
+func atomicWrite(fullPath string, content []byte, info os.FileInfo) error {
 	dir := filepath.Dir(fullPath)
 	temp, err := os.CreateTemp(dir, ".mivia-edit-*")
 	if err != nil {
@@ -729,7 +735,15 @@ func atomicWrite(fullPath string, content []byte, mode os.FileMode) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tempName, mode); err != nil {
+	if os.Geteuid() == 0 {
+		if uid, gid, ok := fileOwner(info); ok {
+			if err := os.Chown(tempName, uid, gid); err != nil && !ownershipUnsupported(err) {
+				return err
+			}
+		}
+	}
+	mode := info.Mode()
+	if err := os.Chmod(tempName, mode); err != nil && !chmodUnsupported(err) {
 		return err
 	}
 	if err := os.Rename(tempName, fullPath); err != nil {
@@ -740,6 +754,25 @@ func atomicWrite(fullPath string, content []byte, mode os.FileMode) error {
 		_ = dirHandle.Close()
 	}
 	return nil
+}
+
+func chmodUnsupported(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.EOPNOTSUPP)
+}
+
+func ownershipUnsupported(err error) bool {
+	return chmodUnsupported(err)
+}
+
+func fileOwner(info os.FileInfo) (int, int, bool) {
+	if info == nil {
+		return 0, 0, false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, false
+	}
+	return int(stat.Uid), int(stat.Gid), true
 }
 
 func diffPreview(relativePath string, oldContent []byte, newContent []byte, maxBytes int) string {

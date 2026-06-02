@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
@@ -89,6 +90,66 @@ func TestWorkspaceService_GitAvailableUsesFastRevParse(t *testing.T) {
 	}
 }
 
+func TestWorkspaceService_ReadGoSourceAllowsOrdinarySensitiveLookingIdentifiers(t *testing.T) {
+	root := t.TempDir()
+	source := `package main
+
+type EditToken struct {
+	Value string
+}
+
+func secret() EditToken {
+	return EditToken{Value: "not-a-credential"}
+}
+
+func NewService() []byte {
+	secret := make([]byte, 32)
+	return secret
+}
+`
+	writeFixture(t, root, "cmd/main.go", source)
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly), nil, Options{Enabled: true})
+
+	file, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "cmd/main.go"})
+	if err != nil {
+		t.Fatalf("read ordinary Go source identifiers: %v", err)
+	}
+	for _, expected := range []string{"type EditToken", "func secret()", "secret := make"} {
+		if !strings.Contains(file.Text, expected) {
+			t.Fatalf("expected %q in read source, got %q", expected, file.Text)
+		}
+	}
+}
+
+func TestWorkspaceService_ReadFileMaxBytesClampsInsteadOfRejecting(t *testing.T) {
+	root := t.TempDir()
+	source := strings.Repeat("a", 20)
+	writeFixture(t, root, "main.go", source)
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly), nil, Options{Enabled: true})
+
+	aboveFileSize, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{
+		RelativePath: "main.go",
+		MaxBytes:     len(source) + 100,
+	})
+	if err != nil {
+		t.Fatalf("read with max_bytes above file size: %v", err)
+	}
+	if aboveFileSize.Text != source || aboveFileSize.TextTruncated {
+		t.Fatalf("expected full untruncated file, got %#v", aboveFileSize)
+	}
+
+	aboveLimit, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{
+		RelativePath: "main.go",
+		MaxBytes:     MaxReadBytes + 1,
+	})
+	if err != nil {
+		t.Fatalf("read with max_bytes above MaxReadBytes: %v", err)
+	}
+	if aboveLimit.Text != source || aboveLimit.TextTruncated {
+		t.Fatalf("expected clamp to read limit without truncating small file, got %#v", aboveLimit)
+	}
+}
+
 func TestWorkspaceService_RejectsReadOnlyAndStaleToken(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package main\n")
@@ -119,6 +180,35 @@ func TestWorkspaceService_RejectsReadOnlyAndStaleToken(t *testing.T) {
 	})
 	if !errors.Is(err, ErrEditTokenInvalid) {
 		t.Fatalf("expected stale token error, got %v", err)
+	}
+}
+
+func TestWorkspaceService_EditConflictAndStaleTokenErrorsStayExplicit(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+
+	file, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "main.go"})
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	_, err = svc.EditFile(context.Background(), "example-service", EditFileOptions{
+		RelativePath: "main.go",
+		EditToken:    file.EditToken,
+		Edits:        []ExactEdit{{StartByte: 0, EndByte: 7, OldText: "module", NewText: "package"}},
+	})
+	if !errors.Is(err, ErrEditConflict) {
+		t.Fatalf("expected explicit edit conflict error, got %v", err)
+	}
+
+	writeFixture(t, root, "main.go", "package changed\n")
+	_, err = svc.EditFile(context.Background(), "example-service", EditFileOptions{
+		RelativePath: "main.go",
+		EditToken:    file.EditToken,
+		Edits:        []ExactEdit{{StartByte: 0, EndByte: 7, OldText: "package", NewText: "module"}},
+	})
+	if !errors.Is(err, ErrEditTokenInvalid) {
+		t.Fatalf("expected explicit stale token error, got %v", err)
 	}
 }
 
@@ -270,6 +360,14 @@ const aws = "AKIA1234567890ABCDEF"
 		if !strings.Contains(body, raw) {
 			t.Fatalf("expected raw value %q in diff: %s", raw, body)
 		}
+	}
+}
+
+func TestAtomicWriteIgnoresUnsupportedChmod(t *testing.T) {
+	err := &os.PathError{Op: "chmod", Path: "/mnt/c/example/.mivia-edit-test", Err: syscall.EPERM}
+
+	if !chmodUnsupported(err) {
+		t.Fatal("expected unsupported chmod error to be tolerated")
 	}
 }
 

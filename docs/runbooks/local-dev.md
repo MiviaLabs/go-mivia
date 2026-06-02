@@ -72,6 +72,7 @@ Defaults:
 - Content graph ingestion: `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true`
 - Live updates: `MIVIA_INGESTION_LIVE_UPDATES_ENABLED=true`
 - Global workspace gate: `MIVIA_WORKSPACE_ENABLED=true`
+- Container user: `MIVIA_CONTAINER_USER=10001:10001` by default. For local edit-capable bind mounts across mixed WSL/Windows ownership boundaries, use the ignored local override with `MIVIA_CONTAINER_USER=0:0`; the workspace atomic write path preserves original Unix ownership when supported and tolerates chmod-unsupported Windows mounts.
 - Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`; persistent project graph/search stores live under `/var/lib/mivia/projects/<project-id>/`, with search SQLite filenames tied to the Pebble graph storage epoch.
 - Container storage: named Compose volume `mivia-data`
 - Config file: `configs/mivia-server.compose.toml`
@@ -94,7 +95,7 @@ docker compose -f docker-compose.yml -f .docker-compose.local.yml up
 
 Use the commented local override template at the bottom of `docker-compose.yml`, copy it into `.docker-compose.local.yml`, and replace only placeholder paths.
 
-Workspace access still requires a configured project with `workspace_mode = "read_only"` or `"edit"`. Leave project `workspace_mode = "disabled"` for projects that must not expose governed git status/diff/read/edit tools.
+Workspace access still requires a configured project with `workspace_mode = "read_only"` or `"edit"`. Leave project `workspace_mode = "disabled"` for projects that must not expose governed git status/diff/read/edit tools. If exact workspace edits fail while reads and dry-runs succeed, check the container user and bind mount permissions before changing host drive permissions.
 
 ## Optional Local Project Config
 
