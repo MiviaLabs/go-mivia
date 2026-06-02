@@ -18,6 +18,7 @@ import (
 	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry/httpapi"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
@@ -440,6 +441,23 @@ func TestProjectDashboardSummary_SymbolConcentrationUsesExplicitCodeAreaFallback
 	}
 }
 
+func TestProjectDashboardSummary_IncludesLocalIntegrationStatusAndCounts(t *testing.T) {
+	mux, projectID, root := newIntegrationDashboardMux(t)
+
+	dashboard := httptest.NewRecorder()
+	mux.ServeHTTP(dashboard, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/dashboard-summary", nil))
+	if dashboard.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", dashboard.Code, dashboard.Body.String())
+	}
+	body := dashboard.Body.String()
+	assertDoesNotLeak(t, body, root, "https://tenant.atlassian.net", "ACME", "ENG", "MIVIA_ATLASSIAN", "/home/mac/secret", "raw-provider-cursor", "sha256:")
+	for _, expected := range []string{`"integrations"`, `"provider":"jira"`, `"provider":"confluence"`, `"allowlist_kind":"project_keys"`, `"allowlist_kind":"space_keys"`, `"allowlist_count":2`, `"count":3`, `"count":2`, `"active_run"`, `"last_run_status":"completed"`, `"last_run_items_seen":7`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected dashboard integration summary to contain %s, got %s", expected, body)
+		}
+	}
+}
+
 func assertDashboardCount(t *testing.T, items []struct {
 	Key   string `json:"key"`
 	Count int    `json:"count"`
@@ -501,6 +519,17 @@ func TestProjectIngestionRoutes_SubmitsAsyncWithoutWaitingForScan(t *testing.T) 
 	case <-runner.executeStarted:
 	case <-time.After(testShortTimeout):
 		t.Fatalf("expected scheduler worker to receive submitted scan")
+	}
+	for _, path := range []string{
+		"/api/v1/projects/example-service/ingestion-runs/latest",
+		"/api/v1/projects/example-service/context-health",
+		"/api/v1/projects/example-service/dashboard-summary",
+	} {
+		active := httptest.NewRecorder()
+		mux.ServeHTTP(active, httptest.NewRequest(http.MethodGet, path, nil))
+		if active.Code == http.StatusServiceUnavailable {
+			t.Fatalf("expected active ingestion endpoint %s not to return 503: %s", path, active.Body.String())
+		}
 	}
 }
 
@@ -574,6 +603,82 @@ func TestProjectWorkspaceRoutes_GitUnavailableIsExplicit(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "git_unavailable") || !strings.Contains(res.Body.String(), "git is not available") {
 		t.Fatalf("expected explicit git unavailable error, got %s", res.Body.String())
+	}
+}
+
+func TestProjectIntegrationRoutesExposeLocalDataOnly(t *testing.T) {
+	ctx := context.Background()
+	registry, digest, project := newIntegrationRegistryDigest(t)
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := sqliteschema.Bootstrap(ctx, db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+	store := projectintegrations.NewSQLiteStore(db.SQLDB())
+	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, ItemID: "10001", ItemKey: "LOCAL-1", ItemType: "Task", ItemStatus: "open", ItemUpdatedAt: testIntegrationTime().Add(-time.Hour), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
+		t.Fatalf("upsert old jira item: %v", err)
+	}
+	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, ItemID: "10002", ItemKey: "LOCAL-2", ItemType: "Bug", ItemStatus: "done", ItemUpdatedAt: testIntegrationTime(), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
+		t.Fatalf("upsert recent jira item: %v", err)
+	}
+	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderConfluence, ItemID: "20001", ItemType: "page", ItemStatus: "current", ItemUpdatedAt: testIntegrationTime(), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
+		t.Fatalf("upsert confluence page: %v", err)
+	}
+	service, err := projectintegrations.NewServiceWithOptions([]config.Project{project}, store, projectintegrations.ServiceOptions{RichContent: fakeIntegrationRichContent{}})
+	if err != nil {
+		t.Fatalf("new integration service: %v", err)
+	}
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutesWithWorkspaceAndIntegrations(mux, registry, digest, nil, nil, service)
+
+	counts := httptest.NewRecorder()
+	mux.ServeHTTP(counts, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/counts", nil))
+	if counts.Code != http.StatusOK || !strings.Contains(counts.Body.String(), `"project_id":"example-service"`) || !strings.Contains(counts.Body.String(), `"provider":"jira"`) || !strings.Contains(counts.Body.String(), `"count":2`) || !strings.Contains(counts.Body.String(), `"provider":"confluence"`) || !strings.Contains(counts.Body.String(), `"count":1`) {
+		t.Fatalf("unexpected counts response %d: %s", counts.Code, counts.Body.String())
+	}
+	assertDoesNotLeak(t, counts.Body.String(), "tenant.atlassian.net", "MIVIA_ATLASSIAN", "/home/mac/secret", "content_sha256")
+
+	jira := httptest.NewRecorder()
+	mux.ServeHTTP(jira, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/jira/issues?page_size=2", nil))
+	if jira.Code != http.StatusOK {
+		t.Fatalf("expected jira list 200, got %d: %s", jira.Code, jira.Body.String())
+	}
+	if !strings.Contains(jira.Body.String(), `"sort":"updated_desc"`) || strings.Index(jira.Body.String(), "LOCAL-2") > strings.Index(jira.Body.String(), "LOCAL-1") {
+		t.Fatalf("expected recent jira issues sorted by updated desc, got %s", jira.Body.String())
+	}
+	if !strings.Contains(jira.Body.String(), `"item_type":"Task"`) || !strings.Contains(jira.Body.String(), `"item_type":"Bug"`) {
+		t.Fatalf("expected jira list to include typed Jira issues, got %s", jira.Body.String())
+	}
+	if !strings.Contains(jira.Body.String(), `"title":"Ticket summary for LOCAL-2"`) {
+		t.Fatalf("expected jira list to include local rich-content title, got %s", jira.Body.String())
+	}
+	assertDoesNotLeak(t, jira.Body.String(), "tenant.atlassian.net", "MIVIA_ATLASSIAN", "/home/mac/secret")
+
+	confluence := httptest.NewRecorder()
+	mux.ServeHTTP(confluence, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/confluence/pages", nil))
+	if confluence.Code != http.StatusOK || !strings.Contains(confluence.Body.String(), `"provider":"confluence"`) || !strings.Contains(confluence.Body.String(), `"item_type":"page"`) || !strings.Contains(confluence.Body.String(), `"title":"Confluence page title for 20001"`) {
+		t.Fatalf("unexpected confluence pages response %d: %s", confluence.Code, confluence.Body.String())
+	}
+
+	search := httptest.NewRecorder()
+	mux.ServeHTTP(search, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/search?provider=confluence&query=policy", nil))
+	if search.Code != http.StatusOK || !strings.Contains(search.Body.String(), "bounded local confluence result") {
+		t.Fatalf("unexpected local search response %d: %s", search.Code, search.Body.String())
+	}
+
+	page := httptest.NewRecorder()
+	mux.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/confluence/pages/20001", nil))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "bounded local page text") {
+		t.Fatalf("unexpected confluence read response %d: %s", page.Code, page.Body.String())
+	}
+
+	invalidSort := httptest.NewRecorder()
+	mux.ServeHTTP(invalidSort, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/jira/issues?sort=provider_url_desc", nil))
+	if invalidSort.Code != http.StatusBadRequest || strings.Contains(invalidSort.Body.String(), "tenant.atlassian.net") {
+		t.Fatalf("expected redacted 400 for invalid sort, got %d: %s", invalidSort.Code, invalidSort.Body.String())
 	}
 }
 
@@ -874,6 +979,130 @@ func newIngestionMuxWithFiles(t *testing.T, files map[string]string, include []s
 	return mux, "example-service", root
 }
 
+func newIntegrationDashboardMux(t *testing.T) (*http.ServeMux, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("write source fixture: %v", err)
+	}
+	project := config.Project{
+		ID:                    "example-service",
+		DisplayName:           "Example Service",
+		RootPath:              root,
+		Enabled:               true,
+		Classification:        projectregistry.ClassificationInternal,
+		GraphNamespace:        "example-service",
+		DigestMode:            projectregistry.DigestModeContentGraph,
+		UpdatePolicy:          projectregistry.UpdatePolicyManual,
+		Include:               []string{"**/*.go"},
+		FollowSymlinks:        false,
+		MaxFileBytes:          4096,
+		MaxChunkBytes:         1024,
+		SensitiveMarkerPolicy: projectregistry.SensitiveMarkerPolicySkipFile,
+		Integrations: config.IntegrationConfig{
+			Jira: &config.JiraIntegration{
+				Enabled:    true,
+				SiteURL:    "https://tenant.atlassian.net",
+				CloudID:    "tenant-cloud-id",
+				AuthMode:   "api_token_basic",
+				MaxResults: 100,
+				CredentialRefs: config.AtlassianCredentialRefs{
+					EmailEnv:    "MIVIA_ATLASSIAN_EMAIL",
+					APITokenEnv: "MIVIA_ATLASSIAN_TOKEN",
+				},
+				Polling:     config.IntegrationPolling{IngestionEnabled: true, InitialFullSync: "manual", IncrementalInterval: time.Minute},
+				ProjectKeys: []string{"ACME", "OPS"},
+			},
+			Confluence: &config.ConfluenceIntegration{
+				Enabled:    true,
+				SiteURL:    "https://tenant.atlassian.net",
+				CloudID:    "tenant-cloud-id",
+				AuthMode:   "api_token_basic",
+				MaxResults: 100,
+				CredentialRefs: config.AtlassianCredentialRefs{
+					EmailFile:    "/home/mac/secret-email",
+					APITokenFile: "/home/mac/secret-token",
+				},
+				Polling:   config.IntegrationPolling{IngestionEnabled: true, InitialFullSync: "manual", IncrementalInterval: time.Minute},
+				SpaceKeys: []string{"ENG", "TEAM"},
+			},
+		},
+	}
+	registry, err := projectregistry.NewRegistry([]config.Project{project}, projectregistry.Options{
+		ContentGraphEnabled:          true,
+		ContentGraphApprovalAccepted: true,
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(context.Background(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	db, err := sqliteplatform.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := sqliteschema.Bootstrap(context.Background(), db.SQLDB()); err != nil {
+		t.Fatalf("bootstrap sqlite: %v", err)
+	}
+	digest := projectregistry.NewDigestService(registry, graph)
+	ingestion := projectingestion.NewService(registry, projectingestion.NewGraphStore(graph), projectingestion.NewSQLiteStore(db.SQLDB()))
+	integrations, err := projectintegrations.NewService([]config.Project{project}, &dashboardIntegrationStore{})
+	if err != nil {
+		t.Fatalf("new integration service: %v", err)
+	}
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutesWithWorkspaceAndIntegrations(mux, registry, digest, ingestion, nil, integrations)
+	return mux, "example-service", root
+}
+
+type dashboardIntegrationStore struct{}
+
+func (store *dashboardIntegrationStore) UpsertSource(context.Context, projectintegrations.SourceMetadataInput) (projectintegrations.SourceMetadata, error) {
+	return projectintegrations.SourceMetadata{}, projectintegrations.ErrNotFound
+}
+
+func (store *dashboardIntegrationStore) ListSources(context.Context, string) ([]projectintegrations.SourceMetadata, error) {
+	return []projectintegrations.SourceMetadata{
+		{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, AllowlistCount: 2},
+		{ProjectID: "example-service", Provider: projectintegrations.ProviderConfluence, AllowlistCount: 2},
+	}, nil
+}
+
+func (store *dashboardIntegrationStore) GetSyncState(_ context.Context, _ string, provider projectintegrations.Provider) (projectintegrations.SyncState, error) {
+	if provider != projectintegrations.ProviderJira {
+		return projectintegrations.SyncState{}, projectintegrations.ErrNotFound
+	}
+	return projectintegrations.SyncState{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, LastRunID: "jira-run-1", LastSuccessfulRunID: "jira-run-1", UpdatedAt: time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)}, nil
+}
+
+func (store *dashboardIntegrationStore) GetSyncRun(_ context.Context, _ string, provider projectintegrations.Provider, runID string) (projectintegrations.SyncRun, error) {
+	if provider != projectintegrations.ProviderJira || runID != "jira-run-1" {
+		return projectintegrations.SyncRun{}, projectintegrations.ErrNotFound
+	}
+	return projectintegrations.SyncRun{ID: runID, ProjectID: "example-service", Provider: provider, Kind: projectintegrations.SyncKindIncremental, Status: projectintegrations.SyncRunStatusCompleted, ItemsSeen: 7, ItemsUpserted: 4}, nil
+}
+
+func (store *dashboardIntegrationStore) GetActiveSyncRun(_ context.Context, _ string, provider projectintegrations.Provider) (projectintegrations.SyncRun, error) {
+	if provider != projectintegrations.ProviderJira {
+		return projectintegrations.SyncRun{}, projectintegrations.ErrNotFound
+	}
+	return projectintegrations.SyncRun{ID: "jira-run-active", ProjectID: "example-service", Provider: projectintegrations.ProviderJira, Kind: projectintegrations.SyncKindInitialFull, Status: projectintegrations.SyncRunStatusRunning, ItemsSeen: 2, ItemsUpserted: 1}, nil
+}
+
+func (store *dashboardIntegrationStore) CountItems(_ context.Context, _ string, provider projectintegrations.Provider) (int, error) {
+	switch provider {
+	case projectintegrations.ProviderJira:
+		return 3, nil
+	case projectintegrations.ProviderConfluence:
+		return 2, nil
+	default:
+		return 0, projectintegrations.ErrNotFound
+	}
+}
+
 func waitIngestionRun(t *testing.T, mux *http.ServeMux, projectID string, runID string) projectingestion.RunMetadata {
 	t.Helper()
 	deadline := time.After(time.Second)
@@ -991,4 +1220,106 @@ func (runner *blockingAsyncRunner) releaseExecution() {
 	default:
 		close(runner.release)
 	}
+}
+
+func newIntegrationRegistryDigest(t *testing.T) (*projectregistry.Registry, *projectregistry.DigestService, config.Project) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("write source fixture: %v", err)
+	}
+	project := config.Project{
+		ID:             "example-service",
+		DisplayName:    "Example Service",
+		RootPath:       root,
+		Enabled:        true,
+		Classification: projectregistry.ClassificationInternal,
+		GraphNamespace: "example-service",
+		DigestMode:     projectregistry.DigestModeMetadataOnly,
+		UpdatePolicy:   projectregistry.UpdatePolicyManual,
+		Include:        []string{"**/*.go"},
+		FollowSymlinks: false,
+		Integrations: config.IntegrationConfig{
+			Jira: &config.JiraIntegration{
+				Enabled:    true,
+				SiteURL:    "https://tenant.atlassian.net",
+				CloudID:    "cloud-id-1",
+				AuthMode:   "api_token_basic",
+				MaxResults: 100,
+				CredentialRefs: config.AtlassianCredentialRefs{
+					EmailEnv:    "MIVIA_ATLASSIAN_EMAIL_PROJECT_1",
+					APITokenEnv: "MIVIA_ATLASSIAN_TOKEN_PROJECT_1",
+				},
+				ProjectKeys: []string{"LOCAL"},
+			},
+			Confluence: &config.ConfluenceIntegration{
+				Enabled:    true,
+				SiteURL:    "https://tenant.atlassian.net",
+				CloudID:    "cloud-id-1",
+				AuthMode:   "api_token_basic",
+				MaxResults: 100,
+				CredentialRefs: config.AtlassianCredentialRefs{
+					EmailFile:    "/home/mac/secret-email",
+					APITokenFile: "/home/mac/secret-token",
+				},
+				SpaceKeys: []string{"ENG"},
+			},
+		},
+	}
+	registry, err := projectregistry.NewRegistry([]config.Project{project}, projectregistry.Options{})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	graph := ladybug.NewMemoryGraph()
+	if err := graph.Bootstrap(context.Background(), ladybugschema.BootstrapSchema()); err != nil {
+		t.Fatalf("bootstrap graph: %v", err)
+	}
+	return registry, projectregistry.NewDigestService(registry, graph), project
+}
+
+type fakeIntegrationRichContent struct{}
+
+func (fakeIntegrationRichContent) SearchRichContent(_ context.Context, projectID string, options projectintegrations.RichContentSearchOptions) ([]projectintegrations.RichContentSearchResult, error) {
+	return []projectintegrations.RichContentSearchResult{{
+		Artifact: projectintegrations.RichContentArtifact{
+			ID:        "artifact-1",
+			ProjectID: projectID,
+			Provider:  options.Provider,
+			ItemID:    "20001",
+			ItemType:  "page",
+		},
+		Snippet: "bounded local confluence result",
+	}}, nil
+}
+
+func (fakeIntegrationRichContent) GetRichContentItem(_ context.Context, projectID string, provider projectintegrations.Provider, itemIDOrKey string, _ projectintegrations.RichContentReadOptions) (projectintegrations.RichContentReadResult, error) {
+	fieldName := "title"
+	text := "Confluence page title for " + itemIDOrKey
+	if provider == projectintegrations.ProviderJira {
+		fieldName = "summary"
+		text = "Ticket summary for " + itemIDOrKey
+	}
+	return projectintegrations.RichContentReadResult{
+		Artifact: projectintegrations.RichContentArtifact{
+			ID:        "artifact-1",
+			ProjectID: projectID,
+			Provider:  provider,
+			ItemID:    itemIDOrKey,
+			ItemType:  "page",
+		},
+		Chunks: []projectintegrations.RichContentChunkView{{
+			ID:        "chunk-1",
+			ProjectID: projectID,
+			Provider:  provider,
+			ItemID:    itemIDOrKey,
+			ItemType:  "page",
+			FieldName: fieldName,
+			Label:     fieldName,
+			Text:      text + "\nbounded local page text",
+		}},
+	}, nil
+}
+
+func testIntegrationTime() time.Time {
+	return time.Date(2026, 6, 2, 5, 0, 0, 0, time.UTC)
 }

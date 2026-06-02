@@ -95,8 +95,10 @@ type dashboardWorkspaceSummary struct {
 }
 
 type dashboardIntegrationSummary struct {
-	Providers []providerStatusSummary                 `json:"providers,omitempty"`
-	Counts    []projectintegrations.ProviderItemCount `json:"counts,omitempty"`
+	Providers        []providerStatusSummary   `json:"providers,omitempty"`
+	Counts           []integrationCountSummary `json:"counts,omitempty"`
+	RecentJiraIssues []integrationItemSummary  `json:"recent_jira_issues,omitempty"`
+	ConfluencePages  []integrationItemSummary  `json:"confluence_pages,omitempty"`
 }
 
 type dashboardSummaryLimits struct {
@@ -151,6 +153,44 @@ type providerStatusSummary struct {
 	SourceAllowlistCount int                          `json:"source_allowlist_count,omitempty"`
 	LastRunStatus        string                       `json:"last_run_status,omitempty"`
 	LastRunItemsSeen     int                          `json:"last_run_items_seen,omitempty"`
+	ActiveRunStatus      string                       `json:"active_run_status,omitempty"`
+	ActiveRunItemsSeen   int                          `json:"active_run_items_seen,omitempty"`
+	ActiveRun            *integrationRunSummary       `json:"active_run,omitempty"`
+}
+
+type integrationRunSummary struct {
+	Status    projectintegrations.SyncRunStatus `json:"status"`
+	ItemsSeen int                               `json:"items_seen"`
+}
+
+type integrationCountSummary struct {
+	Provider projectintegrations.Provider `json:"provider"`
+	Count    int                          `json:"count"`
+}
+
+type integrationCountsPageResponse struct {
+	ProjectID string                    `json:"project_id"`
+	Counts    []integrationCountSummary `json:"counts,omitempty"`
+}
+
+type integrationItemSummary struct {
+	Provider      projectintegrations.Provider `json:"provider"`
+	ItemID        string                       `json:"item_id,omitempty"`
+	ItemKey       string                       `json:"item_key,omitempty"`
+	Title         string                       `json:"title,omitempty"`
+	ItemType      string                       `json:"item_type,omitempty"`
+	ItemStatus    string                       `json:"item_status,omitempty"`
+	ItemUpdatedAt time.Time                    `json:"item_updated_at,omitempty"`
+	LastSeenAt    time.Time                    `json:"last_seen_at,omitempty"`
+}
+
+type integrationItemPageResponse struct {
+	ProjectID       string                       `json:"project_id"`
+	Provider        projectintegrations.Provider `json:"provider"`
+	Items           []integrationItemSummary     `json:"items,omitempty"`
+	NextPageToken   string                       `json:"next_page_token,omitempty"`
+	Sort            string                       `json:"sort"`
+	SampleTruncated bool                         `json:"sample_truncated"`
 }
 
 func getDashboardSummaryHandler(registry *projectregistry.Registry, ingestion projectingestion.API, workspace projectworkspace.API, integrations *projectintegrations.Service) http.Handler {
@@ -726,7 +766,9 @@ func dashboardIntegrations(ctx context.Context, integrations *projectintegration
 		return result
 	}
 	for _, provider := range providers {
-		status, err := integrations.Status(ctx, projectID, provider.Provider)
+		status, err := dashboardWithTimeout(ctx, func(ctx context.Context) (projectintegrations.ProviderStatus, error) {
+			return integrations.Status(ctx, projectID, provider.Provider)
+		})
 		if err != nil {
 			*warnings = append(*warnings, "integration_status_unavailable")
 			continue
@@ -747,12 +789,150 @@ func dashboardIntegrations(ctx context.Context, integrations *projectintegration
 			item.LastRunStatus = string(status.LastRun.Status)
 			item.LastRunItemsSeen = status.LastRun.ItemsSeen
 		}
+		if status.ActiveRun != nil {
+			item.ActiveRunStatus = string(status.ActiveRun.Status)
+			item.ActiveRunItemsSeen = status.ActiveRun.ItemsSeen
+			item.ActiveRun = &integrationRunSummary{Status: status.ActiveRun.Status, ItemsSeen: status.ActiveRun.ItemsSeen}
+		}
 		result.Providers = append(result.Providers, item)
 	}
-	if counts, err := integrations.Counts(ctx, projectID); err == nil {
-		result.Counts = counts.Counts
+	if counts, err := dashboardWithTimeout(ctx, func(ctx context.Context) (projectintegrations.ProjectIntegrationCounts, error) {
+		return integrations.Counts(ctx, projectID)
+	}); err == nil {
+		result.Counts = integrationCountSummaries(counts.Counts)
+	}
+	if jira, err := dashboardWithTimeout(ctx, func(ctx context.Context) (projectintegrations.ItemListResult, error) {
+		return integrations.ListLocalItems(ctx, projectintegrations.LocalItemListInput{
+			ProjectID: projectID,
+			Provider:  projectintegrations.ProviderJira,
+			PageSize:  8,
+			Sort:      "updated_desc",
+		})
+	}); err == nil {
+		result.RecentJiraIssues = enrichedIntegrationItemSummaries(ctx, integrations, projectID, projectintegrations.ProviderJira, jira.Items, 8)
+	}
+	if confluence, err := dashboardWithTimeout(ctx, func(ctx context.Context) (projectintegrations.ItemListResult, error) {
+		return integrations.ListLocalItems(ctx, projectintegrations.LocalItemListInput{
+			ProjectID: projectID,
+			Provider:  projectintegrations.ProviderConfluence,
+			ItemType:  "page",
+			PageSize:  12,
+			Sort:      "updated_desc",
+		})
+	}); err == nil {
+		result.ConfluencePages = enrichedIntegrationItemSummaries(ctx, integrations, projectID, projectintegrations.ProviderConfluence, confluence.Items, 12)
 	}
 	return result
+}
+
+func integrationCountSummaries(counts []projectintegrations.ProviderItemCount) []integrationCountSummary {
+	if len(counts) == 0 {
+		return nil
+	}
+	summaries := make([]integrationCountSummary, 0, len(counts))
+	for _, count := range counts {
+		summaries = append(summaries, integrationCountSummary{Provider: count.Provider, Count: count.Count})
+	}
+	return summaries
+}
+
+func integrationItemPage(result projectintegrations.ItemListResult) integrationItemPageResponse {
+	return integrationItemPageResponse{
+		ProjectID:       result.ProjectID,
+		Provider:        result.Provider,
+		Items:           integrationItemSummaries(result.Items, len(result.Items)),
+		NextPageToken:   result.NextPageToken,
+		Sort:            result.Sort,
+		SampleTruncated: result.SampleTruncated,
+	}
+}
+
+func enrichedIntegrationItemPage(ctx context.Context, integrations *projectintegrations.Service, result projectintegrations.ItemListResult) integrationItemPageResponse {
+	response := integrationItemPage(result)
+	response.Items = enrichedIntegrationItemSummaries(ctx, integrations, result.ProjectID, result.Provider, result.Items, len(result.Items))
+	return response
+}
+
+func integrationCountsResponse(result projectintegrations.ProjectIntegrationCounts) integrationCountsPageResponse {
+	return integrationCountsPageResponse{
+		ProjectID: result.ProjectID,
+		Counts:    integrationCountSummaries(result.Counts),
+	}
+}
+
+func integrationItemSummaries(items []projectintegrations.ItemMetadata, limit int) []integrationItemSummary {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	summaries := make([]integrationItemSummary, 0, len(items))
+	for _, item := range items {
+		summaries = append(summaries, integrationItemSummary{
+			Provider:      item.Provider,
+			ItemID:        item.ItemID,
+			ItemKey:       item.ItemKey,
+			Title:         "",
+			ItemType:      item.ItemType,
+			ItemStatus:    item.ItemStatus,
+			ItemUpdatedAt: item.ItemUpdatedAt,
+			LastSeenAt:    item.LastSeenAt,
+		})
+	}
+	return summaries
+}
+
+func enrichedIntegrationItemSummaries(ctx context.Context, integrations *projectintegrations.Service, projectID string, provider projectintegrations.Provider, items []projectintegrations.ItemMetadata, limit int) []integrationItemSummary {
+	summaries := integrationItemSummaries(items, limit)
+	if integrations == nil || len(summaries) == 0 {
+		return summaries
+	}
+	for index := range summaries {
+		key := summaries[index].ItemKey
+		if provider == projectintegrations.ProviderConfluence || strings.TrimSpace(key) == "" {
+			key = summaries[index].ItemID
+		}
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		result, err := integrations.ReadLocalContent(ctx, projectintegrations.LocalReadInput{
+			ProjectID:     projectID,
+			Provider:      provider,
+			ItemIDOrKey:   key,
+			MaxChunks:     2,
+			MaxChunkBytes: 500,
+		})
+		if err != nil {
+			continue
+		}
+		summaries[index].Title = integrationTitleFromContent(provider, result)
+	}
+	return summaries
+}
+
+func integrationTitleFromContent(provider projectintegrations.Provider, result projectintegrations.RichContentReadResult) string {
+	titleFields := map[string]bool{"title": true}
+	if provider == projectintegrations.ProviderJira {
+		titleFields["summary"] = true
+	}
+	for _, chunk := range result.Chunks {
+		if titleFields[strings.ToLower(strings.TrimSpace(chunk.FieldName))] {
+			return firstLine(strings.TrimSpace(chunk.Text), 160)
+		}
+	}
+	return ""
+}
+
+func firstLine(value string, limit int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
+	if index := strings.IndexByte(value, '\n'); index >= 0 {
+		value = strings.TrimSpace(value[:index])
+	}
+	if limit > 0 && len(value) > limit {
+		return strings.TrimSpace(value[:limit])
+	}
+	return value
 }
 
 func sortedCounts(values map[string]int, limit int) []dashboardCount {

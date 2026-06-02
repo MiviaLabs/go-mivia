@@ -21,6 +21,10 @@ type ItemCountStore interface {
 	CountItems(context.Context, string, Provider) (int, error)
 }
 
+type ItemListStore interface {
+	ListItemsPage(context.Context, string, Provider, ItemListOptions) (ItemListResult, error)
+}
+
 type ActiveSyncRunStore interface {
 	GetActiveSyncRun(context.Context, string, Provider) (SyncRun, error)
 }
@@ -170,6 +174,15 @@ type LocalReadInput struct {
 	MaxChunkBytes int
 	MaxChunks     int
 	ChunkOffset   int
+}
+
+type LocalItemListInput struct {
+	ProjectID string
+	Provider  Provider
+	ItemType  string
+	PageSize  int
+	PageToken string
+	Sort      string
 }
 
 func NewService(projects []config.Project, store Store) (*Service, error) {
@@ -402,6 +415,32 @@ func (service *Service) Counts(ctx context.Context, projectID string) (ProjectIn
 		counts = append(counts, ProviderItemCount{ProjectID: project.ID, Provider: provider, Count: count})
 	}
 	return ProjectIntegrationCounts{ProjectID: project.ID, Counts: counts}, nil
+}
+
+func (service *Service) ListLocalItems(ctx context.Context, input LocalItemListInput) (ItemListResult, error) {
+	if service == nil {
+		return ItemListResult{}, fmt.Errorf("%w: service is nil", ErrInvalidInput)
+	}
+	if service.store == nil {
+		return ItemListResult{}, fmt.Errorf("%w: integration store unavailable", ErrNotFound)
+	}
+	itemStore, ok := service.store.(ItemListStore)
+	if !ok {
+		return ItemListResult{}, fmt.Errorf("%w: integration item list store unavailable", ErrNotFound)
+	}
+	project, err := service.project(input.ProjectID)
+	if err != nil {
+		return ItemListResult{}, err
+	}
+	if _, err := providerStatusConfig(project, input.Provider); err != nil {
+		return ItemListResult{}, err
+	}
+	return itemStore.ListItemsPage(ctx, project.ID, input.Provider, ItemListOptions{
+		ItemType:  input.ItemType,
+		PageSize:  input.PageSize,
+		PageToken: input.PageToken,
+		Sort:      input.Sort,
+	})
 }
 
 func (service *Service) SearchLocalContent(ctx context.Context, input LocalSearchInput) ([]RichContentSearchResult, error) {

@@ -155,6 +155,22 @@ type ItemMetadata struct {
 	Changed         bool
 }
 
+type ItemListOptions struct {
+	ItemType  string
+	PageSize  int
+	PageToken string
+	Sort      string
+}
+
+type ItemListResult struct {
+	ProjectID       string
+	Provider        Provider
+	Items           []ItemMetadata
+	NextPageToken   string
+	Sort            string
+	SampleTruncated bool
+}
+
 type RichContentPayload struct {
 	Item   RichContentItem
 	Chunks []RichContentChunk

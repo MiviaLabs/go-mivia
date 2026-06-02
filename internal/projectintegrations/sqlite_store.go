@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -630,6 +631,74 @@ func (store *SQLiteStore) ListItems(ctx context.Context, projectID string, provi
 	return items, nil
 }
 
+func (store *SQLiteStore) ListItemsPage(ctx context.Context, projectID string, provider Provider, options ItemListOptions) (ItemListResult, error) {
+	if strings.TrimSpace(projectID) == "" || !validProvider(provider) {
+		return ItemListResult{}, ErrInvalidInput
+	}
+	pageSize := boundedItemPageSize(options.PageSize)
+	offset, err := itemPageOffset(options.PageToken)
+	if err != nil {
+		return ItemListResult{}, err
+	}
+	itemType := strings.TrimSpace(options.ItemType)
+	orderBy, sortMode, err := itemListOrder(options.Sort)
+	if err != nil {
+		return ItemListResult{}, err
+	}
+	args := []any{strings.TrimSpace(projectID), string(provider)}
+	where := "WHERE project_id = ? AND provider = ?"
+	if itemType != "" {
+		where += " AND item_type = ?"
+		args = append(args, itemType)
+	}
+	args = append(args, pageSize+1, offset)
+	rows, err := store.db.QueryContext(ctx, `SELECT
+		project_id,
+		provider,
+		item_id,
+		item_key,
+		item_id_hash,
+		item_key_hash,
+		item_type,
+		item_status,
+		item_updated_at,
+		content_sha256,
+		provider_version,
+		provider_etag,
+		first_seen_at,
+		last_seen_at,
+		last_run_id
+	FROM project_integration_items
+	`+where+`
+	ORDER BY `+orderBy+`
+	LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return ItemListResult{}, err
+	}
+	defer rows.Close()
+	result := ItemListResult{
+		ProjectID: strings.TrimSpace(projectID),
+		Provider:  provider,
+		Sort:      sortMode,
+	}
+	for rows.Next() {
+		item, err := scanItem(rows)
+		if err != nil {
+			return ItemListResult{}, err
+		}
+		result.Items = append(result.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return ItemListResult{}, err
+	}
+	if len(result.Items) > pageSize {
+		result.Items = result.Items[:pageSize]
+		result.SampleTruncated = true
+		result.NextPageToken = strconv.Itoa(offset + pageSize)
+	}
+	return result, nil
+}
+
 func (store *SQLiteStore) CountItems(ctx context.Context, projectID string, provider Provider) (int, error) {
 	var count int
 	err := store.db.QueryRowContext(ctx, `SELECT COUNT(*)
@@ -639,6 +708,41 @@ func (store *SQLiteStore) CountItems(ctx context.Context, projectID string, prov
 		return 0, err
 	}
 	return count, nil
+}
+
+func boundedItemPageSize(value int) int {
+	if value <= 0 {
+		return 25
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func itemPageOffset(token string) (int, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return 0, nil
+	}
+	offset, err := strconv.Atoi(token)
+	if err != nil || offset < 0 {
+		return 0, ErrInvalidInput
+	}
+	return offset, nil
+}
+
+func itemListOrder(value string) (string, string, error) {
+	switch strings.TrimSpace(value) {
+	case "", "updated_desc":
+		return "item_updated_at DESC, item_key ASC, item_id ASC", "updated_desc", nil
+	case "updated_asc":
+		return "item_updated_at ASC, item_key ASC, item_id ASC", "updated_asc", nil
+	case "key_asc":
+		return "item_key ASC, item_id ASC", "key_asc", nil
+	default:
+		return "", "", ErrInvalidInput
+	}
 }
 
 func sourceFromInput(input SourceMetadataInput) (SourceMetadata, error) {
