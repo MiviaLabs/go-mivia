@@ -888,51 +888,19 @@ func enrichedIntegrationItemSummaries(ctx context.Context, integrations *project
 	if integrations == nil || len(summaries) == 0 {
 		return summaries
 	}
+	if len(items) > len(summaries) {
+		items = items[:len(summaries)]
+	}
+	titles, err := integrations.ListLocalItemTitles(ctx, projectID, provider, items)
+	if err != nil {
+		return summaries
+	}
 	for index := range summaries {
-		key := summaries[index].ItemKey
-		if provider == projectintegrations.ProviderConfluence || strings.TrimSpace(key) == "" {
-			key = summaries[index].ItemID
+		if title := strings.TrimSpace(titles[summaries[index].ItemID]); title != "" {
+			summaries[index].Title = title
 		}
-		if strings.TrimSpace(key) == "" {
-			continue
-		}
-		result, err := integrations.ReadLocalContent(ctx, projectintegrations.LocalReadInput{
-			ProjectID:     projectID,
-			Provider:      provider,
-			ItemIDOrKey:   key,
-			MaxChunks:     2,
-			MaxChunkBytes: 500,
-		})
-		if err != nil {
-			continue
-		}
-		summaries[index].Title = integrationTitleFromContent(provider, result)
 	}
 	return summaries
-}
-
-func integrationTitleFromContent(provider projectintegrations.Provider, result projectintegrations.RichContentReadResult) string {
-	titleFields := map[string]bool{"title": true}
-	if provider == projectintegrations.ProviderJira {
-		titleFields["summary"] = true
-	}
-	for _, chunk := range result.Chunks {
-		if titleFields[strings.ToLower(strings.TrimSpace(chunk.FieldName))] {
-			return firstLine(strings.TrimSpace(chunk.Text), 160)
-		}
-	}
-	return ""
-}
-
-func firstLine(value string, limit int) string {
-	value = strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
-	if index := strings.IndexByte(value, '\n'); index >= 0 {
-		value = strings.TrimSpace(value[:index])
-	}
-	if limit > 0 && len(value) > limit {
-		return strings.TrimSpace(value[:limit])
-	}
-	return value
 }
 
 func sortedCounts(values map[string]int, limit int) []dashboardCount {

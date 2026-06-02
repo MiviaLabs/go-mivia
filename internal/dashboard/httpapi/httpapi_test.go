@@ -56,7 +56,7 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 			t.Fatalf("expected dashboard app to contain explicit status label %q", want)
 		}
 	}
-	for _, want := range []string{"Indexed integration items", "Recent Jira issues", "Confluence pages", "Search indexed Jira and Confluence", "/integrations/search", "jira/issues", "confluence/pages", "openIntegrationDrawer", "integration-detail", "integrationItemTitle"} {
+	for _, want := range []string{"Indexed integration items", "Recent Jira issues", "Confluence pages", "Search indexed Jira and Confluence", "/integrations/search", "jira/issues", "confluence/pages", "openIntegrationDrawer", "integration-detail", "integrationItemTitle", "Load more", "next_page_token"} {
 		if !strings.Contains(app.Body.String(), want) {
 			t.Fatalf("expected dashboard app to contain integration browser/search affordance %q", want)
 		}

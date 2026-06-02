@@ -624,8 +624,14 @@ func TestProjectIntegrationRoutesExposeLocalDataOnly(t *testing.T) {
 	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, ItemID: "10002", ItemKey: "LOCAL-2", ItemType: "Bug", ItemStatus: "done", ItemUpdatedAt: testIntegrationTime(), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
 		t.Fatalf("upsert recent jira item: %v", err)
 	}
+	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderJira, ItemID: "10003", ItemKey: "LOCAL-3", ItemType: "Story", ItemStatus: "review", ItemUpdatedAt: testIntegrationTime().Add(time.Minute), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
+		t.Fatalf("upsert newest jira item: %v", err)
+	}
 	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderConfluence, ItemID: "20001", ItemType: "page", ItemStatus: "current", ItemUpdatedAt: testIntegrationTime(), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
 		t.Fatalf("upsert confluence page: %v", err)
+	}
+	if _, err := store.UpsertItem(ctx, projectintegrations.ItemMetadataInput{ProjectID: "example-service", Provider: projectintegrations.ProviderConfluence, ItemID: "20002", ItemType: "page", ItemStatus: "current", ItemUpdatedAt: testIntegrationTime().Add(time.Minute), FirstSeenAt: testIntegrationTime(), LastSeenAt: testIntegrationTime()}); err != nil {
+		t.Fatalf("upsert newer confluence page: %v", err)
 	}
 	service, err := projectintegrations.NewServiceWithOptions([]config.Project{project}, store, projectintegrations.ServiceOptions{RichContent: fakeIntegrationRichContent{}})
 	if err != nil {
@@ -636,7 +642,7 @@ func TestProjectIntegrationRoutesExposeLocalDataOnly(t *testing.T) {
 
 	counts := httptest.NewRecorder()
 	mux.ServeHTTP(counts, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/counts", nil))
-	if counts.Code != http.StatusOK || !strings.Contains(counts.Body.String(), `"project_id":"example-service"`) || !strings.Contains(counts.Body.String(), `"provider":"jira"`) || !strings.Contains(counts.Body.String(), `"count":2`) || !strings.Contains(counts.Body.String(), `"provider":"confluence"`) || !strings.Contains(counts.Body.String(), `"count":1`) {
+	if counts.Code != http.StatusOK || !strings.Contains(counts.Body.String(), `"project_id":"example-service"`) || !strings.Contains(counts.Body.String(), `"provider":"jira"`) || !strings.Contains(counts.Body.String(), `"count":3`) || !strings.Contains(counts.Body.String(), `"provider":"confluence"`) || !strings.Contains(counts.Body.String(), `"count":2`) {
 		t.Fatalf("unexpected counts response %d: %s", counts.Code, counts.Body.String())
 	}
 	assertDoesNotLeak(t, counts.Body.String(), "tenant.atlassian.net", "MIVIA_ATLASSIAN", "/home/mac/secret", "content_sha256")
@@ -646,21 +652,32 @@ func TestProjectIntegrationRoutesExposeLocalDataOnly(t *testing.T) {
 	if jira.Code != http.StatusOK {
 		t.Fatalf("expected jira list 200, got %d: %s", jira.Code, jira.Body.String())
 	}
-	if !strings.Contains(jira.Body.String(), `"sort":"updated_desc"`) || strings.Index(jira.Body.String(), "LOCAL-2") > strings.Index(jira.Body.String(), "LOCAL-1") {
+	if !strings.Contains(jira.Body.String(), `"sort":"updated_desc"`) || strings.Index(jira.Body.String(), "LOCAL-3") > strings.Index(jira.Body.String(), "LOCAL-2") {
 		t.Fatalf("expected recent jira issues sorted by updated desc, got %s", jira.Body.String())
 	}
-	if !strings.Contains(jira.Body.String(), `"item_type":"Task"`) || !strings.Contains(jira.Body.String(), `"item_type":"Bug"`) {
+	if !strings.Contains(jira.Body.String(), `"item_type":"Story"`) || !strings.Contains(jira.Body.String(), `"item_type":"Bug"`) {
 		t.Fatalf("expected jira list to include typed Jira issues, got %s", jira.Body.String())
 	}
-	if !strings.Contains(jira.Body.String(), `"title":"Ticket summary for LOCAL-2"`) {
+	if !strings.Contains(jira.Body.String(), `"title":"Ticket summary for 10003"`) || !strings.Contains(jira.Body.String(), `"next_page_token":"2"`) {
 		t.Fatalf("expected jira list to include local rich-content title, got %s", jira.Body.String())
 	}
 	assertDoesNotLeak(t, jira.Body.String(), "tenant.atlassian.net", "MIVIA_ATLASSIAN", "/home/mac/secret")
 
+	jiraNext := httptest.NewRecorder()
+	mux.ServeHTTP(jiraNext, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/jira/issues?page_size=2&page_token=2", nil))
+	if jiraNext.Code != http.StatusOK || !strings.Contains(jiraNext.Body.String(), `"item_key":"LOCAL-1"`) || !strings.Contains(jiraNext.Body.String(), `"title":"Ticket summary for 10001"`) {
+		t.Fatalf("unexpected second jira page %d: %s", jiraNext.Code, jiraNext.Body.String())
+	}
+
 	confluence := httptest.NewRecorder()
-	mux.ServeHTTP(confluence, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/confluence/pages", nil))
-	if confluence.Code != http.StatusOK || !strings.Contains(confluence.Body.String(), `"provider":"confluence"`) || !strings.Contains(confluence.Body.String(), `"item_type":"page"`) || !strings.Contains(confluence.Body.String(), `"title":"Confluence page title for 20001"`) {
+	mux.ServeHTTP(confluence, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/confluence/pages?page_size=1", nil))
+	if confluence.Code != http.StatusOK || !strings.Contains(confluence.Body.String(), `"provider":"confluence"`) || !strings.Contains(confluence.Body.String(), `"item_type":"page"`) || !strings.Contains(confluence.Body.String(), `"title":"Confluence page title for 20002"`) || !strings.Contains(confluence.Body.String(), `"next_page_token":"1"`) {
 		t.Fatalf("unexpected confluence pages response %d: %s", confluence.Code, confluence.Body.String())
+	}
+	confluenceNext := httptest.NewRecorder()
+	mux.ServeHTTP(confluenceNext, httptest.NewRequest(http.MethodGet, "/api/v1/projects/example-service/integrations/confluence/pages?page_size=1&page_token=1", nil))
+	if confluenceNext.Code != http.StatusOK || !strings.Contains(confluenceNext.Body.String(), `"title":"Confluence page title for 20001"`) {
+		t.Fatalf("unexpected second confluence page %d: %s", confluenceNext.Code, confluenceNext.Body.String())
 	}
 
 	search := httptest.NewRecorder()
@@ -1278,6 +1295,18 @@ func newIntegrationRegistryDigest(t *testing.T) (*projectregistry.Registry, *pro
 }
 
 type fakeIntegrationRichContent struct{}
+
+func (fakeIntegrationRichContent) ListRichContentTitles(_ context.Context, _ string, provider projectintegrations.Provider, itemIDs []string) (map[string]string, error) {
+	titles := make(map[string]string, len(itemIDs))
+	for _, itemID := range itemIDs {
+		if provider == projectintegrations.ProviderJira {
+			titles[itemID] = "Ticket summary for " + itemID
+		} else {
+			titles[itemID] = "Confluence page title for " + itemID
+		}
+	}
+	return titles, nil
+}
 
 func (fakeIntegrationRichContent) SearchRichContent(_ context.Context, projectID string, options projectintegrations.RichContentSearchOptions) ([]projectintegrations.RichContentSearchResult, error) {
 	return []projectintegrations.RichContentSearchResult{{

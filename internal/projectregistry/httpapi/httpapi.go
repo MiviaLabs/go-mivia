@@ -20,6 +20,7 @@ import (
 
 const workspaceGitStatusTimeout = 30 * time.Second
 const dashboardSectionTimeout = 3 * time.Second
+const integrationItemListTimeout = 12 * time.Second
 
 func RegisterRoutes(mux *http.ServeMux, registry *projectregistry.Registry, digest *projectregistry.DigestService) {
 	RegisterRoutesWithIngestion(mux, registry, digest, nil)
@@ -545,7 +546,7 @@ func integrationItemsHandler(integrations *projectintegrations.Service, provider
 			writeIntegrationResult(w, nil, err, http.StatusOK)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), dashboardSectionTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), integrationItemListTimeout)
 		defer cancel()
 		result, err := integrations.ListLocalItems(ctx, projectintegrations.LocalItemListInput{
 			ProjectID: strings.TrimSpace(r.PathValue("id")),
