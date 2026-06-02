@@ -1075,6 +1075,8 @@ function tabWorkspace(workspace) {
 function tabIntegrations(project, integrationSummary) {
   const providers = Array.isArray(integrationSummary?.providers) ? integrationSummary.providers : [];
   const counts = Array.isArray(integrationSummary?.counts) ? integrationSummary.counts : [];
+  const recentJira = Array.isArray(integrationSummary?.recent_jira_issues) ? integrationSummary.recent_jira_issues : [];
+  const confluencePages = Array.isArray(integrationSummary?.confluence_pages) ? integrationSummary.confluence_pages : [];
   const children = [
     block("Configured", integrationsInline(project.integrations) || emptyText("No integrations configured.")),
     block("Provider status",
@@ -1085,7 +1087,142 @@ function tabIntegrations(project, integrationSummary) {
   if (counts.length) {
     children.push(countBlock("Indexed integration items", counts.map((item) => ({ key: item.provider, count: item.count })), { total: 0 }));
   }
+  const hasJira = hasIntegrationProvider(project, providers, counts, "jira") || recentJira.length > 0;
+  const hasConfluence = hasIntegrationProvider(project, providers, counts, "confluence") || confluencePages.length > 0;
+  if (hasJira) children.push(block("Recent Jira issues", integrationBrowser(project.id, "jira", "issues", recentJira)));
+  if (hasConfluence) children.push(block("Confluence pages", integrationBrowser(project.id, "confluence", "pages", confluencePages)));
+  if (hasJira || hasConfluence) children.push(block("Search", integrationSearch(project.id)));
   return panel("Integrations", ...children);
+}
+
+function hasIntegrationProvider(project, providers, counts, provider) {
+  return Boolean(project.integrations?.[provider]) ||
+    providers.some((item) => item.provider === provider) ||
+    counts.some((item) => item.provider === provider && item.count > 0);
+}
+
+function integrationBrowser(projectID, provider, collection, initialItems) {
+  const listNode = el("div", { class: "rows" });
+  const previewNode = el("div", { class: "integration-preview" }, emptyText("Select an item to preview indexed content."));
+  const node = el("div", { class: "integration-browser", dataset: { provider, collection } },
+    listNode,
+    previewNode,
+  );
+  renderIntegrationItems(projectID, provider, collection, listNode, previewNode, initialItems);
+  loadIntegrationItems(projectID, provider, collection, listNode, previewNode);
+  return node;
+}
+
+function renderIntegrationItems(projectID, provider, collection, listNode, previewNode, items) {
+  clear(listNode);
+  if (!Array.isArray(items) || items.length === 0) {
+    listNode.append(emptyText(`No indexed ${provider} ${collection}.`));
+    return;
+  }
+  items.forEach((item) => {
+    const id = integrationItemID(item);
+    const title = integrationItemTitle(item);
+    const status = integrationItemField(item, "item_status", "ItemStatus") || "unknown";
+    const updated = integrationItemField(item, "item_updated_at", "ItemUpdatedAt");
+    listNode.append(el("button", {
+      class: "integration-row",
+      type: "button",
+      disabled: !id,
+      onClick: () => loadIntegrationPreview(projectID, provider, collection, id, previewNode),
+    },
+      el("strong", { text: title }),
+      el("span", { text: `${status} · updated ${formatDate(updated)}` }),
+    ));
+  });
+}
+
+async function loadIntegrationItems(projectID, provider, collection, listNode, previewNode) {
+  const path = provider === "jira" ? "jira/issues" : "confluence/pages";
+  try {
+    const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/integrations/${path}?page_size=12&sort=updated_desc`, 5000);
+    renderIntegrationItems(projectID, provider, collection, listNode, previewNode, Array.isArray(data.items) ? data.items : []);
+  } catch (error) {
+    if (!listNode.childElementCount) listNode.append(emptyText(`${provider} ${collection} unavailable.`));
+  }
+}
+
+async function loadIntegrationPreview(projectID, provider, collection, id, previewNode) {
+  const path = provider === "jira" ? `jira/issues/${encodeURIComponent(id)}` : `confluence/pages/${encodeURIComponent(id)}`;
+  previewNode.replaceChildren(emptyText("Loading indexed preview..."));
+  try {
+    const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/integrations/${path}?max_chunks=4&max_chunk_bytes=1200`, 5000);
+    const chunks = Array.isArray(data.chunks) ? data.chunks : [];
+    previewNode.replaceChildren(
+      chunks.length
+        ? el("div", { class: "integration-chunks" }, chunks.map((chunk) => el("pre", { text: chunk.text || "" })))
+        : emptyText(`No indexed ${collection} content for this item.`),
+    );
+  } catch (error) {
+    previewNode.replaceChildren(emptyText(error.message));
+  }
+}
+
+function integrationSearch(projectID) {
+  const input = el("input", { type: "search", placeholder: "Search indexed Jira and Confluence", "aria-label": "Search indexed integrations" });
+  const provider = el("select", { "aria-label": "Integration provider" },
+    el("option", { value: "", text: "All" }),
+    el("option", { value: "jira", text: "Jira" }),
+    el("option", { value: "confluence", text: "Confluence" }),
+  );
+  const results = el("div", { class: "search-results" }, emptyText("Enter a query to search indexed integration content."));
+  const form = el("form", {
+    class: "integration-search",
+    onSubmit: async (event) => {
+      event.preventDefault();
+      const query = input.value.trim();
+      if (!query) {
+        results.replaceChildren(emptyText("Enter a query to search indexed integration content."));
+        return;
+      }
+      results.replaceChildren(emptyText("Searching indexed integrations..."));
+      const params = new URLSearchParams({ query, max_results: "12", max_snippet_bytes: "360" });
+      if (provider.value) params.set("provider", provider.value);
+      try {
+        const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/integrations/search?${params}`, 6000);
+        renderIntegrationSearchResults(results, Array.isArray(data.results) ? data.results : []);
+      } catch (error) {
+        results.replaceChildren(emptyText(error.message));
+      }
+    },
+  }, input, provider, el("button", { type: "submit", class: "compact", text: "Search" }));
+  return el("div", { class: "integration-search-wrap" }, form, results);
+}
+
+function renderIntegrationSearchResults(node, results) {
+  clear(node);
+  if (!results.length) {
+    node.append(emptyText("No indexed integration matches."));
+    return;
+  }
+  node.append(el("div", { class: "rows" }, results.map((result) => {
+    const artifact = result.artifact || {};
+    const provider = artifact.provider || result.provider || "integration";
+    const itemID = artifact.item_id || result.item_id || "";
+    const label = artifact.item_key || itemID || provider;
+    return el("div", { class: "row row--file" },
+      el("strong", { text: `${provider}: ${label}` }),
+      el("span", { text: result.snippet || "" }),
+    );
+  })));
+}
+
+function integrationItemField(item, snake, title) {
+  return item?.[snake] ?? item?.[title] ?? "";
+}
+
+function integrationItemID(item) {
+  return integrationItemField(item, "item_key", "ItemKey") || integrationItemField(item, "item_id", "ItemID");
+}
+
+function integrationItemTitle(item) {
+  return integrationItemField(item, "item_key", "ItemKey") ||
+    integrationItemField(item, "item_id", "ItemID") ||
+    "indexed item";
 }
 
 // ---------------------------------------------------------------------------

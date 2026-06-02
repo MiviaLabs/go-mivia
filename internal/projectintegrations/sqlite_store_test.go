@@ -248,6 +248,35 @@ func TestSQLiteStore_CountItemsByProjectAndProvider(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_ListJiraItemsDefaultsToUpdatedDesc(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newTestSQLiteStore(t)
+	inputs := []ItemMetadataInput{
+		{ProjectID: "project-1", Provider: ProviderJira, ItemID: "10001", ItemKey: "LOCAL-1", ItemType: "issue", ItemUpdatedAt: testTime().Add(-time.Hour), FirstSeenAt: testTime(), LastSeenAt: testTime()},
+		{ProjectID: "project-1", Provider: ProviderJira, ItemID: "10002", ItemKey: "LOCAL-2", ItemType: "issue", ItemUpdatedAt: testTime(), FirstSeenAt: testTime(), LastSeenAt: testTime()},
+		{ProjectID: "project-1", Provider: ProviderJira, ItemID: "10003", ItemKey: "LOCAL-3", ItemType: "task", ItemUpdatedAt: testTime().Add(time.Hour), FirstSeenAt: testTime(), LastSeenAt: testTime()},
+	}
+	for _, input := range inputs {
+		if _, err := store.UpsertItem(ctx, input); err != nil {
+			t.Fatalf("upsert item %#v: %v", input, err)
+		}
+	}
+
+	page, err := store.ListItemsPage(ctx, "project-1", ProviderJira, ItemListOptions{ItemType: "issue", PageSize: 2})
+	if err != nil {
+		t.Fatalf("list jira items: %v", err)
+	}
+	if page.Sort != "updated_desc" {
+		t.Fatalf("Sort = %q, want updated_desc", page.Sort)
+	}
+	if len(page.Items) != 2 || page.Items[0].ItemKey != "LOCAL-2" || page.Items[1].ItemKey != "LOCAL-1" {
+		t.Fatalf("expected recent issue items sorted by updated desc, got %#v", page.Items)
+	}
+	if _, err := store.ListItemsPage(ctx, "project-1", ProviderJira, ItemListOptions{Sort: "provider_url_desc"}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected invalid sort error, got %v", err)
+	}
+}
+
 func TestSQLiteStore_UpsertItemReportsUnchangedContent(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newTestSQLiteStore(t)

@@ -56,6 +56,11 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 			t.Fatalf("expected dashboard app to contain explicit status label %q", want)
 		}
 	}
+	for _, want := range []string{"Indexed integration items", "Recent Jira issues", "Confluence pages", "Search indexed Jira and Confluence", "/integrations/search", "jira/issues", "confluence/pages", "loadIntegrationPreview"} {
+		if !strings.Contains(app.Body.String(), want) {
+			t.Fatalf("expected dashboard app to contain integration browser/search affordance %q", want)
+		}
+	}
 }
 
 func TestRoutes_UnknownRootSubpathNotFound(t *testing.T) {

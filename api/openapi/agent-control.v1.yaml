@@ -1177,6 +1177,202 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/integrations:
+    get:
+      operationId: listProjectIntegrations
+      summary: List configured project integrations
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Configured integration providers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIntegrationProviderList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/integrations/{provider}/status:
+    get:
+      operationId: getProjectIntegrationStatus
+      summary: Get local integration status
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/IntegrationProvider'
+      responses:
+        '200':
+          description: Local integration status and redacted ingestion metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIntegrationStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/integrations/counts:
+    get:
+      operationId: countProjectIntegrationItems
+      summary: Count locally ingested integration items
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      responses:
+        '200':
+          description: Local integration item counts by provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIntegrationCounts'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/integrations/search:
+    get:
+      operationId: searchProjectIntegrationContent
+      summary: Search locally ingested integration content
+      description: Searches locally persisted integration content only. Result snippets are bounded by query parameters and server limits.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: provider
+          in: query
+          schema:
+            $ref: '#/components/schemas/IntegrationProvider'
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: max_results
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: max_snippet_bytes
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 4096
+        - name: case_sensitive
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Bounded local integration content matches
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIntegrationSearchResults'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/integrations/jira/issues:
+    get:
+      operationId: listProjectJiraIssues
+      summary: List locally ingested Jira issues
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [updated_desc, updated_asc, key_asc]
+      responses:
+        '200':
+          description: Jira issues sorted by most recently updated by default
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIntegrationItemPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/integrations/jira/issues/{key}:
+    get:
+      operationId: getProjectJiraIssueContent
+      summary: Get bounded local Jira issue content
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/IntegrationMaxChunks'
+        - $ref: '#/components/parameters/IntegrationMaxChunkBytes'
+        - $ref: '#/components/parameters/IntegrationChunkOffset'
+      responses:
+        '200':
+          description: Bounded local Jira issue content chunks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIntegrationContentRead'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/integrations/confluence/pages:
+    get:
+      operationId: listProjectConfluencePages
+      summary: List locally ingested Confluence pages
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [updated_desc, updated_asc, key_asc]
+      responses:
+        '200':
+          description: Confluence pages sorted by most recently updated by default
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIntegrationItemPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/integrations/confluence/pages/{page_id}:
+    get:
+      operationId: getProjectConfluencePageContent
+      summary: Get bounded local Confluence page content
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: page_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/IntegrationMaxChunks'
+        - $ref: '#/components/parameters/IntegrationMaxChunkBytes'
+        - $ref: '#/components/parameters/IntegrationChunkOffset'
+      responses:
+        '200':
+          description: Bounded local Confluence page content chunks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIntegrationContentRead'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   parameters:
     ID:
@@ -1220,6 +1416,32 @@ components:
       in: query
       schema:
         type: string
+    IntegrationProvider:
+      name: provider
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/IntegrationProvider'
+    IntegrationMaxChunks:
+      name: max_chunks
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 20
+    IntegrationMaxChunkBytes:
+      name: max_chunk_bytes
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 8192
+    IntegrationChunkOffset:
+      name: chunk_offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
   responses:
     BadRequest:
       description: Invalid request
@@ -2878,6 +3100,191 @@ components:
             $ref: '#/components/schemas/ProjectSymbolCallEdge'
         truncated:
           type: boolean
+    IntegrationProvider:
+      type: string
+      enum: [jira, confluence]
+    ProjectIntegrationProviderList:
+      type: object
+      additionalProperties: false
+      required: [providers]
+      properties:
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/IntegrationProvider'
+    ProjectIntegrationStatus:
+      type: object
+      additionalProperties: true
+      description: Redacted local integration configuration and sync status. Raw credentials, provider URLs, source payloads, cursors, content hashes, and absolute roots are not returned.
+      properties:
+        provider:
+          $ref: '#/components/schemas/IntegrationProvider'
+        configured:
+          type: boolean
+        enabled:
+          type: boolean
+        ingestion_enabled:
+          type: boolean
+        source_persisted:
+          type: boolean
+        active_run:
+          $ref: '#/components/schemas/ProjectIntegrationRunSummary'
+    ProjectIntegrationRunSummary:
+      type: object
+      additionalProperties: true
+      properties:
+        status:
+          type: string
+        items_seen:
+          type: integer
+        items_upserted:
+          type: integer
+    ProjectIntegrationCounts:
+      type: object
+      additionalProperties: false
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
+        counts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectIntegrationCount'
+    ProjectIntegrationCount:
+      type: object
+      additionalProperties: false
+      required: [provider, count]
+      properties:
+        provider:
+          $ref: '#/components/schemas/IntegrationProvider'
+        count:
+          type: integer
+          minimum: 0
+    ProjectIntegrationItemPage:
+      type: object
+      additionalProperties: false
+      required: [project_id, provider, sort, sample_truncated]
+      properties:
+        project_id:
+          type: string
+        provider:
+          $ref: '#/components/schemas/IntegrationProvider'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectIntegrationItem'
+        next_page_token:
+          type: string
+        sort:
+          type: string
+          enum: [updated_desc, updated_asc, key_asc]
+        sample_truncated:
+          type: boolean
+    ProjectIntegrationItem:
+      type: object
+      additionalProperties: false
+      required: [provider]
+      properties:
+        provider:
+          $ref: '#/components/schemas/IntegrationProvider'
+        item_id:
+          type: string
+        item_key:
+          type: string
+        item_type:
+          type: string
+        item_status:
+          type: string
+        item_updated_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+    ProjectIntegrationContentRead:
+      type: object
+      additionalProperties: false
+      required: [artifact, chunks, chunks_truncated]
+      properties:
+        artifact:
+          $ref: '#/components/schemas/ProjectIntegrationArtifact'
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectIntegrationContentChunk'
+        chunks_truncated:
+          type: boolean
+        next_chunk_offset:
+          type: integer
+          minimum: 0
+    ProjectIntegrationArtifact:
+      type: object
+      additionalProperties: true
+      description: Local integration artifact metadata. Raw content is returned only through bounded chunks.
+      properties:
+        ID:
+          type: string
+        ProjectID:
+          type: string
+        Provider:
+          $ref: '#/components/schemas/IntegrationProvider'
+        ItemID:
+          type: string
+        ItemKey:
+          type: string
+        ItemType:
+          type: string
+        FieldCount:
+          type: integer
+        ChunkCount:
+          type: integer
+        UpdatedAt:
+          type: string
+          format: date-time
+    ProjectIntegrationContentChunk:
+      type: object
+      additionalProperties: true
+      properties:
+        FieldName:
+          type: string
+        Label:
+          type: string
+        Index:
+          type: integer
+        ByteStart:
+          type: integer
+        ByteEnd:
+          type: integer
+        Text:
+          type: string
+        TextTruncated:
+          type: boolean
+    ProjectIntegrationSearchResults:
+      type: object
+      additionalProperties: false
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectIntegrationSearchResult'
+    ProjectIntegrationSearchResult:
+      type: object
+      additionalProperties: true
+      required: [Artifact, Chunk, Snippet]
+      properties:
+        Artifact:
+          $ref: '#/components/schemas/ProjectIntegrationArtifact'
+        Chunk:
+          $ref: '#/components/schemas/ProjectIntegrationContentChunk'
+        Snippet:
+          type: string
+        SnippetTruncated:
+          type: boolean
+        ByteStart:
+          type: integer
+        ByteEnd:
+          type: integer
     ErrorResponse:
       type: object
       additionalProperties: false

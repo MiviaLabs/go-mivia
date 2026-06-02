@@ -81,6 +81,16 @@ func RegisterRoutesWithWorkspaceIntegrationsAndActivity(mux *http.ServeMux, regi
 		mux.Handle("POST /api/v1/projects/{id}/workspace/files/create", workspaceFileCreateHandler(workspace))
 		mux.Handle("POST /api/v1/projects/{id}/workspace/files/delete", workspaceFileDeleteHandler(workspace))
 	}
+	if integrations != nil {
+		mux.Handle("GET /api/v1/projects/{id}/integrations", listIntegrationsHandler(integrations))
+		mux.Handle("GET /api/v1/projects/{id}/integrations/{provider}/status", integrationStatusHandler(integrations))
+		mux.Handle("GET /api/v1/projects/{id}/integrations/counts", integrationCountsHandler(integrations))
+		mux.Handle("GET /api/v1/projects/{id}/integrations/search", integrationSearchHandler(integrations))
+		mux.Handle("GET /api/v1/projects/{id}/integrations/jira/issues", integrationItemsHandler(integrations, projectintegrations.ProviderJira, "issue"))
+		mux.Handle("GET /api/v1/projects/{id}/integrations/jira/issues/{key}", integrationReadHandler(integrations, projectintegrations.ProviderJira, "key"))
+		mux.Handle("GET /api/v1/projects/{id}/integrations/confluence/pages", integrationItemsHandler(integrations, projectintegrations.ProviderConfluence, "page"))
+		mux.Handle("GET /api/v1/projects/{id}/integrations/confluence/pages/{page_id}", integrationReadHandler(integrations, projectintegrations.ProviderConfluence, "page_id"))
+	}
 }
 
 func getContextHealthHandler(registry *projectregistry.Registry, ingestion projectingestion.API, workspace projectworkspace.API) http.Handler {
@@ -462,6 +472,128 @@ func getFileOutlineHandler(ingestion projectingestion.API) http.Handler {
 	})
 }
 
+func listIntegrationsHandler(integrations *projectintegrations.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providers, err := integrations.ListProviders(strings.TrimSpace(r.PathValue("id")))
+		writeIntegrationResult(w, map[string]any{"providers": providers}, err, http.StatusOK)
+	})
+}
+
+func integrationStatusHandler(integrations *projectintegrations.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provider, err := providerFromPath(r.PathValue("provider"))
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), dashboardSectionTimeout)
+		defer cancel()
+		status, err := integrations.Status(ctx, strings.TrimSpace(r.PathValue("id")), provider)
+		writeIntegrationResult(w, status, err, http.StatusOK)
+	})
+}
+
+func integrationCountsHandler(integrations *projectintegrations.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), dashboardSectionTimeout)
+		defer cancel()
+		counts, err := integrations.Counts(ctx, strings.TrimSpace(r.PathValue("id")))
+		writeIntegrationResult(w, integrationCountsResponse(counts), err, http.StatusOK)
+	})
+}
+
+func integrationSearchHandler(integrations *projectintegrations.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provider, err := optionalProviderQuery(r)
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		maxResults, err := positiveIntQuery(r, "max_results")
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		maxSnippetBytes, err := positiveIntQuery(r, "max_snippet_bytes")
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		caseSensitive, err := optionalBoolQuery(r, "case_sensitive")
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), dashboardSectionTimeout)
+		defer cancel()
+		results, err := integrations.SearchLocalContent(ctx, projectintegrations.LocalSearchInput{
+			ProjectID:       strings.TrimSpace(r.PathValue("id")),
+			Provider:        provider,
+			Query:           r.URL.Query().Get("query"),
+			MaxResults:      maxResults,
+			MaxSnippetBytes: maxSnippetBytes,
+			CaseSensitive:   caseSensitive,
+		})
+		writeIntegrationResult(w, map[string]any{"results": results}, err, http.StatusOK)
+	})
+}
+
+func integrationItemsHandler(integrations *projectintegrations.Service, provider projectintegrations.Provider, itemType string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pageSize, err := positiveIntQuery(r, "page_size")
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), dashboardSectionTimeout)
+		defer cancel()
+		result, err := integrations.ListLocalItems(ctx, projectintegrations.LocalItemListInput{
+			ProjectID: strings.TrimSpace(r.PathValue("id")),
+			Provider:  provider,
+			ItemType:  itemType,
+			PageSize:  pageSize,
+			PageToken: r.URL.Query().Get("page_token"),
+			Sort:      r.URL.Query().Get("sort"),
+		})
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		writeIntegrationResult(w, integrationItemPage(result), nil, http.StatusOK)
+	})
+}
+
+func integrationReadHandler(integrations *projectintegrations.Service, provider projectintegrations.Provider, pathKey string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		maxChunkBytes, err := positiveIntQuery(r, "max_chunk_bytes")
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		maxChunks, err := positiveIntQuery(r, "max_chunks")
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		chunkOffset, err := optionalNonNegativeIntQuery(r, "chunk_offset")
+		if err != nil {
+			writeIntegrationResult(w, nil, err, http.StatusOK)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), dashboardSectionTimeout)
+		defer cancel()
+		result, err := integrations.ReadLocalContent(ctx, projectintegrations.LocalReadInput{
+			ProjectID:     strings.TrimSpace(r.PathValue("id")),
+			Provider:      provider,
+			ItemIDOrKey:   strings.TrimSpace(r.PathValue(pathKey)),
+			MaxChunkBytes: maxChunkBytes,
+			MaxChunks:     maxChunks,
+			ChunkOffset:   chunkOffset,
+		})
+		writeIntegrationResult(w, result, err, http.StatusOK)
+	})
+}
+
 func workspaceGitStatusHandler(workspace projectworkspace.API) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		includeUntracked := true
@@ -704,6 +836,46 @@ func writeReliabilityResult(w http.ResponseWriter, body any, err error, successS
 		return
 	}
 	httpserver.WriteError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+}
+
+func writeIntegrationResult(w http.ResponseWriter, body any, err error, successStatus int) {
+	if err == nil {
+		httpserver.WriteJSON(w, successStatus, body)
+		return
+	}
+	if errors.Is(err, projectintegrations.ErrNotFound) {
+		httpserver.WriteError(w, http.StatusNotFound, "not_found", "project integration resource not found")
+		return
+	}
+	if errors.Is(err, projectintegrations.ErrInvalidInput) ||
+		errors.Is(err, projectregistry.ErrInvalidInput) {
+		httpserver.WriteError(w, http.StatusBadRequest, "invalid_project_integration_request", "project integration request is invalid")
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		httpserver.WriteError(w, http.StatusGatewayTimeout, "integration_timeout", "project integration request timed out")
+		return
+	}
+	httpserver.WriteError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+}
+
+func providerFromPath(value string) (projectintegrations.Provider, error) {
+	switch projectintegrations.Provider(strings.TrimSpace(value)) {
+	case projectintegrations.ProviderJira:
+		return projectintegrations.ProviderJira, nil
+	case projectintegrations.ProviderConfluence:
+		return projectintegrations.ProviderConfluence, nil
+	default:
+		return "", projectintegrations.ErrInvalidInput
+	}
+}
+
+func optionalProviderQuery(r *http.Request) (projectintegrations.Provider, error) {
+	value := strings.TrimSpace(r.URL.Query().Get("provider"))
+	if value == "" {
+		return "", nil
+	}
+	return providerFromPath(value)
 }
 
 func paginationFromRequest(r *http.Request) (projectingestion.Pagination, error) {
