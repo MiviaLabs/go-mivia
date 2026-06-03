@@ -51,6 +51,12 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 			input.FailureCriteria = input.FailureBlockCriteria
 		}
 		return svc.CreateWorkTask(ctx, CreateWorkTaskInput{ProjectID: input.ID, PlanID: input.PlanID, TaskRef: input.TaskRef, Title: input.Title, Description: input.Description, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, EvidenceNeeded: input.EvidenceNeeded, ContextPackRefs: input.ContextPackRefs, LikelyFilesAffected: input.LikelyFilesAffected, DependencyTaskIDs: input.DependencyTaskIDs, VerificationRequirement: input.VerificationRequirement, ExpectedOutput: input.ExpectedOutput, FailureCriteria: input.FailureCriteria, ResumeInstructions: input.ResumeInstructions, KnowledgeCandidateRefs: input.KnowledgeCandidateRefs})
+	case "projects.work_tasks.get":
+		var input taskIDInput
+		if err := decodeMCP(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+		}
+		return svc.GetWorkTask(ctx, input.ID, input.TaskID)
 	case "projects.work_tasks.update_status":
 		var input taskStatusMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -167,6 +173,11 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 type planIDInput struct {
 	ID     string `json:"id"`
 	PlanID string `json:"plan_id"`
+}
+
+type taskIDInput struct {
+	ID     string `json:"id"`
+	TaskID string `json:"task_id"`
 }
 
 type createPlanMCPInput struct {

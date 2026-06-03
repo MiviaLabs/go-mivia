@@ -1387,7 +1387,7 @@ func workspaceToolDefinitions() []map[string]any {
 				"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"file_id":       map[string]any{"type": "string"},
 				"relative_path": map[string]any{"type": "string"},
-				"max_bytes":     map[string]any{"type": "integer", "minimum": 1, "description": "Requested text byte cap. Values above the server limit are accepted and clamped; use text_truncated to detect partial reads."},
+				"max_bytes":     map[string]any{"type": "integer", "minimum": 1, "description": "Optional caller text byte cap. Omit to return the full eligible file text; text_truncated is true only when this cap is applied."},
 			}, []string{"id"}),
 		},
 		{

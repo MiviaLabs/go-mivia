@@ -57,6 +57,30 @@ func TestWorkspaceService_ReadEditAndQueueIngestion(t *testing.T) {
 	}
 }
 
+func TestWorkspaceService_ReadFileReturnsFullTextUnlessCallerCaps(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("line content\n", 6000)
+	writeFixture(t, root, "docs/large.md", content)
+	registry := newWorkspaceRegistryWithIncludeAndMax(t, root, projectregistry.WorkspaceModeEdit, []string{"**/*.md"}, int64(len(content)+1))
+	svc := NewService(registry, nil, Options{Enabled: true})
+
+	full, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "docs/large.md"})
+	if err != nil {
+		t.Fatalf("read full file: %v", err)
+	}
+	if full.TextTruncated || full.Text != content {
+		t.Fatalf("expected full file read, truncated=%v got_len=%d want_len=%d", full.TextTruncated, len(full.Text), len(content))
+	}
+
+	capped, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "docs/large.md", MaxBytes: 128})
+	if err != nil {
+		t.Fatalf("read capped file: %v", err)
+	}
+	if !capped.TextTruncated || len(capped.Text) != 128 {
+		t.Fatalf("expected caller-capped read, truncated=%v len=%d", capped.TextTruncated, len(capped.Text))
+	}
+}
+
 func TestWorkspaceService_CreateFileCreatesParentsAndQueuesIngestion(t *testing.T) {
 	root := t.TempDir()
 	registry := newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit)
@@ -658,6 +682,10 @@ func newWorkspaceRegistry(t *testing.T, root string, mode string) *projectregist
 }
 
 func newWorkspaceRegistryWithInclude(t *testing.T, root string, mode string, include []string) *projectregistry.Registry {
+	return newWorkspaceRegistryWithIncludeAndMax(t, root, mode, include, 4096)
+}
+
+func newWorkspaceRegistryWithIncludeAndMax(t *testing.T, root string, mode string, include []string, maxFileBytes int64) *projectregistry.Registry {
 	t.Helper()
 	registry, err := projectregistry.NewRegistry([]config.Project{{
 		ID:                    "example-service",
@@ -671,7 +699,7 @@ func newWorkspaceRegistryWithInclude(t *testing.T, root string, mode string, inc
 		WorkspaceMode:         mode,
 		Include:               include,
 		FollowSymlinks:        false,
-		MaxFileBytes:          4096,
+		MaxFileBytes:          maxFileBytes,
 		MaxChunkBytes:         1024,
 		SensitiveMarkerPolicy: projectregistry.SensitiveMarkerPolicySkipFile,
 	}}, projectregistry.Options{

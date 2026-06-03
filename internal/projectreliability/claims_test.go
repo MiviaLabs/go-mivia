@@ -141,7 +141,7 @@ func TestClaimChecker_VerifiesWorkPlanToolsRoutesAndAliases(t *testing.T) {
 		IncludeVerified: true,
 		Documents: []ClaimDocument{{
 			Path: "api/mcp/agent-control.v1.md",
-			Text: "Use projects.work_plans.create, projects_work_plans_resume, projects.work_tasks.get_next, projects_work_tasks_attach_verifier_result, POST /api/v1/projects/{id}/work-plans/{plan_id}/resume, POST /api/v1/projects/example-service/work-tasks/task-123/claim, GET /api/v1/projects/example-service/work-tasks/next, and POST /api/v1/projects/{id}/work-tasks/{task_id}/knowledge-candidates.",
+			Text: "Use projects.work_plans.create, projects_work_plans_resume, projects.work_tasks.get, projects.work_tasks.get_next, projects_work_tasks_attach_verifier_result, POST /api/v1/projects/{id}/work-plans/{plan_id}/resume, POST /api/v1/projects/example-service/work-tasks/task-123/claim, GET /api/v1/projects/example-service/work-tasks/next, and POST /api/v1/projects/{id}/work-tasks/{task_id}/knowledge-candidates.",
 		}},
 	})
 	if err != nil {
@@ -150,12 +150,41 @@ func TestClaimChecker_VerifiesWorkPlanToolsRoutesAndAliases(t *testing.T) {
 	for _, claim := range []string{
 		"projects.work_plans.create",
 		"projects_work_plans_resume",
+		"projects.work_tasks.get",
 		"projects.work_tasks.get_next",
 		"projects_work_tasks_attach_verifier_result",
 		"/api/v1/projects/{id}/work-plans/{plan_id}/resume",
 		"/api/v1/projects/example-service/work-tasks/task-123/claim",
 		"/api/v1/projects/example-service/work-tasks/next",
 		"/api/v1/projects/{id}/work-tasks/{task_id}/knowledge-candidates",
+	} {
+		assertClaimStatus(t, result, claim, "verified")
+	}
+}
+
+func TestClaimChecker_VerifiesWorkflowRoutes(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		ProjectID:       "example-service",
+		IncludeVerified: true,
+		Documents: []ClaimDocument{{
+			Path: "api/mcp/agent-control.v1.md",
+			Text: "Use POST /api/v1/projects/{id}/workflows/validate-toml, POST /api/v1/projects/{id}/workflows/import-toml, GET /api/v1/projects/{id}/workflows, GET /api/v1/projects/{id}/workflows/{workflow_id}, POST /api/v1/projects/{id}/workflows/{workflow_id}/status, POST /api/v1/projects/{id}/workflows/{workflow_id}/compile, GET /api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions, GET /api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions/{agent_id}, GET /api/v1/projects/{id}/permission-snapshots, and GET /api/v1/projects/{id}/permission-snapshots/{snapshot_id}.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	for _, claim := range []string{
+		"/api/v1/projects/{id}/workflows/validate-toml",
+		"/api/v1/projects/{id}/workflows/import-toml",
+		"/api/v1/projects/{id}/workflows",
+		"/api/v1/projects/{id}/workflows/{workflow_id}",
+		"/api/v1/projects/{id}/workflows/{workflow_id}/status",
+		"/api/v1/projects/{id}/workflows/{workflow_id}/compile",
+		"/api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions",
+		"/api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions/{agent_id}",
+		"/api/v1/projects/{id}/permission-snapshots",
+		"/api/v1/projects/{id}/permission-snapshots/{snapshot_id}",
 	} {
 		assertClaimStatus(t, result, claim, "verified")
 	}

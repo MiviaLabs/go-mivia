@@ -282,7 +282,7 @@ func normalizeRouteClaim(route string) string {
 		route = before
 	}
 	route = strings.TrimRight(route, "/")
-	for _, placeholder := range []string{"id", "project_id", "run_id", "file_id", "symbol_id", "plan_id", "task_id", "claim_id", "knowledge_id", "automation_id", "org_ref"} {
+	for _, placeholder := range []string{"id", "project_id", "run_id", "file_id", "symbol_id", "plan_id", "task_id", "claim_id", "knowledge_id", "automation_id", "workflow_id", "agent_id", "snapshot_id", "org_ref"} {
 		route = strings.ReplaceAll(route, "{"+placeholder+"}", "*")
 		route = strings.ReplaceAll(route, "<"+placeholder+">", "*")
 	}
@@ -367,7 +367,7 @@ func defaultKnownTools() []string {
 		"projects.integrations.list", "projects.integrations.status", "projects.integrations.counts", "projects.integrations.poll",
 		"projects.integrations.poll_status", "projects.integrations.search", "projects.jira.issue.get", "projects.confluence.page.get",
 		"projects.work_plans.create", "projects.work_plans.get", "projects.work_plans.list", "projects.work_plans.update_status", "projects.work_plans.resume",
-		"projects.work_tasks.create", "projects.work_tasks.update_status", "projects.work_tasks.claim", "projects.work_tasks.release", "projects.work_tasks.start",
+		"projects.work_tasks.create", "projects.work_tasks.get", "projects.work_tasks.update_status", "projects.work_tasks.claim", "projects.work_tasks.release", "projects.work_tasks.start",
 		"projects.work_tasks.complete", "projects.work_tasks.fail", "projects.work_tasks.block", "projects.work_tasks.list_open",
 		"projects.work_tasks.list_mine", "projects.work_tasks.list_blocked", "projects.work_tasks.get_next",
 		"projects.work_tasks.attach_evidence", "projects.work_tasks.attach_context_pack", "projects.work_tasks.attach_claim",
@@ -432,6 +432,10 @@ func defaultKnownRoutes() []string {
 		"/api/v1/projects/*/work-tasks/*/evidence", "/api/v1/projects/*/work-tasks/*/context-packs",
 		"/api/v1/projects/*/work-tasks/*/claims", "/api/v1/projects/*/work-tasks/*/verifier-results",
 		"/api/v1/projects/*/work-tasks/*/knowledge-candidates",
+		"/api/v1/projects/*/workflows/validate-toml", "/api/v1/projects/*/workflows/import-toml", "/api/v1/projects/*/workflows",
+		"/api/v1/projects/*/workflows/*", "/api/v1/projects/*/workflows/*/status", "/api/v1/projects/*/workflows/*/compile",
+		"/api/v1/projects/*/workflows/*/agent-definitions", "/api/v1/projects/*/workflows/*/agent-definitions/*",
+		"/api/v1/projects/*/permission-snapshots", "/api/v1/projects/*/permission-snapshots/*",
 		"/api/v1/projects/*/automations", "/api/v1/projects/*/automations/*",
 		"/api/v1/projects/*/automations/*/runs", "/api/v1/projects/*/automations/*/parallel-batches",
 		"/api/v1/projects/*/automation-runs", "/api/v1/projects/*/automation-runs/*",
@@ -440,5 +444,9 @@ func defaultKnownRoutes() []string {
 		"/api/v1/projects/{id}/automations/{automation_id}/runs", "/api/v1/projects/{id}/automations/{automation_id}/parallel-batches",
 		"/api/v1/projects/{id}/automation-runs", "/api/v1/projects/{id}/automation-runs/claim-next",
 		"/api/v1/projects/{id}/automation-runs/{run_id}", "/api/v1/projects/{id}/automation-runs/{run_id}/attempt-result",
+		"/api/v1/projects/{id}/workflows/validate-toml", "/api/v1/projects/{id}/workflows/import-toml", "/api/v1/projects/{id}/workflows",
+		"/api/v1/projects/{id}/workflows/{workflow_id}", "/api/v1/projects/{id}/workflows/{workflow_id}/status", "/api/v1/projects/{id}/workflows/{workflow_id}/compile",
+		"/api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions", "/api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions/{agent_id}",
+		"/api/v1/projects/{id}/permission-snapshots", "/api/v1/projects/{id}/permission-snapshots/{snapshot_id}",
 	}
 }

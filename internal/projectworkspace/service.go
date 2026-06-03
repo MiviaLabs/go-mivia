@@ -261,12 +261,11 @@ func (svc *Service) ReadFile(ctx context.Context, projectID string, options Read
 	if err != nil {
 		return WorkspaceFile{}, err
 	}
-	maxBytes := normalizeMax(options.MaxBytes, DefaultMaxReadBytes, MaxReadBytes)
 	content, info, err := svc.readEligibleFile(project, relativePath)
 	if err != nil {
 		return WorkspaceFile{}, err
 	}
-	return svc.workspaceFile(project, fileID, relativePath, content, info, maxBytes), nil
+	return svc.workspaceFile(project, fileID, relativePath, content, info, options.MaxBytes), nil
 }
 
 func safeGitRef(value string) (string, error) {

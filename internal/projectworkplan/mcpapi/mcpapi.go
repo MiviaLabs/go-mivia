@@ -26,6 +26,7 @@ var workPlanTools = []string{
 	"projects.work_plans.update_status",
 	"projects.work_plans.resume",
 	"projects.work_tasks.create",
+	"projects.work_tasks.get",
 	"projects.work_tasks.update_status",
 	"projects.work_tasks.claim",
 	"projects.work_tasks.release",
@@ -70,6 +71,8 @@ func ToolDefinitions() []map[string]any {
 			schema(map[string]any{"id": ref, "plan_id": ref, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id"})),
 		tool("projects.work_tasks.create", "Create Work Task", "MUST create small dependency-aware tasks suitable for an isolated low-intelligence worker. Prior state: a Work Plan exists. Required fields: id, plan_id, task_ref, title, evidence_needed, likely_files_affected or discovery scope in description, verification_requirement, and resume_instructions. The task must be executable from its metadata and attached refs alone, without prior chat memory or hidden orchestrator context; verification must be written so the orchestrator can run it independently. Safety: refs and bounded metadata only; reject broad or vague work. Next tool: projects.work_tasks.claim after dependencies are ready. Must not store raw context pack contents or source dumps.",
 			schema(map[string]any{"id": ref, "plan_id": ref, "task_ref": ref, "title": text, "description": optionalText, "owner_agent": ref, "evidence_needed": refArray, "context_pack_refs": refArray, "likely_files_affected": fileArray, "dependency_task_ids": refArray, "verification_requirement": longText, "resume_instructions": longText, "expected_output": optionalText, "failure_block_criteria": optionalText, "knowledge_candidate_expectation": optionalText, "run_id": ref, "trace_id": ref}, []string{"id", "plan_id", "task_ref", "title", "evidence_needed", "verification_requirement", "resume_instructions"})),
+		tool("projects.work_tasks.get", "Get Work Task", "MUST be used to inspect one existing Work Task before changing task state, attaching refs, or resuming task execution. Prior state: project id and task_id are known. Required fields: id and task_id. Safety: return bounded task metadata only; no raw prompt/source/log/provider material. Next tool: projects.work_tasks.claim, start, update_status, or complete according to lifecycle.",
+			schema(map[string]any{"id": ref, "task_id": ref}, []string{"id", "task_id"})),
 		tool("projects.work_tasks.update_status", "Update Work Task Status", "MUST be used when a Work Task lifecycle state changes outside claim/start/complete/fail/block helpers, especially to cancel or supersede stale planned metadata. Prior state: projects.work_tasks.get or list_open identified the task. Required fields: id, task_id, status, and safe_next_action. Normal lifecycle is planned -> ready -> claimed -> in_progress -> needs_review -> verifying -> done; do not jump planned -> done. Safety: bounded metadata only; do not bypass verifier, independent review, Evidence Graph, confidence, or knowledge-decision requirements for done tasks. Next tool: projects.work_tasks.get_next or list_open.",
 			schema(map[string]any{"id": ref, "task_id": ref, "status": statusSchema(taskStatuses()), "safe_next_action": text, "outcome": longText, "blocked_reason": longText, "resume_instructions": longText, "blocked_by_task_ids": refArray, "verifier_result_refs": refArray, "review_result_refs": refArray, "review_exempt_reason": reviewExemptReason, "claim_refs": refArray, "evidence_refs": refArray, "knowledge_candidate_refs": refArray, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "status", "safe_next_action"})),
 		tool("projects.work_tasks.claim", "Claim Work Task", "MUST be called before an agent edits files or executes a task. Prior state: task is ready and dependencies are satisfied. Required fields: id, task_id, owner_agent, and normally run_id. Safety: prevents duplicate agent work; metadata-only owner/run refs. Next tool: projects.work_tasks.start. Must not override another claim unless the service explicitly allows it.",
@@ -150,6 +153,8 @@ func validateArguments(name string, arguments json.RawMessage) error {
 		value = &resumePlanInput{}
 	case "projects.work_tasks.create":
 		value = &createTaskInput{}
+	case "projects.work_tasks.get":
+		value = &taskIDInput{}
 	case "projects.work_tasks.update_status":
 		value = &updateTaskStatusInput{}
 	case "projects.work_tasks.claim":
@@ -329,6 +334,7 @@ type updateTaskStatusInput struct {
 	ResumeInstructions     string          `json:"resume_instructions,omitempty"`
 	BlockedByTaskIDs       []string        `json:"blocked_by_task_ids,omitempty"`
 	VerifierResultRefs     []string        `json:"verifier_result_refs,omitempty"`
+	ReviewResultRefs       []string        `json:"review_result_refs,omitempty"`
 	ClaimRefs              []string        `json:"claim_refs,omitempty"`
 	EvidenceRefs           []string        `json:"evidence_refs,omitempty"`
 	KnowledgeCandidateRefs []string        `json:"knowledge_candidate_refs,omitempty"`

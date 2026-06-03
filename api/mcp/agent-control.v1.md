@@ -88,10 +88,10 @@ When exposed, agents MUST use Work Plans and Work Tasks for governed multi-step 
 3. `projects.work_tasks.claim` and `projects.work_tasks.start` are required before execution.
 4. Context-dependent tasks must attach context pack refs with `projects.work_tasks.attach_context_pack`.
 5. Evidence-backed tasks must attach Evidence Graph or claim refs with `projects.work_tasks.attach_evidence` and `projects.work_tasks.attach_claim`.
-6. Tasks must attach verifier result refs with `projects.work_tasks.attach_verifier_result` before completion. The orchestrator runs verifier commands unless the task explicitly allows a worker to run one narrow verifier.
-7. Non-trivial or write-capable tasks must attach independent review result refs with `projects.work_tasks.attach_review_result` before completion. The reviewer must be a different agent/run from the implementing `claimed_by_run_id` when known. Use `review_exempt_reason` only for tiny mechanical tasks with no code, config, data, auth, tenancy, privacy, API, migration, automation, or promotion risk.
+6. Tasks must attach verifier result refs with `projects.work_tasks.attach_verifier_result` before completion. Verifier refs must be short safe identifiers, not commands, raw logs, raw stderr, paths, or source text. The orchestrator runs verifier commands unless the task explicitly allows a worker to run one narrow verifier.
+7. Non-trivial or write-capable tasks must attach independent review result refs with `projects.work_tasks.attach_review_result` before completion. Review refs must be short safe identifiers. The reviewer must be a different agent/run from the implementing `claimed_by_run_id` when known. Use `review_exempt_reason` only for tiny mechanical tasks with no code, config, data, auth, tenancy, privacy, API, migration, automation, or promotion risk.
 8. Lifecycle order is mandatory. Work Plans normally move `planned -> active -> done`; do not jump `planned -> done`. Work Tasks normally move `planned -> ready -> claimed -> in_progress -> verifying/needs_review -> done`; use `blocked`, `failed`, `cancelled`, or `superseded` only when that state is true.
-9. `projects.work_tasks.complete`, `projects.work_tasks.block`, `projects.work_tasks.fail`, or `projects.work_tasks.update_status` must keep status current; blocked tasks require a blocked reason and resume instructions.
+9. `projects.work_tasks.get` inspects a known task before lifecycle changes. `projects.work_tasks.complete`, `projects.work_tasks.block`, `projects.work_tasks.fail`, or `projects.work_tasks.update_status` must keep status current; blocked tasks require a blocked reason and resume instructions.
 10. Before completing implementation, review, research, or automation tasks, agents must make a reusable-knowledge decision. If a durable conclusion exists, attach Evidence Graph claim/evidence refs, score confidence when reusable, and create/link a Knowledge Promotion candidate. If no reusable knowledge exists, record a short no-reusable-knowledge reason in the task outcome or attachment note.
 11. `projects.work_tasks.get_next` is required after resume, completion, block, or uncertainty.
 12. `projects.work_tasks.promote_knowledge_candidate` may create or link only a Knowledge Promotion candidate. It must not bypass Evidence Graph, Confidence Engine, verifier, project, or org promotion gates.
@@ -105,6 +105,7 @@ projects.work_plans.list
 projects.work_plans.update_status
 projects.work_plans.resume
 projects.work_tasks.create
+projects.work_tasks.get
 projects.work_tasks.update_status
 projects.work_tasks.claim
 projects.work_tasks.release
@@ -201,7 +202,7 @@ projects.work_plans.resume/list/create
 -> external runner claim/complete when runner_execution=external
 -> independent review result attached to task
 -> orchestrator verifier runs outside workers
--> projects.work_tasks.attach_verifier_result
+-> projects.work_tasks.attach_verifier_result with a short safe verifier_result_ref
 -> Evidence Graph decisions/actions/outcomes for reusable conclusions
 -> projects.confidence.claims.score when knowledge may be reused
 -> projects.work_tasks.promote_knowledge_candidate
@@ -860,7 +861,7 @@ Workspace tools are available only when `[workspace].enabled = true` and the tar
 
 - `projects.workspace.git_status` / `projects_workspace_git_status`: parsed git status with project `id`, optional `include_untracked`, project-relative `path_prefix`, `page_size`, and `page_token`. If Git is unavailable in the runtime, the tool fails explicitly with `git is not available in the mivia-server runtime`.
 - `projects.workspace.git_diff` / `projects_workspace_git_diff`: capped safe diff with project `id`, optional `scope` (`working_tree`, `staged`, `head`), one optional file selector, project-relative `path_prefix`, `context_lines`, `max_diff_bytes`, and `page_token`. If Git is unavailable in the runtime, the tool fails explicitly with `git is not available in the mivia-server runtime`.
-- `projects.workspace.file_read` / `projects_workspace_file_read`: current eligible file text by `file_id` or project-relative `relative_path`, with an opaque edit token. Requested `max_bytes` values above the server limit are accepted and clamped; check `text_truncated` for partial reads.
+- `projects.workspace.file_read` / `projects_workspace_file_read`: current eligible file text by `file_id` or project-relative `relative_path`, with an opaque edit token. Omit `max_bytes` to return the full eligible file text; set `max_bytes` only when the caller wants an explicit capped read, in which case `text_truncated` reports whether the cap was applied.
 - `projects.workspace.file_edit` / `projects_workspace_file_edit`: `workspace_mode = "edit"` only; applies ordered exact byte-span edits with `edit_token`, `old_text`, and `new_text`. Successful non-dry-run edits queue path ingestion.
 - `projects.workspace.file_create` / `projects_workspace_file_create`: `workspace_mode = "edit"` only; creates one eligible workspace text file by project-relative `relative_path`, `text`, optional `create_parent_dirs`, and optional `dry_run`. Successful non-dry-run creates queue path ingestion.
 - `projects.workspace.file_delete` / `projects_workspace_file_delete`: `workspace_mode = "edit"` only; deletes one eligible workspace file by `file_id` or project-relative `relative_path` after validating `edit_token`, with optional `dry_run`. Successful non-dry-run deletes queue path ingestion.

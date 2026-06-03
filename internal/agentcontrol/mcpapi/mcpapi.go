@@ -37,7 +37,9 @@ import (
 	knowledgestore "github.com/MiviaLabs/go-mivia/internal/projectknowledge/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	projectmcpapi "github.com/MiviaLabs/go-mivia/internal/projectregistry/mcpapi"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 	workflowmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkflow/mcpapi"
+	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 	workplanmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkplan/mcpapi"
 	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
@@ -657,18 +659,26 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		return
 	}
 	if errors.Is(err, workplanmcpapi.ErrInvalidInput) {
-		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
 		return
 	}
 	if errors.Is(err, automationmcpapi.ErrInvalidInput) {
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
-	if errors.Is(err, projectworkplan.ErrInvalidInput) || errors.Is(err, workplanstore.ErrDuplicate) {
+	if errors.Is(err, workflowmcpapi.ErrInvalidInput) {
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
+	if errors.Is(err, projectworkplan.ErrInvalidInput) || errors.Is(err, workplanstore.ErrDuplicate) {
+		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
+		return
+	}
 	if errors.Is(err, projectautomation.ErrInvalidInput) || errors.Is(err, automationstore.ErrDuplicate) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
+	if errors.Is(err, projectworkflow.ErrInvalidInput) || errors.Is(err, workflowstore.ErrDuplicate) {
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
@@ -689,6 +699,14 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		return
 	}
 	if errors.Is(err, automationstore.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, workflowmcpapi.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, workflowstore.ErrNotFound) {
 		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
 	}
@@ -1015,6 +1033,43 @@ func writeJSONRPCError(w http.ResponseWriter, id any, code int, message string) 
 			"message": message,
 		},
 	})
+}
+
+func safeClientErrorMessage(prefix string, err error) string {
+	if err == nil {
+		return prefix
+	}
+	message := strings.TrimSpace(err.Error())
+	if message == "" || len(message) > 240 || containsUnsafeClientErrorMarker(message) {
+		return prefix
+	}
+	return prefix + ": " + message
+}
+
+func containsUnsafeClientErrorMarker(message string) bool {
+	lower := strings.ToLower(message)
+	for _, marker := range []string{
+		"raw prompt",
+		"raw completion",
+		"source dump",
+		"raw stderr",
+		"provider payload",
+		"token=",
+		"secret=",
+		"credential",
+		"api_key",
+		"password=",
+		"/home/",
+		"wsl.localhost",
+		"c:\\",
+		"\\\\",
+		"package main",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func accepts(header string, mediaType string) bool {

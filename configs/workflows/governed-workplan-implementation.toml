@@ -127,7 +127,7 @@ resume_instructions = "resume by rerunning failed narrow verifier and checking a
 
 [[review_gates]]
 id = "implementation-independent-review"
-applies_to = ["run-implementation-batch", "review-implementation-batch", "orchestrator-verification"]
+applies_to = ["run-implementation-batch", "orchestrator-verification"]
 reviewer_agent = "implementation-reviewer"
 required = true
 independent_from_owner = true

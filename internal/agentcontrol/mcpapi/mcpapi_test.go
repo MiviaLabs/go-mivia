@@ -24,6 +24,8 @@ import (
 	ladybugschema "github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
 	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectknowledge"
@@ -135,10 +137,104 @@ func TestToolsCall_WorkPlanServiceErrorsMapToClientErrors(t *testing.T) {
 	if bytes.Contains(richTask.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(richTask.Body.Bytes(), []byte(`"status":"ready"`)) || !bytes.Contains(richTask.Body.Bytes(), []byte(`"agent_run_ids":["agent_run_1"]`)) {
 		t.Fatalf("expected rich task create success, got %s", richTask.Body.String())
 	}
+	var createdTask rpcResponse
+	if err := json.Unmarshal(richTask.Body.Bytes(), &createdTask); err != nil {
+		t.Fatalf("decode create task: %v", err)
+	}
+	taskID := createdTask.Result.StructuredContent["id"].(string)
 
 	invalidTask := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects.work_tasks.create","arguments":{"id":"example-service","plan_id":"missing-plan","task_ref":"task/missing","title":"Missing plan","evidence_needed":["current source"],"verification_requirement":"focused tests","resume_instructions":"continue safely"}}}`)
 	if !bytes.Contains(invalidTask.Body.Bytes(), []byte(`"code":-32002`)) {
 		t.Fatalf("expected missing plan to map to not found, got %s", invalidTask.Body.String())
+	}
+
+	getTask := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.work_tasks.get","arguments":{"id":"example-service","task_id":"`+taskID+`"}}}`)
+	if !bytes.Contains(getTask.Body.Bytes(), []byte(taskID)) || bytes.Contains(getTask.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected work task get success, got %s", getTask.Body.String())
+	}
+}
+
+func TestToolsCall_WorkTaskLifecycleErrorsIncludeSafeReason(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	handler := mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeAndWorkPlans(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, workPlans, nil, nil, nil, slog.Default())
+
+	createPlan := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"projects.work_plans.create","arguments":{"id":"example-service","plan_ref":"plan/ref","title":"Top-level route","goal_summary":"Route metadata-only work plan tools"}}}`)
+	var plan rpcResponse
+	if err := json.Unmarshal(createPlan.Body.Bytes(), &plan); err != nil {
+		t.Fatalf("decode create plan: %v", err)
+	}
+	planID := plan.Result.StructuredContent["id"].(string)
+	createTask := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.work_tasks.create","arguments":{"id":"example-service","plan_id":"`+planID+`","task_ref":"task/ref","title":"Lifecycle fixture","evidence_needed":["source-ref"],"likely_files_affected":["internal/projectworkplan/service.go"],"verification_requirement":"focused tests","resume_instructions":"resume from task metadata","expected_output":"task lifecycle error","failure_block_criteria":"transition rejected"}}}`)
+	var task rpcResponse
+	if err := json.Unmarshal(createTask.Body.Bytes(), &task); err != nil {
+		t.Fatalf("decode create task: %v", err)
+	}
+	taskID := task.Result.StructuredContent["id"].(string)
+
+	invalidComplete := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects.work_tasks.complete","arguments":{"id":"example-service","task_id":"`+taskID+`","outcome":"done too early","safe_next_action":"show lifecycle reason"}}}`)
+	if !bytes.Contains(invalidComplete.Body.Bytes(), []byte(`"code":-32602`)) ||
+		!bytes.Contains(invalidComplete.Body.Bytes(), []byte(`invalid work task transition ready -\u003e done`)) ||
+		bytes.Contains(invalidComplete.Body.Bytes(), []byte(`internal error`)) {
+		t.Fatalf("expected safe lifecycle reason, got %s", invalidComplete.Body.String())
+	}
+}
+
+func TestToolsCall_WorkTaskUpdateStatusAcceptsReviewRefs(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	handler := mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeAndWorkPlans(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, workPlans, nil, nil, nil, slog.Default())
+
+	createPlan := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"projects.work_plans.create","arguments":{"id":"example-service","plan_ref":"plan/ref","title":"Top-level route","goal_summary":"Route metadata-only work plan tools"}}}`)
+	var plan rpcResponse
+	if err := json.Unmarshal(createPlan.Body.Bytes(), &plan); err != nil {
+		t.Fatalf("decode create plan: %v", err)
+	}
+	planID := plan.Result.StructuredContent["id"].(string)
+	createTask := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.work_tasks.create","arguments":{"id":"example-service","plan_id":"`+planID+`","task_ref":"task/ref","title":"Lifecycle fixture","evidence_needed":["source-ref"],"likely_files_affected":["internal/projectworkplan/service.go"],"verification_requirement":"focused tests","resume_instructions":"resume from task metadata","expected_output":"task status update","failure_block_criteria":"status update rejected"}}}`)
+	var task rpcResponse
+	if err := json.Unmarshal(createTask.Body.Bytes(), &task); err != nil {
+		t.Fatalf("decode create task: %v", err)
+	}
+	taskID := task.Result.StructuredContent["id"].(string)
+
+	claim := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects.work_tasks.claim","arguments":{"id":"example-service","task_id":"`+taskID+`","owner_agent":"worker","run_id":"run-1"}}}`)
+	if bytes.Contains(claim.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected claim success, got %s", claim.Body.String())
+	}
+	start := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.work_tasks.start","arguments":{"id":"example-service","task_id":"`+taskID+`","run_id":"run-1"}}}`)
+	if bytes.Contains(start.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected start success, got %s", start.Body.String())
+	}
+	update := postMCP(t, handler, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"projects.work_tasks.update_status","arguments":{"id":"example-service","task_id":"`+taskID+`","status":"verifying","safe_next_action":"complete after refs","verifier_result_refs":["test-workplan"],"review_result_refs":["review-workplan"],"outcome":"refs accepted"}}}`)
+	if bytes.Contains(update.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(update.Body.Bytes(), []byte(`review-workplan`)) {
+		t.Fatalf("expected status update with review refs to succeed, got %s", update.Body.String())
+	}
+}
+
+func TestToolsCall_WorkflowCompileErrorsMapToClientErrors(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true})
+	workflows := projectworkflow.New(workflowstore.NewMemoryStore())
+	workflows.SetCompilerDependencies(workPlans, automations)
+	handler := mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationAndWorkflow(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, workPlans, automations, workflows, nil, nil, nil, slog.Default())
+
+	tomlJSON, err := json.Marshal(workflowSelfReviewTOML())
+	if err != nil {
+		t.Fatalf("marshal TOML: %v", err)
+	}
+	importWorkflow := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"projects.workflows.import_toml","arguments":{"id":"project-1","toml":`+string(tomlJSON)+`}}}`)
+	if bytes.Contains(importWorkflow.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected workflow import success, got %s", importWorkflow.Body.String())
+	}
+
+	compile := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.workflows.compile_to_work_plan","arguments":{"id":"project-1","workflow_id":"workflow-self-review","dry_run":true}}}`)
+	if !bytes.Contains(compile.Body.Bytes(), []byte(`"code":-32602`)) || bytes.Contains(compile.Body.Bytes(), []byte(`internal error`)) {
+		t.Fatalf("expected workflow compile validation to map to invalid arguments, got %s", compile.Body.String())
 	}
 }
 
@@ -1115,6 +1211,48 @@ func postMCP(t *testing.T, handler http.Handler, body string) *httptest.Response
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	return res
+}
+
+func workflowSelfReviewTOML() string {
+	return `[[workflows]]
+id = "workflow-self-review"
+project_id = "project-1"
+workflow_ref = "workflow-self-review"
+title = "Self Review Workflow"
+purpose = "Compile-time self-review validation fixture."
+status = "enabled"
+
+[[workflows.agents]]
+id = "reviewer"
+display_name = "Reviewer"
+purpose = "Owns and reviews the same bounded task for validation."
+allowed_tools = ["projects.work_tasks.attach_review_result"]
+secret_policy = "deny"
+log_policy = "metadata_only"
+
+[[workflows.steps]]
+id = "review-step"
+kind = "work_task"
+title = "Review Step"
+agent = "reviewer"
+description = "Fixture step that violates independent review at compile time."
+evidence_needed = ["fixture-evidence-ref"]
+likely_files_affected = ["internal/agentcontrol/mcpapi/mcpapi.go"]
+verification_requirement = "focused MCP handler test"
+expected_output = "compile validation error"
+failure_criteria = "unexpected compile success"
+resume_instructions = "resume by fixing review gate metadata"
+
+[[workflows.review_gates]]
+id = "independent-review"
+applies_to = ["review-step"]
+reviewer_agent = "reviewer"
+required = true
+independent_from_owner = true
+required_artifacts = ["review-result-ref"]
+allowed_actions = ["approved", "rejected"]
+instructions = "Reject self-review."
+`
 }
 
 type fakeDiagnosticsSnapshotter struct {

@@ -59,6 +59,7 @@ func TestCallToolTaskLifecycleAttachmentsResumeAndNext(t *testing.T) {
 	taskBody := `{"id":"example-service","plan_id":"` + planID + `","task_ref":"task/ref","title":"Wire MCP","evidence_needed":["source patterns"],"likely_files_affected":["internal/agentcontrol/mcpapi/mcpapi.go"],"verification_requirement":"focused MCP tests","resume_instructions":"continue from tool routing"}`
 	task := call(t, api, "projects.work_tasks.create", taskBody)
 	taskID := structuredString(t, task, "task_id")
+	gotTask := call(t, api, "projects.work_tasks.get", `{"id":"example-service","task_id":"`+taskID+`"}`)
 	stale := call(t, api, "projects.work_tasks.create", `{"id":"example-service","plan_id":"`+planID+`","task_ref":"task/stale","title":"Stale metadata","evidence_needed":["workplan-list"],"likely_files_affected":["mcp-workplan-metadata"],"verification_requirement":"confirm cancellation","resume_instructions":"no execution needed","expected_output":"stale task cancelled","failure_block_criteria":"status update rejected"}`)
 	staleID := structuredString(t, stale, "task_id")
 	cancelled := call(t, api, "projects.work_tasks.update_status", `{"id":"example-service","task_id":"`+staleID+`","status":"cancelled","safe_next_action":"stale metadata retained"}`)
@@ -75,8 +76,11 @@ func TestCallToolTaskLifecycleAttachmentsResumeAndNext(t *testing.T) {
 	next := call(t, api, "projects.work_tasks.get_next", `{"id":"example-service","plan_id":"`+planID+`"}`)
 	resume := call(t, api, "projects.work_plans.resume", `{"id":"example-service","plan_id":"`+planID+`","owner_agent":"worker-4"}`)
 
-	for _, result := range []map[string]any{task, stale, cancelled, claim, start, evidence, contextPack, claimRef, verifier, review, candidate, complete, next, resume} {
+	for _, result := range []map[string]any{task, gotTask, stale, cancelled, claim, start, evidence, contextPack, claimRef, verifier, review, candidate, complete, next, resume} {
 		requireCommonOutput(t, result)
+	}
+	if structuredString(t, gotTask, "task_id") != taskID {
+		t.Fatalf("expected get task %s, got %s", taskID, jsonText(t, gotTask))
 	}
 	if structuredString(t, cancelled, "status") != "cancelled" {
 		t.Fatalf("expected cancelled stale task, got %#v", cancelled)
@@ -259,6 +263,12 @@ func (api *fakeWorkPlanAPI) CallWorkPlanTool(_ context.Context, name string, arg
 		api.tasks[taskID] = task
 		if plan := api.plans[stringValue(input, "plan_id")]; plan != nil {
 			plan["current_task_id"] = taskID
+		}
+		return task, nil
+	case "projects.work_tasks.get":
+		task := api.tasks[stringValue(input, "task_id")]
+		if task == nil {
+			return nil, ErrNotFound
 		}
 		return task, nil
 	case "projects.work_tasks.claim":
