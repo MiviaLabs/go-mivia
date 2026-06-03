@@ -21,6 +21,7 @@ Local task plans and research plans are not stable technical documentation. Do n
 - Context-pack services: `internal/projectcontext` composes bounded text search hits, file metadata, symbol metadata, and optional impact analysis without new storage, roots, raw diffs, provider calls, or full chunk text.
 - Project ingestion services: `internal/projectingestion` handles eligible local source safety gates, chunking, promoted AST extraction, extractor cache, per-project SQLite FTS5 search indexing, bounded project-targeted graph writes, SQLite run/file state, bounded REST/MCP query views, fair scheduling, live watcher orchestration, parallel full-scan file workers, search-index repair, startup recovery for interrupted runs, and periodic running-progress persistence.
 - Project workspace services: `internal/projectworkspace` handles governed git status/diff, current eligible file reads with opaque edit tokens, and token-guarded exact byte-span edits for explicitly opted-in workspaces.
+- Project evidence services: `internal/projectevidence` stores project-scoped Evidence Graph metadata for claims, evidence refs, decisions, actions, outcomes, artifact links, and promotion links through REST and MCP without raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, or PII.
 - Stores: Ladybug graph abstraction for graph data; lazy-opened Pebble-backed Ladybug graphs for durable content-graph persistence; SQLite for local app configuration, ingestion state, extractor cache, and FTS-backed governed search. Content-graph projects can use persistent project-scoped graph/search stores or process-local memory; persistent stores derive from the configured Ladybug path parent under `projects/<project-id>/`, with project search filenames tied to the Pebble graph storage epoch.
 - Boundary: localhost-only by default; no approved production deployment, public API exposure, auth model, live provider, external crawling, embedding provider, vector dimension, arbitrary shell endpoint, raw patch upload, git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool, or PII processing.
 
@@ -42,6 +43,7 @@ flowchart TB
   ProjectDigest["metadata-only project digest"]
   ProjectIngestion["content graph ingestion"]
   ProjectWorkspace["governed workspace status/diff/read/edit"]
+  ProjectEvidence["project Evidence Graph metadata"]
   Scheduler["fair ingestion scheduler"]
   Watcher["live watcher orchestrator"]
   FullScanWorkers["bounded full-scan file workers"]
@@ -99,6 +101,9 @@ flowchart TB
   ProjectWorkspace --> ProjectIngestion
   ProjectWorkspace --> REST
   ProjectWorkspace --> MCP
+  REST --> ProjectEvidence
+  MCP --> ProjectEvidence
+  ProjectEvidence --> GraphRouter
   ConfigFile --> ProjectRegistry
   REST --> ResearchService
   MCP --> ResearchService
@@ -267,9 +272,14 @@ flowchart LR
   Pack["Bounded context pack"]
   Run["Agent run artifacts"]
   Gate["agent_runs.promote_artifact"]
+  EvidenceGraph["projects.evidence_graph.*"]
+  Claim["claim evidence decision action outcome"]
   Decision["candidate, validated, promoted, rejected"]
 
   Agent --> ContextPack
+  Agent --> EvidenceGraph
+  EvidenceGraph --> Claim
+  Claim --> Decision
   ContextPack --> Search
   ContextPack --> Impact
   Search --> Pack
@@ -311,6 +321,7 @@ sequenceDiagram
 - SQLite FTS5 stores governed search rows for eligible chunks, files, symbols, references, and calls. Persistent content-graph projects use one project-scoped search database under the configured storage parent, while shared metadata remains separate. Search APIs are literal/metadata search over already-indexed content, not crawling, provider calls, embeddings, vectors, raw DB queries, or raw FTS query execution. Symbol source, text search, and AST search return text only from eligible indexed chunks and only under explicit caps.
 - Context packs compose existing indexed search and reliability metadata only. They return capped snippets and metadata, not full chunk text, raw diffs, roots, provider payloads, secrets, prompts, or PII.
 - Promotion gates store metadata-only decisions for existing agent-run artifact refs. They do not copy runtime payloads into the knowledge graph, and validated/promoted/rejected decisions require verifier refs and bounded decision text.
+- Evidence Graph records project-scoped metadata only: claim refs, evidence refs, decisions, action refs, outcome refs, artifact refs, promotion refs, safe changed-file refs, run IDs, trace IDs, timestamps, and bounded summaries/rationales. It must not store raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, skipped sensitive content, or PII.
 - Named AST search runs against eligible indexed chunks using the server-owned query catalog for Go, Python, JavaScript, JSX, TypeScript, TSX, C#, and Dart. Raw Tree-sitter query syntax is not exposed. Coverage gaps such as oversized files are represented only as safe metadata counts.
 - Full scans run through a fair scheduler, dispatch configurable file workers under a shared global cap, flush prepared graph/search writes by file-count cap and internal write weight, persist running progress counters, and tombstone stale files only after enumeration and workers drain. REST and MCP manual ingestion and search-index repair calls enqueue work and return run metadata without waiting for scan completion. Live path events have priority over full-scan continuation, and operators can cap per-project worker use below the global worker count when fairness across projects matters.
 - On startup, persisted `pending` or `running` ingestion runs from a previous server process are marked failed with `error_category=server_restarted`; live startup scans or fresh manual ingestion are the repair path.

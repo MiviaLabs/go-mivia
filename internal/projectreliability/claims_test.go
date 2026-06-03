@@ -65,6 +65,28 @@ func TestClaimChecker_VerifiesDelegatedMCPToolsAndAliases(t *testing.T) {
 	}
 }
 
+func TestClaimChecker_VerifiesEvidenceGraphToolsRoutesAndAliases(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		ProjectID:       "example-service",
+		IncludeVerified: true,
+		Documents: []ClaimDocument{{
+			Path: "api/mcp/agent-control.v1.md",
+			Text: "Use projects.evidence_graph.claims.create, projects_evidence_graph_claims_create, projects.evidence_graph.promotions.link, and POST /api/v1/projects/{id}/evidence-graph/claims/{claim_id}/promotion-links.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	for _, claim := range []string{
+		"projects.evidence_graph.claims.create",
+		"projects_evidence_graph_claims_create",
+		"projects.evidence_graph.promotions.link",
+		"/api/v1/projects/{id}/evidence-graph/claims/{claim_id}/promotion-links",
+	} {
+		assertClaimStatus(t, result, claim, "verified")
+	}
+}
+
 func TestClaimChecker_FlagsStaleToolAndTaskLink(t *testing.T) {
 	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
 		Documents: []ClaimDocument{{

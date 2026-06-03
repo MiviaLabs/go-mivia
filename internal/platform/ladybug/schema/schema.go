@@ -16,6 +16,7 @@ func BootstrapSchema() GraphSchema {
 	return GraphSchema{
 		NodeLabels: []string{
 			"Agent",
+			"AgentRun",
 			"Task",
 			"ResearchRun",
 			"Project",
@@ -35,6 +36,13 @@ func BootstrapSchema() GraphSchema {
 			"IngestionFinding",
 			"IntegrationArtifact",
 			"IntegrationContentChunk",
+			"Claim",
+			"Evidence",
+			"Decision",
+			"Action",
+			"Outcome",
+			"Artifact",
+			"Promotion",
 		},
 		Relationships: []Relationship{
 			{Type: "AGENT_RAN_TASK", From: "Agent", To: "Task"},
@@ -62,6 +70,17 @@ func BootstrapSchema() GraphSchema {
 			{Type: "INGESTION_RUN_SKIPPED_FILE", From: "IngestionRun", To: "RepoFile"},
 			{Type: "PROJECT_HAS_INTEGRATION_ARTIFACT", From: "Project", To: "IntegrationArtifact"},
 			{Type: "INTEGRATION_ARTIFACT_HAS_CHUNK", From: "IntegrationArtifact", To: "IntegrationContentChunk"},
+			{Type: "PROJECT_HAS_CLAIM", From: "Project", To: "Claim"},
+			{Type: "AGENT_RUN_MADE_CLAIM", From: "AgentRun", To: "Claim"},
+			{Type: "CLAIM_HAS_EVIDENCE", From: "Claim", To: "Evidence"},
+			{Type: "EVIDENCE_SUPPORTS_DECISION", From: "Evidence", To: "Decision"},
+			{Type: "CLAIM_HAS_DECISION", From: "Claim", To: "Decision"},
+			{Type: "DECISION_PRODUCED_ACTION", From: "Decision", To: "Action"},
+			{Type: "ACTION_PRODUCED_OUTCOME", From: "Action", To: "Outcome"},
+			{Type: "ACTION_PRODUCED_ARTIFACT", From: "Action", To: "Artifact"},
+			{Type: "ARTIFACT_HAS_PROMOTION", From: "Artifact", To: "Promotion"},
+			{Type: "PROMOTION_DECIDES_CLAIM", From: "Promotion", To: "Claim"},
+			{Type: "OUTCOME_SUPPORTS_PROMOTION", From: "Outcome", To: "Promotion"},
 		},
 	}
 }

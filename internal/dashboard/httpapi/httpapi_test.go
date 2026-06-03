@@ -61,6 +61,16 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 			t.Fatalf("expected dashboard app to contain integration browser/search affordance %q", want)
 		}
 	}
+	for _, want := range []string{"Evidence Graph", "tabEvidenceGraph(project.id)", "projectSubview = \"evidence-graph\"", "/evidence-graph/claims?", "page_size", "page_token", "artifact_ref", "promotion_state", "outcome_status", "run_id", "trace_id", "loadEvidenceClaimByID", "/evidence-graph/claims/${encodeURIComponent(claimID)}", "Claim", "Evidence", "Decision", "Action", "Outcome", "artifact_links", "promotion_links", "raw prompt", "package main"} {
+		if !strings.Contains(app.Body.String(), want) {
+			t.Fatalf("expected dashboard app to contain project evidence affordance %q", want)
+		}
+	}
+	for _, forbidden := range []string{"Evidence Graph\" },\n  { id: \"overview\"", "raw graph data", "source bodies", "provider payloads"} {
+		if strings.Contains(app.Body.String(), forbidden) {
+			t.Fatalf("dashboard app contained forbidden evidence marker %q", forbidden)
+		}
+	}
 }
 
 func TestRoutes_UnknownRootSubpathNotFound(t *testing.T) {

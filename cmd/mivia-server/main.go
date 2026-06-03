@@ -26,6 +26,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/logging"
 	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/go-mivia/internal/projectevidence"
+	evidencehttpapi "github.com/MiviaLabs/go-mivia/internal/projectevidence/httpapi"
+	evidencestore "github.com/MiviaLabs/go-mivia/internal/projectevidence/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	integrationconfluence "github.com/MiviaLabs/go-mivia/internal/projectintegrations/confluence"
@@ -205,6 +208,7 @@ func run() error {
 	if err := configStore.SetRuntimeFlag(ctx, "research.live_providers_enabled", false, "disabled until provider ADR approval"); err != nil {
 		return err
 	}
+	projectEvidenceService := projectevidence.New(evidencestore.NewLadybugStore(projectGraph))
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
 		LiveUpdatesEnabled:       cfg.Ingestion.LiveUpdatesEnabled,
 		DebounceInterval:         cfg.Ingestion.DebounceInterval,
@@ -262,6 +266,7 @@ func run() error {
 	httpapi.RegisterRoutes(mux, agentService)
 	researchhttpapi.RegisterRoutes(mux, researchService)
 	projecthttpapi.RegisterRoutesWithWorkspaceIntegrationsAndActivity(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, activityRecorder)
+	evidencehttpapi.RegisterRoutes(mux, projectEvidenceService)
 	var diagnosticsService *diagnostics.Service
 	if diagnostics.Enabled(cfg.Debug.Enabled, cfg.HTTPAddr) {
 		diagnosticsService = diagnostics.NewService(projectingestion.DiagnosticsSource{
@@ -273,7 +278,7 @@ func run() error {
 		}, diagnostics.RuntimeOptions{Enabled: cfg.Debug.RuntimeMetricsEnabled})
 		diagnostics.RegisterRoutes(mux, diagnosticsService)
 	}
-	mux.Handle("/mcp", mcpapi.NewHandlerWithActivity(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, diagnosticsService, activityRecorder, logger))
+	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityAndEvidenceGraph(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectIntegrationService, diagnosticsService, activityRecorder, logger))
 
 	handler := httpserver.Chain(
 		mux,

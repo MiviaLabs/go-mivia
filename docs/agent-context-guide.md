@@ -97,6 +97,15 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Analyze changed-path impact | `POST /projects/{id}/impact/analyze` | `projects.impact.analyze` |
 | Build context pack | `POST /projects/{id}/context-pack` | `projects.context_pack.build` |
 | Check stale documentation claims | `POST /projects/{id}/claims/check` | `projects.claims.check` |
+| Create Evidence Graph claim | `POST /projects/{id}/evidence-graph/claims` | `projects.evidence_graph.claims.create` |
+| List Evidence Graph claims | `GET /projects/{id}/evidence-graph/claims` | `projects.evidence_graph.claims.list` |
+| Get Evidence Graph claim record | `GET /projects/{id}/evidence-graph/claims/{claim_id}` | `projects.evidence_graph.claims.get` |
+| Append Evidence Graph evidence | `POST /projects/{id}/evidence-graph/claims/{claim_id}/evidence` | `projects.evidence_graph.evidence.append` |
+| Create Evidence Graph decision | `POST /projects/{id}/evidence-graph/claims/{claim_id}/decisions` | `projects.evidence_graph.decisions.create` |
+| Create Evidence Graph action | `POST /projects/{id}/evidence-graph/claims/{claim_id}/actions` | `projects.evidence_graph.actions.create` |
+| Create Evidence Graph outcome | `POST /projects/{id}/evidence-graph/claims/{claim_id}/outcomes` | `projects.evidence_graph.outcomes.create` |
+| Link Evidence Graph artifact | `POST /projects/{id}/evidence-graph/claims/{claim_id}/artifact-links` | `projects.evidence_graph.artifacts.link` |
+| Link Evidence Graph promotion | `POST /projects/{id}/evidence-graph/claims/{claim_id}/promotion-links` | `projects.evidence_graph.promotions.link` |
 | Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
 | Rebuild local search index | `POST /projects/{id}/search-index/rebuild` | `projects.search_index.rebuild` |
 | Get ingestion run | `GET /projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
@@ -145,6 +154,8 @@ Project integration polling is also asynchronous. Configure Jira and Confluence 
 `projects.context_health` summarizes whether a project is ready, warming up, syncing, running, degraded, stale, empty, disabled, or unavailable using only safe config, ingestion, search-index, and workspace-git metadata. `syncing` means ingestion is active or a bounded local probe timed out under load; `degraded` means explicit failure or degraded search-index state. `projects.impact.analyze` maps changed paths or governed workspace diff file metadata to affected domains, routes, tools, security flags, and residual unknowns without returning raw diff content. During active ingestion, graph fanout is skipped and impact returns partial `index_syncing` metadata instead of waiting on busy stores. `projects.context_pack.build` combines bounded search snippets, file metadata, symbol metadata, optional impact analysis, and manifest-only reproducibility metadata without new storage, provider calls, roots, raw diffs, full chunk text, or full source by default. The manifest records normalized query/options, graph/search-index status, selected file/symbol/chunk IDs, file timestamps, warnings, limitations, and truncated redacted hashes over manifest metadata identifiers only. `projects.claims.check` checks selected stable docs/contracts for registered REST/MCP names and forbidden `.ai/tasks/` links; it does not use LLM judgment, broad crawling, or document-content echoing.
 
 `agent_runs.*` tools store redacted execution metadata only: project/task IDs, statuses, timestamps, changed project-relative paths, verifier command metadata, artifact refs, promotion decisions, and short summaries/notes. `agent_runs.promote_artifact` records `candidate`, `validated`, `promoted`, or `rejected` decisions for existing artifact refs; validated, promoted, and rejected decisions require a verifier ref and bounded decision text. They reject raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII.
+
+The Evidence Graph tools and the concrete REST routes listed above store project-scoped metadata only: claims, evidence refs, decisions, actions, outcomes, artifact links, promotion links, safe changed-file refs, run IDs, trace IDs, timestamps, and bounded summaries/rationales. They reject raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, skipped sensitive content, and PII. Dotted MCP names have underscore aliases, for example `projects_evidence_graph_claims_create`.
 
 Search tools are backed by governed indexed state. Text search is literal-only and returns capped snippets from eligible chunks. File, symbol, reference, and call search use indexed metadata and pagination. Raw FTS syntax and raw SQLite errors are not exposed.
 

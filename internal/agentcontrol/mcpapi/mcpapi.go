@@ -20,6 +20,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
 	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
+	"github.com/MiviaLabs/go-mivia/internal/projectevidence"
+	evidencemcpapi "github.com/MiviaLabs/go-mivia/internal/projectevidence/mcpapi"
+	evidencestore "github.com/MiviaLabs/go-mivia/internal/projectevidence/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	integrationmcpapi "github.com/MiviaLabs/go-mivia/internal/projectintegrations/mcpapi"
@@ -46,16 +49,17 @@ const ServerInstructions = "This MCP server is the authoritative context and wor
 	"Do not use Jira or Confluence live connectors for this repository unless explicitly requested; use locally ingested integration tools only when configured."
 
 type Handler struct {
-	service       *service.Service
-	research      *research.Service
-	projects      *projectregistry.Registry
-	projectDigest *projectregistry.DigestService
-	projectIngest projectingestion.API
-	projectWork   projectworkspace.API
-	integrations  *projectintegrations.Service
-	diagnostics   *diagnostics.Service
-	activity      *agentactivity.Recorder
-	logger        *slog.Logger
+	service         *service.Service
+	research        *research.Service
+	projects        *projectregistry.Registry
+	projectDigest   *projectregistry.DigestService
+	projectIngest   projectingestion.API
+	projectWork     projectworkspace.API
+	projectEvidence *projectevidence.Service
+	integrations    *projectintegrations.Service
+	diagnostics     *diagnostics.Service
+	activity        *agentactivity.Recorder
+	logger          *slog.Logger
 }
 
 type jsonRPCRequest struct {
@@ -94,17 +98,22 @@ func NewHandlerWithResearchProjectsIngestionWorkspaceIntegrationsAndDiagnostics(
 }
 
 func NewHandlerWithActivity(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
+	return NewHandlerWithActivityAndEvidenceGraph(service, research, projects, projectDigest, projectIngest, projectWork, nil, integrations, diagnosticsService, activity, logger)
+}
+
+func NewHandlerWithActivityAndEvidenceGraph(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
 	return &Handler{
-		service:       service,
-		research:      research,
-		projects:      projects,
-		projectDigest: projectDigest,
-		projectIngest: projectIngest,
-		projectWork:   projectWork,
-		integrations:  integrations,
-		diagnostics:   diagnosticsService,
-		activity:      activity,
-		logger:        logger,
+		service:         service,
+		research:        research,
+		projects:        projects,
+		projectDigest:   projectDigest,
+		projectIngest:   projectIngest,
+		projectWork:     projectWork,
+		projectEvidence: projectEvidence,
+		integrations:    integrations,
+		diagnostics:     diagnosticsService,
+		activity:        activity,
+		logger:          logger,
 	}
 }
 
@@ -323,6 +332,9 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 }
 
 func (handler *Handler) callToolParams(r *http.Request, params toolsCallParams) (map[string]any, error) {
+	if evidencemcpapi.IsEvidenceGraphTool(params.Name) {
+		return evidencemcpapi.CallTool(r.Context(), handler.projectEvidence, params.Name, params.Arguments)
+	}
 	switch params.Name {
 	case "tasks.create", "tasks_create":
 		var input struct {
@@ -531,7 +543,15 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
+	if errors.Is(err, projectevidence.ErrInvalidInput) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, evidencestore.ErrNotFound) {
 		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
 	}
@@ -694,6 +714,9 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 	}
 	if handler.projects != nil {
 		tools = append(tools, projectmcpapi.ToolDefinitionsWithWorkspaceAndDiagnostics(handler.projectIngest != nil, handler.projectWork != nil, handler.diagnostics != nil)...)
+	}
+	if handler.projectEvidence != nil {
+		tools = append(tools, evidencemcpapi.ToolDefinitions()...)
 	}
 	if handler.integrations != nil {
 		tools = append(tools, integrationmcpapi.ToolDefinitions()...)
