@@ -419,6 +419,22 @@ func cleanPathList(paths []string) []string {
 
 func addPathImpact(result ImpactAnalysis, path string, addUnknown bool) ImpactAnalysis {
 	switch {
+	case strings.HasPrefix(path, "internal/projectreliability/"):
+		result = addDomain(result, "project_reliability", "context health, claim checks, or impact analysis behavior", path)
+		result.AffectedTools = appendUnique(result.AffectedTools, "projects.context_health", "projects.graph_status", "projects.impact.analyze", "projects.claims.check")
+	case strings.HasPrefix(path, "internal/projectevidence/"):
+		result = addDomain(result, "evidence_graph", "Evidence Graph claim metadata and governance links", path)
+		result.AffectedTools = appendUnique(result.AffectedTools, "projects.evidence_graph.*")
+		result.AffectedRoutes = appendUnique(result.AffectedRoutes, "/api/v1/projects/*/evidence-graph/*")
+		result.SecurityFlags = appendUnique(result.SecurityFlags, "redacted_metadata_boundary")
+	case strings.HasPrefix(path, "internal/projectconfidence/"):
+		result = addDomain(result, "confidence_engine", "deterministic confidence scoring and reliability inputs", path)
+		result.AffectedTools = appendUnique(result.AffectedTools, "projects.confidence.*")
+		result.AffectedRoutes = appendUnique(result.AffectedRoutes, "/api/v1/projects/*/confidence/*")
+		result.SecurityFlags = appendUnique(result.SecurityFlags, "confidence_metadata_boundary")
+	case strings.HasPrefix(path, "internal/projectcontext/"):
+		result = addDomain(result, "context_pack", "metadata-only context pack assembly", path)
+		result.AffectedTools = appendUnique(result.AffectedTools, "projects.context_pack.build")
 	case strings.HasPrefix(path, "internal/projectingestion/"):
 		result = addDomain(result, "ingestion_search_index", "content graph ingestion, search, or index behavior", path)
 		result.AffectedTools = appendUnique(result.AffectedTools, "projects.ingest", "projects.files.list", "projects.search.*")

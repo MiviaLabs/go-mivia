@@ -20,6 +20,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
 	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
+	"github.com/MiviaLabs/go-mivia/internal/projectconfidence"
+	confidencemcpapi "github.com/MiviaLabs/go-mivia/internal/projectconfidence/mcpapi"
+	confidencestore "github.com/MiviaLabs/go-mivia/internal/projectconfidence/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectevidence"
 	evidencemcpapi "github.com/MiviaLabs/go-mivia/internal/projectevidence/mcpapi"
 	evidencestore "github.com/MiviaLabs/go-mivia/internal/projectevidence/store"
@@ -49,17 +52,19 @@ const ServerInstructions = "This MCP server is the authoritative context and wor
 	"Do not use Jira or Confluence live connectors for this repository unless explicitly requested; use locally ingested integration tools only when configured."
 
 type Handler struct {
-	service         *service.Service
-	research        *research.Service
-	projects        *projectregistry.Registry
-	projectDigest   *projectregistry.DigestService
-	projectIngest   projectingestion.API
-	projectWork     projectworkspace.API
-	projectEvidence *projectevidence.Service
-	integrations    *projectintegrations.Service
-	diagnostics     *diagnostics.Service
-	activity        *agentactivity.Recorder
-	logger          *slog.Logger
+	service                 *service.Service
+	research                *research.Service
+	projects                *projectregistry.Registry
+	projectDigest           *projectregistry.DigestService
+	projectIngest           projectingestion.API
+	projectWork             projectworkspace.API
+	projectEvidence         *projectevidence.Service
+	projectConfidence       *projectconfidence.Service
+	projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter
+	integrations            *projectintegrations.Service
+	diagnostics             *diagnostics.Service
+	activity                *agentactivity.Recorder
+	logger                  *slog.Logger
 }
 
 type jsonRPCRequest struct {
@@ -102,18 +107,24 @@ func NewHandlerWithActivity(service *service.Service, research *research.Service
 }
 
 func NewHandlerWithActivityAndEvidenceGraph(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
+	return NewHandlerWithActivityEvidenceGraphAndConfidence(service, research, projects, projectDigest, projectIngest, projectWork, projectEvidence, nil, nil, integrations, diagnosticsService, activity, logger)
+}
+
+func NewHandlerWithActivityEvidenceGraphAndConfidence(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
 	return &Handler{
-		service:         service,
-		research:        research,
-		projects:        projects,
-		projectDigest:   projectDigest,
-		projectIngest:   projectIngest,
-		projectWork:     projectWork,
-		projectEvidence: projectEvidence,
-		integrations:    integrations,
-		diagnostics:     diagnosticsService,
-		activity:        activity,
-		logger:          logger,
+		service:                 service,
+		research:                research,
+		projects:                projects,
+		projectDigest:           projectDigest,
+		projectIngest:           projectIngest,
+		projectWork:             projectWork,
+		projectEvidence:         projectEvidence,
+		projectConfidence:       projectConfidence,
+		projectConfidenceInputs: projectConfidenceInputs,
+		integrations:            integrations,
+		diagnostics:             diagnosticsService,
+		activity:                activity,
+		logger:                  logger,
 	}
 }
 
@@ -332,6 +343,9 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 }
 
 func (handler *Handler) callToolParams(r *http.Request, params toolsCallParams) (map[string]any, error) {
+	if confidencemcpapi.IsConfidenceTool(params.Name) {
+		return confidencemcpapi.CallTool(r.Context(), handler.projectConfidence, handler.projectConfidenceInputs, params.Name, params.Arguments)
+	}
 	if evidencemcpapi.IsEvidenceGraphTool(params.Name) {
 		return evidencemcpapi.CallTool(r.Context(), handler.projectEvidence, params.Name, params.Arguments)
 	}
@@ -547,11 +561,19 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
+	if errors.Is(err, projectconfidence.ErrInvalidInput) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
 	}
 	if errors.Is(err, evidencestore.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, confidencestore.ErrNotFound) {
 		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
 	}
@@ -717,6 +739,9 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 	}
 	if handler.projectEvidence != nil {
 		tools = append(tools, evidencemcpapi.ToolDefinitions()...)
+	}
+	if handler.projectConfidence != nil {
+		tools = append(tools, confidencemcpapi.ToolDefinitions()...)
 	}
 	if handler.integrations != nil {
 		tools = append(tools, integrationmcpapi.ToolDefinitions()...)

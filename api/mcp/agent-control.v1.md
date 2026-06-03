@@ -495,6 +495,80 @@ Input schema:
 
 Output: structured `PromotionLink` metadata plus a JSON text content block. Non-candidate links require `verifier_ref` and `decision_ref`; promoted links require `outcome_ref` for a passed outcome.
 
+### Confidence Tools
+
+Confidence tools are project-scoped and metadata-only. They score and retrieve deterministic confidence assessments for Evidence Graph claims. They do not store or return raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI/provider scoring, embedding scoring, or vector scoring. Use dotted tool names when available; underscore aliases are accepted for each tool listed below.
+
+#### `projects.confidence.claims.score`
+
+Alias: `projects_confidence_claims_score`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "claim_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "changed_paths": { "type": "array", "items": { "type": "string", "maxLength": 300 }, "maxItems": 100 },
+    "claim_check_paths": { "type": "array", "items": { "type": "string", "maxLength": 300 }, "maxItems": 20 },
+    "include_verified": { "type": "boolean" }
+  }
+}
+```
+
+Output: structured `ScoreClaimResponse` metadata with an `assessment` object. The assessment includes `id`, `project_id`, `claim_id`, `claim_ref`, optional `run_id` and `trace_id`, `score` from 0 to 100, `band` (`high`, `medium`, `low`, or `unknown`), `recommendation` (`promote`, `verify`, `review`, `reject`, or `insufficient_evidence`), bounded `factors`, safe input counters, and timestamps.
+
+#### `projects.confidence.claims.get`
+
+Alias: `projects_confidence_claims_get`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "claim_id": { "type": "string", "minLength": 1, "maxLength": 200 }
+  }
+}
+```
+
+Output: one stored metadata-only `ConfidenceAssessment` for the claim. It returns the same assessment shape as `projects.confidence.claims.score` and no raw evidence bodies or raw source.
+
+#### `projects.confidence.claims.list`
+
+Alias: `projects_confidence_claims_list`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "band": { "type": "string", "enum": ["high", "medium", "low", "unknown"] },
+    "min_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "max_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "recommendation": { "type": "string", "enum": ["promote", "verify", "review", "reject", "insufficient_evidence"] },
+    "run_id": { "type": "string", "maxLength": 200 },
+    "trace_id": { "type": "string", "maxLength": 200 },
+    "page_size": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "page_token": { "type": "string", "maxLength": 20 }
+  }
+}
+```
+
+Output: structured metadata with `assessments` and optional `next_page_token`. The default page size is 50 and the maximum is 100.
+
 ### Workspace Tools
 
 Workspace tools are available only when `[workspace].enabled = true` and the target project has `workspace_mode = "read_only"` or `"edit"` with `digest_mode = "content_graph"`. Their `id` input is always a project id or safe alias returned by `projects.list` / `projects.get`; callers must not pass cwd, root, UNC, WSL, local filesystem paths, or workspace URIs as `id`. They never expose roots, datastore paths, raw command lines, raw stderr, content hashes, skipped sensitive content, secrets, PII, raw prompts, provider payloads, raw parser/SQLite/FTS errors, or stack traces.

@@ -43,6 +43,8 @@ func BootstrapSchema() GraphSchema {
 			"Outcome",
 			"Artifact",
 			"Promotion",
+			"ConfidenceAssessment",
+			"ConfidenceFactor",
 		},
 		Relationships: []Relationship{
 			{Type: "AGENT_RAN_TASK", From: "Agent", To: "Task"},
@@ -81,6 +83,11 @@ func BootstrapSchema() GraphSchema {
 			{Type: "ARTIFACT_HAS_PROMOTION", From: "Artifact", To: "Promotion"},
 			{Type: "PROMOTION_DECIDES_CLAIM", From: "Promotion", To: "Claim"},
 			{Type: "OUTCOME_SUPPORTS_PROMOTION", From: "Outcome", To: "Promotion"},
+			{Type: "CLAIM_HAS_CONFIDENCE", From: "Claim", To: "ConfidenceAssessment"},
+			{Type: "CONFIDENCE_HAS_FACTOR", From: "ConfidenceAssessment", To: "ConfidenceFactor"},
+			{Type: "CONFIDENCE_USED_EVIDENCE", From: "ConfidenceAssessment", To: "Evidence"},
+			{Type: "CONFIDENCE_USED_DECISION", From: "ConfidenceAssessment", To: "Decision"},
+			{Type: "CONFIDENCE_USED_OUTCOME", From: "ConfidenceAssessment", To: "Outcome"},
 		},
 	}
 }

@@ -344,6 +344,7 @@ func defaultKnownTools() []string {
 		"projects.evidence_graph.claims.create", "projects.evidence_graph.claims.get", "projects.evidence_graph.claims.list",
 		"projects.evidence_graph.evidence.append", "projects.evidence_graph.decisions.create", "projects.evidence_graph.actions.create",
 		"projects.evidence_graph.outcomes.create", "projects.evidence_graph.artifacts.link", "projects.evidence_graph.promotions.link",
+		"projects.confidence.claims.score", "projects.confidence.claims.get", "projects.confidence.claims.list",
 		"projects.integrations.list", "projects.integrations.status", "projects.integrations.counts", "projects.integrations.poll",
 		"projects.integrations.poll_status", "projects.integrations.search", "projects.jira.issue.get", "projects.confluence.page.get",
 	})
@@ -385,5 +386,6 @@ func defaultKnownRoutes() []string {
 		"/api/v1/projects/*/evidence-graph/claims/*/evidence", "/api/v1/projects/*/evidence-graph/claims/*/decisions",
 		"/api/v1/projects/*/evidence-graph/claims/*/actions", "/api/v1/projects/*/evidence-graph/claims/*/outcomes",
 		"/api/v1/projects/*/evidence-graph/claims/*/artifact-links", "/api/v1/projects/*/evidence-graph/claims/*/promotion-links",
+		"/api/v1/projects/*/confidence/claims", "/api/v1/projects/*/confidence/claims/*", "/api/v1/projects/*/confidence/claims/*/score",
 	}
 }

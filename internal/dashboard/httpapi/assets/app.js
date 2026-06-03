@@ -34,6 +34,7 @@ const TABS = [
   { id: "overview", label: "Overview" },
   { id: "graph", label: "Graph" },
   { id: "evidence", label: "Evidence Graph" },
+  { id: "confidence", label: "Confidence" },
   { id: "ingestion", label: "Ingestion" },
   { id: "workspace", label: "Workspace" },
   { id: "integrations", label: "Integrations" },
@@ -944,6 +945,7 @@ function buildTabs(project, health, latest, graph, dashboard) {
     overview: () => tabOverview(project, health, latest, graph),
     graph: () => tabGraph(graph),
     evidence: () => tabEvidenceGraph(project.id),
+    confidence: () => tabConfidence(project.id),
     ingestion: () => tabIngestion(latest, graph),
     workspace: () => tabWorkspace(dashboard.workspace),
     integrations: () => tabIntegrations(project, dashboard.integrations),
@@ -1383,6 +1385,298 @@ function safeChangedPaths(paths) {
   return paths
     .map(safeEvidenceText)
     .filter((path) => path && !path.startsWith("/") && !path.includes("..") && !path.includes(":"));
+}
+
+function tabConfidence(projectID) {
+  const listNode = el("div", { class: "rows" }, emptyText("Loading confidence assessments..."));
+  const detailNode = el("div", { class: "evidence-detail" }, emptyText("Select an assessment to inspect the score explanation."));
+  const pagerNode = el("div", { class: "integration-pager" });
+  const state = { assessments: [], nextPageToken: "", loading: false, selectedClaimID: "" };
+  const controls = confidenceFilterForm(projectID, state, listNode, pagerNode, detailNode);
+  const body = el("div", { class: "evidence-layout" },
+    block("Assessments", controls, listNode, pagerNode),
+    block("Score explanation", detailNode),
+  );
+  loadConfidenceAssessments(projectID, state, listNode, pagerNode, detailNode, false);
+  return panel("Confidence", body);
+}
+
+function confidenceFilterForm(projectID, state, listNode, pagerNode, detailNode) {
+  const claimSearch = evidenceInput("Claim id", "claim_id_search");
+  const runID = evidenceInput("Run id", "run_id");
+  const traceID = evidenceInput("Trace id", "trace_id");
+  const minScore = el("input", { type: "number", min: "0", max: "100", name: "min_score", placeholder: "Min score", "aria-label": "Min score" });
+  const maxScore = el("input", { type: "number", min: "0", max: "100", name: "max_score", placeholder: "Max score", "aria-label": "Max score" });
+  const band = evidenceSelect("Band", "band", ["", "high", "medium", "low", "unknown"]);
+  const recommendation = evidenceSelect("Recommendation", "recommendation", ["", "promote", "verify", "review", "reject", "insufficient_evidence"]);
+  const fields = { claimSearch, runID, traceID, minScore, maxScore, band, recommendation };
+  const form = el("form", {
+    class: "evidence-filters",
+    onSubmit: async (event) => {
+      event.preventDefault();
+      await loadConfidenceAssessments(projectID, state, listNode, pagerNode, detailNode, false, fields);
+    },
+  },
+    claimSearch,
+    band,
+    recommendation,
+    minScore,
+    maxScore,
+    runID,
+    traceID,
+    el("button", { type: "submit", class: "compact", text: "Apply" }),
+    el("button", {
+      type: "button",
+      class: "secondary compact",
+      onClick: () => scoreConfidenceClaim(projectID, fields, state, listNode, pagerNode, detailNode),
+      text: "Score claim",
+    }),
+    el("button", {
+      type: "button",
+      class: "secondary compact",
+      onClick: () => {
+        Object.values(fields).forEach((field) => { field.value = ""; });
+        loadConfidenceAssessments(projectID, state, listNode, pagerNode, detailNode, false, fields);
+      },
+      text: "Clear",
+    }),
+  );
+  form.dataset.projectSubview = "confidence";
+  return form;
+}
+
+async function scoreConfidenceClaim(projectID, fields, state, listNode, pagerNode, detailNode) {
+  const claimID = fields.claimSearch.value.trim();
+  if (!claimID) {
+    detailNode.replaceChildren(emptyText("Enter a claim id before scoring."));
+    return;
+  }
+  detailNode.replaceChildren(emptyText("Scoring claim confidence..."));
+  try {
+    const data = await fetchJSONWithOptions(`/api/v1/projects/${encodeURIComponent(projectID)}/confidence/claims/${encodeURIComponent(claimID)}/score`, 15000, {
+      method: "POST",
+      headers: { "Accept": "application/json", "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const assessment = data?.assessment || null;
+    state.selectedClaimID = assessment?.claim_id || claimID;
+    detailNode.replaceChildren(confidenceAssessmentDetail(assessment));
+    await loadConfidenceAssessments(projectID, state, listNode, pagerNode, detailNode, false, fields);
+  } catch (error) {
+    detailNode.replaceChildren(emptyText(error.message));
+  }
+}
+
+async function loadConfidenceAssessments(projectID, state, listNode, pagerNode, detailNode, append, fields) {
+  if (state.loading) return;
+  state.loading = true;
+  renderConfidencePager(projectID, state, listNode, pagerNode, detailNode, fields);
+  const filter = confidenceFilterValues(fields);
+  if (!append) {
+    state.nextPageToken = "";
+    state.selectedClaimID = "";
+    listNode.replaceChildren(emptyText("Loading confidence assessments..."));
+    detailNode.replaceChildren(emptyText("Select an assessment to inspect the score explanation."));
+  }
+  try {
+    if (!append && filter.claimSearch) {
+      await loadConfidenceAssessmentByClaim(projectID, filter.claimSearch, state, listNode, detailNode);
+      return;
+    }
+    const params = new URLSearchParams({ page_size: "20" });
+    if (append && state.nextPageToken) params.set("page_token", state.nextPageToken);
+    setParam(params, "band", filter.band);
+    setParam(params, "min_score", filter.minScore);
+    setParam(params, "max_score", filter.maxScore);
+    setParam(params, "recommendation", filter.recommendation);
+    setParam(params, "run_id", filter.runID);
+    setParam(params, "trace_id", filter.traceID);
+    const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/confidence/claims?${params}`, 12000);
+    const assessments = Array.isArray(data.assessments) ? data.assessments : [];
+    state.assessments = append ? state.assessments.concat(assessments) : assessments;
+    state.nextPageToken = data.next_page_token || data.NextPageToken || "";
+    renderConfidenceAssessments(projectID, state, listNode, detailNode);
+  } catch (error) {
+    if (!append) listNode.replaceChildren(emptyText(error.message));
+  } finally {
+    state.loading = false;
+    renderConfidencePager(projectID, state, listNode, pagerNode, detailNode, fields);
+  }
+}
+
+async function loadConfidenceAssessmentByClaim(projectID, claimID, state, listNode, detailNode) {
+  try {
+    const assessment = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/confidence/claims/${encodeURIComponent(claimID)}`, 12000);
+    state.assessments = assessment?.claim_id ? [assessment] : [];
+    state.nextPageToken = "";
+    renderConfidenceAssessments(projectID, state, listNode, detailNode);
+    if (assessment?.claim_id) {
+      state.selectedClaimID = assessment.claim_id;
+      detailNode.replaceChildren(confidenceAssessmentDetail(assessment));
+    }
+  } catch {
+    state.assessments = [];
+    state.nextPageToken = "";
+    renderConfidenceAssessments(projectID, state, listNode, detailNode);
+  }
+}
+
+function confidenceFilterValues(fields) {
+  if (!fields) return {};
+  return {
+    claimSearch: fields.claimSearch.value.trim(),
+    runID: fields.runID.value.trim(),
+    traceID: fields.traceID.value.trim(),
+    minScore: confidenceScoreValue(fields.minScore.value),
+    maxScore: confidenceScoreValue(fields.maxScore.value),
+    band: fields.band.value.trim(),
+    recommendation: fields.recommendation.value.trim(),
+  };
+}
+
+function confidenceScoreValue(value) {
+  const text = String(value || "").trim();
+  if (text === "") return "";
+  const number = Number(text);
+  if (!Number.isInteger(number) || number < 0 || number > 100) return "";
+  return String(number);
+}
+
+function renderConfidenceAssessments(projectID, state, listNode, detailNode) {
+  clear(listNode);
+  if (!state.assessments.length) {
+    listNode.append(emptyText("No confidence assessments match the current filters."));
+    return;
+  }
+  state.assessments.forEach((assessment) => {
+    const claimID = safeEvidenceText(assessment.claim_id);
+    listNode.append(el("button", {
+      class: "integration-row",
+      type: "button",
+      disabled: !claimID,
+      onClick: () => loadConfidenceAssessmentDetail(projectID, claimID, state, detailNode),
+    },
+      el("strong", { text: confidenceAssessmentTitle(assessment) }),
+      el("span", { text: compactJoin([`score ${confidenceScoreText(assessment.score)}`, assessment.band, assessment.recommendation]) }),
+      el("span", { text: compactJoin([assessment.claim_ref, assessment.run_id, assessment.trace_id, formatDate(assessment.updated_at || assessment.created_at)]) }),
+    ));
+  });
+}
+
+function renderConfidencePager(projectID, state, listNode, pagerNode, detailNode, fields) {
+  clear(pagerNode);
+  if (state.loading) {
+    pagerNode.append(el("span", { class: "muted-text", text: "Loading confidence assessments..." }));
+    return;
+  }
+  if (!state.nextPageToken) return;
+  pagerNode.append(el("button", {
+    type: "button",
+    class: "compact",
+    onClick: () => loadConfidenceAssessments(projectID, state, listNode, pagerNode, detailNode, true, fields),
+    text: "Load more",
+  }));
+}
+
+async function loadConfidenceAssessmentDetail(projectID, claimID, state, detailNode) {
+  state.selectedClaimID = claimID;
+  detailNode.replaceChildren(emptyText("Loading confidence assessment..."));
+  try {
+    const assessment = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/confidence/claims/${encodeURIComponent(claimID)}`, 12000);
+    if (state.selectedClaimID !== claimID) return;
+    detailNode.replaceChildren(confidenceAssessmentDetail(assessment));
+  } catch (error) {
+    detailNode.replaceChildren(emptyText(error.message));
+  }
+}
+
+function confidenceAssessmentDetail(assessment) {
+  if (!assessment) return emptyText("Confidence assessment unavailable.");
+  return el("div", { class: "evidence-chain" },
+    infoList([
+      ["Score", confidenceScoreText(assessment.score)],
+      ["Band", safeEvidenceText(assessment.band)],
+      ["Recommendation", safeEvidenceText(assessment.recommendation)],
+      ["Claim", safeEvidenceText(assessment.claim_ref || assessment.claim_id)],
+      ["Run", safeEvidenceText(assessment.run_id)],
+      ["Trace", safeEvidenceText(assessment.trace_id)],
+      ["Created", formatDate(assessment.created_at)],
+      ["Updated", formatDate(assessment.updated_at)],
+    ]),
+    confidenceLinkedClaim(assessment),
+    confidenceInputsBlock(assessment.inputs),
+    evidenceSection("Factors", assessment.factors, confidenceFactorRow),
+  );
+}
+
+function confidenceLinkedClaim(assessment) {
+  const claimID = safeEvidenceText(assessment.claim_id);
+  if (!claimID) return null;
+  const { projectID } = selectedRoute();
+  return el("button", {
+    type: "button",
+    class: "secondary compact",
+    onClick: () => {
+      location.hash = `project=${encodeURIComponent(projectID)}&tab=evidence`;
+      setTimeout(() => {
+        const input = document.querySelector("[data-project-subview='evidence-graph'] input[name='claim_id_search']");
+        const form = input && input.closest("form");
+        if (input && form) {
+          input.value = claimID;
+          form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        }
+      }, 0);
+    },
+    text: "Open Evidence Graph claim",
+  });
+}
+
+function confidenceInputsBlock(inputs) {
+  const value = inputs || {};
+  return block("Inputs",
+    infoList([
+      ["Evidence", numberValue(value.evidence_count)],
+      ["Evidence kinds", safeEvidenceText((value.evidence_kinds || []).join(", "))],
+      ["Decisions", numberValue(value.decision_count)],
+      ["Actions", numberValue(value.action_count)],
+      ["Passed outcomes", numberValue(value.passed_outcome_count)],
+      ["Failed outcomes", numberValue(value.failed_outcome_count)],
+      ["Promotion", safeEvidenceText(value.promotion_state)],
+      ["Context", compactJoin([value.context_health_status, value.context_health_reason])],
+      ["Claim checks", `${numberValue(value.claim_check_verified)} verified | ${numberValue(value.claim_check_actionable)} actionable`],
+      ["Impact", confidenceImpactText(value)],
+    ]),
+  );
+}
+
+function confidenceFactorRow(item) {
+  return evidenceMetadataRow(
+    safeEvidenceText(item.name),
+    compactJoin([item.status, `delta ${confidenceDeltaText(item.score_delta)}`, `weight ${confidenceScoreText(item.weight)}`, item.source_ref]),
+    safeEvidenceSummary(item.summary),
+  );
+}
+
+function confidenceAssessmentTitle(assessment) {
+  const claim = safeEvidenceText(assessment.claim_ref || assessment.claim_id);
+  return claim || "confidence assessment";
+}
+
+function confidenceScoreText(value) {
+  return typeof value === "number" ? String(value) : "unknown";
+}
+
+function confidenceDeltaText(value) {
+  if (typeof value !== "number") return "unknown";
+  return value > 0 ? `+${value}` : String(value);
+}
+
+function confidenceImpactText(inputs) {
+  return compactJoin([
+    inputs?.impact_partial ? "partial" : "complete",
+    `${numberValue(inputs?.impact_residual_unknown_count)} unknowns`,
+    `${numberValue(inputs?.impact_security_flag_count)} security flags`,
+  ]);
 }
 
 function tabIngestion(latest, graph) {
@@ -2036,10 +2330,14 @@ function prettyJSON(value) {
 }
 
 async function fetchJSON(url, timeoutMs) {
+  return fetchJSONWithOptions(url, timeoutMs, { headers: { "Accept": "application/json" } });
+}
+
+async function fetchJSONWithOptions(url, timeoutMs, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal, headers: { "Accept": "application/json" } });
+    const response = await fetch(url, { ...options, signal: controller.signal });
     if (!response.ok) throw new Error(`${url} returned ${response.status}`);
     return await response.json();
   } catch (error) {

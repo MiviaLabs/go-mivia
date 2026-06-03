@@ -66,6 +66,11 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 			t.Fatalf("expected dashboard app to contain project evidence affordance %q", want)
 		}
 	}
+	for _, want := range []string{"Confidence", "tabConfidence(project.id)", "projectSubview = \"confidence\"", "/confidence/claims?", "/confidence/claims/${encodeURIComponent(claimID)}", "/score", "band", "min_score", "max_score", "recommendation", "Score claim", "Score explanation", "confidenceAssessmentDetail", "confidenceFactorRow", "Open Evidence Graph claim"} {
+		if !strings.Contains(app.Body.String(), want) {
+			t.Fatalf("expected dashboard app to contain project confidence affordance %q", want)
+		}
+	}
 	for _, forbidden := range []string{"Evidence Graph\" },\n  { id: \"overview\"", "raw graph data", "source bodies", "provider payloads"} {
 		if strings.Contains(app.Body.String(), forbidden) {
 			t.Fatalf("dashboard app contained forbidden evidence marker %q", forbidden)

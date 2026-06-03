@@ -105,6 +105,18 @@ func TestBootstrapSchema_EvidenceLabelsAndRelationships(t *testing.T) {
 	assertRelationship(t, bootstrap, "OUTCOME_SUPPORTS_PROMOTION", "Outcome", "Promotion")
 }
 
+func TestBootstrapSchema_ConfidenceLabelsAndRelationships(t *testing.T) {
+	bootstrap := schema.BootstrapSchema()
+
+	assertLabel(t, bootstrap, "ConfidenceAssessment")
+	assertLabel(t, bootstrap, "ConfidenceFactor")
+	assertRelationship(t, bootstrap, "CLAIM_HAS_CONFIDENCE", "Claim", "ConfidenceAssessment")
+	assertRelationship(t, bootstrap, "CONFIDENCE_HAS_FACTOR", "ConfidenceAssessment", "ConfidenceFactor")
+	assertRelationship(t, bootstrap, "CONFIDENCE_USED_EVIDENCE", "ConfidenceAssessment", "Evidence")
+	assertRelationship(t, bootstrap, "CONFIDENCE_USED_DECISION", "ConfidenceAssessment", "Decision")
+	assertRelationship(t, bootstrap, "CONFIDENCE_USED_OUTCOME", "ConfidenceAssessment", "Outcome")
+}
+
 func TestBootstrapSchema_RelationshipEndpointsAreDeclaredLabels(t *testing.T) {
 	bootstrap := schema.BootstrapSchema()
 	labels := make(map[string]struct{}, len(bootstrap.NodeLabels))

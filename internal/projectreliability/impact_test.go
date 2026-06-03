@@ -13,6 +13,10 @@ func TestImpactAnalyzer_MapsKnownPaths(t *testing.T) {
 	result, err := NewImpactAnalyzer(nil).Analyze(context.Background(), ImpactAnalysisRequest{
 		ProjectID: "example-service",
 		ChangedPaths: []string{
+			"internal/projectreliability/impact.go",
+			"internal/projectevidence/service.go",
+			"internal/projectconfidence/input.go",
+			"internal/projectcontext/service.go",
 			"internal/projectregistry/mcpapi/mcpapi.go",
 			"internal/agentcontrol/httpapi/httpapi.go",
 			"docs/security/privacy-baseline.md",
@@ -21,12 +25,25 @@ func TestImpactAnalyzer_MapsKnownPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyze impact: %v", err)
 	}
+	assertDomain(t, result, "project_reliability")
+	assertDomain(t, result, "evidence_graph")
+	assertDomain(t, result, "confidence_engine")
+	assertDomain(t, result, "context_pack")
 	assertDomain(t, result, "mcp_project_tools")
 	assertDomain(t, result, "agent_control")
 	assertDomain(t, result, "security_privacy_docs")
+	assertContains(t, result.AffectedTools, "projects.impact.analyze")
+	assertContains(t, result.AffectedTools, "projects.evidence_graph.*")
+	assertContains(t, result.AffectedTools, "projects.confidence.*")
+	assertContains(t, result.AffectedTools, "projects.context_pack.build")
 	assertContains(t, result.AffectedTools, "projects.*")
+	assertContains(t, result.AffectedRoutes, "/api/v1/projects/*/evidence-graph/*")
+	assertContains(t, result.AffectedRoutes, "/api/v1/projects/*/confidence/*")
 	assertContains(t, result.AffectedRoutes, "/api/v1/agent-runs")
+	assertContains(t, result.SecurityFlags, "redacted_metadata_boundary")
+	assertContains(t, result.SecurityFlags, "confidence_metadata_boundary")
 	assertContains(t, result.SecurityFlags, "security_privacy_policy")
+	assertNotContains(t, result.ResidualUnknowns, "unmapped_path")
 }
 
 func TestImpactAnalyzer_UsesWorkspaceDiffMetadataWithoutRawDiff(t *testing.T) {

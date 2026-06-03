@@ -677,6 +677,125 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/confidence/claims/{claim_id}/score:
+    post:
+      operationId: scoreProjectConfidenceClaim
+      summary: Score Evidence Graph claim confidence
+      description: Calculates and stores one deterministic metadata-only confidence assessment for a project-scoped Evidence Graph claim. The score uses safe metadata inputs only and does not use raw prompts, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI providers, embeddings, vectors, or vector scoring.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: claim_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScoreProjectConfidenceClaimRequest'
+            examples:
+              metadataRefsOnly:
+                summary: Safe metadata refs only
+                value:
+                  changed_paths:
+                    - internal/projectconfidence/service.go
+                  claim_check_paths:
+                    - api/openapi/agent-control.v1.yaml
+                  include_verified: false
+      responses:
+        '200':
+          description: Scored confidence assessment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectConfidenceScoreResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /projects/{id}/confidence/claims/{claim_id}:
+    get:
+      operationId: getProjectConfidenceClaim
+      summary: Get claim confidence assessment
+      description: Returns the stored metadata-only confidence assessment for one project-scoped Evidence Graph claim. Responses include score, band, recommendation, factors, and input counters only; raw prompts, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI providers, embeddings, vectors, and vector scoring are not exposed.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: claim_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: Stored confidence assessment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectConfidenceAssessment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/confidence/claims:
+    get:
+      operationId: listProjectConfidenceClaims
+      summary: List claim confidence assessments
+      description: Lists project-scoped metadata-only confidence assessments with safe filters and pagination. The list never returns raw prompts, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI providers, embeddings, vectors, or vector scoring.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: band
+          in: query
+          schema:
+            $ref: '#/components/schemas/ProjectConfidenceBand'
+        - name: min_score
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+        - name: max_score
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+        - name: recommendation
+          in: query
+          schema:
+            $ref: '#/components/schemas/ProjectConfidenceRecommendation'
+        - name: run_id
+          in: query
+          schema:
+            type: string
+        - name: trace_id
+          in: query
+          schema:
+            type: string
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: page_token
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Confidence assessments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectConfidenceAssessmentList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects/{id}/workspace/git/status:
     get:
       operationId: getProjectWorkspaceGitStatus
@@ -3810,6 +3929,116 @@ components:
         action_ref: {type: string, maxLength: 200}
         outcome_ref: {type: string, maxLength: 200}
       description: Non-candidate links require verifier_ref and decision_ref. Promoted links require outcome_ref for a passed outcome.
+    ProjectConfidenceBand:
+      type: string
+      enum: [high, medium, low, unknown]
+    ProjectConfidenceRecommendation:
+      type: string
+      enum: [promote, verify, review, reject, insufficient_evidence]
+    ProjectConfidenceFactorStatus:
+      type: string
+      enum: [positive, neutral, negative]
+    ProjectConfidenceAssessment:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, claim_id, claim_ref, score, band, recommendation, factors, inputs, created_at, updated_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        claim_id: {type: string}
+        claim_ref: {type: string}
+        run_id: {type: string}
+        trace_id: {type: string}
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        band:
+          $ref: '#/components/schemas/ProjectConfidenceBand'
+        recommendation:
+          $ref: '#/components/schemas/ProjectConfidenceRecommendation'
+        factors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectConfidenceFactor'
+        inputs:
+          $ref: '#/components/schemas/ProjectConfidenceInputs'
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+      description: Metadata-only confidence assessment linked to an Evidence Graph claim. It exposes bounded factors and counters only; raw prompts, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI/provider scoring, embedding scoring, and vector scoring are prohibited.
+    ProjectConfidenceFactor:
+      type: object
+      additionalProperties: false
+      required: [name, score_delta, weight, status, summary, source_ref]
+      properties:
+        name: {type: string}
+        score_delta: {type: integer}
+        weight: {type: integer}
+        status:
+          $ref: '#/components/schemas/ProjectConfidenceFactorStatus'
+        summary:
+          type: string
+          maxLength: 500
+        source_ref:
+          type: string
+          maxLength: 200
+      description: Bounded metadata factor. Summaries and source refs must not include raw source, prompt text, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
+    ProjectConfidenceInputs:
+      type: object
+      additionalProperties: false
+      required: [evidence_count, decision_count, action_count, passed_outcome_count, failed_outcome_count, claim_check_verified, claim_check_actionable, impact_partial, impact_residual_unknown_count, impact_security_flag_count]
+      properties:
+        evidence_count: {type: integer, minimum: 0}
+        evidence_kinds:
+          type: array
+          items: {type: string}
+        decision_count: {type: integer, minimum: 0}
+        action_count: {type: integer, minimum: 0}
+        passed_outcome_count: {type: integer, minimum: 0}
+        failed_outcome_count: {type: integer, minimum: 0}
+        promotion_state: {type: string}
+        context_health_status: {type: string}
+        context_health_reason: {type: string}
+        latest_run_age_seconds:
+          type: integer
+          minimum: 0
+        claim_check_verified: {type: integer, minimum: 0}
+        claim_check_actionable: {type: integer, minimum: 0}
+        impact_partial: {type: boolean}
+        impact_residual_unknown_count: {type: integer, minimum: 0}
+        impact_security_flag_count: {type: integer, minimum: 0}
+      description: Safe counters and status strings used by deterministic confidence scoring. This object does not expose raw graph traversal, raw request payloads, raw scoring internals, source text, prompts, stderr, provider payloads, secrets, roots, external URLs, or PII.
+    ScoreProjectConfidenceClaimRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        changed_paths:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 300}
+        claim_check_paths:
+          type: array
+          maxItems: 20
+          items: {type: string, maxLength: 300}
+        include_verified: {type: boolean}
+      description: Optional safe metadata hints for deterministic scoring. Paths must be project-relative refs; raw request payloads, raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, AI/provider scoring, embedding scoring, and vector scoring are prohibited.
+    ProjectConfidenceScoreResponse:
+      type: object
+      additionalProperties: false
+      required: [assessment]
+      properties:
+        assessment:
+          $ref: '#/components/schemas/ProjectConfidenceAssessment'
+    ProjectConfidenceAssessmentList:
+      type: object
+      additionalProperties: false
+      required: [assessments]
+      properties:
+        assessments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectConfidenceAssessment'
+        next_page_token: {type: string}
     ErrorResponse:
       type: object
       additionalProperties: false

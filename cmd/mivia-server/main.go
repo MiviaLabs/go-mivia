@@ -26,6 +26,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/logging"
 	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/go-mivia/internal/projectconfidence"
+	confidencehttpapi "github.com/MiviaLabs/go-mivia/internal/projectconfidence/httpapi"
+	confidencestore "github.com/MiviaLabs/go-mivia/internal/projectconfidence/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectevidence"
 	evidencehttpapi "github.com/MiviaLabs/go-mivia/internal/projectevidence/httpapi"
 	evidencestore "github.com/MiviaLabs/go-mivia/internal/projectevidence/store"
@@ -36,6 +39,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	projecthttpapi "github.com/MiviaLabs/go-mivia/internal/projectregistry/httpapi"
 	projectstore "github.com/MiviaLabs/go-mivia/internal/projectregistry/store"
+	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 	"github.com/MiviaLabs/go-mivia/internal/research"
 	researchhttpapi "github.com/MiviaLabs/go-mivia/internal/research/httpapi"
@@ -209,6 +213,7 @@ func run() error {
 		return err
 	}
 	projectEvidenceService := projectevidence.New(evidencestore.NewLadybugStore(projectGraph))
+	projectConfidenceService := projectconfidence.New(confidencestore.NewLadybugStore(projectGraph))
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
 		LiveUpdatesEnabled:       cfg.Ingestion.LiveUpdatesEnabled,
 		DebounceInterval:         cfg.Ingestion.DebounceInterval,
@@ -229,6 +234,13 @@ func run() error {
 	if cfg.Workspace.Enabled {
 		projectWorkspaceService = projectworkspace.NewService(projectRegistry, projectIngestionScheduler, projectworkspace.Options{Enabled: true})
 	}
+	projectReliabilityService := projectreliability.NewServiceFromAPIs(projectRegistry, projectIngestionScheduler, projectWorkspaceService, projectreliability.Options{})
+	projectConfidenceInputs := projectconfidence.NewReliabilityInputAdapter(
+		projectEvidenceService,
+		projectReliabilityService,
+		projectreliability.NewClaimChecker(projectWorkspaceService),
+		projectreliability.NewImpactAnalyzerWithGraph(projectWorkspaceService, projectIngestionScheduler),
+	)
 	agentService := service.New(agentStore, agentStore)
 	activityStore := agentactivity.NewSQLiteStore(sqliteDB.SQLDB(), agentactivity.SQLiteStoreOptions{
 		RetainRawPayloads: cfg.AgentActivity.RetainRawPayloads,
@@ -267,6 +279,7 @@ func run() error {
 	researchhttpapi.RegisterRoutes(mux, researchService)
 	projecthttpapi.RegisterRoutesWithWorkspaceIntegrationsAndActivity(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, activityRecorder)
 	evidencehttpapi.RegisterRoutes(mux, projectEvidenceService)
+	confidencehttpapi.RegisterRoutes(mux, projectConfidenceService, projectConfidenceInputs)
 	var diagnosticsService *diagnostics.Service
 	if diagnostics.Enabled(cfg.Debug.Enabled, cfg.HTTPAddr) {
 		diagnosticsService = diagnostics.NewService(projectingestion.DiagnosticsSource{
@@ -278,7 +291,7 @@ func run() error {
 		}, diagnostics.RuntimeOptions{Enabled: cfg.Debug.RuntimeMetricsEnabled})
 		diagnostics.RegisterRoutes(mux, diagnosticsService)
 	}
-	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityAndEvidenceGraph(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectIntegrationService, diagnosticsService, activityRecorder, logger))
+	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityEvidenceGraphAndConfidence(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectConfidenceService, projectConfidenceInputs, projectIntegrationService, diagnosticsService, activityRecorder, logger))
 
 	handler := httpserver.Chain(
 		mux,
