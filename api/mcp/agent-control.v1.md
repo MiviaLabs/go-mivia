@@ -270,6 +270,231 @@ Input schema: `id`, optional inline `documents`, optional `selected_paths`, opti
 
 Output: summary counts plus actionable line-level claim findings for registered MCP tool names, registered REST route patterns, and forbidden `.ai/tasks/` links in stable docs. Verified findings are omitted by default and counted in `verified_omitted`; pass `include_verified: true` only for audit/debug output. The checker is deterministic and does not use LLM judgment, broad crawling, or document-content echoing.
 
+### Evidence Graph Tools
+
+Evidence Graph tools are project-scoped and metadata-only. They reject raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, and PII. Use dotted tool names when available; underscore aliases are accepted for each tool listed below.
+
+#### `projects.evidence_graph.claims.create`
+
+Alias: `projects_evidence_graph_claims_create`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_ref", "summary"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "run_id": { "type": "string", "maxLength": 200 },
+    "trace_id": { "type": "string", "maxLength": 200 },
+    "claim_ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "status": { "type": "string", "enum": ["candidate", "validated", "promoted", "rejected"] }
+  }
+}
+```
+
+Output: structured `Claim` metadata plus a JSON text content block.
+
+#### `projects.evidence_graph.claims.get`
+
+Alias: `projects_evidence_graph_claims_get`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "claim_id": { "type": "string", "minLength": 1, "maxLength": 200 }
+  }
+}
+```
+
+Output: structured `ClaimRecord` metadata containing the claim plus evidence, decisions, actions, outcomes, artifact links, and promotion links.
+
+#### `projects.evidence_graph.claims.list`
+
+Alias: `projects_evidence_graph_claims_list`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "artifact_ref": { "type": "string", "maxLength": 200 },
+    "promotion_state": { "type": "string", "enum": ["candidate", "validated", "promoted", "rejected"] },
+    "outcome_status": { "type": "string", "enum": ["passed", "failed", "blocked", "unknown"] },
+    "run_id": { "type": "string", "maxLength": 200 },
+    "trace_id": { "type": "string", "maxLength": 200 },
+    "page_size": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "page_token": { "type": "string", "maxLength": 20 }
+  }
+}
+```
+
+Output: structured `ClaimList` metadata with `claims` and optional `next_page_token`. The default page size is 50 and the maximum is 100.
+
+#### `projects.evidence_graph.evidence.append`
+
+Alias: `projects_evidence_graph_evidence_append`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_id", "evidence_ref", "evidence_kind"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "claim_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "evidence_ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "evidence_kind": { "type": "string", "enum": ["context_pack", "file", "chunk", "symbol", "verifier", "claim_check", "artifact", "other"] },
+    "source_ref": { "type": "string", "maxLength": 200 },
+    "summary": { "type": "string", "maxLength": 500 }
+  }
+}
+```
+
+Output: structured `Evidence` metadata plus a JSON text content block.
+
+#### `projects.evidence_graph.decisions.create`
+
+Alias: `projects_evidence_graph_decisions_create`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_id", "decision_ref", "state", "verifier_ref", "rationale"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "claim_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "decision_ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "state": { "type": "string", "enum": ["validated", "promoted", "rejected"] },
+    "verifier_ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "rationale": { "type": "string", "minLength": 1, "maxLength": 500 }
+  }
+}
+```
+
+Output: structured `Decision` metadata plus a JSON text content block.
+
+#### `projects.evidence_graph.actions.create`
+
+Alias: `projects_evidence_graph_actions_create`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_id", "decision_id", "action_ref", "action_kind"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "claim_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "decision_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "action_ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "action_kind": { "type": "string", "enum": ["code_change", "doc_change", "verifier_run", "config_change", "review_comment", "other"] },
+    "summary": { "type": "string", "maxLength": 500 },
+    "changed_files": { "type": "array", "items": { "type": "string", "maxLength": 300 }, "maxItems": 100 },
+    "run_id": { "type": "string", "maxLength": 200 }
+  }
+}
+```
+
+Output: structured `Action` metadata plus a JSON text content block.
+
+#### `projects.evidence_graph.outcomes.create`
+
+Alias: `projects_evidence_graph_outcomes_create`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_id", "action_id", "outcome_ref", "outcome_kind", "status"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "claim_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "action_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "outcome_ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "outcome_kind": { "type": "string", "enum": ["test", "build", "claim_check", "manual_review", "promotion", "failure", "other"] },
+    "status": { "type": "string", "enum": ["passed", "failed", "blocked", "unknown"] },
+    "verifier_ref": { "type": "string", "maxLength": 200 },
+    "summary": { "type": "string", "maxLength": 500 }
+  }
+}
+```
+
+Output: structured `Outcome` metadata plus a JSON text content block.
+
+#### `projects.evidence_graph.artifacts.link`
+
+Alias: `projects_evidence_graph_artifacts_link`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_id", "artifact_ref"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "claim_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "artifact_ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "artifact_kind": { "type": "string", "maxLength": 200 },
+    "run_id": { "type": "string", "maxLength": 200 }
+  }
+}
+```
+
+Output: structured `ArtifactLink` metadata plus a JSON text content block.
+
+#### `projects.evidence_graph.promotions.link`
+
+Alias: `projects_evidence_graph_promotions_link`
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "claim_id", "artifact_ref", "promotion_state", "source_ref"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "claim_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "run_id": { "type": "string", "maxLength": 200 },
+    "artifact_ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "promotion_state": { "type": "string", "enum": ["candidate", "validated", "promoted", "rejected"] },
+    "source_ref": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "verifier_ref": { "type": "string", "maxLength": 200 },
+    "decision_ref": { "type": "string", "maxLength": 200 },
+    "action_ref": { "type": "string", "maxLength": 200 },
+    "outcome_ref": { "type": "string", "maxLength": 200 }
+  }
+}
+```
+
+Output: structured `PromotionLink` metadata plus a JSON text content block. Non-candidate links require `verifier_ref` and `decision_ref`; promoted links require `outcome_ref` for a passed outcome.
+
 ### Workspace Tools
 
 Workspace tools are available only when `[workspace].enabled = true` and the target project has `workspace_mode = "read_only"` or `"edit"` with `digest_mode = "content_graph"`. Their `id` input is always a project id or safe alias returned by `projects.list` / `projects.get`; callers must not pass cwd, root, UNC, WSL, local filesystem paths, or workspace URIs as `id`. They never expose roots, datastore paths, raw command lines, raw stderr, content hashes, skipped sensitive content, secrets, PII, raw prompts, provider payloads, raw parser/SQLite/FTS errors, or stack traces.

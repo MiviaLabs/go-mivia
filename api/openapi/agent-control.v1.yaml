@@ -404,6 +404,279 @@ paths:
                 $ref: '#/components/schemas/ClaimCheckResult'
         '400':
           $ref: '#/components/responses/BadRequest'
+  /projects/{id}/evidence-graph/claims:
+    post:
+      operationId: createProjectEvidenceClaim
+      summary: Create Evidence Graph claim
+      description: Creates one project-scoped metadata-only Evidence Graph claim. Raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, and PII are prohibited.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectEvidenceClaimRequest'
+      responses:
+        '201':
+          description: Created Evidence Graph claim
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEvidenceClaim'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      operationId: listProjectEvidenceClaims
+      summary: List Evidence Graph claims
+      description: Lists project-scoped metadata-only Evidence Graph claims with safe metadata filters.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: artifact_ref
+          in: query
+          schema:
+            type: string
+        - name: promotion_state
+          in: query
+          schema:
+            $ref: '#/components/schemas/ProjectEvidencePromotionState'
+        - name: outcome_status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ProjectEvidenceOutcomeStatus'
+        - name: run_id
+          in: query
+          schema:
+            type: string
+        - name: trace_id
+          in: query
+          schema:
+            type: string
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+        - name: page_token
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Evidence Graph claims
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEvidenceClaimList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/evidence-graph/claims/{claim_id}:
+    get:
+      operationId: getProjectEvidenceClaim
+      summary: Get Evidence Graph claim record
+      description: Returns one project-scoped Evidence Graph claim chain as metadata only.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: claim_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: Evidence Graph claim record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEvidenceClaimRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/evidence-graph/claims/{claim_id}/evidence:
+    post:
+      operationId: appendProjectEvidence
+      summary: Append Evidence Graph evidence
+      description: Appends one safe evidence reference to a project-scoped claim. Stores metadata only.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: claim_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendProjectEvidenceRequest'
+      responses:
+        '201':
+          description: Appended evidence metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEvidenceEvidence'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/evidence-graph/claims/{claim_id}/decisions:
+    post:
+      operationId: createProjectEvidenceDecision
+      summary: Create Evidence Graph decision
+      description: Creates one safe decision linked to an Evidence Graph claim.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: claim_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectEvidenceDecisionRequest'
+      responses:
+        '201':
+          description: Created decision metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEvidenceDecision'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/evidence-graph/claims/{claim_id}/actions:
+    post:
+      operationId: createProjectEvidenceAction
+      summary: Create Evidence Graph action
+      description: Creates one safe action linked to an Evidence Graph decision.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: claim_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectEvidenceActionRequest'
+      responses:
+        '201':
+          description: Created action metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEvidenceAction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/evidence-graph/claims/{claim_id}/outcomes:
+    post:
+      operationId: createProjectEvidenceOutcome
+      summary: Create Evidence Graph outcome
+      description: Creates one safe outcome linked to an Evidence Graph action.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: claim_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectEvidenceOutcomeRequest'
+      responses:
+        '201':
+          description: Created outcome metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEvidenceOutcome'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/evidence-graph/claims/{claim_id}/artifact-links:
+    post:
+      operationId: linkProjectEvidenceArtifact
+      summary: Link Evidence Graph artifact
+      description: Links a safe artifact ref to an Evidence Graph claim. Stores metadata only.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: claim_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LinkProjectEvidenceArtifactRequest'
+      responses:
+        '201':
+          description: Linked artifact metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEvidenceArtifactLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/evidence-graph/claims/{claim_id}/promotion-links:
+    post:
+      operationId: linkProjectEvidencePromotion
+      summary: Link Evidence Graph promotion
+      description: Links a safe promotion decision ref to an Evidence Graph claim. Promoted links require a passed outcome ref. Stores metadata only and prohibits raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, and PII.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - name: claim_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LinkProjectEvidencePromotionRequest'
+      responses:
+        '201':
+          description: Linked promotion metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEvidencePromotionLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /projects/{id}/workspace/git/status:
     get:
       operationId: getProjectWorkspaceGitStatus
@@ -3287,6 +3560,256 @@ components:
           type: integer
         ByteEnd:
           type: integer
+    ProjectEvidenceClaimStatus:
+      type: string
+      enum: [candidate, validated, promoted, rejected]
+    ProjectEvidenceEvidenceKind:
+      type: string
+      enum: [context_pack, file, chunk, symbol, verifier, claim_check, artifact, other]
+    ProjectEvidenceDecisionState:
+      type: string
+      enum: [validated, promoted, rejected]
+    ProjectEvidenceActionKind:
+      type: string
+      enum: [code_change, doc_change, verifier_run, config_change, review_comment, other]
+    ProjectEvidenceOutcomeKind:
+      type: string
+      enum: [test, build, claim_check, manual_review, promotion, failure, other]
+    ProjectEvidenceOutcomeStatus:
+      type: string
+      enum: [passed, failed, blocked, unknown]
+    ProjectEvidencePromotionState:
+      type: string
+      enum: [candidate, validated, promoted, rejected]
+    ProjectEvidenceClaim:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, claim_ref, summary, status, created_at, updated_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        run_id: {type: string}
+        trace_id: {type: string}
+        claim_ref: {type: string}
+        summary: {type: string}
+        status:
+          $ref: '#/components/schemas/ProjectEvidenceClaimStatus'
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+      description: Metadata-only Evidence Graph claim. Raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, and PII are prohibited.
+    ProjectEvidenceEvidence:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, claim_id, evidence_ref, evidence_kind, created_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        claim_id: {type: string}
+        evidence_ref: {type: string}
+        evidence_kind:
+          $ref: '#/components/schemas/ProjectEvidenceEvidenceKind'
+        source_ref: {type: string}
+        summary: {type: string}
+        created_at: {type: string, format: date-time}
+    ProjectEvidenceDecision:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, claim_id, decision_ref, state, verifier_ref, rationale, decided_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        claim_id: {type: string}
+        decision_ref: {type: string}
+        state:
+          $ref: '#/components/schemas/ProjectEvidenceDecisionState'
+        verifier_ref: {type: string}
+        rationale: {type: string}
+        decided_at: {type: string, format: date-time}
+    ProjectEvidenceAction:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, claim_id, decision_id, action_ref, action_kind, created_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        claim_id: {type: string}
+        decision_id: {type: string}
+        action_ref: {type: string}
+        action_kind:
+          $ref: '#/components/schemas/ProjectEvidenceActionKind'
+        summary: {type: string}
+        changed_files:
+          type: array
+          items: {type: string}
+        run_id: {type: string}
+        created_at: {type: string, format: date-time}
+    ProjectEvidenceOutcome:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, claim_id, action_id, outcome_ref, outcome_kind, status, created_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        claim_id: {type: string}
+        action_id: {type: string}
+        outcome_ref: {type: string}
+        outcome_kind:
+          $ref: '#/components/schemas/ProjectEvidenceOutcomeKind'
+        status:
+          $ref: '#/components/schemas/ProjectEvidenceOutcomeStatus'
+        verifier_ref: {type: string}
+        summary: {type: string}
+        created_at: {type: string, format: date-time}
+    ProjectEvidenceArtifactLink:
+      type: object
+      additionalProperties: false
+      required: [project_id, claim_id, artifact_ref]
+      properties:
+        project_id: {type: string}
+        claim_id: {type: string}
+        artifact_ref: {type: string}
+        artifact_kind: {type: string}
+        run_id: {type: string}
+    ProjectEvidencePromotionLink:
+      type: object
+      additionalProperties: false
+      required: [project_id, claim_id, artifact_ref, promotion_state, source_ref, decided_at]
+      properties:
+        project_id: {type: string}
+        claim_id: {type: string}
+        run_id: {type: string}
+        artifact_ref: {type: string}
+        promotion_state:
+          $ref: '#/components/schemas/ProjectEvidencePromotionState'
+        source_ref: {type: string}
+        verifier_ref: {type: string}
+        decision_ref: {type: string}
+        action_ref: {type: string}
+        outcome_ref: {type: string}
+        decided_at: {type: string, format: date-time}
+    ProjectEvidenceClaimRecord:
+      type: object
+      additionalProperties: false
+      required: [claim]
+      properties:
+        claim:
+          $ref: '#/components/schemas/ProjectEvidenceClaim'
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectEvidenceEvidence'
+        decisions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectEvidenceDecision'
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectEvidenceAction'
+        outcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectEvidenceOutcome'
+        artifact_links:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectEvidenceArtifactLink'
+        promotion_links:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectEvidencePromotionLink'
+    ProjectEvidenceClaimList:
+      type: object
+      additionalProperties: false
+      required: [claims]
+      properties:
+        claims:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectEvidenceClaim'
+        next_page_token: {type: string}
+    CreateProjectEvidenceClaimRequest:
+      type: object
+      additionalProperties: false
+      required: [claim_ref, summary]
+      properties:
+        run_id: {type: string, maxLength: 200}
+        trace_id: {type: string, maxLength: 200}
+        claim_ref: {type: string, minLength: 1, maxLength: 200}
+        summary: {type: string, minLength: 1, maxLength: 500}
+        status:
+          $ref: '#/components/schemas/ProjectEvidenceClaimStatus'
+    AppendProjectEvidenceRequest:
+      type: object
+      additionalProperties: false
+      required: [evidence_ref, evidence_kind]
+      properties:
+        evidence_ref: {type: string, minLength: 1, maxLength: 200}
+        evidence_kind:
+          $ref: '#/components/schemas/ProjectEvidenceEvidenceKind'
+        source_ref: {type: string, maxLength: 200}
+        summary: {type: string, maxLength: 500}
+    CreateProjectEvidenceDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [decision_ref, state, verifier_ref, rationale]
+      properties:
+        decision_ref: {type: string, minLength: 1, maxLength: 200}
+        state:
+          $ref: '#/components/schemas/ProjectEvidenceDecisionState'
+        verifier_ref: {type: string, minLength: 1, maxLength: 200}
+        rationale: {type: string, minLength: 1, maxLength: 500}
+    CreateProjectEvidenceActionRequest:
+      type: object
+      additionalProperties: false
+      required: [decision_id, action_ref, action_kind]
+      properties:
+        decision_id: {type: string, minLength: 1, maxLength: 200}
+        action_ref: {type: string, minLength: 1, maxLength: 200}
+        action_kind:
+          $ref: '#/components/schemas/ProjectEvidenceActionKind'
+        summary: {type: string, maxLength: 500}
+        changed_files:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 300}
+        run_id: {type: string, maxLength: 200}
+    CreateProjectEvidenceOutcomeRequest:
+      type: object
+      additionalProperties: false
+      required: [action_id, outcome_ref, outcome_kind, status]
+      properties:
+        action_id: {type: string, minLength: 1, maxLength: 200}
+        outcome_ref: {type: string, minLength: 1, maxLength: 200}
+        outcome_kind:
+          $ref: '#/components/schemas/ProjectEvidenceOutcomeKind'
+        status:
+          $ref: '#/components/schemas/ProjectEvidenceOutcomeStatus'
+        verifier_ref: {type: string, maxLength: 200}
+        summary: {type: string, maxLength: 500}
+    LinkProjectEvidenceArtifactRequest:
+      type: object
+      additionalProperties: false
+      required: [artifact_ref]
+      properties:
+        artifact_ref: {type: string, minLength: 1, maxLength: 200}
+        artifact_kind: {type: string, maxLength: 200}
+        run_id: {type: string, maxLength: 200}
+    LinkProjectEvidencePromotionRequest:
+      type: object
+      additionalProperties: false
+      required: [artifact_ref, promotion_state, source_ref]
+      properties:
+        run_id: {type: string, maxLength: 200}
+        artifact_ref: {type: string, minLength: 1, maxLength: 200}
+        promotion_state:
+          $ref: '#/components/schemas/ProjectEvidencePromotionState'
+        source_ref: {type: string, minLength: 1, maxLength: 200}
+        verifier_ref: {type: string, maxLength: 200}
+        decision_ref: {type: string, maxLength: 200}
+        action_ref: {type: string, maxLength: 200}
+        outcome_ref: {type: string, maxLength: 200}
+      description: Non-candidate links require verifier_ref and decision_ref. Promoted links require outcome_ref for a passed outcome.
     ErrorResponse:
       type: object
       additionalProperties: false

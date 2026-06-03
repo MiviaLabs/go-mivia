@@ -282,7 +282,7 @@ func normalizeRouteClaim(route string) string {
 		route = before
 	}
 	route = strings.TrimRight(route, "/")
-	for _, placeholder := range []string{"id", "project_id", "run_id", "file_id", "symbol_id", "task_id"} {
+	for _, placeholder := range []string{"id", "project_id", "run_id", "file_id", "symbol_id", "task_id", "claim_id"} {
 		route = strings.ReplaceAll(route, "{"+placeholder+"}", "*")
 		route = strings.ReplaceAll(route, "<"+placeholder+">", "*")
 	}
@@ -309,7 +309,7 @@ func shouldWildcardRouteSegment(parts []string, index int, segment string) bool 
 		previous = parts[index-1]
 	}
 	switch previous {
-	case "projects", "tasks", "research-runs", "agent-runs", "files", "symbols", "ingestion-runs", "digest-runs":
+	case "projects", "tasks", "research-runs", "agent-runs", "files", "symbols", "ingestion-runs", "digest-runs", "claims":
 		return true
 	default:
 		return false
@@ -341,6 +341,9 @@ func defaultKnownTools() []string {
 		"projects.symbol.callers", "projects.symbol.callees", "projects.symbol.call_graph", "projects.headings.list", "projects.file.outline",
 		"projects.workspace.git_status", "projects.workspace.git_diff", "projects.workspace.file_read", "projects.workspace.file_edit", "projects.workspace.file_create", "projects.workspace.file_delete",
 		"projects.diagnostics.ingestion",
+		"projects.evidence_graph.claims.create", "projects.evidence_graph.claims.get", "projects.evidence_graph.claims.list",
+		"projects.evidence_graph.evidence.append", "projects.evidence_graph.decisions.create", "projects.evidence_graph.actions.create",
+		"projects.evidence_graph.outcomes.create", "projects.evidence_graph.artifacts.link", "projects.evidence_graph.promotions.link",
 		"projects.integrations.list", "projects.integrations.status", "projects.integrations.counts", "projects.integrations.poll",
 		"projects.integrations.poll_status", "projects.integrations.search", "projects.jira.issue.get", "projects.confluence.page.get",
 	})
@@ -378,5 +381,9 @@ func defaultKnownRoutes() []string {
 		"/api/v1/projects/*/headings",
 		"/api/v1/projects/*/workspace/git/status", "/api/v1/projects/*/workspace/git/diff", "/api/v1/projects/*/workspace/files/read", "/api/v1/projects/*/workspace/files/edit",
 		"/api/v1/projects/*/workspace/files/create", "/api/v1/projects/*/workspace/files/delete",
+		"/api/v1/projects/*/evidence-graph/claims", "/api/v1/projects/*/evidence-graph/claims/*",
+		"/api/v1/projects/*/evidence-graph/claims/*/evidence", "/api/v1/projects/*/evidence-graph/claims/*/decisions",
+		"/api/v1/projects/*/evidence-graph/claims/*/actions", "/api/v1/projects/*/evidence-graph/claims/*/outcomes",
+		"/api/v1/projects/*/evidence-graph/claims/*/artifact-links", "/api/v1/projects/*/evidence-graph/claims/*/promotion-links",
 	}
 }

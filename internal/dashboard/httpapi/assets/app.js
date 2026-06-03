@@ -33,6 +33,7 @@ const FILTERS = [
 const TABS = [
   { id: "overview", label: "Overview" },
   { id: "graph", label: "Graph" },
+  { id: "evidence", label: "Evidence Graph" },
   { id: "ingestion", label: "Ingestion" },
   { id: "workspace", label: "Workspace" },
   { id: "integrations", label: "Integrations" },
@@ -942,6 +943,7 @@ function buildTabs(project, health, latest, graph, dashboard) {
   const renderers = {
     overview: () => tabOverview(project, health, latest, graph),
     graph: () => tabGraph(graph),
+    evidence: () => tabEvidenceGraph(project.id),
     ingestion: () => tabIngestion(latest, graph),
     workspace: () => tabWorkspace(dashboard.workspace),
     integrations: () => tabIntegrations(project, dashboard.integrations),
@@ -1046,6 +1048,341 @@ function tabGraph(graph) {
         ? el("div", { class: "grid" }, ...concentration)
         : emptyText("No concentration data.")),
   );
+}
+
+function tabEvidenceGraph(projectID) {
+  const listNode = el("div", { class: "rows" }, emptyText("Loading evidence claims..."));
+  const detailNode = el("div", { class: "evidence-detail" }, emptyText("Select a claim to inspect the chain."));
+  const pagerNode = el("div", { class: "integration-pager" });
+  const state = { claims: [], nextPageToken: "", loading: false, selectedClaimID: "" };
+  const controls = evidenceFilterForm(projectID, state, listNode, pagerNode, detailNode);
+  const body = el("div", { class: "evidence-layout" },
+    block("Claims", controls, listNode, pagerNode),
+    block("Claim chain", detailNode),
+  );
+  loadEvidenceClaims(projectID, state, listNode, pagerNode, detailNode, false);
+  return panel("Evidence Graph", body);
+}
+
+function evidenceFilterForm(projectID, state, listNode, pagerNode, detailNode) {
+  const claimSearch = evidenceInput("Claim id", "claim_id_search");
+  const artifactRef = evidenceInput("Artifact ref", "artifact_ref");
+  const runID = evidenceInput("Run id", "run_id");
+  const traceID = evidenceInput("Trace id", "trace_id");
+  const promotionState = evidenceSelect("Promotion", "promotion_state", ["", "candidate", "validated", "promoted", "rejected"]);
+  const outcomeStatus = evidenceSelect("Outcome", "outcome_status", ["", "passed", "failed", "blocked", "unknown"]);
+  const fields = { claimSearch, artifactRef, runID, traceID, promotionState, outcomeStatus };
+  const form = el("form", {
+    class: "evidence-filters",
+    onSubmit: async (event) => {
+      event.preventDefault();
+      await loadEvidenceClaims(projectID, state, listNode, pagerNode, detailNode, false, fields);
+    },
+  },
+    claimSearch,
+    artifactRef,
+    promotionState,
+    outcomeStatus,
+    runID,
+    traceID,
+    el("button", { type: "submit", class: "compact", text: "Apply" }),
+    el("button", {
+      type: "button",
+      class: "secondary compact",
+      onClick: () => {
+        Object.values(fields).forEach((field) => { field.value = ""; });
+        loadEvidenceClaims(projectID, state, listNode, pagerNode, detailNode, false, fields);
+      },
+      text: "Clear",
+    }),
+  );
+  form.dataset.projectSubview = "evidence-graph";
+  return form;
+}
+
+function evidenceInput(label, name) {
+  return el("input", { type: "search", name, placeholder: label, "aria-label": label, autocomplete: "off" });
+}
+
+function evidenceSelect(label, name, values) {
+  return el("select", { name, "aria-label": label },
+    values.map((value) => el("option", { value, text: value || label })),
+  );
+}
+
+async function loadEvidenceClaims(projectID, state, listNode, pagerNode, detailNode, append, fields) {
+  if (state.loading) return;
+  state.loading = true;
+  renderEvidencePager(projectID, state, listNode, pagerNode, detailNode, fields);
+  const filter = evidenceFilterValues(fields);
+  if (!append) {
+    state.nextPageToken = "";
+    state.selectedClaimID = "";
+    listNode.replaceChildren(emptyText("Loading evidence claims..."));
+    detailNode.replaceChildren(emptyText("Select a claim to inspect the chain."));
+  }
+  try {
+    if (!append && filter.claimSearch) {
+      await loadEvidenceClaimByID(projectID, filter.claimSearch, state, listNode, detailNode);
+      return;
+    }
+    const params = new URLSearchParams({ page_size: "20" });
+    if (append && state.nextPageToken) params.set("page_token", state.nextPageToken);
+    setParam(params, "artifact_ref", filter.artifactRef);
+    setParam(params, "promotion_state", filter.promotionState);
+    setParam(params, "outcome_status", filter.outcomeStatus);
+    setParam(params, "run_id", filter.runID);
+    setParam(params, "trace_id", filter.traceID);
+    const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/evidence-graph/claims?${params}`, 12000);
+    const claims = Array.isArray(data.claims) ? data.claims : [];
+    const visible = filter.claimSearch ? claims.filter((claim) => evidenceClaimMatches(claim, filter.claimSearch)) : claims;
+    state.claims = append ? state.claims.concat(visible) : visible;
+    state.nextPageToken = data.next_page_token || data.NextPageToken || "";
+    renderEvidenceClaims(projectID, state, listNode, detailNode);
+  } catch (error) {
+    if (!append) listNode.replaceChildren(emptyText(error.message));
+  } finally {
+    state.loading = false;
+    renderEvidencePager(projectID, state, listNode, pagerNode, detailNode, fields);
+  }
+}
+
+async function loadEvidenceClaimByID(projectID, claimID, state, listNode, detailNode) {
+  try {
+    const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/evidence-graph/claims/${encodeURIComponent(claimID)}`, 12000);
+    const claim = data?.claim || null;
+    state.claims = claim ? [claim] : [];
+    state.nextPageToken = "";
+    renderEvidenceClaims(projectID, state, listNode, detailNode);
+    if (claim?.id) {
+      state.selectedClaimID = claim.id;
+      detailNode.replaceChildren(evidenceClaimChain(data));
+    }
+  } catch {
+    state.claims = [];
+    state.nextPageToken = "";
+    renderEvidenceClaims(projectID, state, listNode, detailNode);
+  }
+}
+
+function evidenceFilterValues(fields) {
+  if (!fields) return {};
+  return {
+    claimSearch: fields.claimSearch.value.trim().toLowerCase(),
+    artifactRef: fields.artifactRef.value.trim(),
+    promotionState: fields.promotionState.value.trim(),
+    outcomeStatus: fields.outcomeStatus.value.trim(),
+    runID: fields.runID.value.trim(),
+    traceID: fields.traceID.value.trim(),
+  };
+}
+
+function setParam(params, key, value) {
+  if (value) params.set(key, value);
+}
+
+function evidenceClaimMatches(claim, query) {
+  const haystack = [
+    claim?.id,
+    claim?.claim_ref,
+    claim?.summary,
+    claim?.status,
+    claim?.run_id,
+    claim?.trace_id,
+  ].map(safeEvidenceText).join(" ").toLowerCase();
+  return haystack.includes(query);
+}
+
+function renderEvidenceClaims(projectID, state, listNode, detailNode) {
+  clear(listNode);
+  if (!state.claims.length) {
+    listNode.append(emptyText("No evidence claims match the current filters."));
+    return;
+  }
+  state.claims.forEach((claim) => {
+    const claimID = safeEvidenceText(claim.id);
+    listNode.append(el("button", {
+      class: "integration-row",
+      type: "button",
+      disabled: !claimID,
+      onClick: () => loadEvidenceClaimDetail(projectID, claimID, state, detailNode),
+    },
+      el("strong", { text: safeEvidenceText(claim.claim_ref || claim.id) || "claim" }),
+      el("span", { text: compactJoin([claim.status, claim.run_id, claim.trace_id, formatDate(claim.updated_at || claim.created_at)]) }),
+      el("span", { text: safeEvidenceSummary(claim.summary) }),
+    ));
+  });
+}
+
+function renderEvidencePager(projectID, state, listNode, pagerNode, detailNode, fields) {
+  clear(pagerNode);
+  if (state.loading) {
+    pagerNode.append(el("span", { class: "muted-text", text: "Loading evidence claims..." }));
+    return;
+  }
+  if (!state.nextPageToken) return;
+  pagerNode.append(el("button", {
+    type: "button",
+    class: "compact",
+    onClick: () => loadEvidenceClaims(projectID, state, listNode, pagerNode, detailNode, true, fields),
+    text: "Load more",
+  }));
+}
+
+async function loadEvidenceClaimDetail(projectID, claimID, state, detailNode) {
+  state.selectedClaimID = claimID;
+  detailNode.replaceChildren(emptyText("Loading claim chain..."));
+  try {
+    const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/evidence-graph/claims/${encodeURIComponent(claimID)}`, 12000);
+    if (state.selectedClaimID !== claimID) return;
+    detailNode.replaceChildren(evidenceClaimChain(data));
+  } catch (error) {
+    detailNode.replaceChildren(emptyText(error.message));
+  }
+}
+
+function evidenceClaimChain(record) {
+  const claim = record?.claim || {};
+  return el("div", { class: "evidence-chain" },
+    evidenceFlow(),
+    infoList([
+      ["Claim", safeEvidenceText(claim.claim_ref || claim.id)],
+      ["Status", safeEvidenceText(claim.status)],
+      ["Run", safeEvidenceText(claim.run_id)],
+      ["Trace", safeEvidenceText(claim.trace_id)],
+      ["Created", formatDate(claim.created_at)],
+      ["Updated", formatDate(claim.updated_at)],
+    ]),
+    safeEvidenceSummary(claim.summary) ? block("Summary", el("p", { text: safeEvidenceSummary(claim.summary) })) : null,
+    evidenceSection("Evidence", record?.evidence, evidenceRowEvidence),
+    evidenceSection("Decisions", record?.decisions, evidenceRowDecision),
+    evidenceSection("Actions", record?.actions, evidenceRowAction),
+    evidenceSection("Outcomes", record?.outcomes, evidenceRowOutcome),
+    evidenceSection("Artifacts", record?.artifact_links, evidenceRowArtifact),
+    evidenceSection("Promotions", record?.promotion_links, evidenceRowPromotion),
+  );
+}
+
+function evidenceFlow() {
+  return el("div", { class: "flow" },
+    ["Claim", "Evidence", "Decision", "Action", "Outcome"].map((label) => el("div", { class: "flow__node" },
+      pill(label, "muted"),
+      el("strong", { class: "flow__val", text: label }),
+    )),
+  );
+}
+
+function evidenceSection(title, items, renderer) {
+  const rows = Array.isArray(items) ? items : [];
+  return block(title, rows.length ? el("div", { class: "rows" }, rows.map(renderer)) : emptyText(`No ${title.toLowerCase()} recorded.`));
+}
+
+function evidenceRowEvidence(item) {
+  return evidenceMetadataRow(
+    safeEvidenceText(item.evidence_ref),
+    compactJoin([item.evidence_kind, item.source_ref, formatDate(item.created_at)]),
+    safeEvidenceSummary(item.summary),
+  );
+}
+
+function evidenceRowDecision(item) {
+  return evidenceMetadataRow(
+    safeEvidenceText(item.decision_ref),
+    compactJoin([item.state, item.verifier_ref, formatDate(item.decided_at)]),
+    safeEvidenceSummary(item.rationale),
+  );
+}
+
+function evidenceRowAction(item) {
+  const paths = safeChangedPaths(item.changed_files);
+  return evidenceMetadataRow(
+    safeEvidenceText(item.action_ref),
+    compactJoin([item.action_kind, item.run_id, formatDate(item.created_at)]),
+    safeEvidenceSummary(item.summary),
+    paths.length ? el("div", { class: "tag-list" }, paths.map((path) => el("span", { class: "tag", text: path }))) : null,
+  );
+}
+
+function evidenceRowOutcome(item) {
+  return evidenceMetadataRow(
+    safeEvidenceText(item.outcome_ref),
+    compactJoin([item.outcome_kind, item.status, item.verifier_ref, formatDate(item.created_at)]),
+    safeEvidenceSummary(item.summary),
+  );
+}
+
+function evidenceRowArtifact(item) {
+  return evidenceMetadataRow(
+    safeEvidenceText(item.artifact_ref),
+    compactJoin([item.artifact_kind, item.run_id]),
+    "",
+  );
+}
+
+function evidenceRowPromotion(item) {
+  return evidenceMetadataRow(
+    safeEvidenceText(item.artifact_ref),
+    compactJoin([item.promotion_state, item.run_id, item.verifier_ref, item.decision_ref, item.action_ref, item.outcome_ref, formatDate(item.decided_at)]),
+    safeEvidenceText(item.source_ref),
+  );
+}
+
+function evidenceMetadataRow(title, meta, summaryText, extra) {
+  return el("div", { class: "row row--file" },
+    el("strong", { text: title || "metadata" }),
+    meta ? el("span", { text: meta }) : null,
+    summaryText ? el("span", { text: summaryText }) : null,
+    extra || null,
+  );
+}
+
+function compactJoin(values) {
+  return values.map(safeEvidenceText).filter(Boolean).join(" | ");
+}
+
+function safeEvidenceSummary(value) {
+  const text = safeEvidenceText(value);
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
+}
+
+function safeEvidenceText(value) {
+  if (value == null) return "";
+  const text = String(value).replace(/\s+/g, " ").trim();
+  if (!text || unsafeEvidenceText(text)) return "";
+  return text;
+}
+
+function unsafeEvidenceText(text) {
+  const lower = text.toLowerCase();
+  return lower.includes("raw_prompt") ||
+    lower.includes("raw prompt") ||
+    lower.includes("raw_request") ||
+    lower.includes("raw_result") ||
+    lower.includes("raw stderr") ||
+    lower.includes("raw source") ||
+    lower.includes("source dump") ||
+    lower.includes("package main") ||
+    lower.includes("func ") ||
+    lower.includes("provider payload") ||
+    lower.includes("authorization:") ||
+    lower.includes("bearer ") ||
+    lower.includes("token=") ||
+    lower.includes("secret=") ||
+    lower.includes("wsl.localhost") ||
+    lower.includes("http://") ||
+    lower.includes("https://") ||
+    lower.includes("/home/") ||
+    /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(text) ||
+    /\+?[0-9][0-9 .()-]{7,}[0-9]/.test(text) ||
+    /^[a-z]:\\/i.test(text) ||
+    /\\/.test(text);
+}
+
+function safeChangedPaths(paths) {
+  if (!Array.isArray(paths)) return [];
+  return paths
+    .map(safeEvidenceText)
+    .filter((path) => path && !path.startsWith("/") && !path.includes("..") && !path.includes(":"));
 }
 
 function tabIngestion(latest, graph) {
