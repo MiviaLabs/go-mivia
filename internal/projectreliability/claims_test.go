@@ -191,6 +191,29 @@ func TestClaimChecker_VerifiesAutomationToolsRoutesAndAliases(t *testing.T) {
 	}
 }
 
+func TestClaimChecker_VerifiesWorkflowToolsAndAliases(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		ProjectID:       "example-service",
+		IncludeVerified: true,
+		Documents: []ClaimDocument{{
+			Path: "api/mcp/agent-control.v1.md",
+			Text: "Use projects.workflows.validate_toml, projects_workflows_import_toml, projects.workflows.compile_to_work_plan, projects_agent_definitions_get, and projects.permission_snapshots.list.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	for _, claim := range []string{
+		"projects.workflows.validate_toml",
+		"projects_workflows_import_toml",
+		"projects.workflows.compile_to_work_plan",
+		"projects_agent_definitions_get",
+		"projects.permission_snapshots.list",
+	} {
+		assertClaimStatus(t, result, claim, "verified")
+	}
+}
+
 func TestClaimChecker_FlagsStaleToolAndTaskLink(t *testing.T) {
 	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
 		Documents: []ClaimDocument{{

@@ -37,6 +37,7 @@ const (
 	defaultIntegrationPageSize        = 100
 	defaultConfluencePageSize         = 50
 	defaultIntegrationMaxResults      = 0
+	defaultAutomationPollInterval     = 5 * time.Second
 	defaultSQLiteBusyTimeout          = 5 * time.Second
 	defaultSQLiteSynchronous          = "NORMAL"
 	defaultSensitiveMarkerPolicy      = "skip_file"
@@ -60,6 +61,7 @@ type Config struct {
 	ShutdownTimeout   time.Duration
 	Ingestion         Ingestion
 	Workspace         Workspace
+	Workflows         Workflows
 	AgentActivity     AgentActivity
 	Automation        Automation
 	Projects          []Project
@@ -88,6 +90,11 @@ type Workspace struct {
 	Enabled bool
 }
 
+type Workflows struct {
+	Enabled         bool
+	DefinitionPaths []string
+}
+
 type AgentActivity struct {
 	RetainRawPayloads bool
 }
@@ -99,6 +106,7 @@ type Automation struct {
 	AllowManualRunner         bool
 	RunnerExecution           string
 	QueueDepth                int
+	PollInterval              time.Duration
 	GlobalWorkerCount         int
 	PerProjectWorkerLimit     int
 	PerAgentWorkerLimit       int
@@ -298,6 +306,7 @@ func defaultConfig(configPath string) Config {
 		ShutdownTimeout:   defaultShutdownTimeout,
 		Ingestion:         defaultIngestion(),
 		Workspace:         Workspace{Enabled: false},
+		Workflows:         Workflows{Enabled: false},
 		Automation:        defaultAutomation(),
 		Projects:          nil,
 	}
@@ -311,6 +320,7 @@ func defaultAutomation() Automation {
 		AllowManualRunner:         false,
 		RunnerExecution:           "in_process",
 		QueueDepth:                16,
+		PollInterval:              defaultAutomationPollInterval,
 		GlobalWorkerCount:         1,
 		PerProjectWorkerLimit:     1,
 		PerAgentWorkerLimit:       1,
@@ -513,6 +523,9 @@ func (cfg Config) Validate() error {
 	if err := cfg.Ingestion.Validate(); err != nil {
 		return err
 	}
+	if err := cfg.Workflows.Validate(); err != nil {
+		return err
+	}
 	if cfg.AgentActivity.RetainRawPayloads && !cfg.Debug.Enabled {
 		return errors.New("MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS requires MIVIA_DEBUG_ENABLED")
 	}
@@ -606,6 +619,9 @@ func (automation Automation) Validate() error {
 	if automation.QueueDepth <= 0 {
 		return errors.New("MIVIA_AUTOMATION_QUEUE_DEPTH must be positive")
 	}
+	if automation.PollInterval <= 0 {
+		return errors.New("MIVIA_AUTOMATION_POLL_INTERVAL must be positive")
+	}
 	if automation.GlobalWorkerCount <= 0 {
 		return errors.New("MIVIA_AUTOMATION_GLOBAL_WORKER_COUNT must be positive")
 	}
@@ -627,6 +643,19 @@ func (automation Automation) Validate() error {
 	for _, agent := range automation.Agents {
 		if err := agent.Validate(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (workflows Workflows) Validate() error {
+	for _, path := range workflows.DefinitionPaths {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
+			return errors.New("MIVIA_WORKFLOWS_DEFINITION_PATHS must not contain empty paths")
+		}
+		if strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "\\") || strings.Contains(trimmed, ":") || strings.Contains(trimmed, "//") || strings.Contains(trimmed, "..") {
+			return errors.New("MIVIA_WORKFLOWS_DEFINITION_PATHS must contain safe relative paths")
 		}
 	}
 	return nil

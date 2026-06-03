@@ -74,6 +74,10 @@ func TestLoadFileConfig_AcceptsDisabledAutomationConfig(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1
 
+[workflows]
+enabled = false
+definition_paths = ["configs/workflows/governed-feature.toml"]
+
 [automation]
 enabled = false
 runner_enabled = false
@@ -81,6 +85,7 @@ runner_execution = "external"
 require_codex_when_available = true
 allow_manual_runner = false
 queue_depth = 32
+poll_interval = "2s"
 global_worker_count = 2
 per_project_worker_limit = 1
 per_agent_worker_limit = 1
@@ -100,11 +105,14 @@ codex_binary_path = "codex"
 	if merged.Automation.Enabled || merged.Automation.RunnerEnabled {
 		t.Fatalf("expected disabled automation defaults, got %+v", merged.Automation)
 	}
-	if merged.Automation.QueueDepth != 32 || merged.Automation.MaxParallelTasks != 2 {
+	if merged.Automation.QueueDepth != 32 || merged.Automation.PollInterval.String() != "2s" || merged.Automation.MaxParallelTasks != 2 {
 		t.Fatalf("unexpected automation limits: %+v", merged.Automation)
 	}
 	if merged.Automation.RunnerExecution != "external" {
 		t.Fatalf("unexpected runner execution: %+v", merged.Automation)
+	}
+	if merged.Workflows.Enabled || len(merged.Workflows.DefinitionPaths) != 1 || merged.Workflows.DefinitionPaths[0] != "configs/workflows/governed-feature.toml" {
+		t.Fatalf("unexpected workflow config: %+v", merged.Workflows)
 	}
 }
 
@@ -122,6 +130,30 @@ version = 1
 
 [automation]
 max_parallel_tasks = 0
+`,
+		"negative_poll_interval": `
+version = 1
+
+[automation]
+poll_interval = "-1s"
+`,
+		"absolute_workflow_path": `
+version = 1
+
+[workflows]
+definition_paths = ["/home/mac/workflow.toml"]
+`,
+		"parent_workflow_path": `
+version = 1
+
+[workflows]
+definition_paths = ["../workflow.toml"]
+`,
+		"windows_drive_workflow_path": `
+version = 1
+
+[workflows]
+definition_paths = ["C:/workflow.toml"]
 `,
 		"unknown_field": `
 version = 1

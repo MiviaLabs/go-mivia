@@ -30,6 +30,53 @@ Review and implementation guidance:
 - Before commit, use the smallest verification set appropriate to the changed files and risk. Add `projects.context_health`, `projects.impact.analyze`, `projects.claims.check`, or `agent_runs.*` only when they materially improve confidence, support a review/handoff, or are explicitly requested.
 - For multi-step reviews, fix loops, implementation handoffs, or resumable work, agents should use `agent_runs.*` to record redacted breadcrumbs and `agent_runs.promote_artifact` to record promotion-gate decisions for existing artifact refs. Store only safe metadata; never store raw prompts, completions, source dumps, raw stderr, roots, secrets, provider payloads, skipped sensitive content, or PII.
 
+## Project Workflow TOML
+
+Project Workflow TOML is a compile-only metadata surface. It validates and imports bounded workflow definitions, agent definitions, review gates, step dependencies, permission snapshots, and safe refs. It does not execute TOML, raw prompts, shell commands, Codex CLI, source, stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
+
+Use workflow tools only when the running server exposes them through `tools/list`:
+
+```text
+projects.workflows.validate_toml
+projects.workflows.import_toml
+projects.workflows.get
+projects.workflows.list
+projects.workflows.update_status
+projects.workflows.compile_to_work_plan
+projects.agent_definitions.list
+projects.agent_definitions.get
+projects.permission_snapshots.get
+projects.permission_snapshots.list
+```
+
+Rules:
+
+1. Validate TOML before import. Validation returns metadata and issues only.
+2. Import stores workflow metadata only. Import does not create execution runs and does not bypass Work Plans or Work Tasks.
+3. Enable workflow metadata only after review gates, verifier requirements, evidence/claim refs, resume instructions, safe affected-file refs, and permission metadata are present.
+4. Compile with `projects.workflows.compile_to_work_plan` before automation. Compile creates or returns Work Plan, Work Task, reviewer task, automation, and permission snapshot refs; it does not run automation.
+5. Required review gates must be independent when `independent_from_owner=true`; a reviewer agent cannot review the same agent's implementation or automation step.
+6. Automation steps must depend on at least one Work Task step and have a required review gate. Automation remains an executor over ready Work Tasks only.
+7. Permission snapshots are immutable metadata for allowed skills/tools/commands, denied commands, workspace mode, network policy, secret policy, log policy, runtime, retry policy, content hash, and run/trace refs. They are not OS sandbox proof or execution approval.
+8. Reusable conclusions must follow the order: Evidence Graph refs and outcomes, verifier refs, independent review refs, confidence score when reusable, Knowledge Promotion candidate, validation, project promotion, optional org review/promotion. Knowledge never auto-promotes from TOML, automation, or confidence alone.
+
+REST mirrors the same metadata surface at:
+
+```text
+POST /api/v1/projects/{id}/workflows/validate-toml
+POST /api/v1/projects/{id}/workflows/import-toml
+GET /api/v1/projects/{id}/workflows
+GET /api/v1/projects/{id}/workflows/{workflow_id}
+POST /api/v1/projects/{id}/workflows/{workflow_id}/status
+POST /api/v1/projects/{id}/workflows/{workflow_id}/compile
+GET /api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions
+GET /api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions/{agent_id}
+GET /api/v1/projects/{id}/permission-snapshots
+GET /api/v1/projects/{id}/permission-snapshots/{snapshot_id}
+```
+
+Workflow records, agent definitions, review gates, compile results, and permission snapshots must stay metadata-only. Never store raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
+
 ## Governed Work Plans And Work Tasks
 
 Work Plans and Work Tasks are the governed workflow for multi-step implementation once the running MCP server exposes `projects.work_plans.*` and `projects.work_tasks.*` through `tools/list`. Before relying on them, verify the callable surface. If the tools are absent, report the surface gap explicitly; do not claim they are available and do not store Work Plan/Task records in ad hoc stable docs.

@@ -1,6 +1,9 @@
 package projectautomation
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 const (
 	AutomationStatusDraft      = "draft"
@@ -51,6 +54,13 @@ const (
 	TriggerKindManual = "manual"
 )
 
+const (
+	AutomationSourceManual   = "manual"
+	AutomationSourceWorkflow = "workflow"
+)
+
+const PermissionSnapshotRefPrefix = "permission_snapshot:"
+
 type Automation struct {
 	ID              string    `json:"id"`
 	ProjectID       string    `json:"project_id"`
@@ -62,6 +72,7 @@ type Automation struct {
 	PlanID          string    `json:"plan_id,omitempty"`
 	AllowedTaskRefs []string  `json:"allowed_task_refs,omitempty"`
 	TriggerKind     string    `json:"trigger_kind"`
+	SourceKind      string    `json:"source_kind,omitempty"`
 	SchedulePolicy  string    `json:"schedule_policy,omitempty"`
 	PermissionRef   string    `json:"permission_ref"`
 	CreatedByRunID  string    `json:"created_by_run_id,omitempty"`
@@ -161,6 +172,19 @@ type Options struct {
 	DefaultMaxRuntime         time.Duration
 	CodexBinaryPath           string
 	Agents                    []AutomationAgent
+	PermissionResolver        PermissionResolver
+	Governance                GovernanceOptions
+}
+
+type ExecutorOptions struct {
+	Enabled               bool
+	RunnerEnabled         bool
+	RunnerExecution       string
+	PollInterval          time.Duration
+	GlobalWorkerCount     int
+	PerProjectWorkerLimit int
+	PerAgentWorkerLimit   int
+	ProjectIDs            []string
 }
 
 type CreateAutomationInput struct {
@@ -172,6 +196,7 @@ type CreateAutomationInput struct {
 	PlanID          string   `json:"plan_id,omitempty"`
 	AllowedTaskRefs []string `json:"allowed_task_refs,omitempty"`
 	PermissionRef   string   `json:"permission_ref"`
+	SourceKind      string   `json:"source_kind,omitempty"`
 	CreatedByRunID  string   `json:"created_by_run_id,omitempty"`
 	TraceID         string   `json:"trace_id,omitempty"`
 }
@@ -232,5 +257,27 @@ type CompleteAttemptInput struct {
 	VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 	ClaimRefs          []string `json:"claim_refs,omitempty"`
+	ReviewRefs         []string `json:"review_result_refs,omitempty"`
 	KnowledgeRefs      []string `json:"knowledge_candidate_refs,omitempty"`
+}
+
+type PermissionCheckInput struct {
+	ProjectID       string
+	AutomationID    string
+	AutomationRef   string
+	AgentID         string
+	PermissionRef   string
+	RunnerKind      string
+	RunnerExecution string
+}
+
+type PermissionSnapshotMetadata struct {
+	PermissionRef      string
+	AgentID            string
+	AllowedRunnerKinds []string
+	DeniedCommands     []string
+}
+
+type PermissionResolver interface {
+	CheckAutomationPermission(context.Context, PermissionCheckInput) (PermissionSnapshotMetadata, error)
 }

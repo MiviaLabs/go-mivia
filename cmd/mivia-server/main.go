@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,6 +48,9 @@ import (
 	projecthttpapi "github.com/MiviaLabs/go-mivia/internal/projectregistry/httpapi"
 	projectstore "github.com/MiviaLabs/go-mivia/internal/projectregistry/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
+	workflowhttpapi "github.com/MiviaLabs/go-mivia/internal/projectworkflow/httpapi"
+	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 	workplanhttpapi "github.com/MiviaLabs/go-mivia/internal/projectworkplan/httpapi"
 	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
@@ -225,6 +230,7 @@ func run() error {
 	projectConfidenceService := projectconfidence.New(confidencestore.NewLadybugStore(projectGraph))
 	projectKnowledgeService := projectknowledge.New(knowledgestore.NewLadybugStore(projectGraph))
 	projectWorkPlanService := projectworkplan.New(workplanstore.NewLadybugStore(projectGraph))
+	projectWorkflowService := projectworkflow.New(workflowstore.NewMemoryStore())
 	projectAutomationService := projectautomation.New(automationstore.NewMemoryStore(), projectWorkPlanService, projectautomation.Options{
 		Enabled:                   cfg.Automation.Enabled,
 		RunnerEnabled:             cfg.Automation.RunnerEnabled,
@@ -235,7 +241,22 @@ func run() error {
 		DefaultMaxRuntime:         cfg.Automation.DefaultMaxRuntime,
 		CodexBinaryPath:           cfg.Automation.CodexBinaryPath,
 		Agents:                    automationAgents(cfg.Automation.Agents),
+		PermissionResolver:        projectWorkflowService,
 	})
+	projectAutomationExecutor := projectautomation.NewExecutor(projectAutomationService, projectautomation.ExecutorOptions{
+		Enabled:               cfg.Automation.Enabled,
+		RunnerEnabled:         cfg.Automation.RunnerEnabled,
+		RunnerExecution:       cfg.Automation.RunnerExecution,
+		PollInterval:          cfg.Automation.PollInterval,
+		GlobalWorkerCount:     cfg.Automation.GlobalWorkerCount,
+		PerProjectWorkerLimit: cfg.Automation.PerProjectWorkerLimit,
+		PerAgentWorkerLimit:   cfg.Automation.PerAgentWorkerLimit,
+		ProjectIDs:            automationProjectIDs(projectRegistry.List()),
+	})
+	projectWorkflowService.SetCompilerDependencies(projectWorkPlanService, projectAutomationService)
+	if err := loadConfiguredWorkflows(ctx, cfg, projectWorkflowService, logger); err != nil {
+		return err
+	}
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
 		LiveUpdatesEnabled:       cfg.Ingestion.LiveUpdatesEnabled,
 		DebounceInterval:         cfg.Ingestion.DebounceInterval,
@@ -309,6 +330,7 @@ func run() error {
 	knowledgehttpapi.RegisterRoutes(mux, projectKnowledgeService, projectKnowledgeInputs)
 	workplanhttpapi.RegisterRoutes(mux, projectWorkPlanService)
 	automationhttpapi.RegisterRoutes(mux, projectAutomationService)
+	workflowhttpapi.RegisterRoutes(mux, projectWorkflowService)
 	var diagnosticsService *diagnostics.Service
 	if diagnostics.Enabled(cfg.Debug.Enabled, cfg.HTTPAddr) {
 		diagnosticsService = diagnostics.NewService(projectingestion.DiagnosticsSource{
@@ -320,7 +342,7 @@ func run() error {
 		}, diagnostics.RuntimeOptions{Enabled: cfg.Debug.RuntimeMetricsEnabled})
 		diagnostics.RegisterRoutes(mux, diagnosticsService)
 	}
-	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAndAutomation(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectConfidenceService, projectConfidenceInputs, projectKnowledgeService, projectKnowledgeInputs, projectWorkPlanService, projectAutomationService, projectIntegrationService, diagnosticsService, activityRecorder, logger))
+	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationAndWorkflow(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectConfidenceService, projectConfidenceInputs, projectKnowledgeService, projectKnowledgeInputs, projectWorkPlanService, projectAutomationService, projectWorkflowService, projectIntegrationService, diagnosticsService, activityRecorder, logger))
 
 	handler := httpserver.Chain(
 		mux,
@@ -334,6 +356,10 @@ func run() error {
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+	}
+
+	if err := projectAutomationExecutor.Start(ctx); err != nil {
+		return err
 	}
 
 	errCh := make(chan error, 1)
@@ -358,6 +384,9 @@ func run() error {
 		if err := projectIntegrationScheduler.Stop(shutdownCtx); err != nil {
 			return err
 		}
+		if err := projectAutomationExecutor.Stop(shutdownCtx); err != nil {
+			return err
+		}
 		return server.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
@@ -365,11 +394,69 @@ func run() error {
 		_ = projectIngestionOrchestrator.Stop(shutdownCtx)
 		_ = projectIngestionScheduler.Stop(shutdownCtx)
 		_ = projectIntegrationScheduler.Stop(shutdownCtx)
+		_ = projectAutomationExecutor.Stop(shutdownCtx)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
 	}
+}
+
+func loadConfiguredWorkflows(ctx context.Context, cfg config.Config, svc *projectworkflow.Service, logger *slog.Logger) error {
+	if !cfg.Workflows.Enabled || svc == nil {
+		return nil
+	}
+	for _, configuredPath := range cfg.Workflows.DefinitionPaths {
+		cleanPath, err := resolveWorkflowDefinitionPath(cfg.ConfigPath, configuredPath)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(cleanPath)
+		if err != nil {
+			return errors.New("load workflow definition failed")
+		}
+		defs, issues, err := projectworkflow.ParseWorkflowTOML(data)
+		if err != nil {
+			return err
+		}
+		if len(defs) == 0 {
+			return errors.New("workflow definition file contained no workflows")
+		}
+		for _, issue := range issues {
+			if issue.Severity == "error" {
+				return errors.New("workflow definition validation failed")
+			}
+		}
+		result, err := svc.ImportWorkflowTOML(ctx, projectworkflow.ImportWorkflowTOMLInput{ProjectID: defs[0].ProjectID, Data: data, CreatedByRunID: "server-startup"})
+		if err != nil {
+			return err
+		}
+		logger.Info("workflow definitions loaded", slog.Int("workflow_count", len(result.Workflows)), slog.Int("permission_snapshot_count", len(result.PermissionSnapshotIDs)))
+	}
+	return nil
+}
+
+func resolveWorkflowDefinitionPath(configPath string, path string) (string, error) {
+	trimmedPath := strings.TrimSpace(path)
+	if strings.Contains(trimmedPath, "..") {
+		return "", errors.New("workflow definition path cannot contain traversal")
+	}
+	cleanPath := filepath.Clean(trimmedPath)
+	if cleanPath == "." || cleanPath == "" || filepath.IsAbs(cleanPath) {
+		return "", errors.New("workflow definition path must be relative")
+	}
+	for _, part := range strings.Split(cleanPath, string(filepath.Separator)) {
+		if part == ".." {
+			return "", errors.New("workflow definition path cannot contain traversal")
+		}
+	}
+	if configPath != "" {
+		configRelative := filepath.Join(filepath.Dir(configPath), cleanPath)
+		if _, err := os.Stat(configRelative); err == nil {
+			return configRelative, nil
+		}
+	}
+	return cleanPath, nil
 }
 
 func openProjectPersistentGraphs(registry *projectregistry.Registry, baseLadybugPath string) ([]projectregistry.ProjectGraphBackend, func(), error) {
@@ -559,4 +646,14 @@ func automationAgents(configAgents []config.AutomationAgent) []projectautomation
 		})
 	}
 	return agents
+}
+
+func automationProjectIDs(projects []projectregistry.Project) []string {
+	ids := make([]string, 0, len(projects))
+	for _, project := range projects {
+		if project.Enabled {
+			ids = append(ids, project.ID)
+		}
+	}
+	return ids
 }

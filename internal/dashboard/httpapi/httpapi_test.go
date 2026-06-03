@@ -82,6 +82,16 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"Workflows", "tabProjectWorkflows(project.id)", "projectSubview = \"workflows\"", "/workflows", "/agent-definitions", "/permission-snapshots?workflow_id=", "/compile",
+		"Workflow List", "Workflow Detail", "Permission Summary", "Steps And Dependencies", "Review Gates", "Reviewer Instructions",
+		"Validate compile", "Compile validated workflow", "Validate compile first. Compilation requires a second explicit action after validation passes.", "dry_run: true", "dry_run: false",
+		"workflowCompileHasErrors", "workflowPermissionSummary", "workflowReviewGateList", "workflowStepList", "workflowSafeRefs",
+	} {
+		if !strings.Contains(app.Body.String(), want) {
+			t.Fatalf("expected dashboard app to contain workflow affordance %q", want)
+		}
+	}
+	for _, want := range []string{
 		"Knowledge Promotion", "tabKnowledgePromotion(project.id)", "projectSubview = \"knowledge-promotion\"",
 		"/knowledge?", "/api/v1/orgs/default/knowledge?", "/knowledge/${encodeURIComponent(knowledgeID)}", "/reuse-events",
 		"Project-level knowledge", "Org-level knowledge", "Org promotion requires explicit review and is never automatic.",
@@ -101,6 +111,11 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 	for _, want := range []string{"work-plan-view", "work-plan-layout", "work-plan-columns", "work-plan-row", "work-plan-row--selected", "work-task-row", "work-task-table", "work-link-list"} {
 		if !strings.Contains(styles.Body.String(), want) {
 			t.Fatalf("expected dashboard styles to contain work plan affordance %q", want)
+		}
+	}
+	for _, want := range []string{"workflow-view", "workflow-layout", "workflow-row", "workflow-row--selected", "workflow-row__stats", "workflow-step", "workflow-permission", "workflow-instructions", "workflow-compile"} {
+		if !strings.Contains(styles.Body.String(), want) {
+			t.Fatalf("expected dashboard styles to contain workflow affordance %q", want)
 		}
 	}
 	for _, want := range []string{"knowledge-layout", "knowledge-filters", "knowledge-row--project", "knowledge-row--org", "scope-pill--project", "scope-pill--org"} {

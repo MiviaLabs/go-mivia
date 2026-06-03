@@ -37,6 +37,7 @@ import (
 	knowledgestore "github.com/MiviaLabs/go-mivia/internal/projectknowledge/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	projectmcpapi "github.com/MiviaLabs/go-mivia/internal/projectregistry/mcpapi"
+	workflowmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkflow/mcpapi"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 	workplanmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkplan/mcpapi"
 	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
@@ -75,6 +76,7 @@ type Handler struct {
 	projectKnowledgeInputs  *projectknowledge.PromotionInputAdapter
 	projectWorkPlan         workplanmcpapi.API
 	projectAutomation       automationmcpapi.API
+	projectWorkflow         workflowmcpapi.API
 	integrations            *projectintegrations.Service
 	diagnostics             *diagnostics.Service
 	activity                *agentactivity.Recorder
@@ -137,6 +139,10 @@ func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeAndWorkPlans(service 
 }
 
 func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAndAutomation(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, projectKnowledge *projectknowledge.Service, projectKnowledgeInputs *projectknowledge.PromotionInputAdapter, projectWorkPlan workplanmcpapi.API, projectAutomation automationmcpapi.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
+	return NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationAndWorkflow(service, research, projects, projectDigest, projectIngest, projectWork, projectEvidence, projectConfidence, projectConfidenceInputs, projectKnowledge, projectKnowledgeInputs, projectWorkPlan, projectAutomation, nil, integrations, diagnosticsService, activity, logger)
+}
+
+func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationAndWorkflow(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, projectKnowledge *projectknowledge.Service, projectKnowledgeInputs *projectknowledge.PromotionInputAdapter, projectWorkPlan workplanmcpapi.API, projectAutomation automationmcpapi.API, projectWorkflow workflowmcpapi.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:                 service,
 		research:                research,
@@ -151,6 +157,7 @@ func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAndAutomatio
 		projectKnowledgeInputs:  projectKnowledgeInputs,
 		projectWorkPlan:         projectWorkPlan,
 		projectAutomation:       projectAutomation,
+		projectWorkflow:         projectWorkflow,
 		integrations:            integrations,
 		diagnostics:             diagnosticsService,
 		activity:                activity,
@@ -230,13 +237,13 @@ func (handler *Handler) dispatch(w http.ResponseWriter, r *http.Request, req jso
 		result, params, err := handler.callTool(r, req.Params)
 		writeToolOrError(w, req.ID, result, err)
 		fields := activityFields{
-			ProjectID:  projectIDFromArgs(params.Arguments),
+			ProjectID:  activitySafeProjectID(params.Name, params.Arguments),
 			ToolName:   params.Name,
-			RawArgs:    params.Arguments,
+			RawArgs:    activitySafeToolArguments(params.Name, params.Arguments),
 			Status:     "ok",
 			Duration:   time.Since(started),
 			Error:      "",
-			RawParams:  req.Params,
+			RawParams:  activitySafeToolParams(params),
 			RequestID:  requestIDString(req.ID),
 			RemoteAddr: r.RemoteAddr,
 			UserAgent:  r.UserAgent(),
@@ -294,6 +301,9 @@ func (handler *Handler) recordActivity(r *http.Request, req jsonRPCRequest, fiel
 	if handler.activity == nil {
 		return
 	}
+	if fields.RawParams != nil {
+		req.Params = fields.RawParams
+	}
 	rawRequest, _ := json.Marshal(req)
 	if fields.RequestID == "" {
 		fields.RequestID = requestIDString(req.ID)
@@ -320,6 +330,40 @@ func (handler *Handler) recordActivity(r *http.Request, req jsonRPCRequest, fiel
 		RawArgs:    fields.RawArgs,
 		RawResult:  fields.RawResult,
 	})
+}
+
+func activitySafeToolParams(params toolsCallParams) json.RawMessage {
+	safeArgs := activitySafeToolArguments(params.Name, params.Arguments)
+	if bytes.Equal(safeArgs, params.Arguments) {
+		raw, _ := json.Marshal(params)
+		return raw
+	}
+	safe := params
+	safe.Arguments = safeArgs
+	raw, _ := json.Marshal(safe)
+	return raw
+}
+
+func activitySafeProjectID(name string, raw json.RawMessage) string {
+	canonical := strings.ReplaceAll(name, "_", ".")
+	if canonical == "projects.workflows.validate.toml" || canonical == "projects.workflows.import.toml" {
+		return ""
+	}
+	return projectIDFromArgs(raw)
+}
+
+func activitySafeToolArguments(name string, raw json.RawMessage) json.RawMessage {
+	canonical := strings.ReplaceAll(name, "_", ".")
+	if canonical != "projects.workflows.validate.toml" && canonical != "projects.workflows.import.toml" {
+		return raw
+	}
+	payload := map[string]any{"id": "[redacted-workflow-project]", "toml": "[redacted-workflow-toml]"}
+	if canonical == "projects.workflows.import.toml" {
+		payload["created_by_run_id"] = "[redacted-workflow-run]"
+		payload["trace_id"] = "[redacted-workflow-trace]"
+	}
+	encoded, _ := json.Marshal(payload)
+	return encoded
 }
 
 func projectIDFromArgs(raw json.RawMessage) string {
@@ -387,6 +431,9 @@ func (handler *Handler) callToolParams(r *http.Request, params toolsCallParams) 
 	}
 	if automationmcpapi.IsAutomationTool(params.Name) {
 		return automationmcpapi.CallTool(r.Context(), handler.projectAutomation, params.Name, params.Arguments)
+	}
+	if workflowmcpapi.IsWorkflowTool(params.Name) {
+		return workflowmcpapi.CallTool(r.Context(), handler.projectWorkflow, params.Name, params.Arguments)
 	}
 	switch params.Name {
 	case "tasks.create", "tasks_create":
@@ -831,6 +878,9 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 	}
 	if handler.projectAutomation != nil {
 		tools = append(tools, automationmcpapi.ToolDefinitions()...)
+	}
+	if handler.projectWorkflow != nil {
+		tools = append(tools, workflowmcpapi.ToolDefinitions()...)
 	}
 	if handler.integrations != nil {
 		tools = append(tools, integrationmcpapi.ToolDefinitions()...)

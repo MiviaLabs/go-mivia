@@ -54,7 +54,7 @@ func TestAutomationRoutesCreateRunAndList(t *testing.T) {
 		"runner_kind":      projectautomation.RunnerKindManual,
 		"safe_next_action": "Claim the next ready task.",
 	}, http.StatusCreated)
-	if run.AutomationID != created.ID || run.Status != projectautomation.RunStatusRunning {
+	if run.AutomationID != created.ID || run.Status != projectautomation.RunStatusVerifying {
 		t.Fatalf("unexpected run: %+v", run)
 	}
 

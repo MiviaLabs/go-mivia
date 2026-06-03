@@ -1,0 +1,135 @@
+id = "workflow-decomposition-planning"
+project_id = "mivialabs-agents-monorepo"
+workflow_ref = "governed-decomposition-planning"
+title = "Governed Decomposition And Planning"
+purpose = "Convert a user objective into a Work Plan with isolated ready Work Tasks, evidence needs, verifier scope, and independent review gates."
+status = "enabled"
+
+[[agents]]
+id = "planning-worker"
+display_name = "Planning Worker"
+purpose = "Reads bounded project context and drafts low-intelligence-ready Work Task metadata."
+allowed_skills = ["mivia-mcp", "plan-task"]
+allowed_tools = [
+  "projects.list",
+  "projects.get",
+  "projects.context_health",
+  "projects.context_pack.build",
+  "projects.work_plans.create",
+  "projects.work_tasks.create"
+]
+allowed_commands = []
+denied_commands = ["go test ./...", "git push", "git reset --hard"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "20m"
+max_retries = 1
+
+[[agents]]
+id = "planning-reviewer"
+display_name = "Planning Reviewer"
+purpose = "Reviews Work Plan and Work Task decomposition for readiness, evidence, dependencies, and verifier scope."
+allowed_skills = ["mivia-mcp", "project-review"]
+allowed_tools = [
+  "projects.work_plans.get",
+  "projects.work_tasks.list",
+  "projects.work_tasks.attach_review_result",
+  "projects.claims.check"
+]
+allowed_commands = []
+denied_commands = ["go test ./...", "git push", "git reset --hard"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "15m"
+max_retries = 0
+
+[[agents]]
+id = "planning-orchestrator"
+display_name = "Planning Orchestrator"
+purpose = "Compiles planning tasks and queues only reviewed ready tasks for automation."
+allowed_skills = ["mivia-mcp"]
+allowed_tools = [
+  "projects.work_plans.resume",
+  "projects.work_tasks.update_status",
+  "projects.automations.create",
+  "projects.automations.run_parallel_batch"
+]
+allowed_commands = []
+denied_commands = ["go test ./...", "git push", "git reset --hard"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "10m"
+max_retries = 0
+
+[[steps]]
+id = "discover-planning-context"
+kind = "work_task"
+title = "Discover Planning Context"
+agent = "planning-worker"
+description = "Identify repo instructions, current project state, relevant docs, source areas, and MCP surface gaps for the requested objective."
+evidence_needed = ["project-context-health", "repo-instructions-ref", "context-pack-ref", "mcp-surface-gap-ref"]
+likely_files_affected = [".ai/INDEX.md", "docs", "internal", "configs"]
+verification_requirement = "orchestrator verifies context refs exist before decomposition"
+expected_output = "bounded planning context summary and evidence refs"
+failure_criteria = "block if context freshness, scope, or MCP availability cannot be established"
+resume_instructions = "resume by reading attached context refs and current Work Plan metadata"
+
+[[steps]]
+id = "decompose-work-plan"
+kind = "work_task"
+title = "Decompose Work Plan"
+agent = "planning-worker"
+depends_on = ["discover-planning-context"]
+description = "Create small Work Tasks with objective, files, evidence, dependencies, verifier, output, failure criteria, resume instructions, and review gate."
+evidence_needed = ["context-pack-ref", "task-decomposition-ref", "dependency-map-ref"]
+likely_files_affected = [".ai", "docs", "internal", "configs"]
+verification_requirement = "orchestrator checks every task is low-intelligence-ready before ready status"
+expected_output = "Work Tasks in planned status with complete metadata"
+failure_criteria = "block if any task depends on hidden chat context or lacks review and verifier requirements"
+resume_instructions = "resume from Work Plan id, task refs, dependency map, and evidence refs"
+max_parallel_tasks = 1
+
+[[steps]]
+id = "mark-ready-after-review"
+kind = "work_task"
+title = "Mark Tasks Ready After Review"
+agent = "planning-orchestrator"
+depends_on = ["decompose-work-plan"]
+description = "Move only reviewed decomposition-complete tasks from planned to ready and leave incomplete tasks blocked."
+evidence_needed = ["review-result-ref", "ready-task-list-ref"]
+likely_files_affected = []
+verification_requirement = "orchestrator confirms review refs before ready status"
+expected_output = "ready task refs or blocked task refs with resume instructions"
+failure_criteria = "block if any task lacks independent review or required metadata"
+resume_instructions = "resume by listing task statuses and checking attached review refs"
+
+[[steps]]
+id = "queue-planning-automation"
+kind = "automation_batch"
+title = "Queue Planning Automation"
+agent = "planning-orchestrator"
+depends_on = ["mark-ready-after-review"]
+description = "Queue reviewed planning tasks only after decomposition and review gates have passed."
+evidence_needed = ["automation-ref", "permission-snapshot-ref", "ready-task-list-ref"]
+likely_files_affected = []
+verification_requirement = "orchestrator verifies automation refs and no worker-run full tests"
+expected_output = "automation batch queued for ready planning tasks"
+failure_criteria = "block if ready tasks overlap unsafely or lack permission snapshots"
+resume_instructions = "resume from automation run refs and task statuses"
+max_parallel_tasks = 2
+
+[[review_gates]]
+id = "planning-readiness-review"
+applies_to = ["decompose-work-plan", "mark-ready-after-review", "queue-planning-automation"]
+reviewer_agent = "planning-reviewer"
+required = true
+independent_from_owner = true
+required_artifacts = ["work-plan-ref", "work-task-refs", "evidence-refs", "dependency-map-ref"]
+allowed_actions = ["approved", "rejected", "needs_changes", "blocked"]
+instructions = "Approve only if each Work Task is isolated-worker-ready, metadata-only, has evidence needs, verifier scope, dependencies, resume instructions, and independent review requirements."

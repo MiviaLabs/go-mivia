@@ -29,6 +29,8 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectknowledge"
 	knowledgestore "github.com/MiviaLabs/go-mivia/internal/projectknowledge/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
+	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 	workplanmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkplan/mcpapi"
 	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
@@ -260,6 +262,46 @@ func TestToolsCall_RecordsProjectScopedActivityWithRawPayload(t *testing.T) {
 	}
 	if !bytes.Contains(event.RawArgs, []byte("example-service")) {
 		t.Fatalf("expected raw arguments to be retained for collapsed details, got %s", string(event.RawArgs))
+	}
+}
+
+func TestToolsCall_RedactsWorkflowTOMLFromActivity(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	activity := agentactivity.NewRecorder(10)
+	workflowSvc := projectworkflow.New(workflowstore.NewMemoryStore())
+	handler := mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationAndWorkflow(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, workflowSvc, nil, nil, activity, slog.Default())
+
+	rawTOML := "raw prompt token=secret /home/mac"
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "abc",
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "projects.workflows.validate_toml",
+			"arguments": map[string]any{"id": "person@example.com", "toml": rawTOML, "created_by_run_id": "token=secret"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	postMCP(t, handler, string(payload))
+
+	events := activity.Recent("", 10)
+	if len(events) != 1 {
+		t.Fatalf("expected one activity event, got %#v", events)
+	}
+	event := events[0]
+	if event.ProjectID != "" {
+		t.Fatalf("workflow TOML activity stored unsafe project id: %#v", event.ProjectID)
+	}
+	for _, raw := range [][]byte{event.RawArgs, event.RawParams, event.RawRequest} {
+		if bytes.Contains(raw, []byte("raw prompt")) || bytes.Contains(raw, []byte("token=secret")) || bytes.Contains(raw, []byte("/home/mac")) || bytes.Contains(raw, []byte("person@example.com")) {
+			t.Fatalf("workflow TOML leaked into activity: %s", string(raw))
+		}
+		if !bytes.Contains(raw, []byte("[redacted-workflow-toml]")) || !bytes.Contains(raw, []byte("[redacted-workflow-project]")) {
+			t.Fatalf("expected redacted workflow TOML marker in activity: %s", string(raw))
+		}
 	}
 }
 

@@ -94,6 +94,33 @@ func TestProjectPersistentGraphMaxOpenUsesConfiguredCountBelowCap(t *testing.T) 
 	}
 }
 
+func TestResolveWorkflowDefinitionPathPrefersConfigDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "workflows"), 0o755); err != nil {
+		t.Fatalf("mkdir workflows: %v", err)
+	}
+	expected := filepath.Join(dir, "workflows", "workflow.toml")
+	if err := os.WriteFile(expected, []byte("id = \"workflow\"\n"), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	resolved, err := resolveWorkflowDefinitionPath(filepath.Join(dir, "mivia-server.local.toml"), "workflows/workflow.toml")
+	if err != nil {
+		t.Fatalf("resolve workflow path: %v", err)
+	}
+	if resolved != expected {
+		t.Fatalf("expected config-relative path %q, got %q", expected, resolved)
+	}
+}
+
+func TestResolveWorkflowDefinitionPathRejectsUnsafePaths(t *testing.T) {
+	for _, path := range []string{"", ".", "/tmp/workflow.toml", "../workflow.toml", "workflows/../workflow.toml"} {
+		if _, err := resolveWorkflowDefinitionPath("configs/mivia-server.local.toml", path); err == nil {
+			t.Fatalf("expected unsafe workflow path %q to fail", path)
+		}
+	}
+}
+
 func TestConfigCheckRedactedJSONValidConfig(t *testing.T) {
 	projectRoot := t.TempDir()
 	configPath := writeConfigFixture(t, fmt.Sprintf(`

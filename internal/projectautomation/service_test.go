@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -210,6 +211,256 @@ func TestExternalClaimAndCompleteAttempt(t *testing.T) {
 	}
 }
 
+func TestRunStartAttachesGovernanceActionEvidence(t *testing.T) {
+	ctx := context.Background()
+	fakeTasks := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "a", []string{"internal/foo.go"}),
+	}}
+	governance := &fakeGovernance{actionRef: "evidence/action-start"}
+	svc := New(newTestStore(), fakeTasks, Options{
+		Enabled: true, RunnerEnabled: true, RequireCodexWhenAvailable: true, MaxParallelTasks: 1,
+		Governance: GovernanceOptions{Evidence: governance},
+	})
+	svc.codexAvailable = func() bool { return true }
+	svc.codexPath = func() (string, bool) { return "/usr/local/bin/codex", true }
+	svc.codexRunner = func(context.Context, CodexCommand, int64) (CodexRunResult, error) {
+		return CodexRunResult{ExitCode: 0, Duration: time.Second}, nil
+	}
+	automation := createTestAutomation(t, ctx, svc)
+
+	if _, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a"}); err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if governance.actionCalls != 1 {
+		t.Fatalf("expected one action call, got %d", governance.actionCalls)
+	}
+	if !contains(fakeTasks.evidenceRefs, "evidence/action-start") {
+		t.Fatalf("expected action evidence ref attachment, got %#v", fakeTasks.evidenceRefs)
+	}
+}
+
+func TestCompleteAttemptAttachesGovernanceOutcomeAndRefs(t *testing.T) {
+	ctx := context.Background()
+	fakeTasks := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "a", []string{"internal/foo.go"}),
+	}}
+	governance := &fakeGovernance{outcomeRef: "evidence/outcome-pass"}
+	svc := New(newTestStore(), fakeTasks, Options{
+		Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1,
+		Governance: GovernanceOptions{Evidence: governance},
+	})
+	svc.codexAvailable = func() bool { return false }
+	automation := createTestAutomation(t, ctx, svc)
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a"})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+
+	if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: queued.ID, Status: RunStatusCompleted, DurationMS: 1234, VerifierResultRefs: []string{"verifier/pass"}, ReviewRefs: []string{"review/approved"}}); err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if governance.outcomeCalls != 1 {
+		t.Fatalf("expected one outcome call, got %d", governance.outcomeCalls)
+	}
+	if !contains(fakeTasks.evidenceRefs, "evidence/outcome-pass") {
+		t.Fatalf("expected outcome evidence ref attachment, got %#v", fakeTasks.evidenceRefs)
+	}
+	if !contains(fakeTasks.verifierRefs, "verifier/pass") {
+		t.Fatalf("expected verifier ref attachment, got %#v", fakeTasks.verifierRefs)
+	}
+	if !contains(fakeTasks.reviewRefs, "review/approved") {
+		t.Fatalf("expected review ref attachment, got %#v", fakeTasks.reviewRefs)
+	}
+}
+
+func TestNilGovernanceHooksDoNotPanic(t *testing.T) {
+	ctx := context.Background()
+	fakeTasks := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "a", []string{"internal/foo.go"}),
+	}}
+	svc := New(newTestStore(), fakeTasks, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createTestAutomation(t, ctx, svc)
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a"})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: queued.ID, Status: RunStatusCompleted}); err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+}
+
+func TestKnowledgeCandidateRequiresVerifierAndReviewRefs(t *testing.T) {
+	ctx := context.Background()
+	runCase := func(t *testing.T, verifierRefs []string, reviewRefs []string) *fakeGovernance {
+		t.Helper()
+		fakeTasks := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+			"task-a": readyTask("task-a", "a", []string{"internal/foo.go"}),
+		}}
+		governance := &fakeGovernance{outcomeRef: "evidence/outcome-pass", confidenceRef: "confidence/score", candidateRef: "knowledge/candidate"}
+		svc := New(newTestStore(), fakeTasks, Options{
+			Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1,
+			Governance: GovernanceOptions{Evidence: governance, Confidence: governance, Knowledge: governance},
+		})
+		svc.codexAvailable = func() bool { return false }
+		automation := createTestAutomation(t, ctx, svc)
+		queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a"})
+		if err != nil {
+			t.Fatalf("RunNow returned error: %v", err)
+		}
+		if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+			t.Fatalf("ClaimNextRun returned error: %v", err)
+		}
+		if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: queued.ID, Status: RunStatusCompleted, ClaimRefs: []string{"claim/ref"}, VerifierResultRefs: verifierRefs, ReviewRefs: reviewRefs}); err != nil {
+			t.Fatalf("CompleteAttempt returned error: %v", err)
+		}
+		return governance
+	}
+
+	if governance := runCase(t, []string{"verifier/pass"}, nil); governance.candidateCalls != 0 {
+		t.Fatalf("expected no candidate without review refs, got %d", governance.candidateCalls)
+	}
+	if governance := runCase(t, nil, []string{"review/approved"}); governance.candidateCalls != 0 {
+		t.Fatalf("expected no candidate without verifier refs, got %d", governance.candidateCalls)
+	}
+	if governance := runCase(t, []string{"verifier/pass"}, []string{"review/approved"}); governance.candidateCalls != 1 {
+		t.Fatalf("expected one candidate with verifier and review refs, got %d", governance.candidateCalls)
+	}
+}
+
+func TestCompleteAttemptRejectsUnclaimedQueuedRun(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "a", []string{"internal/foo.go"}),
+	}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createTestAutomation(t, ctx, svc)
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a"})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+
+	if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: queued.ID, Status: RunStatusCompleted}); err == nil {
+		t.Fatal("expected unclaimed queued run completion to fail")
+	}
+	if len(svc.store.(*testStore).attempts) != 0 {
+		t.Fatalf("expected no attempt for rejected completion, got %d", len(svc.store.(*testStore).attempts))
+	}
+}
+
+func TestCreateWorkflowAutomationRequiresPermissionSnapshotRef(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, Options{AllowManualRunner: true})
+
+	if _, err := svc.CreateAutomation(ctx, CreateAutomationInput{ProjectID: "project-1", AutomationRef: "auto/ref", Title: "Automation", Purpose: "Run safe work tasks", AgentID: "agent-1", PlanID: "plan-1", SourceKind: AutomationSourceWorkflow}); err == nil {
+		t.Fatal("expected missing workflow permission ref to fail")
+	}
+	if _, err := svc.CreateAutomation(ctx, CreateAutomationInput{ProjectID: "project-1", AutomationRef: "auto/ref", Title: "Automation", Purpose: "Run safe work tasks", AgentID: "agent-1", PlanID: "plan-1", SourceKind: AutomationSourceWorkflow, PermissionRef: "permission/default"}); err == nil {
+		t.Fatal("expected malformed workflow permission ref to fail")
+	}
+}
+
+func TestSubmitWorkflowAutomationRejectsPermissionAgentMismatch(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "allowed-task", []string{"internal/foo.go"}),
+	}}
+	resolver := &fakePermissionResolver{metadata: PermissionSnapshotMetadata{AgentID: "other-agent", AllowedRunnerKinds: []string{RunnerKindCodexCLI}}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1, PermissionResolver: resolver})
+	svc.codexAvailable = func() bool { return true }
+	automation := createWorkflowAutomation(t, ctx, svc, []string{"allowed-task"}, "agent-1")
+
+	run, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	if run.Status != RunStatusPolicyDenied || run.FailureCategory != "invalid_project_automation_input:_permission_agent_mismatch" {
+		t.Fatalf("expected permission mismatch denial, got %#v", run)
+	}
+}
+
+func TestSubmitWorkflowAutomationRejectsTaskOutsideAllowedRefs(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "outside-task", []string{"internal/foo.go"}),
+	}}
+	resolver := &fakePermissionResolver{metadata: PermissionSnapshotMetadata{AgentID: "agent-1", AllowedRunnerKinds: []string{RunnerKindCodexCLI}}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1, PermissionResolver: resolver})
+	svc.codexAvailable = func() bool { return true }
+	automation := createWorkflowAutomation(t, ctx, svc, []string{"allowed-task"}, "agent-1")
+
+	run, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	if run.Status != RunStatusPolicyDenied || run.FailureCategory != "invalid_project_automation_input:_task_ref_not_allowed" {
+		t.Fatalf("expected task ref denial, got %#v", run)
+	}
+}
+
+func TestRunNowWorkflowAutomationRejectsUnspecifiedTaskOutsideAllowedRefs(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "outside-task", []string{"internal/foo.go"}),
+	}}
+	resolver := &fakePermissionResolver{metadata: PermissionSnapshotMetadata{AgentID: "agent-1", AllowedRunnerKinds: []string{RunnerKindCodexCLI}}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1, PermissionResolver: resolver})
+	svc.codexAvailable = func() bool { return true }
+	svc.codexPath = func() (string, bool) { return "/usr/local/bin/codex", true }
+	automation := createWorkflowAutomation(t, ctx, svc, []string{"allowed-task"}, "agent-1")
+
+	run, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, RunnerKind: RunnerKindCodexCLI})
+	if err == nil {
+		t.Fatal("expected RunNow to return the blocked start error")
+	}
+	if run.Status != RunStatusBlocked || run.FailureCategory != "task_unavailable" {
+		t.Fatalf("expected unresolved allowed task to block start, got %#v", run)
+	}
+}
+
+func TestSubmitWorkflowAutomationWithValidPermissionAndAllowedTaskQueues(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "allowed-task", []string{"internal/foo.go"}),
+	}}
+	resolver := &fakePermissionResolver{metadata: PermissionSnapshotMetadata{AgentID: "agent-1", AllowedRunnerKinds: []string{RunnerKindCodexCLI}}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1, PermissionResolver: resolver})
+	svc.codexAvailable = func() bool { return true }
+	automation := createWorkflowAutomation(t, ctx, svc, []string{"allowed-task"}, "agent-1")
+
+	run, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	if run.Status != RunStatusQueued || run.RunnerKind != RunnerKindCodexCLI {
+		t.Fatalf("expected valid workflow run to queue, got %#v", run)
+	}
+}
+
+func TestSubmitManualAutomationWithoutPermissionRemainsCompatible(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, Options{AllowManualRunner: true, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{ProjectID: "project-1", AutomationRef: "manual/ref", Title: "Manual", Purpose: "Manual metadata run", AgentID: "agent-1"})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+
+	run, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, RunnerKind: RunnerKindManual})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	if run.Status != RunStatusQueued || run.RunnerKind != RunnerKindManual {
+		t.Fatalf("expected manual run to remain compatible, got %#v", run)
+	}
+}
+
 func newTestService(t *testing.T, options Options) *Service {
 	t.Helper()
 	svc := New(newTestStore(), &fakeWorkTasks{}, options)
@@ -220,6 +471,25 @@ func newTestService(t *testing.T, options Options) *Service {
 func createTestAutomation(t *testing.T, ctx context.Context, svc *Service) Automation {
 	t.Helper()
 	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{ProjectID: "project-1", AutomationRef: "auto/ref", Title: "Automation", Purpose: "Run safe work tasks", AgentID: "agent-1", PlanID: "plan-1", PermissionRef: "permission/default"})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	return automation
+}
+
+func createWorkflowAutomation(t *testing.T, ctx context.Context, svc *Service, allowedTaskRefs []string, agentID string) Automation {
+	t.Helper()
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "workflow/ref",
+		Title:           "Workflow Automation",
+		Purpose:         "Run governed workflow task metadata",
+		AgentID:         agentID,
+		PlanID:          "plan-1",
+		AllowedTaskRefs: allowedTaskRefs,
+		PermissionRef:   "permission_snapshot:snapshot-1",
+		SourceKind:      AutomationSourceWorkflow,
+	})
 	if err != nil {
 		t.Fatalf("CreateAutomation returned error: %v", err)
 	}
@@ -241,10 +511,27 @@ func readyTask(id string, ref string, files []string) projectworkplan.WorkTask {
 }
 
 type fakeWorkTasks struct {
-	tasks map[string]projectworkplan.WorkTask
+	tasks         map[string]projectworkplan.WorkTask
+	evidenceRefs  []string
+	verifierRefs  []string
+	reviewRefs    []string
+	knowledgeRefs []string
+}
+
+type fakePermissionResolver struct {
+	metadata PermissionSnapshotMetadata
+	err      error
+}
+
+func (fake *fakePermissionResolver) CheckAutomationPermission(context.Context, PermissionCheckInput) (PermissionSnapshotMetadata, error) {
+	if fake.err != nil {
+		return PermissionSnapshotMetadata{}, fake.err
+	}
+	return fake.metadata, nil
 }
 
 type testStore struct {
+	mu         sync.Mutex
 	automation map[string]Automation
 	runs       map[string]AutomationRun
 	batches    map[string]AutomationParallelBatch
@@ -256,11 +543,15 @@ func newTestStore() *testStore {
 }
 
 func (store *testStore) CreateAutomation(_ context.Context, value Automation) (Automation, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	store.automation[value.ID] = value
 	return value, nil
 }
 
 func (store *testStore) GetAutomation(_ context.Context, projectID string, automationID string) (Automation, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	value, ok := store.automation[automationID]
 	if !ok || value.ProjectID != projectID {
 		return Automation{}, errors.New("not found")
@@ -269,6 +560,8 @@ func (store *testStore) GetAutomation(_ context.Context, projectID string, autom
 }
 
 func (store *testStore) ListAutomations(_ context.Context, filter AutomationFilter) ([]Automation, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	var out []Automation
 	for _, value := range store.automation {
 		if value.ProjectID == filter.ProjectID {
@@ -279,16 +572,22 @@ func (store *testStore) ListAutomations(_ context.Context, filter AutomationFilt
 }
 
 func (store *testStore) UpdateAutomation(_ context.Context, value Automation) (Automation, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	store.automation[value.ID] = value
 	return value, nil
 }
 
 func (store *testStore) CreateRun(_ context.Context, value AutomationRun) (AutomationRun, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	store.runs[value.ID] = value
 	return value, nil
 }
 
 func (store *testStore) GetRun(_ context.Context, projectID string, runID string) (AutomationRun, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	value, ok := store.runs[runID]
 	if !ok || value.ProjectID != projectID {
 		return AutomationRun{}, errors.New("not found")
@@ -297,31 +596,48 @@ func (store *testStore) GetRun(_ context.Context, projectID string, runID string
 }
 
 func (store *testStore) ListRuns(_ context.Context, filter RunFilter) ([]AutomationRun, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	var out []AutomationRun
 	for _, value := range store.runs {
-		if value.ProjectID == filter.ProjectID {
-			out = append(out, value)
+		if value.ProjectID != filter.ProjectID {
+			continue
 		}
+		if filter.AutomationID != "" && value.AutomationID != filter.AutomationID {
+			continue
+		}
+		if filter.Status != "" && value.Status != filter.Status {
+			continue
+		}
+		out = append(out, value)
 	}
 	return out, nil
 }
 
 func (store *testStore) UpdateRun(_ context.Context, value AutomationRun) (AutomationRun, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	store.runs[value.ID] = value
 	return value, nil
 }
 
 func (store *testStore) CreateAttempt(_ context.Context, value AutomationAttempt) (AutomationAttempt, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	store.attempts[value.ID] = value
 	return value, nil
 }
 
 func (store *testStore) CreateParallelBatch(_ context.Context, value AutomationParallelBatch) (AutomationParallelBatch, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	store.batches[value.ID] = value
 	return value, nil
 }
 
 func (store *testStore) GetParallelBatch(_ context.Context, projectID string, batchID string) (AutomationParallelBatch, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	value, ok := store.batches[batchID]
 	if !ok || value.ProjectID != projectID {
 		return AutomationParallelBatch{}, errors.New("not found")
@@ -362,11 +678,23 @@ func (fake *fakeWorkTasks) StartWorkTask(context.Context, projectworkplan.WorkTa
 	return projectworkplan.WorkTask{}, nil
 }
 
-func (fake *fakeWorkTasks) AttachEvidence(context.Context, projectworkplan.AttachInput) (projectworkplan.Attachment, error) {
+func (fake *fakeWorkTasks) AttachEvidence(_ context.Context, input projectworkplan.AttachInput) (projectworkplan.Attachment, error) {
+	fake.evidenceRefs = append(fake.evidenceRefs, input.Ref)
 	return projectworkplan.Attachment{}, nil
 }
 
-func (fake *fakeWorkTasks) AttachVerifierResult(context.Context, projectworkplan.AttachInput) (projectworkplan.Attachment, error) {
+func (fake *fakeWorkTasks) AttachVerifierResult(_ context.Context, input projectworkplan.AttachInput) (projectworkplan.Attachment, error) {
+	fake.verifierRefs = append(fake.verifierRefs, input.Ref)
+	return projectworkplan.Attachment{}, nil
+}
+
+func (fake *fakeWorkTasks) AttachReviewResult(_ context.Context, input projectworkplan.AttachInput) (projectworkplan.Attachment, error) {
+	fake.reviewRefs = append(fake.reviewRefs, input.Ref)
+	return projectworkplan.Attachment{}, nil
+}
+
+func (fake *fakeWorkTasks) AttachKnowledgeCandidate(_ context.Context, input projectworkplan.AttachInput) (projectworkplan.Attachment, error) {
+	fake.knowledgeRefs = append(fake.knowledgeRefs, input.Ref)
 	return projectworkplan.Attachment{}, nil
 }
 
@@ -380,4 +708,44 @@ func (fake *fakeWorkTasks) FailWorkTask(context.Context, projectworkplan.WorkTas
 
 func (fake *fakeWorkTasks) BlockWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
 	return projectworkplan.WorkTask{}, nil
+}
+
+type fakeGovernance struct {
+	actionRef       string
+	outcomeRef      string
+	confidenceRef   string
+	candidateRef    string
+	actionCalls     int
+	outcomeCalls    int
+	confidenceCalls int
+	candidateCalls  int
+}
+
+func (fake *fakeGovernance) CreateActionRef(context.Context, GovernanceActionInput) (string, error) {
+	fake.actionCalls++
+	return fake.actionRef, nil
+}
+
+func (fake *fakeGovernance) CreateOutcomeRef(context.Context, GovernanceOutcomeInput) (string, error) {
+	fake.outcomeCalls++
+	return fake.outcomeRef, nil
+}
+
+func (fake *fakeGovernance) RecordConfidenceRef(context.Context, GovernanceConfidenceInput) (string, error) {
+	fake.confidenceCalls++
+	return fake.confidenceRef, nil
+}
+
+func (fake *fakeGovernance) CreateCandidateRef(context.Context, GovernanceKnowledgeCandidateInput) (string, error) {
+	fake.candidateCalls++
+	return fake.candidateRef, nil
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

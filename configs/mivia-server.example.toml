@@ -78,6 +78,15 @@ sensitive_marker_policy = "skip_file"
 # surfaces for projects that also opt in with workspace_mode below.
 enabled = false
 
+[workflows]
+# Disabled by default. Workflow TOML is imported as metadata only and is never
+# compiled or executed at startup. Paths are relative examples and must not
+# escape upward.
+enabled = false
+definition_paths = [
+  "configs/workflows/governed-feature.toml",
+]
+
 [automation]
 # Disabled by default. Runner execution must be explicitly enabled after review.
 enabled = false
@@ -88,6 +97,7 @@ runner_execution = "in_process"
 require_codex_when_available = true
 allow_manual_runner = false
 queue_depth = 16
+poll_interval = "5s"
 global_worker_count = 1
 per_project_worker_limit = 1
 per_agent_worker_limit = 1

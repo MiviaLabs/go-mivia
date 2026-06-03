@@ -54,6 +54,7 @@ type fileConfig struct {
 	Logging    *fileLoggingConfig    `toml:"logging"`
 	Ingestion  *fileIngestionConfig  `toml:"ingestion"`
 	Workspace  *fileWorkspaceConfig  `toml:"workspace"`
+	Workflows  *fileWorkflowConfig   `toml:"workflows"`
 	Automation *fileAutomationConfig `toml:"automation"`
 	Projects   []fileProjectConfig   `toml:"projects"`
 }
@@ -95,6 +96,11 @@ type fileWorkspaceConfig struct {
 	Enabled *bool `toml:"enabled"`
 }
 
+type fileWorkflowConfig struct {
+	Enabled         *bool    `toml:"enabled"`
+	DefinitionPaths []string `toml:"definition_paths"`
+}
+
 type fileAutomationConfig struct {
 	Enabled                   *bool                       `toml:"enabled"`
 	RunnerEnabled             *bool                       `toml:"runner_enabled"`
@@ -102,6 +108,7 @@ type fileAutomationConfig struct {
 	AllowManualRunner         *bool                       `toml:"allow_manual_runner"`
 	RunnerExecution           *string                     `toml:"runner_execution"`
 	QueueDepth                *int                        `toml:"queue_depth"`
+	PollInterval              *string                     `toml:"poll_interval"`
 	GlobalWorkerCount         *int                        `toml:"global_worker_count"`
 	PerProjectWorkerLimit     *int                        `toml:"per_project_worker_limit"`
 	PerAgentWorkerLimit       *int                        `toml:"per_agent_worker_limit"`
@@ -634,6 +641,15 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		base.Workspace.Enabled = *cfg.Workspace.Enabled
 	}
 
+	if cfg.Workflows != nil {
+		if cfg.Workflows.Enabled != nil {
+			base.Workflows.Enabled = *cfg.Workflows.Enabled
+		}
+		if cfg.Workflows.DefinitionPaths != nil {
+			base.Workflows.DefinitionPaths = append([]string(nil), cfg.Workflows.DefinitionPaths...)
+		}
+	}
+
 	if cfg.Automation != nil {
 		if cfg.Automation.Enabled != nil {
 			base.Automation.Enabled = *cfg.Automation.Enabled
@@ -653,6 +669,10 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		if cfg.Automation.QueueDepth != nil {
 			base.Automation.QueueDepth = *cfg.Automation.QueueDepth
 		}
+		var err error
+		if base.Automation.PollInterval, err = applyDuration("automation.poll_interval", cfg.Automation.PollInterval, base.Automation.PollInterval); err != nil {
+			return Config{}, err
+		}
 		if cfg.Automation.GlobalWorkerCount != nil {
 			base.Automation.GlobalWorkerCount = *cfg.Automation.GlobalWorkerCount
 		}
@@ -665,7 +685,6 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		if cfg.Automation.MaxParallelTasks != nil {
 			base.Automation.MaxParallelTasks = *cfg.Automation.MaxParallelTasks
 		}
-		var err error
 		if base.Automation.DefaultMaxRuntime, err = applyDuration("automation.default_max_runtime", cfg.Automation.DefaultMaxRuntime, base.Automation.DefaultMaxRuntime); err != nil {
 			return Config{}, err
 		}

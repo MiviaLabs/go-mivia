@@ -1203,7 +1203,9 @@ main {
 }
 
 .work-plan-view,
+.workflow-view,
 .work-plan-current__body,
+.workflow-detail__body,
 .work-task-detail__body {
   display: grid;
   gap: 12px;
@@ -1211,13 +1213,15 @@ main {
 }
 
 .work-plan-layout,
+.workflow-layout,
 .work-plan-columns {
   display: grid;
   gap: 14px;
   align-items: start;
 }
 
-.work-plan-layout {
+.work-plan-layout,
+.workflow-layout {
   grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.2fr);
 }
 
@@ -1234,7 +1238,8 @@ main {
 }
 
 .work-task-row,
-.work-plan-row {
+.work-plan-row,
+.workflow-row {
   display: grid;
   gap: 4px;
   width: 100%;
@@ -1250,12 +1255,16 @@ main {
 
 .work-task-row:hover:not(:disabled),
 .work-plan-row:hover:not(:disabled),
-.work-plan-row--selected {
+.work-plan-row--selected,
+.workflow-row:hover:not(:disabled),
+.workflow-row--selected {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   background: var(--panel);
 }
 
-.work-task-row__head {
+.work-task-row__head,
+.workflow-row__head,
+.workflow-compile__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1268,15 +1277,87 @@ main {
 .work-task-row span,
 .work-plan-row strong,
 .work-plan-row span,
+.workflow-row strong,
+.workflow-row span,
 .work-note {
   overflow-wrap: anywhere;
 }
 
 .work-task-row span,
 .work-plan-row span,
+.workflow-row span,
 .work-note {
   color: var(--muted);
   font-size: 12px;
+}
+
+.workflow-list,
+.workflow-detail,
+.workflow-step-list,
+.workflow-grid,
+.workflow-permissions,
+.workflow-compile,
+.workflow-compile-result {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.workflow-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.workflow-row__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.workflow-stat {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 7px;
+  background: var(--panel);
+}
+
+.workflow-stat strong {
+  color: var(--fg);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.workflow-step,
+.workflow-permission {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.workflow-step--gate {
+  border-color: color-mix(in srgb, var(--warn) 26%, var(--line));
+}
+
+.workflow-instructions summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.workflow-compile__actions {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.workflow-compile__status {
+  display: grid;
+  gap: 8px;
 }
 
 .work-task-table {
@@ -1649,6 +1730,7 @@ main {
 
   .work-plan-layout,
   .work-plan-layout--wide,
+  .workflow-layout,
   .work-plan-columns {
     grid-template-columns: 1fr;
   }
@@ -1716,6 +1798,7 @@ main {
   .evidence-filters,
   .knowledge-layout,
   .knowledge-filters,
+  .workflow-row__stats,
   .work-task-table__row {
     grid-template-columns: 1fr;
   }

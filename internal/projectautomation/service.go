@@ -122,9 +122,18 @@ func (svc *Service) CreateAutomation(ctx context.Context, input CreateAutomation
 	if err != nil {
 		return Automation{}, err
 	}
-	permissionRef, err := safeRef(input.PermissionRef, "permission_ref")
+	sourceKind, err := safeAutomationSource(input.SourceKind)
 	if err != nil {
 		return Automation{}, err
+	}
+	permissionRef, err := safeOptionalRef(input.PermissionRef, "permission_ref")
+	if err != nil {
+		return Automation{}, err
+	}
+	if sourceKind == AutomationSourceWorkflow {
+		if err := validatePermissionSnapshotRef(permissionRef); err != nil {
+			return Automation{}, err
+		}
 	}
 	runID, err := safeOptionalRef(input.CreatedByRunID, "created_by_run_id")
 	if err != nil {
@@ -138,7 +147,7 @@ func (svc *Service) CreateAutomation(ctx context.Context, input CreateAutomation
 	value := Automation{
 		ID: svc.newID("automation"), ProjectID: projectID, AutomationRef: automationRef, Title: title, Purpose: purpose,
 		Status: AutomationStatusDraft, AgentID: agentID, PlanID: planID, AllowedTaskRefs: taskRefs, TriggerKind: TriggerKindManual,
-		PermissionRef: permissionRef, CreatedByRunID: runID, TraceID: traceID, CreatedAt: now, UpdatedAt: now,
+		SourceKind: sourceKind, PermissionRef: permissionRef, CreatedByRunID: runID, TraceID: traceID, CreatedAt: now, UpdatedAt: now,
 	}
 	return svc.store.CreateAutomation(ctx, value)
 }
@@ -196,6 +205,9 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	}
 	runnerKind, err := svc.resolveRunnerKind(input.RunnerKind)
 	if err != nil {
+		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
+	}
+	if err := svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID); err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
 	}
 	orchestratorRunID, err := safeOptionalRef(input.OrchestratorRunID, "orchestrator_run_id")
@@ -260,7 +272,54 @@ func (svc *Service) RunNow(ctx context.Context, input SubmitRunInput) (Automatio
 		if _, err := svc.store.CreateAttempt(ctx, attempt); err != nil {
 			return svc.failRun(ctx, run, RunStatusFailed, "attempt_record_failed")
 		}
+		return svc.failRun(ctx, run, RunStatusVerifying, "verification_required")
+	}
+	return svc.runCodexTask(ctx, run, task)
+}
+
+func (svc *Service) ExecuteQueuedRun(ctx context.Context, projectID, runID string) (AutomationRun, error) {
+	if svc.store == nil {
+		return AutomationRun{}, fmt.Errorf("%w: store is required", ErrInvalidInput)
+	}
+	projectID, runID, err := safeProjectObject(projectID, runID, "run_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run, err := svc.store.GetRun(ctx, projectID, runID)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if run.Status != RunStatusQueued {
 		return run, nil
+	}
+	if svc.options.RunnerExecution == RunnerExecutionExternal {
+		run.SafeSummary = "external_runner_queued"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	if svc.workTasks == nil {
+		return svc.failRun(ctx, run, RunStatusRunnerUnavailable, "work_task_api_unavailable")
+	}
+	if !svc.options.Enabled || !svc.options.RunnerEnabled {
+		return svc.failRun(ctx, run, RunStatusPolicyDenied, "automation_runner_disabled")
+	}
+	if run.RunnerKind == RunnerKindCodexCLI && !svc.codexAvailable() {
+		return svc.failRun(ctx, run, RunStatusRunnerUnavailable, "codex_cli_unavailable")
+	}
+	run, task, err := svc.prepareRunForExecution(ctx, run)
+	if err != nil {
+		return run, err
+	}
+	if run.RunnerKind != RunnerKindCodexCLI {
+		attempt := AutomationAttempt{ID: svc.newID("automation_attempt"), ProjectID: run.ProjectID, AutomationRunID: run.ID, AttemptNumber: 1, RunnerKind: run.RunnerKind, Status: RunStatusCompleted, CreatedAt: svc.now(), FinishedAt: svc.now()}
+		if _, err := svc.store.CreateAttempt(ctx, attempt); err != nil {
+			return svc.failRun(ctx, run, RunStatusFailed, "attempt_record_failed")
+		}
+		run.Status = RunStatusVerifying
+		run.FailureCategory = "verification_required"
+		run.FinishedAt = svc.now()
+		run.UpdatedAt = run.FinishedAt
+		return svc.store.UpdateRun(ctx, run)
 	}
 	return svc.runCodexTask(ctx, run, task)
 }
@@ -318,6 +377,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	if err != nil {
 		return AutomationRun{}, err
 	}
+	if run.Status != RunStatusRunning || run.RunnerKind != RunnerKindCodexCLI {
+		return AutomationRun{}, fmt.Errorf("%w: automation run is not externally claimed", ErrInvalidInput)
+	}
 	status, err := safeAttemptStatus(input.Status)
 	if err != nil {
 		return AutomationRun{}, err
@@ -335,6 +397,10 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		return AutomationRun{}, err
 	}
 	claimRefs, err := safeRefList(input.ClaimRefs, "claim_refs")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	reviewRefs, err := safeRefList(input.ReviewRefs, "review_result_refs")
 	if err != nil {
 		return AutomationRun{}, err
 	}
@@ -360,6 +426,17 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		CreatedAt:          now,
 		FinishedAt:         now,
 	}
+	knowledgeRefs, err = svc.attachAttemptGovernance(ctx, run, attempt, attemptGovernanceRefs{
+		VerifierRefs:  verifierRefs,
+		EvidenceRefs:  append([]string{"automation_run:" + run.ID}, evidenceRefs...),
+		ClaimRefs:     claimRefs,
+		ReviewRefs:    reviewRefs,
+		KnowledgeRefs: knowledgeRefs,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	attempt.KnowledgeRefs = knowledgeRefs
 	if _, err := svc.store.CreateAttempt(ctx, attempt); err != nil {
 		return svc.failRun(ctx, run, RunStatusFailed, "attempt_record_failed")
 	}
@@ -442,7 +519,16 @@ func (svc *Service) ComputeParallelBatch(ctx context.Context, input ComputeParal
 }
 
 func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRun) (AutomationRun, projectworkplan.WorkTask, error) {
-	task, err := svc.resolveTask(ctx, run)
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "automation_unavailable")
+		return updated, projectworkplan.WorkTask{}, err
+	}
+	if err := svc.validateAutomationPolicy(ctx, automation, run.RunnerKind, run.TaskID); err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusPolicyDenied, err.Error())
+		return updated, projectworkplan.WorkTask{}, err
+	}
+	task, err := svc.resolveTask(ctx, run, automation)
 	if err != nil {
 		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "task_unavailable")
 		return updated, projectworkplan.WorkTask{}, err
@@ -477,7 +563,14 @@ func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRu
 	run.StartedAt = svc.now()
 	run.UpdatedAt = run.StartedAt
 	run, err = svc.store.UpdateRun(ctx, run)
-	return run, task, err
+	if err != nil {
+		return run, task, err
+	}
+	if err := svc.attachRunStartGovernance(ctx, run, task); err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusFailed, "governance_action_failed")
+		return updated, projectworkplan.WorkTask{}, err
+	}
+	return run, task, nil
 }
 
 func (svc *Service) candidateTasks(ctx context.Context, projectID string, planID string, taskIDs []string) ([]projectworkplan.WorkTask, error) {
@@ -586,6 +679,9 @@ func (svc *Service) runCodexTask(ctx context.Context, run AutomationRun, task pr
 		FinishedAt:         finished,
 		VerifierResultRefs: nil,
 	}
+	if _, err := svc.attachAttemptGovernance(ctx, run, attempt, attemptGovernanceRefs{EvidenceRefs: []string{"automation_run:" + run.ID}}); err != nil {
+		return svc.failRun(ctx, run, RunStatusFailed, "governance_outcome_failed")
+	}
 	if _, createErr := svc.store.CreateAttempt(ctx, attempt); createErr != nil {
 		return svc.failRun(ctx, run, RunStatusFailed, "attempt_record_failed")
 	}
@@ -692,20 +788,120 @@ func (svc *Service) failRun(ctx context.Context, run AutomationRun, status strin
 	return svc.store.UpdateRun(ctx, run)
 }
 
-func (svc *Service) resolveTask(ctx context.Context, run AutomationRun) (projectworkplan.WorkTask, error) {
+func (svc *Service) resolveTask(ctx context.Context, run AutomationRun, automation Automation) (projectworkplan.WorkTask, error) {
 	if run.TaskID != "" {
-		return svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil {
+			return projectworkplan.WorkTask{}, err
+		}
+		if err := validateAllowedTaskRef(automation, task); err != nil {
+			return projectworkplan.WorkTask{}, err
+		}
+		return task, nil
 	}
 	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: run.ProjectID, PlanID: run.PlanID, OwnerAgent: run.AgentID})
 	if err != nil {
 		return projectworkplan.WorkTask{}, err
 	}
 	for _, task := range tasks {
+		if validateAllowedTaskRef(automation, task) != nil {
+			continue
+		}
 		if err := validateExecutableTask(task); err == nil {
 			return task, nil
 		}
 	}
 	return projectworkplan.WorkTask{}, fmt.Errorf("%w: no ready task", ErrInvalidInput)
+}
+
+func (svc *Service) validateAutomationPolicy(ctx context.Context, automation Automation, runnerKind string, taskID string) error {
+	if automation.SourceKind == AutomationSourceWorkflow {
+		if err := validatePermissionSnapshotRef(automation.PermissionRef); err != nil {
+			return err
+		}
+	}
+	if strings.HasPrefix(automation.PermissionRef, PermissionSnapshotRefPrefix) {
+		if svc.options.PermissionResolver == nil {
+			return fmt.Errorf("%w: permission_resolver_unavailable", ErrInvalidInput)
+		}
+		metadata, err := svc.options.PermissionResolver.CheckAutomationPermission(ctx, PermissionCheckInput{
+			ProjectID:       automation.ProjectID,
+			AutomationID:    automation.ID,
+			AutomationRef:   automation.AutomationRef,
+			AgentID:         automation.AgentID,
+			PermissionRef:   automation.PermissionRef,
+			RunnerKind:      runnerKind,
+			RunnerExecution: svc.options.RunnerExecution,
+		})
+		if err != nil {
+			return err
+		}
+		if metadata.AgentID != automation.AgentID {
+			return fmt.Errorf("%w: permission_agent_mismatch", ErrInvalidInput)
+		}
+		if !permissionAllowsRunner(metadata, runnerKind) {
+			return fmt.Errorf("%w: permission_runner_denied", ErrInvalidInput)
+		}
+	}
+	if taskID != "" && len(automation.AllowedTaskRefs) > 0 && svc.workTasks != nil {
+		task, err := svc.workTasks.GetWorkTask(ctx, automation.ProjectID, taskID)
+		if err != nil {
+			return fmt.Errorf("%w: task_unavailable", ErrInvalidInput)
+		}
+		if err := validateAllowedTaskRef(automation, task); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateAllowedTaskRef(automation Automation, task projectworkplan.WorkTask) error {
+	if len(automation.AllowedTaskRefs) == 0 {
+		return nil
+	}
+	for _, ref := range automation.AllowedTaskRefs {
+		if ref == task.TaskRef {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: task_ref_not_allowed", ErrInvalidInput)
+}
+
+func validatePermissionSnapshotRef(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%w: missing_permission_snapshot_ref", ErrInvalidInput)
+	}
+	if !strings.HasPrefix(value, PermissionSnapshotRefPrefix) {
+		return fmt.Errorf("%w: malformed_permission_snapshot_ref", ErrInvalidInput)
+	}
+	if _, err := safeRef(strings.TrimPrefix(value, PermissionSnapshotRefPrefix), "permission_snapshot_id"); err != nil {
+		return fmt.Errorf("%w: malformed_permission_snapshot_ref", ErrInvalidInput)
+	}
+	return nil
+}
+
+func permissionAllowsRunner(metadata PermissionSnapshotMetadata, runnerKind string) bool {
+	if runnerKind == "" {
+		return true
+	}
+	for _, denied := range metadata.DeniedCommands {
+		normalized := strings.ToLower(strings.TrimSpace(denied))
+		if runnerKind == RunnerKindCodexCLI && (normalized == "codex" || normalized == "codex_cli" || strings.Contains(normalized, "codex cli")) {
+			return false
+		}
+		if runnerKind == RunnerKindManual && normalized == "manual" {
+			return false
+		}
+	}
+	if len(metadata.AllowedRunnerKinds) == 0 {
+		return true
+	}
+	for _, allowed := range metadata.AllowedRunnerKinds {
+		if strings.TrimSpace(allowed) == runnerKind {
+			return true
+		}
+	}
+	return false
 }
 
 func validateExecutableTask(task projectworkplan.WorkTask) error {
@@ -809,6 +1005,19 @@ func safeAutomationStatus(value string) (string, error) {
 		return strings.TrimSpace(value), nil
 	default:
 		return "", fmt.Errorf("%w: unknown automation status", ErrInvalidInput)
+	}
+}
+
+func safeAutomationSource(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return AutomationSourceManual, nil
+	}
+	switch value {
+	case AutomationSourceManual, AutomationSourceWorkflow:
+		return value, nil
+	default:
+		return "", fmt.Errorf("%w: unknown automation source", ErrInvalidInput)
 	}
 }
 

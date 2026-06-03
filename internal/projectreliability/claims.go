@@ -375,6 +375,10 @@ func defaultKnownTools() []string {
 		"projects.automations.create", "projects.automations.get", "projects.automations.list", "projects.automations.run",
 		"projects.automations.run_parallel_batch", "projects.automation_runs.get", "projects.automation_runs.list",
 		"projects.automation_runs.claim_next", "projects.automation_runs.complete_attempt",
+		"projects.workflows.validate_toml", "projects.workflows.import_toml", "projects.workflows.get", "projects.workflows.list",
+		"projects.workflows.update_status", "projects.workflows.compile_to_work_plan",
+		"projects.agent_definitions.list", "projects.agent_definitions.get",
+		"projects.permission_snapshots.get", "projects.permission_snapshots.list",
 	})
 }
 

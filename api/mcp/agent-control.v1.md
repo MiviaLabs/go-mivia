@@ -28,6 +28,55 @@ Classification: Internal; local project-integration rich-content exception only
 
 ## Tools
 
+### Project Workflow TOML Contract
+
+Project Workflow TOML is a compile-only metadata surface. It validates and imports workflow definitions, agent definitions, step dependencies, review gates, and permission snapshots, then compiles enabled workflow metadata into governed Work Plans, Work Tasks, reviewer tasks, automations, and permission snapshot refs. It must not execute TOML directly and must not execute raw prompts, shell commands, Codex CLI, source, stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
+
+Workflow import is not an execution path. Automation remains an executor over existing Work Plans and ready Work Tasks only.
+
+Dotted tools and underscore aliases:
+
+```text
+projects.workflows.validate_toml
+projects.workflows.import_toml
+projects.workflows.get
+projects.workflows.list
+projects.workflows.update_status
+projects.workflows.compile_to_work_plan
+projects.agent_definitions.list
+projects.agent_definitions.get
+projects.permission_snapshots.get
+projects.permission_snapshots.list
+```
+
+Rules:
+
+1. `projects.workflows.validate_toml` validates TOML as metadata/config only and returns parsed metadata plus validation issues.
+2. `projects.workflows.import_toml` stores workflow metadata only after validation. It does not create Work Plans, Work Tasks, automation runs, shell commands, Codex CLI runs, or provider calls.
+3. `projects.workflows.update_status` changes lifecycle metadata only. Enabling a workflow does not execute anything.
+4. `projects.workflows.compile_to_work_plan` is the only workflow-to-execution bridge. It requires an enabled workflow and returns Work Plan, Work Task, reviewer task, automation, and permission snapshot refs plus validation issues. `dry_run=true` returns refs/issues only.
+5. Required review gates compile into reviewer Work Tasks. When `independent_from_owner=true`, the reviewer agent must differ from the implementation or automation agent.
+6. Automation steps must depend on at least one Work Task step and have a required review gate. They cannot bypass Work Plan/Work Task governance, independent review refs, verifier refs, Evidence Graph outcomes, confidence scoring, or Knowledge Promotion gates.
+7. Permission snapshots expose immutable metadata for allowed skills/tools/commands, denied commands, workspace mode, network policy, secret policy, log policy, runtime, retry policy, content hash, and run/trace refs. They are not OS sandbox proof and are not approval to execute outside workflow gates.
+8. Knowledge promotion order is Evidence Graph refs/outcomes, verifier refs, independent review refs, confidence score when reusable, Knowledge Promotion candidate, validation, project promotion, and optional org review/promotion. No knowledge auto-promotes from TOML, automation, or confidence score alone.
+
+Project-scoped REST routes:
+
+```text
+POST /api/v1/projects/{id}/workflows/validate-toml
+POST /api/v1/projects/{id}/workflows/import-toml
+GET /api/v1/projects/{id}/workflows
+GET /api/v1/projects/{id}/workflows/{workflow_id}
+POST /api/v1/projects/{id}/workflows/{workflow_id}/status
+POST /api/v1/projects/{id}/workflows/{workflow_id}/compile
+GET /api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions
+GET /api/v1/projects/{id}/workflows/{workflow_id}/agent-definitions/{agent_id}
+GET /api/v1/projects/{id}/permission-snapshots
+GET /api/v1/projects/{id}/permission-snapshots/{snapshot_id}
+```
+
+Workflow records, agent definitions, review gates, compile results, and permission snapshots are metadata-only. Raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, and PII are prohibited.
+
 ### Work Plan And Work Task Contract
 
 Work Plans and Work Tasks are the governed workflow for multi-step implementation when the running server exposes them through `tools/list`. Agents must verify the callable surface before use and must report any surface gap instead of pretending tools exist.

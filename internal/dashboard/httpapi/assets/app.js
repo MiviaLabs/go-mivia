@@ -33,6 +33,7 @@ const FILTERS = [
 const TABS = [
   { id: "overview", label: "Overview" },
   { id: "work-plan", label: "Work Plan" },
+  { id: "workflows", label: "Workflows" },
   { id: "graph", label: "Graph" },
   { id: "evidence", label: "Evidence Graph" },
   { id: "confidence", label: "Confidence" },
@@ -946,6 +947,7 @@ function buildTabs(project, health, latest, graph, dashboard) {
   const renderers = {
     overview: () => tabOverview(project, health, latest, graph),
     "work-plan": () => tabWorkPlan(project.id),
+    workflows: () => tabProjectWorkflows(project.id),
     graph: () => tabGraph(graph),
     evidence: () => tabEvidenceGraph(project.id),
     confidence: () => tabConfidence(project.id),
@@ -1077,6 +1079,334 @@ function tabWorkPlan(projectID) {
   body.dataset.projectSubview = "work-plan";
   loadWorkPlanView(projectID, state, { planNode, planListNode, planTasksNode, nextNode, openNode, mineNode, blockedNode, automationNode, graphNode, detailNode });
   return panel("Work Plan", body);
+}
+
+function tabProjectWorkflows(projectID) {
+  const listNode = el("div", { class: "workflow-list rows" }, emptyText("Loading workflows..."));
+  const detailNode = el("div", { class: "workflow-detail" }, emptyText("Select a workflow to inspect governed execution metadata."));
+  const state = { workflows: [], selectedWorkflowID: "", validatedWorkflowID: "", lastValidation: null, compiling: false };
+  const body = el("div", { class: "workflow-view" },
+    el("div", { class: "workflow-layout" },
+      block("Workflow List", listNode),
+      block("Workflow Detail", detailNode),
+    ),
+  );
+  body.dataset.projectSubview = "workflows";
+  loadProjectWorkflows(projectID, state, listNode, detailNode);
+  return panel("Project Workflows", body);
+}
+
+async function loadProjectWorkflows(projectID, state, listNode, detailNode) {
+  try {
+    const data = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/workflows`, 6000);
+    state.workflows = workArray(data, "workflows");
+    listNode.replaceChildren(workflowRows(projectID, state, listNode, detailNode));
+    if (state.workflows.length) {
+      const selected = state.workflows.find((workflow) => workflowID(workflow) === state.selectedWorkflowID) || state.workflows[0];
+      if (selected) loadProjectWorkflowDetail(projectID, workflowID(selected), state, listNode, detailNode);
+    } else {
+      detailNode.replaceChildren(emptyText("No project workflows returned."));
+    }
+  } catch (error) {
+    listNode.replaceChildren(emptyText(`Workflows unavailable: ${error.message}`));
+    detailNode.replaceChildren(emptyText("Workflow detail unavailable."));
+  }
+}
+
+function workflowRows(projectID, state, listNode, detailNode) {
+  if (!state.workflows.length) return emptyText("No workflows returned.");
+  return el("div", { class: "workflow-list rows" }, state.workflows.map((workflow) => workflowButton(projectID, workflow, state, listNode, detailNode)));
+}
+
+function workflowButton(projectID, workflow, state, listNode, detailNode) {
+  const id = workflowID(workflow);
+  const selected = id && id === state.selectedWorkflowID;
+  return el("button", {
+    class: `workflow-row${selected ? " workflow-row--selected" : ""}`,
+    type: "button",
+    disabled: !id,
+    onClick: () => loadProjectWorkflowDetail(projectID, id, state, listNode, detailNode),
+  },
+    el("div", { class: "workflow-row__head" },
+      el("strong", { text: safeWorkText(workflow.title || workflow.workflow_ref || id) || "workflow" }),
+      pill(safeWorkText(workflow.status) || "status unknown", workflowTone(workflow.status)),
+    ),
+    el("div", { class: "workflow-row__stats" },
+      workflowStat("Agents", workflowAgents(workflow).length),
+      workflowStat("Steps", workflowSteps(workflow).length),
+      workflowStat("Review Gates", workflowReviewGates(workflow).length),
+    ),
+    el("span", { text: compactJoin([workflow.workflow_ref || id, `updated ${formatDate(workflow.updated_at || workflow.created_at)}`]) }),
+  );
+}
+
+function workflowStat(label, value) {
+  return el("span", { class: "workflow-stat" }, el("strong", { text: numberValue(value) }), el("span", { text: label }));
+}
+
+async function loadProjectWorkflowDetail(projectID, workflowIDValue, state, listNode, detailNode) {
+  if (!workflowIDValue) return;
+  state.selectedWorkflowID = workflowIDValue;
+  state.validatedWorkflowID = state.validatedWorkflowID === workflowIDValue ? state.validatedWorkflowID : "";
+  state.lastValidation = state.validatedWorkflowID ? state.lastValidation : null;
+  detailNode.replaceChildren(emptyText("Loading workflow metadata..."));
+  listNode.replaceChildren(workflowRows(projectID, state, listNode, detailNode));
+  const encodedProject = encodeURIComponent(projectID);
+  const encodedWorkflow = encodeURIComponent(workflowIDValue);
+  const [workflowResult, agentsResult, snapshotsResult] = await Promise.allSettled([
+    fetchJSON(`/api/v1/projects/${encodedProject}/workflows/${encodedWorkflow}`, 6000),
+    fetchJSON(`/api/v1/projects/${encodedProject}/workflows/${encodedWorkflow}/agent-definitions`, 6000),
+    fetchJSON(`/api/v1/projects/${encodedProject}/permission-snapshots?workflow_id=${encodedWorkflow}`, 6000),
+  ]);
+  if (state.selectedWorkflowID !== workflowIDValue) return;
+  if (workflowResult.status !== "fulfilled") {
+    detailNode.replaceChildren(emptyText(`Workflow unavailable: ${workflowResult.reason?.message || "request failed"}`));
+    return;
+  }
+  const workflow = workflowResult.value || {};
+  const agents = agentsResult.status === "fulfilled" ? workArray(agentsResult.value, "agent_definitions", "agents") : workflowAgents(workflow);
+  const snapshots = snapshotsResult.status === "fulfilled" ? workArray(snapshotsResult.value, "permission_snapshots") : workflowPermissionSnapshots(workflow);
+  detailNode.replaceChildren(workflowDetail(projectID, workflow, agents, snapshots, state, listNode, detailNode));
+}
+
+function workflowDetail(projectID, workflow, agents, snapshots, state, listNode, detailNode) {
+  const id = workflowID(workflow);
+  return el("div", { class: "workflow-detail__body" },
+    infoList([
+      ["Workflow", id || "unknown"],
+      ["Ref", safeWorkText(workflow.workflow_ref) || "unknown"],
+      ["Status", safeWorkText(workflow.status) || "unknown"],
+      ["Agents", numberValue(agents.length)],
+      ["Steps", numberValue(workflowSteps(workflow).length)],
+      ["Review Gates", numberValue(workflowReviewGates(workflow).length)],
+      ["Updated", formatDate(workflow.updated_at || workflow.created_at)],
+    ]),
+    workTextBlock("Purpose", workflow.purpose),
+    block("Agents", workflowAgentList(agents)),
+    block("Permission Summary", workflowPermissionSummary(snapshots, agents)),
+    block("Steps And Dependencies", workflowStepList(workflowSteps(workflow))),
+    block("Review Gates", workflowReviewGateList(workflowReviewGates(workflow))),
+    block("Compile Action", workflowCompileAction(projectID, id, state, listNode, detailNode)),
+  );
+}
+
+function workflowAgentList(agents) {
+  if (!agents.length) return emptyText("No agent definitions returned.");
+  return el("div", { class: "workflow-grid" }, agents.map((agent) => el("div", { class: "tile" },
+    el("div", { class: "tile__head" },
+      el("strong", { text: safeWorkText(agent.display_name || agent.id) || "agent" }),
+      pill(safeWorkText(agent.workspace_mode) || "workspace unknown", "muted"),
+    ),
+    el("span", { class: "tile__sub", text: safeWorkSummary(agent.purpose) || "No purpose returned." }),
+    el("div", { class: "tag-list" }, [
+      ...workflowSafeRefs(agent.allowed_skills).map((value) => el("span", { class: "tag", text: `skill ${value}` })),
+      ...workflowSafeRefs(agent.allowed_tools).map((value) => el("span", { class: "tag", text: `tool ${value}` })),
+    ]),
+    infoList([
+      ["Network", safeWorkText(agent.network_policy) || "unknown"],
+      ["Secrets", safeWorkText(agent.secret_policy) || "unknown"],
+      ["Logs", safeWorkText(agent.log_policy) || "unknown"],
+      ["Max retries", numberValue(agent.max_retries || 0)],
+    ]),
+  )));
+}
+
+function workflowPermissionSummary(snapshots, agents) {
+  const records = snapshots.length ? snapshots : agents;
+  if (!records.length) return emptyText("No permission snapshots returned.");
+  return el("div", { class: "workflow-permissions" }, records.map((record) => el("div", { class: "workflow-permission" },
+    el("div", { class: "workflow-row__head" },
+      el("strong", { text: safeWorkText(record.agent_id || record.id) || "agent" }),
+      pill(safeWorkText(record.workspace_mode) || "workspace unknown", "muted"),
+    ),
+    infoList([
+      ["Allowed skills", numberValue(workflowSafeRefs(record.allowed_skills).length)],
+      ["Allowed tools", numberValue(workflowSafeRefs(record.allowed_tools).length)],
+      ["Allowed commands", numberValue(workflowSafeRefs(record.allowed_commands).length)],
+      ["Denied commands", numberValue(workflowSafeRefs(record.denied_commands).length)],
+      ["Network", safeWorkText(record.network_policy) || "unknown"],
+      ["Secrets", safeWorkText(record.secret_policy) || "unknown"],
+      ["Logs", safeWorkText(record.log_policy) || "unknown"],
+    ]),
+  )));
+}
+
+function workflowStepList(steps) {
+  if (!steps.length) return emptyText("No workflow steps returned.");
+  return el("div", { class: "workflow-step-list" }, steps.map((step) => el("section", { class: "workflow-step" },
+    el("div", { class: "workflow-row__head" },
+      el("strong", { text: safeWorkText(step.title || step.id) || "step" }),
+      pill(safeWorkText(step.kind) || "kind unknown", "muted"),
+    ),
+    el("span", { class: "work-note", text: compactJoin([step.id, step.agent ? `agent ${step.agent}` : "", step.verification_requirement]) }),
+    workRefsBlock("Dependencies", workflowSafeRefs(step.depends_on)),
+    workTextBlock("Description", step.description),
+    workRefsBlock("Evidence Needed", workflowSafeRefs(step.evidence_needed)),
+    workRefsBlock("Context Pack Refs", workflowSafeRefs(step.context_pack_refs)),
+    workRefsBlock("Likely Files Affected", safeChangedPaths(step.likely_files_affected)),
+    workTextBlock("Expected Output", step.expected_output),
+    workTextBlock("Failure Criteria", step.failure_criteria),
+    workTextBlock("Resume Instructions", step.resume_instructions),
+  )));
+}
+
+function workflowReviewGateList(gates) {
+  if (!gates.length) return emptyText("No review gates returned.");
+  return el("div", { class: "workflow-step-list" }, gates.map((gate) => el("section", { class: "workflow-step workflow-step--gate" },
+    el("div", { class: "workflow-row__head" },
+      el("strong", { text: safeWorkText(gate.id) || "review gate" }),
+      pill(gate.required ? "required" : "optional", gate.required ? "warn" : "muted"),
+    ),
+    infoList([
+      ["Reviewer", safeWorkText(gate.reviewer_agent) || "unknown"],
+      ["Independent", gate.independent_from_owner ? "yes" : "no"],
+      ["Applies to", workflowSafeRefs(gate.applies_to).join(", ") || "unspecified"],
+      ["Allowed actions", workflowSafeRefs(gate.allowed_actions).join(", ") || "none"],
+    ]),
+    workRefsBlock("Required Artifacts", workflowSafeRefs(gate.required_artifacts)),
+    el("details", { class: "workflow-instructions" },
+      el("summary", { text: "Reviewer Instructions" }),
+      el("p", { class: "work-note", text: safeWorkSummary(gate.instructions) || "No reviewer instructions returned." }),
+    ),
+  )));
+}
+
+function workflowCompileAction(projectID, workflowIDValue, state, listNode, detailNode) {
+  const status = el("div", { class: "workflow-compile__status" },
+    state.lastValidation ? workflowCompileResult(state.lastValidation) : emptyText("Validate compile first. Compilation requires a second explicit action after validation passes."),
+  );
+  if (state.compileNotice) status.append(emptyText(state.compileNotice));
+  const validateButton = el("button", {
+    type: "button",
+    class: "compact",
+    disabled: state.compiling || !workflowIDValue,
+    onClick: () => validateWorkflowCompile(projectID, workflowIDValue, state, status, listNode, detailNode),
+    text: "Validate compile",
+  });
+  const children = [el("div", { class: "workflow-compile__actions" }, validateButton)];
+  if (state.validatedWorkflowID === workflowIDValue && !workflowCompileHasErrors(state.lastValidation)) {
+    children[0].append(el("button", {
+      type: "button",
+      class: "compact",
+      disabled: state.compiling,
+      onClick: () => compileValidatedWorkflow(projectID, workflowIDValue, state, status, listNode, detailNode),
+      text: "Compile validated workflow",
+    }));
+  }
+  children.push(status);
+  return el("div", { class: "workflow-compile" }, ...children);
+}
+
+async function validateWorkflowCompile(projectID, workflowIDValue, state, status, listNode, detailNode) {
+  state.compiling = true;
+  state.validatedWorkflowID = "";
+  state.lastValidation = null;
+  state.compileNotice = "";
+  status.replaceChildren(emptyText("Validating workflow compile..."));
+  try {
+    const result = await postWorkflowCompile(projectID, workflowIDValue, { dry_run: true });
+    state.lastValidation = result;
+    if (!workflowCompileHasErrors(result)) state.validatedWorkflowID = workflowIDValue;
+    state.compileNotice = "Validation complete. Use the second explicit action to compile.";
+    state.compiling = false;
+    const root = status.closest(".workflow-compile");
+    if (root) root.replaceWith(workflowCompileAction(projectID, workflowIDValue, state, listNode, detailNode));
+  } catch (error) {
+    status.replaceChildren(emptyText(error.message));
+  } finally {
+    state.compiling = false;
+  }
+}
+
+async function compileValidatedWorkflow(projectID, workflowIDValue, state, status, listNode, detailNode) {
+  if (state.validatedWorkflowID !== workflowIDValue || workflowCompileHasErrors(state.lastValidation)) {
+    status.replaceChildren(emptyText("Compile blocked until validation passes."));
+    return;
+  }
+  state.compiling = true;
+  status.replaceChildren(emptyText("Compiling validated workflow..."));
+  try {
+    const result = await postWorkflowCompile(projectID, workflowIDValue, { dry_run: false });
+    state.lastValidation = result;
+    state.validatedWorkflowID = "";
+    status.replaceChildren(workflowCompileResult(result));
+    loadProjectWorkflowDetail(projectID, workflowIDValue, state, listNode, detailNode);
+  } catch (error) {
+    status.replaceChildren(emptyText(error.message));
+  } finally {
+    state.compiling = false;
+  }
+}
+
+async function postWorkflowCompile(projectID, workflowIDValue, payload) {
+  return fetchJSONWithOptions(`/api/v1/projects/${encodeURIComponent(projectID)}/workflows/${encodeURIComponent(workflowIDValue)}/compile`, 10000, {
+    method: "POST",
+    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+function workflowCompileResult(result) {
+  const issues = workflowIssues(result);
+  return el("div", { class: "workflow-compile-result" },
+    infoList([
+      ["Workflow", safeWorkText(result?.workflow_id) || "unknown"],
+      ["Dry run", result?.dry_run ? "yes" : "no"],
+      ["Work plan", safeWorkText(result?.work_plan_id) || "none"],
+      ["Work tasks", numberValue(workflowSafeRefs(result?.work_task_ids).length)],
+      ["Review tasks", numberValue(workflowSafeRefs(result?.reviewer_task_ids).length)],
+      ["Automations", numberValue(workflowSafeRefs(result?.automation_ids).length)],
+      ["Compiled", formatDate(result?.compiled_at)],
+    ]),
+    issues.length ? workflowIssueList(issues) : emptyText("No validation issues returned."),
+  );
+}
+
+function workflowIssueList(issues) {
+  return el("div", { class: "rows" }, issues.map((issue) => el("div", { class: "row row--file" },
+    el("strong", { text: safeWorkText(issue.code) || "validation_issue" }),
+    el("span", { text: compactJoin([issue.severity, issue.field_path]) }),
+    el("span", { text: safeWorkSummary(issue.message) }),
+  )));
+}
+
+function workflowCompileHasErrors(result) {
+  return workflowIssues(result).some((issue) => safeWorkText(issue.severity).toLowerCase() === "error");
+}
+
+function workflowIssues(result) {
+  return workArray(result, "validation_issues", "issues");
+}
+
+function workflowID(workflow) {
+  return safeWorkText(workflow?.id || workflow?.workflow_id);
+}
+
+function workflowAgents(workflow) {
+  return workArray(workflow, "agents", "agent_definitions");
+}
+
+function workflowSteps(workflow) {
+  return workArray(workflow, "steps");
+}
+
+function workflowReviewGates(workflow) {
+  return workArray(workflow, "review_gates");
+}
+
+function workflowPermissionSnapshots(workflow) {
+  return workArray(workflow, "permission_snapshots");
+}
+
+function workflowTone(status) {
+  const value = safeWorkText(status).toLowerCase();
+  if (["enabled", "active"].includes(value)) return "ok";
+  if (["disabled", "superseded"].includes(value)) return "muted";
+  return "warn";
+}
+
+function workflowSafeRefs(value) {
+  return workRefs(value);
 }
 
 async function loadWorkPlanView(projectID, state, nodes) {
