@@ -1115,6 +1115,135 @@ main {
   align-items: start;
 }
 
+.knowledge-view,
+.knowledge-detail,
+.knowledge-chain {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.knowledge-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.9fr) minmax(240px, 0.9fr) minmax(0, 1.25fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.knowledge-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto auto;
+  gap: 8px;
+}
+
+.knowledge-filters input,
+.knowledge-filters select,
+.knowledge-reuse-form input,
+.knowledge-reuse-form select {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.knowledge-row {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-height: 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  box-shadow: none;
+  color: inherit;
+  text-align: left;
+}
+
+.knowledge-row:hover:not(:disabled) {
+  background: var(--panel);
+}
+
+.knowledge-row--project {
+  border-left: 4px solid var(--accent);
+}
+
+.knowledge-row--org {
+  border-left: 4px solid var(--node);
+}
+
+.knowledge-row__head,
+.knowledge-detail__head,
+.knowledge-reuse-form,
+.knowledge-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.knowledge-row__head {
+  justify-content: space-between;
+}
+
+.knowledge-row strong,
+.knowledge-row span {
+  overflow-wrap: anywhere;
+}
+
+.knowledge-row span,
+.knowledge-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.scope-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.scope-pill--project {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.scope-pill--org {
+  background: var(--node-soft);
+  color: var(--node);
+}
+
+.knowledge-reuse-form {
+  align-items: stretch;
+}
+
+.knowledge-reuse-form input,
+.knowledge-reuse-form select {
+  flex: 1 1 150px;
+}
+
+.knowledge-check {
+  flex: 0 0 auto;
+  min-height: 34px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.knowledge-check input {
+  width: auto;
+  min-height: 0;
+}
+
 .evidence-filters {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1450,7 +1579,9 @@ main {
   }
 
   .evidence-layout,
-  .evidence-filters {
+  .evidence-filters,
+  .knowledge-layout,
+  .knowledge-filters {
     grid-template-columns: 1fr;
   }
 }

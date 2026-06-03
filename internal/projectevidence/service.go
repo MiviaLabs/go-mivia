@@ -3,7 +3,6 @@ package projectevidence
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -796,5 +795,15 @@ func newID(prefix string) string {
 	if _, err := rand.Read(b[:]); err != nil {
 		panic(fmt.Errorf("generate id: %w", err))
 	}
-	return prefix + "_" + hex.EncodeToString(b[:])
+	return prefix + "_" + letterEncode(b[:])
+}
+
+func letterEncode(values []byte) string {
+	const alphabet = "abcdefghijklmnop"
+	out := make([]byte, len(values)*2)
+	for i, value := range values {
+		out[i*2] = alphabet[value>>4]
+		out[i*2+1] = alphabet[value&0x0f]
+	}
+	return string(out)
 }

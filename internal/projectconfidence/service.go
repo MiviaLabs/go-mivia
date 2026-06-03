@@ -3,7 +3,6 @@ package projectconfidence
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -892,5 +891,15 @@ func containsURL(value string) bool {
 
 func deterministicID(projectID string, claimID string) string {
 	sum := sha256.Sum256([]byte(projectID + "\x00" + claimID))
-	return "confidence_" + hex.EncodeToString(sum[:12])
+	return "confidence_" + letterEncode(sum[:12])
+}
+
+func letterEncode(values []byte) string {
+	const alphabet = "abcdefghijklmnop"
+	out := make([]byte, len(values)*2)
+	for i, value := range values {
+		out[i*2] = alphabet[value>>4]
+		out[i*2+1] = alphabet[value&0x0f]
+	}
+	return string(out)
 }

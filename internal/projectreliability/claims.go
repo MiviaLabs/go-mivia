@@ -56,7 +56,7 @@ func NewClaimChecker(workspace projectworkspace.API) *ClaimChecker {
 	return &ClaimChecker{workspace: workspace}
 }
 
-var toolClaimPattern = regexp.MustCompile(`\b(?:projects|agent_runs|tasks|research_runs)(?:\.|_)[a-zA-Z0-9_.*]+`)
+var toolClaimPattern = regexp.MustCompile(`\b(?:projects|orgs|agent_runs|tasks|research_runs)(?:\.|_)[a-zA-Z0-9_.*]+`)
 var routeClaimPattern = regexp.MustCompile(`/api/v1/[a-zA-Z0-9_./{}*<>=?&-]+`)
 
 func (checker *ClaimChecker) Check(ctx context.Context, request ClaimCheckRequest) (ClaimCheckResult, error) {
@@ -282,7 +282,7 @@ func normalizeRouteClaim(route string) string {
 		route = before
 	}
 	route = strings.TrimRight(route, "/")
-	for _, placeholder := range []string{"id", "project_id", "run_id", "file_id", "symbol_id", "task_id", "claim_id"} {
+	for _, placeholder := range []string{"id", "project_id", "run_id", "file_id", "symbol_id", "task_id", "claim_id", "knowledge_id", "org_ref"} {
 		route = strings.ReplaceAll(route, "{"+placeholder+"}", "*")
 		route = strings.ReplaceAll(route, "<"+placeholder+">", "*")
 	}
@@ -309,7 +309,14 @@ func shouldWildcardRouteSegment(parts []string, index int, segment string) bool 
 		previous = parts[index-1]
 	}
 	switch previous {
-	case "projects", "tasks", "research-runs", "agent-runs", "files", "symbols", "ingestion-runs", "digest-runs", "claims":
+	case "claims":
+		return segment != "check"
+	case "files":
+		if index > 1 && parts[index-2] == "workspace" {
+			return false
+		}
+		return true
+	case "projects", "tasks", "research-runs", "agent-runs", "symbols", "ingestion-runs", "digest-runs":
 		return true
 	default:
 		return false
@@ -345,6 +352,10 @@ func defaultKnownTools() []string {
 		"projects.evidence_graph.evidence.append", "projects.evidence_graph.decisions.create", "projects.evidence_graph.actions.create",
 		"projects.evidence_graph.outcomes.create", "projects.evidence_graph.artifacts.link", "projects.evidence_graph.promotions.link",
 		"projects.confidence.claims.score", "projects.confidence.claims.get", "projects.confidence.claims.list",
+		"projects.knowledge.candidates.create", "projects.knowledge.validate", "projects.knowledge.promote_project",
+		"projects.knowledge.submit_org_review", "projects.knowledge.promote_org", "projects.knowledge.reject",
+		"projects.knowledge.supersede", "projects.knowledge.reuse_events.record", "projects.knowledge.get",
+		"projects.knowledge.list", "orgs.knowledge.list",
 		"projects.integrations.list", "projects.integrations.status", "projects.integrations.counts", "projects.integrations.poll",
 		"projects.integrations.poll_status", "projects.integrations.search", "projects.jira.issue.get", "projects.confluence.page.get",
 	})
@@ -387,5 +398,9 @@ func defaultKnownRoutes() []string {
 		"/api/v1/projects/*/evidence-graph/claims/*/actions", "/api/v1/projects/*/evidence-graph/claims/*/outcomes",
 		"/api/v1/projects/*/evidence-graph/claims/*/artifact-links", "/api/v1/projects/*/evidence-graph/claims/*/promotion-links",
 		"/api/v1/projects/*/confidence/claims", "/api/v1/projects/*/confidence/claims/*", "/api/v1/projects/*/confidence/claims/*/score",
+		"/api/v1/projects/*/knowledge/candidates", "/api/v1/projects/*/knowledge/*/validate", "/api/v1/projects/*/knowledge/*/promote-project",
+		"/api/v1/projects/*/knowledge/*/submit-org-review", "/api/v1/projects/*/knowledge/*/promote-org", "/api/v1/projects/*/knowledge/*/reject",
+		"/api/v1/projects/*/knowledge/*/supersede", "/api/v1/projects/*/knowledge/*/reuse-events", "/api/v1/projects/*/knowledge/*",
+		"/api/v1/projects/*/knowledge", "/api/v1/orgs/*/knowledge",
 	}
 }

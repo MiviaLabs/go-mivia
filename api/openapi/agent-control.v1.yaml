@@ -796,6 +796,300 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge/candidates:
+    post:
+      operationId: createProjectKnowledgeCandidate
+      summary: Create project knowledge candidate
+      description: Creates one project-scoped metadata-only knowledge candidate from safe Evidence Graph and Confidence refs. Project-level promotion is the default path; org-level promotion is optional, stricter, explicit, and never automatic.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectKnowledgeCandidateRequest'
+      responses:
+        '201':
+          description: Created knowledge candidate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge/{knowledge_id}/validate:
+    post:
+      operationId: validateProjectKnowledgeCandidate
+      summary: Validate project knowledge candidate
+      description: Validates a candidate through current Evidence Graph and Confidence Engine metadata. Promoted knowledge remains guidance and must be revalidated before future action.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/KnowledgeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectKnowledgeTransitionRequest'
+      responses:
+        '200':
+          description: Validated knowledge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge/{knowledge_id}/promote-project:
+    post:
+      operationId: promoteProjectKnowledge
+      summary: Promote project knowledge
+      description: Promotes validated knowledge to project scope after Evidence Graph, Confidence Engine, passed-outcome, verifier, and metadata-only gates pass.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/KnowledgeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectKnowledgeTransitionRequest'
+      responses:
+        '200':
+          description: Project-promoted knowledge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge/{knowledge_id}/submit-org-review:
+    post:
+      operationId: submitProjectKnowledgeOrgReview
+      summary: Submit project knowledge for org review
+      description: Explicitly submits project-promoted knowledge for org review. This does not promote org knowledge automatically.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/KnowledgeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitProjectKnowledgeOrgReviewRequest'
+      responses:
+        '200':
+          description: Knowledge in org review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge/{knowledge_id}/promote-org:
+    post:
+      operationId: promoteOrgKnowledge
+      summary: Promote org knowledge
+      description: Explicitly promotes org-reviewed knowledge to default org scope after stricter gates pass. Org promotion is optional, requires project promotion first, and is never automatic.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/KnowledgeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoteOrgKnowledgeRequest'
+      responses:
+        '200':
+          description: Org-promoted knowledge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge/{knowledge_id}/reject:
+    post:
+      operationId: rejectProjectKnowledge
+      summary: Reject knowledge
+      description: Rejects a knowledge record without destructive deletion.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/KnowledgeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectProjectKnowledgeRequest'
+      responses:
+        '200':
+          description: Rejected knowledge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge/{knowledge_id}/supersede:
+    post:
+      operationId: supersedeProjectKnowledge
+      summary: Supersede knowledge
+      description: Marks stale or contradicted knowledge as superseded without deleting the old record.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/KnowledgeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupersedeProjectKnowledgeRequest'
+      responses:
+        '200':
+          description: Superseded knowledge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge/{knowledge_id}/reuse-events:
+    post:
+      operationId: recordProjectKnowledgeReuseEvent
+      summary: Record knowledge reuse event
+      description: Records safe metadata when an agent uses, skips, finds stale, or finds contradicted promoted knowledge. Future agents must record reuse events.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/KnowledgeID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordProjectKnowledgeReuseEventRequest'
+      responses:
+        '201':
+          description: Recorded reuse event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeReuseEvent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge/{knowledge_id}:
+    get:
+      operationId: getProjectKnowledge
+      summary: Get project knowledge
+      description: Returns one project knowledge record as metadata only.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/KnowledgeID'
+      responses:
+        '200':
+          description: Knowledge record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/knowledge:
+    get:
+      operationId: listProjectKnowledge
+      summary: List project knowledge
+      description: Lists project knowledge records with safe metadata filters. Agents should query project-level promoted knowledge before planning in the current project.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/KnowledgeScope'
+        - $ref: '#/components/parameters/KnowledgeState'
+        - name: claim_id
+          in: query
+          schema: {type: string}
+        - name: knowledge_ref
+          in: query
+          schema: {type: string}
+        - name: confidence_band
+          in: query
+          schema:
+            $ref: '#/components/schemas/ProjectConfidenceBand'
+        - name: min_confidence
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 100}
+        - name: max_confidence
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 100}
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Project knowledge records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /orgs/{org_ref}/knowledge:
+    get:
+      operationId: listOrgKnowledge
+      summary: List org-promoted knowledge
+      description: Lists default org-promoted knowledge only. Agents should query org knowledge before making cross-project claims, then revalidate current source/context before acting.
+      parameters:
+        - name: org_ref
+          in: path
+          required: true
+          schema: {type: string, enum: [default]}
+        - name: state
+          in: query
+          schema: {type: string, enum: [org_promoted]}
+        - name: claim_id
+          in: query
+          schema: {type: string}
+        - name: knowledge_ref
+          in: query
+          schema: {type: string}
+        - name: confidence_band
+          in: query
+          schema:
+            $ref: '#/components/schemas/ProjectConfidenceBand'
+        - name: min_confidence
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 100}
+        - name: max_confidence
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 100}
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Org-promoted knowledge records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectKnowledgeList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
   /projects/{id}/workspace/git/status:
     get:
       operationId: getProjectWorkspaceGitStatus
@@ -1808,6 +2102,23 @@ components:
       in: query
       schema:
         type: string
+    KnowledgeID:
+      name: knowledge_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    KnowledgeScope:
+      name: scope
+      in: query
+      schema:
+        $ref: '#/components/schemas/ProjectKnowledgeScope'
+    KnowledgeState:
+      name: state
+      in: query
+      schema:
+        $ref: '#/components/schemas/ProjectKnowledgeState'
     IntegrationProvider:
       name: provider
       in: path
@@ -4039,6 +4350,167 @@ components:
           items:
             $ref: '#/components/schemas/ProjectConfidenceAssessment'
         next_page_token: {type: string}
+    ProjectKnowledgeScope:
+      type: string
+      enum: [project, org]
+    ProjectKnowledgeState:
+      type: string
+      enum: [candidate, validated, project_promoted, org_review, org_promoted, rejected, superseded]
+    ProjectKnowledgeReuseOutcome:
+      type: string
+      enum: [used, skipped, stale, contradicted]
+    ProjectKnowledgeRecord:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, scope, knowledge_ref, claim_id, claim_ref, confidence_score, confidence_band, state, summary, reuse_guidance, created_at, updated_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        scope:
+          $ref: '#/components/schemas/ProjectKnowledgeScope'
+        org_ref: {type: string}
+        knowledge_ref: {type: string}
+        claim_id: {type: string}
+        claim_ref: {type: string}
+        confidence_assessment_id: {type: string}
+        confidence_score: {type: integer, minimum: 0, maximum: 100}
+        confidence_band:
+          $ref: '#/components/schemas/ProjectConfidenceBand'
+        state:
+          $ref: '#/components/schemas/ProjectKnowledgeState'
+        summary: {type: string, maxLength: 500}
+        reuse_guidance: {type: string, maxLength: 500}
+        evidence_refs:
+          type: array
+          items: {type: string, maxLength: 200}
+        verifier_refs:
+          type: array
+          items: {type: string, maxLength: 200}
+        outcome_refs:
+          type: array
+          items: {type: string, maxLength: 200}
+        promotion_refs:
+          type: array
+          items: {type: string, maxLength: 200}
+        supersedes_ref: {type: string}
+        superseded_by_ref: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        promoted_at: {type: string, format: date-time}
+      description: Metadata-only promoted knowledge. Raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, and PII are prohibited.
+    ProjectKnowledgeList:
+      type: object
+      additionalProperties: false
+      required: [knowledge]
+      properties:
+        knowledge:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectKnowledgeRecord'
+        next_page_token: {type: string}
+    CreateProjectKnowledgeCandidateRequest:
+      type: object
+      additionalProperties: false
+      required: [knowledge_ref, claim_id, claim_ref, summary, reuse_guidance]
+      properties:
+        knowledge_ref: {type: string, minLength: 1, maxLength: 200}
+        claim_id: {type: string, minLength: 1, maxLength: 200}
+        claim_ref: {type: string, minLength: 1, maxLength: 200}
+        confidence_assessment_id: {type: string, maxLength: 200}
+        confidence_score: {type: integer, minimum: 0, maximum: 100}
+        confidence_band:
+          $ref: '#/components/schemas/ProjectConfidenceBand'
+        summary: {type: string, minLength: 1, maxLength: 500}
+        reuse_guidance: {type: string, minLength: 1, maxLength: 500}
+        evidence_refs:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        verifier_refs:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        outcome_refs:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        promotion_refs:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        supersedes_ref: {type: string, maxLength: 200}
+    ProjectKnowledgeTransitionRequest:
+      type: object
+      additionalProperties: false
+      required: [decision_ref, verifier_ref, rationale]
+      properties:
+        decision_ref: {type: string, minLength: 1, maxLength: 200}
+        verifier_ref: {type: string, minLength: 1, maxLength: 200}
+        rationale: {type: string, minLength: 1, maxLength: 500}
+    SubmitProjectKnowledgeOrgReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [org_ref, decision_ref, verifier_ref, rationale, decided_by]
+      properties:
+        org_ref: {type: string, enum: [default]}
+        decision_ref: {type: string, minLength: 1, maxLength: 200}
+        verifier_ref: {type: string, minLength: 1, maxLength: 200}
+        rationale: {type: string, minLength: 1, maxLength: 500}
+        decided_by: {type: string, minLength: 1, maxLength: 120}
+    PromoteOrgKnowledgeRequest:
+      type: object
+      additionalProperties: false
+      required: [scope, org_ref, decision_ref, verifier_ref, rationale, decided_by]
+      properties:
+        scope: {type: string, enum: [org]}
+        org_ref: {type: string, enum: [default]}
+        decision_ref: {type: string, minLength: 1, maxLength: 200}
+        verifier_ref: {type: string, minLength: 1, maxLength: 200}
+        rationale: {type: string, minLength: 1, maxLength: 500}
+        decided_by: {type: string, minLength: 1, maxLength: 120}
+    RejectProjectKnowledgeRequest:
+      allOf:
+        - $ref: '#/components/schemas/ProjectKnowledgeTransitionRequest'
+    SupersedeProjectKnowledgeRequest:
+      type: object
+      additionalProperties: false
+      required: [superseded_by_ref, decision_ref, verifier_ref, rationale]
+      properties:
+        superseded_by_ref: {type: string, minLength: 1, maxLength: 200}
+        decision_ref: {type: string, minLength: 1, maxLength: 200}
+        verifier_ref: {type: string, minLength: 1, maxLength: 200}
+        rationale: {type: string, minLength: 1, maxLength: 500}
+        decided_by: {type: string, maxLength: 120}
+    RecordProjectKnowledgeReuseEventRequest:
+      type: object
+      additionalProperties: false
+      required: [reuse_ref, revalidated, outcome]
+      properties:
+        agent_run_id: {type: string, maxLength: 200}
+        trace_id: {type: string, maxLength: 200}
+        reuse_ref: {type: string, minLength: 1, maxLength: 200}
+        revalidated: {type: boolean}
+        revalidation_ref: {type: string, maxLength: 200}
+        outcome:
+          $ref: '#/components/schemas/ProjectKnowledgeReuseOutcome'
+        summary: {type: string, maxLength: 500}
+    ProjectKnowledgeReuseEvent:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, knowledge_id, reuse_ref, revalidated, outcome, created_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        knowledge_id: {type: string}
+        agent_run_id: {type: string}
+        trace_id: {type: string}
+        reuse_ref: {type: string}
+        revalidated: {type: boolean}
+        revalidation_ref: {type: string}
+        outcome:
+          $ref: '#/components/schemas/ProjectKnowledgeReuseOutcome'
+        summary: {type: string, maxLength: 500}
+        created_at: {type: string, format: date-time}
     ErrorResponse:
       type: object
       additionalProperties: false

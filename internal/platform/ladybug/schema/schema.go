@@ -45,6 +45,9 @@ func BootstrapSchema() GraphSchema {
 			"Promotion",
 			"ConfidenceAssessment",
 			"ConfidenceFactor",
+			"KnowledgeRecord",
+			"KnowledgePromotionDecision",
+			"KnowledgeReuseEvent",
 		},
 		Relationships: []Relationship{
 			{Type: "AGENT_RAN_TASK", From: "Agent", To: "Task"},
@@ -88,6 +91,13 @@ func BootstrapSchema() GraphSchema {
 			{Type: "CONFIDENCE_USED_EVIDENCE", From: "ConfidenceAssessment", To: "Evidence"},
 			{Type: "CONFIDENCE_USED_DECISION", From: "ConfidenceAssessment", To: "Decision"},
 			{Type: "CONFIDENCE_USED_OUTCOME", From: "ConfidenceAssessment", To: "Outcome"},
+			{Type: "PROJECT_HAS_KNOWLEDGE", From: "Project", To: "KnowledgeRecord"},
+			{Type: "CLAIM_PROMOTED_TO_KNOWLEDGE", From: "Claim", To: "KnowledgeRecord"},
+			{Type: "CONFIDENCE_SUPPORTS_KNOWLEDGE", From: "ConfidenceAssessment", To: "KnowledgeRecord"},
+			{Type: "KNOWLEDGE_HAS_PROMOTION_DECISION", From: "KnowledgeRecord", To: "KnowledgePromotionDecision"},
+			{Type: "KNOWLEDGE_SUPERSEDES_KNOWLEDGE", From: "KnowledgeRecord", To: "KnowledgeRecord"},
+			{Type: "KNOWLEDGE_REUSED_BY_AGENT_RUN", From: "KnowledgeRecord", To: "AgentRun"},
+			{Type: "KNOWLEDGE_HAS_REUSE_EVENT", From: "KnowledgeRecord", To: "KnowledgeReuseEvent"},
 		},
 	}
 }

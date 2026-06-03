@@ -36,6 +36,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	integrationconfluence "github.com/MiviaLabs/go-mivia/internal/projectintegrations/confluence"
 	integrationjira "github.com/MiviaLabs/go-mivia/internal/projectintegrations/jira"
+	"github.com/MiviaLabs/go-mivia/internal/projectknowledge"
+	knowledgehttpapi "github.com/MiviaLabs/go-mivia/internal/projectknowledge/httpapi"
+	knowledgestore "github.com/MiviaLabs/go-mivia/internal/projectknowledge/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	projecthttpapi "github.com/MiviaLabs/go-mivia/internal/projectregistry/httpapi"
 	projectstore "github.com/MiviaLabs/go-mivia/internal/projectregistry/store"
@@ -214,6 +217,7 @@ func run() error {
 	}
 	projectEvidenceService := projectevidence.New(evidencestore.NewLadybugStore(projectGraph))
 	projectConfidenceService := projectconfidence.New(confidencestore.NewLadybugStore(projectGraph))
+	projectKnowledgeService := projectknowledge.New(knowledgestore.NewLadybugStore(projectGraph))
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
 		LiveUpdatesEnabled:       cfg.Ingestion.LiveUpdatesEnabled,
 		DebounceInterval:         cfg.Ingestion.DebounceInterval,
@@ -241,6 +245,7 @@ func run() error {
 		projectreliability.NewClaimChecker(projectWorkspaceService),
 		projectreliability.NewImpactAnalyzerWithGraph(projectWorkspaceService, projectIngestionScheduler),
 	)
+	projectKnowledgeInputs := projectknowledge.NewPromotionInputAdapter(projectEvidenceService, projectConfidenceService)
 	agentService := service.New(agentStore, agentStore)
 	activityStore := agentactivity.NewSQLiteStore(sqliteDB.SQLDB(), agentactivity.SQLiteStoreOptions{
 		RetainRawPayloads: cfg.AgentActivity.RetainRawPayloads,
@@ -280,6 +285,7 @@ func run() error {
 	projecthttpapi.RegisterRoutesWithWorkspaceIntegrationsAndActivity(mux, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectIntegrationService, activityRecorder)
 	evidencehttpapi.RegisterRoutes(mux, projectEvidenceService)
 	confidencehttpapi.RegisterRoutes(mux, projectConfidenceService, projectConfidenceInputs)
+	knowledgehttpapi.RegisterRoutes(mux, projectKnowledgeService, projectKnowledgeInputs)
 	var diagnosticsService *diagnostics.Service
 	if diagnostics.Enabled(cfg.Debug.Enabled, cfg.HTTPAddr) {
 		diagnosticsService = diagnostics.NewService(projectingestion.DiagnosticsSource{
@@ -291,7 +297,7 @@ func run() error {
 		}, diagnostics.RuntimeOptions{Enabled: cfg.Debug.RuntimeMetricsEnabled})
 		diagnostics.RegisterRoutes(mux, diagnosticsService)
 	}
-	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityEvidenceGraphAndConfidence(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectConfidenceService, projectConfidenceInputs, projectIntegrationService, diagnosticsService, activityRecorder, logger))
+	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceAndKnowledge(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectConfidenceService, projectConfidenceInputs, projectKnowledgeService, projectKnowledgeInputs, projectIntegrationService, diagnosticsService, activityRecorder, logger))
 
 	handler := httpserver.Chain(
 		mux,

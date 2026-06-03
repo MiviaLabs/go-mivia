@@ -29,6 +29,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	integrationmcpapi "github.com/MiviaLabs/go-mivia/internal/projectintegrations/mcpapi"
+	"github.com/MiviaLabs/go-mivia/internal/projectknowledge"
+	knowledgemcpapi "github.com/MiviaLabs/go-mivia/internal/projectknowledge/mcpapi"
+	knowledgestore "github.com/MiviaLabs/go-mivia/internal/projectknowledge/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	projectmcpapi "github.com/MiviaLabs/go-mivia/internal/projectregistry/mcpapi"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
@@ -61,6 +64,8 @@ type Handler struct {
 	projectEvidence         *projectevidence.Service
 	projectConfidence       *projectconfidence.Service
 	projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter
+	projectKnowledge        *projectknowledge.Service
+	projectKnowledgeInputs  *projectknowledge.PromotionInputAdapter
 	integrations            *projectintegrations.Service
 	diagnostics             *diagnostics.Service
 	activity                *agentactivity.Recorder
@@ -111,6 +116,10 @@ func NewHandlerWithActivityAndEvidenceGraph(service *service.Service, research *
 }
 
 func NewHandlerWithActivityEvidenceGraphAndConfidence(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
+	return NewHandlerWithActivityEvidenceGraphConfidenceAndKnowledge(service, research, projects, projectDigest, projectIngest, projectWork, projectEvidence, projectConfidence, projectConfidenceInputs, nil, nil, integrations, diagnosticsService, activity, logger)
+}
+
+func NewHandlerWithActivityEvidenceGraphConfidenceAndKnowledge(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, projectKnowledge *projectknowledge.Service, projectKnowledgeInputs *projectknowledge.PromotionInputAdapter, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:                 service,
 		research:                research,
@@ -121,6 +130,8 @@ func NewHandlerWithActivityEvidenceGraphAndConfidence(service *service.Service, 
 		projectEvidence:         projectEvidence,
 		projectConfidence:       projectConfidence,
 		projectConfidenceInputs: projectConfidenceInputs,
+		projectKnowledge:        projectKnowledge,
+		projectKnowledgeInputs:  projectKnowledgeInputs,
 		integrations:            integrations,
 		diagnostics:             diagnosticsService,
 		activity:                activity,
@@ -343,6 +354,9 @@ func (handler *Handler) callTool(r *http.Request, raw json.RawMessage) (map[stri
 }
 
 func (handler *Handler) callToolParams(r *http.Request, params toolsCallParams) (map[string]any, error) {
+	if knowledgemcpapi.IsKnowledgeTool(params.Name) {
+		return knowledgemcpapi.CallTool(r.Context(), handler.projectKnowledge, handler.projectKnowledgeInputs, params.Name, params.Arguments)
+	}
 	if confidencemcpapi.IsConfidenceTool(params.Name) {
 		return confidencemcpapi.CallTool(r.Context(), handler.projectConfidence, handler.projectConfidenceInputs, params.Name, params.Arguments)
 	}
@@ -565,6 +579,10 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
+	if errors.Is(err, projectknowledge.ErrInvalidInput) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
@@ -574,6 +592,10 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		return
 	}
 	if errors.Is(err, confidencestore.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, knowledgestore.ErrNotFound) {
 		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
 	}
@@ -742,6 +764,9 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 	}
 	if handler.projectConfidence != nil {
 		tools = append(tools, confidencemcpapi.ToolDefinitions()...)
+	}
+	if handler.projectKnowledge != nil {
+		tools = append(tools, knowledgemcpapi.ToolDefinitions()...)
 	}
 	if handler.integrations != nil {
 		tools = append(tools, integrationmcpapi.ToolDefinitions()...)

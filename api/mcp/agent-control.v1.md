@@ -495,6 +495,110 @@ Input schema:
 
 Output: structured `PromotionLink` metadata plus a JSON text content block. Non-candidate links require `verifier_ref` and `decision_ref`; promoted links require `outcome_ref` for a passed outcome.
 
+### Knowledge Promotion Tools
+
+Knowledge Promotion tools are metadata-only. They convert verified Evidence Graph and Confidence Engine conclusions into reusable project or org knowledge. Project-level promotion is the default. Org-level promotion is optional, stricter, explicit, and never automatic. Agents MUST treat promoted knowledge as guidance, not proof; they MUST revalidate current source/context before acting and MUST record reuse events. Stale or contradicted knowledge MUST be superseded, not deleted.
+
+All Knowledge Promotion results return `structuredContent` plus a JSON text content block. Inputs and outputs must not contain raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII. Use dotted tool names when available; underscore aliases are accepted for every tool below.
+
+Exact reuse sequence for agents:
+
+1. MUST query project knowledge with `projects.knowledge.list` before planning in the current project.
+2. MUST query org knowledge with `orgs.knowledge.list` before making cross-project claims.
+3. Verify current source, context health, tests or other relevant runtime context before acting.
+4. Record Evidence Graph metadata for any new conclusion.
+5. Score confidence with `projects.confidence.claims.score`.
+6. Promote only after the Evidence Graph, Confidence Engine, passed-outcome, verifier, project, and optional org gates pass.
+7. Record a reuse event with `projects.knowledge.reuse_events.record`.
+
+#### `projects.knowledge.candidates.create`
+
+Alias: `projects_knowledge_candidates_create`
+
+Input schema: `id`, `knowledge_ref`, `claim_id`, `claim_ref`, required `summary`, required `reuse_guidance`, and optional `confidence_assessment_id`, `confidence_score`, `confidence_band`, `evidence_refs`, `verifier_refs`, `outcome_refs`, `promotion_refs`, and `supersedes_ref`.
+
+Output: structured `KnowledgeRecord` metadata plus a JSON text content block.
+
+#### `projects.knowledge.validate`
+
+Alias: `projects_knowledge_validate`
+
+Input schema: `id`, `knowledge_id`, `decision_ref`, `verifier_ref`, and bounded `rationale`.
+
+Output: structured `KnowledgeRecord` metadata plus a JSON text content block.
+
+#### `projects.knowledge.promote_project`
+
+Alias: `projects_knowledge_promote_project`
+
+Input schema: `id`, `knowledge_id`, `decision_ref`, `verifier_ref`, and bounded `rationale`.
+
+Output: structured `KnowledgeRecord` metadata plus a JSON text content block with `state=project_promoted` when the project promotion gate passes.
+
+#### `projects.knowledge.submit_org_review`
+
+Alias: `projects_knowledge_submit_org_review`
+
+Input schema: `id`, `knowledge_id`, `org_ref` (`default`), `decision_ref`, `verifier_ref`, bounded `rationale`, and safe `decided_by`.
+
+Output: structured `KnowledgeRecord` metadata plus a JSON text content block with `state=org_review`. This is not org promotion.
+
+#### `projects.knowledge.promote_org`
+
+Alias: `projects_knowledge_promote_org`
+
+Input schema: `id`, `knowledge_id`, explicit `scope=org`, `org_ref=default`, `decision_ref`, `verifier_ref`, bounded `rationale`, and safe `decided_by`.
+
+Output: structured `KnowledgeRecord` metadata plus a JSON text content block with `state=org_promoted` only after stricter org gates pass.
+
+#### `projects.knowledge.reject`
+
+Alias: `projects_knowledge_reject`
+
+Input schema: `id`, `knowledge_id`, `decision_ref`, `verifier_ref`, bounded `rationale`, and optional safe `decided_by`.
+
+Output: structured rejected `KnowledgeRecord` metadata plus a JSON text content block.
+
+#### `projects.knowledge.supersede`
+
+Alias: `projects_knowledge_supersede`
+
+Input schema: `id`, `knowledge_id`, `superseded_by_ref`, `decision_ref`, `verifier_ref`, bounded `rationale`, and optional safe `decided_by`.
+
+Output: structured superseded `KnowledgeRecord` metadata plus a JSON text content block. Use this for stale or contradicted promoted knowledge instead of deletion.
+
+#### `projects.knowledge.reuse_events.record`
+
+Alias: `projects_knowledge_reuse_events_record`
+
+Input schema: `id`, `knowledge_id`, `reuse_ref`, `revalidated`, `outcome` (`used`, `skipped`, `stale`, or `contradicted`), and optional `agent_run_id`, `trace_id`, `revalidation_ref`, and bounded `summary`.
+
+Output: structured `KnowledgeReuseEvent` metadata plus a JSON text content block.
+
+#### `projects.knowledge.get`
+
+Alias: `projects_knowledge_get`
+
+Input schema: `id` and `knowledge_id`.
+
+Output: one structured `KnowledgeRecord` metadata object plus a JSON text content block.
+
+#### `projects.knowledge.list`
+
+Alias: `projects_knowledge_list`
+
+Input schema: `id` plus optional filters `scope`, `state`, `claim_id`, `knowledge_ref`, `confidence_band`, `min_confidence`, `max_confidence`, `page_size`, and `page_token`.
+
+Output: structured metadata page with `knowledge` and optional `next_page_token` plus a JSON text content block.
+
+#### `orgs.knowledge.list`
+
+Alias: `orgs_knowledge_list`
+
+Input schema: `org_ref=default` plus optional filters `state=org_promoted`, `claim_id`, `knowledge_ref`, `confidence_band`, `min_confidence`, `max_confidence`, `page_size`, and `page_token`.
+
+Output: structured metadata page with org-promoted `knowledge` and optional `next_page_token` plus a JSON text content block. Org-wide non-promoted records are not exposed.
+
 ### Confidence Tools
 
 Confidence tools are project-scoped and metadata-only. They score and retrieve deterministic confidence assessments for Evidence Graph claims. They do not store or return raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI/provider scoring, embedding scoring, or vector scoring. Use dotted tool names when available; underscore aliases are accepted for each tool listed below.

@@ -38,6 +38,29 @@ func TestClaimChecker_HandlesConcreteRoutesAndIgnoresFilenames(t *testing.T) {
 	assertClaimStatus(t, result, "/api/v1/projects/<project_id>/context-health/", "verified")
 }
 
+func TestClaimChecker_VerifiesStaticProjectSubroutes(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		ProjectID:       "example-service",
+		IncludeVerified: true,
+		Documents: []ClaimDocument{{
+			Path: "README.md",
+			Text: "Use POST /api/v1/projects/{id}/claims/check, GET /api/v1/projects/{id}/workspace/files/read, POST /api/v1/projects/{id}/workspace/files/edit, POST /api/v1/projects/{id}/workspace/files/create, and POST /api/v1/projects/{id}/workspace/files/delete.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	for _, claim := range []string{
+		"/api/v1/projects/{id}/claims/check",
+		"/api/v1/projects/{id}/workspace/files/read",
+		"/api/v1/projects/{id}/workspace/files/edit",
+		"/api/v1/projects/{id}/workspace/files/create",
+		"/api/v1/projects/{id}/workspace/files/delete",
+	} {
+		assertClaimStatus(t, result, claim, "verified")
+	}
+}
+
 func TestClaimChecker_VerifiesDelegatedMCPToolsAndAliases(t *testing.T) {
 	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
 		ProjectID:       "example-service",
@@ -82,6 +105,31 @@ func TestClaimChecker_VerifiesEvidenceGraphToolsRoutesAndAliases(t *testing.T) {
 		"projects_evidence_graph_claims_create",
 		"projects.evidence_graph.promotions.link",
 		"/api/v1/projects/{id}/evidence-graph/claims/{claim_id}/promotion-links",
+	} {
+		assertClaimStatus(t, result, claim, "verified")
+	}
+}
+
+func TestClaimChecker_VerifiesKnowledgeToolsRoutesAndAliases(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		ProjectID:       "example-service",
+		IncludeVerified: true,
+		Documents: []ClaimDocument{{
+			Path: "api/mcp/agent-control.v1.md",
+			Text: "Use projects.knowledge.candidates.create, projects_knowledge_candidates_create, projects.knowledge.promote_org, orgs.knowledge.list, POST /api/v1/projects/{id}/knowledge/{knowledge_id}/promote-org, GET /api/v1/orgs/{org_ref}/knowledge?state=org_promoted&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=, and GET /api/v1/projects/{id}/knowledge/{knowledge_id}.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	for _, claim := range []string{
+		"projects.knowledge.candidates.create",
+		"projects_knowledge_candidates_create",
+		"projects.knowledge.promote_org",
+		"orgs.knowledge.list",
+		"/api/v1/projects/{id}/knowledge/{knowledge_id}/promote-org",
+		"/api/v1/orgs/{org_ref}/knowledge?state=org_promoted&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=",
+		"/api/v1/projects/{id}/knowledge/{knowledge_id}",
 	} {
 		assertClaimStatus(t, result, claim, "verified")
 	}

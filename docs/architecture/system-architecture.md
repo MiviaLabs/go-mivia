@@ -23,6 +23,7 @@ Local task plans and research plans are not stable technical documentation. Do n
 - Project workspace services: `internal/projectworkspace` handles governed git status/diff, current eligible file reads with opaque edit tokens, and token-guarded exact byte-span edits for explicitly opted-in workspaces.
 - Project evidence services: `internal/projectevidence` stores project-scoped Evidence Graph metadata for claims, evidence refs, decisions, actions, outcomes, artifact links, and promotion links through REST and MCP without raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, or PII.
 - Project confidence services: `internal/projectconfidence` calculates and stores deterministic metadata-only confidence assessments for Evidence Graph claims through REST and MCP. The implemented confidence routes are `POST /api/v1/projects/{id}/confidence/claims/{claim_id}/score`, `GET /api/v1/projects/{id}/confidence/claims/{claim_id}`, and `GET /api/v1/projects/{id}/confidence/claims?band=&min_score=&max_score=&recommendation=&run_id=&trace_id=&page_size=&page_token=`. The implemented MCP tools are `projects.confidence.claims.score`, `projects.confidence.claims.get`, and `projects.confidence.claims.list` with underscore aliases. They expose score, band, recommendation, bounded factors, and safe input counters only; no raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI/provider scoring, embedding scoring, or vector scoring are stored or returned.
+- Project knowledge services: `internal/projectknowledge` turns verified Evidence Graph and Confidence Engine conclusions into metadata-only reusable knowledge. Project-level promotion is the default. Org-level promotion is optional, stricter, explicit, never automatic, and limited to `org_ref=default` in v1. Implemented REST routes are `POST /api/v1/projects/{id}/knowledge/candidates`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/validate`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/promote-project`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/submit-org-review`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/promote-org`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/reject`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/supersede`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/reuse-events`, `GET /api/v1/projects/{id}/knowledge/{knowledge_id}`, `GET /api/v1/projects/{id}/knowledge?scope=&state=&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=`, and `GET /api/v1/orgs/{org_ref}/knowledge?state=org_promoted&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=`. Implemented MCP tools are `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, and `orgs.knowledge.list` with underscore aliases. Knowledge records must not store raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
 - Stores: Ladybug graph abstraction for graph data; lazy-opened Pebble-backed Ladybug graphs for durable content-graph persistence; SQLite for local app configuration, ingestion state, extractor cache, and FTS-backed governed search. Content-graph projects can use persistent project-scoped graph/search stores or process-local memory; persistent stores derive from the configured Ladybug path parent under `projects/<project-id>/`, with project search filenames tied to the Pebble graph storage epoch.
 - Boundary: localhost-only by default; no approved production deployment, public API exposure, auth model, live provider, external crawling, embedding provider, vector dimension, arbitrary shell endpoint, raw patch upload, git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool, or PII processing.
 
@@ -46,6 +47,7 @@ flowchart TB
   ProjectWorkspace["governed workspace status/diff/read/edit"]
   ProjectEvidence["project Evidence Graph metadata"]
   ProjectConfidence["project confidence metadata"]
+  ProjectKnowledge["project and org knowledge metadata"]
   Scheduler["fair ingestion scheduler"]
   Watcher["live watcher orchestrator"]
   FullScanWorkers["bounded full-scan file workers"]
@@ -112,6 +114,11 @@ flowchart TB
   ProjectConfidence --> Reliability
   ProjectConfidence --> ContextPacks
   ProjectConfidence --> GraphRouter
+  REST --> ProjectKnowledge
+  MCP --> ProjectKnowledge
+  ProjectKnowledge --> ProjectEvidence
+  ProjectKnowledge --> ProjectConfidence
+  ProjectKnowledge --> GraphRouter
   ConfigFile --> ProjectRegistry
   REST --> ResearchService
   MCP --> ResearchService
@@ -282,17 +289,25 @@ flowchart LR
   Gate["agent_runs.promote_artifact"]
   EvidenceGraph["projects.evidence_graph.*"]
   Confidence["projects.confidence.claims.*"]
+  Knowledge["projects.knowledge.* and orgs.knowledge.list"]
+  Reuse["reuse event"]
   Claim["claim evidence decision action outcome"]
   Score["score band recommendation factors"]
   Decision["candidate, validated, promoted, rejected"]
+  Promoted["project_promoted or org_promoted"]
 
   Agent --> ContextPack
   Agent --> EvidenceGraph
   Agent --> Confidence
+  Agent --> Knowledge
   EvidenceGraph --> Claim
   Confidence --> Claim
   Confidence --> Score
   Claim --> Decision
+  Score --> Knowledge
+  Knowledge --> Promoted
+  Agent --> Reuse
+  Promoted --> Reuse
   ContextPack --> Search
   ContextPack --> Impact
   Search --> Pack
@@ -302,6 +317,16 @@ flowchart LR
   Run --> Gate
   Gate --> Decision
 ```
+
+## Knowledge Promotion And Collective Learning
+
+Knowledge Promotion has two levels. Project-level promotion is the default for reusable knowledge inside one project. Org-level promotion is optional, stricter, explicit, and never automatic; v1 supports only `org_ref=default` and requires project promotion first.
+
+Future agents should query `projects.knowledge.list` before planning in the current project and `orgs.knowledge.list` before making cross-project claims. Promoted knowledge is not proof. Agents must revalidate current source, context health, relevant runtime evidence, and stable docs/tool/route claims with `projects.claims.check` before acting.
+
+Exact agent sequence: query project knowledge; query org knowledge if making a cross-project claim; verify current source/context; record Evidence Graph metadata for any new conclusion; score confidence; promote only after gates pass; record a reuse event.
+
+Reuse events are mandatory when an agent uses, skips, finds stale, or finds contradicted knowledge. Stale or contradicted knowledge is superseded, not deleted.
 
 ## Documentation Update Sequence
 
@@ -336,6 +361,7 @@ sequenceDiagram
 - Promotion gates store metadata-only decisions for existing agent-run artifact refs. They do not copy runtime payloads into the knowledge graph, and validated/promoted/rejected decisions require verifier refs and bounded decision text.
 - Evidence Graph records project-scoped metadata only: claim refs, evidence refs, decisions, action refs, outcome refs, artifact refs, promotion refs, safe changed-file refs, run IDs, trace IDs, timestamps, and bounded summaries/rationales. It must not store raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, skipped sensitive content, or PII.
 - Confidence assessments record project-scoped metadata only: Evidence Graph claim refs, score, band, recommendation, bounded factors, safe source refs, safe input counters, run IDs, trace IDs, and timestamps. They must not store or return raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI/provider scoring, embedding scoring, or vector scoring.
+- Knowledge Promotion records metadata only: knowledge refs, claim refs, confidence refs, evidence refs, verifier refs, outcome refs, promotion refs, reuse refs, decisions, summaries, and reuse guidance. They must not store or return raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
 - Named AST search runs against eligible indexed chunks using the server-owned query catalog for Go, Python, JavaScript, JSX, TypeScript, TSX, C#, and Dart. Raw Tree-sitter query syntax is not exposed. Coverage gaps such as oversized files are represented only as safe metadata counts.
 - Full scans run through a fair scheduler, dispatch configurable file workers under a shared global cap, flush prepared graph/search writes by file-count cap and internal write weight, persist running progress counters, and tombstone stale files only after enumeration and workers drain. REST and MCP manual ingestion and search-index repair calls enqueue work and return run metadata without waiting for scan completion. Live path events have priority over full-scan continuation, and operators can cap per-project worker use below the global worker count when fairness across projects matters.
 - On startup, persisted `pending` or `running` ingestion runs from a previous server process are marked failed with `error_category=server_restarted`; live startup scans or fresh manual ingestion are the repair path.

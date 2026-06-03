@@ -1,6 +1,6 @@
 ---
 name: mivia-mcp
-description: Use with the Mivia localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, context health, impact analysis, context packs, stale-claim checks, search, bounded chunks, symbol navigation, call graph, named AST discovery, governed git status/diff, current eligible file reads, eligible file create/delete, exact token-guarded edits, redacted agent-run metadata, promotion-gate decisions, project-scoped Evidence Graph metadata, project-scoped confidence scoring metadata, or locally ingested Jira/Confluence context.
+description: Use with the Mivia localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, context health, impact analysis, context packs, stale-claim checks, search, bounded chunks, symbol navigation, call graph, named AST discovery, governed git status/diff, current eligible file reads, eligible file create/delete, exact token-guarded edits, redacted agent-run metadata, promotion-gate decisions, project-scoped Evidence Graph metadata, project-scoped confidence scoring metadata, Knowledge Promotion metadata, or locally ingested Jira/Confluence context.
 ---
 
 # Mivia Agent MCP
@@ -41,6 +41,7 @@ Host repository external-system rules override the integration guidance below. I
 - Context health, deterministic changed-path impact analysis, and selected stable-doc stale-claim checks.
 - Project-scoped Evidence Graph metadata for claims, evidence refs, decisions, actions, outcomes, artifact links, and promotion links. Store only safe refs and short summaries; never store raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, skipped sensitive content, or PII.
 - Project-scoped confidence scoring metadata for Evidence Graph claims through `projects.confidence.claims.score`, `projects.confidence.claims.get`, and `projects.confidence.claims.list` plus underscore aliases. Confidence tools return deterministic score, band, recommendation, bounded factors, and safe input counters only; they must not store or expose raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI/provider scoring, embedding scoring, or vector scoring.
+- Knowledge Promotion metadata for project-level and org-level promoted knowledge. Query project-level knowledge before planning in the current project. Query org-level knowledge before cross-project claims. Treat promoted knowledge as guidance, never proof, until current source/context has been revalidated.
 - Context packs that combine bounded search snippets, indexed file metadata, symbol metadata, optional impact analysis, and manifest-only reproducibility metadata.
 - Redacted agent-run metadata for run status, steps, changed safe paths, verifier metadata, artifact refs, promotion-gate decisions, and optional `trace_id` correlation. When callers omit `trace_id`, the generated run id is the trace anchor.
 - Configured Jira/Confluence integration provider listing/status/counts, async manual poll submission/status, and local integration graph search/read.
@@ -76,6 +77,7 @@ Do not assume the current repository is the server repo. Do not assume any speci
 | Context freshness/readiness, changed-path impact, stale docs/contracts | Mivia MCP reliability tools | LLM judgment, broad crawling, raw diff echoing |
 | Bounded task context package | `projects.context_pack.build` | Manual broad scans, raw diffs, provider calls, full chunk dumps |
 | Redacted agent-run metadata and promotion decisions | `agent_runs.*` | Raw prompts, completions, source dumps, raw stderr, roots, secrets, provider payloads, or PII |
+| Promoted reusable knowledge | `projects.knowledge.*`, `orgs.knowledge.list` | Treating promoted knowledge as proof, automatic org promotion, deletion instead of supersession |
 | Configured Jira/Confluence status, poll, search, or read | Mivia MCP integration tools | Jira/Confluence connectors, provider dashboards, live Atlassian reads during local search/read |
 | Live project agent activity inspection | Local dashboard `Agent activity` drawer or `GET /api/v1/projects/{id}/agent-activity/stream` | Persistent logs or external telemetry by default |
 | Current tests/runtime state, builds, logs, generated files, process control, arbitrary commands, non-opted-in repos | Shell or host tooling | MCP as proof of those runtime facts |
@@ -133,6 +135,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Content graph | `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline` |
 | Governed workspace | `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.workspace.file_create`, `projects.workspace.file_delete` plus underscore aliases |
 | Evidence Graph metadata only | `projects.evidence_graph.claims.create`, `projects.evidence_graph.claims.get`, `projects.evidence_graph.claims.list`, `projects.evidence_graph.evidence.append`, `projects.evidence_graph.decisions.create`, `projects.evidence_graph.actions.create`, `projects.evidence_graph.outcomes.create`, `projects.evidence_graph.artifacts.link`, `projects.evidence_graph.promotions.link` plus underscore aliases |
+| Knowledge Promotion metadata only | `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, `orgs.knowledge.list` plus underscore aliases |
 | Diagnostics | `projects.diagnostics.ingestion` |
 | Project integrations | `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.counts`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get` |
 
@@ -160,6 +163,17 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 - `projects.confidence.claims.score` / `projects_confidence_claims_score`: calculate and store one deterministic metadata-only confidence assessment for a project-scoped Evidence Graph claim. Inputs are `id`, `claim_id`, optional safe project-relative `changed_paths`, optional stable-doc `claim_check_paths`, and optional `include_verified`.
 - `projects.confidence.claims.get` / `projects_confidence_claims_get`: fetch the stored metadata-only confidence assessment for one claim by `id` and `claim_id`.
 - `projects.confidence.claims.list` / `projects_confidence_claims_list`: list metadata-only confidence assessments by optional `band`, `min_score`, `max_score`, `recommendation`, `run_id`, `trace_id`, `page_size`, and `page_token`; the default page size is 50 and the maximum is 100.
+- `projects.knowledge.candidates.create` / `projects_knowledge_candidates_create`: create one metadata-only project knowledge candidate from safe Evidence Graph and confidence refs.
+- `projects.knowledge.validate` / `projects_knowledge_validate`: validate candidate knowledge with current Evidence Graph and Confidence Engine metadata.
+- `projects.knowledge.promote_project` / `projects_knowledge_promote_project`: promote validated knowledge at project scope after the project gate passes. Project-level promotion is the default.
+- `projects.knowledge.submit_org_review` / `projects_knowledge_submit_org_review`: explicitly submit project-promoted knowledge for default org review. This does not promote org knowledge.
+- `projects.knowledge.promote_org` / `projects_knowledge_promote_org`: explicitly promote org-reviewed knowledge to org scope after stricter gates pass. Org-level promotion is optional, stricter, explicit, and never automatic.
+- `projects.knowledge.reject` / `projects_knowledge_reject`: reject a knowledge record without deleting metadata.
+- `projects.knowledge.supersede` / `projects_knowledge_supersede`: supersede stale or contradicted knowledge without destructive deletion.
+- `projects.knowledge.reuse_events.record` / `projects_knowledge_reuse_events_record`: record safe metadata when promoted knowledge is used, skipped, stale, or contradicted.
+- `projects.knowledge.get` / `projects_knowledge_get`: fetch one project knowledge record as metadata only.
+- `projects.knowledge.list` / `projects_knowledge_list`: list project knowledge by safe metadata filters. Use this before planning in the current project.
+- `orgs.knowledge.list` / `orgs_knowledge_list`: list default org-promoted knowledge only. Use this before making cross-project claims.
 - `projects.ingest`: queue bounded content-graph ingestion. Always poll with `projects.ingestion_status`.
 - `projects.search_index.rebuild`: repair degraded local search index only when asked or when degradation blocks the task. Always poll with `projects.ingestion_status`.
 - `projects.ingestion_status`: read one ingestion/rebuild run by `run_id`.
@@ -197,6 +211,30 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 - `projects.integrations.search`: search already-ingested local Jira/Confluence chunks only.
 - `projects.jira.issue.get`: read one locally ingested Jira issue by issue key with bounded chunks. Default page is 3 chunks; pass `chunk_offset` from `next_chunk_offset` to continue.
 - `projects.confluence.page.get`: read one locally ingested Confluence page by page ID with bounded chunks. Default page is 3 chunks; pass `chunk_offset` from `next_chunk_offset` to continue.
+
+## Knowledge Promotion And Collective Learning
+
+Project-level promoted knowledge is the default reuse surface for agents working in one project. Org-level promoted knowledge is optional, stricter, explicit, cross-project guidance and MUST never be inferred or created automatically from confidence score alone.
+
+Agents MUST query `projects.knowledge.list` before making an implementation plan for the current project. Agents MUST query `orgs.knowledge.list` before making a cross-project claim. When project-level and org-level knowledge conflict for project-specific behavior, agents MUST prefer current project evidence after revalidation.
+
+Promoted knowledge is guidance, not proof. Agents MUST revalidate promoted knowledge against current source, current context health, relevant tests/runtime evidence when available, and `projects.claims.check` for stable docs, MCP tool, REST route, and route-claim surfaces before acting. If revalidation finds stale or contradicted knowledge, agents MUST create or use a superseding record through `projects.knowledge.supersede`; they MUST NOT delete or destructively edit the old record.
+
+Agents MUST record reuse with `projects.knowledge.reuse_events.record` whenever they use, skip, find stale, or find contradicted promoted knowledge. Use `outcome=used`, `skipped`, `stale`, or `contradicted`, and include `revalidated=true` plus a safe `revalidation_ref` when the agent acted on the knowledge.
+
+Exact agent sequence:
+
+1. Query project knowledge with `projects.knowledge.list`.
+2. Query org knowledge with `orgs.knowledge.list` only when making a cross-project claim.
+3. Verify current source/context with MCP context tools, workspace reads, shell/runtime evidence when needed, and `projects.claims.check` for stable docs/tool/route claims.
+4. Record Evidence Graph metadata for any new conclusion with `projects.evidence_graph.*`.
+5. Score confidence with `projects.confidence.claims.score`.
+6. Promote only after gates pass: `projects.knowledge.candidates.create`, `projects.knowledge.validate`, then `projects.knowledge.promote_project`; use `projects.knowledge.submit_org_review` and `projects.knowledge.promote_org` only for explicit org promotion.
+7. Record the reuse event with `projects.knowledge.reuse_events.record`.
+
+Promotion records MUST remain metadata-only. Keep raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, and PII out of knowledge records, promotion decisions, reuse events, summaries, refs, verifier refs, and rationale fields.
+
+For this repository, agents MUST avoid live Jira and Confluence connectors unless the user explicitly overrides that constraint in the same request. Local ingested Jira/Confluence MCP search/read remains subject to `.ai/rules/05-external-systems.md` and must not be treated as live provider proof.
 
 ## Indexed Metadata Contract
 

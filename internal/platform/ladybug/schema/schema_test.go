@@ -117,6 +117,21 @@ func TestBootstrapSchema_ConfidenceLabelsAndRelationships(t *testing.T) {
 	assertRelationship(t, bootstrap, "CONFIDENCE_USED_OUTCOME", "ConfidenceAssessment", "Outcome")
 }
 
+func TestBootstrapSchema_KnowledgePromotionLabelsAndRelationships(t *testing.T) {
+	bootstrap := schema.BootstrapSchema()
+
+	assertLabel(t, bootstrap, "KnowledgeRecord")
+	assertLabel(t, bootstrap, "KnowledgePromotionDecision")
+	assertLabel(t, bootstrap, "KnowledgeReuseEvent")
+	assertRelationship(t, bootstrap, "PROJECT_HAS_KNOWLEDGE", "Project", "KnowledgeRecord")
+	assertRelationship(t, bootstrap, "CLAIM_PROMOTED_TO_KNOWLEDGE", "Claim", "KnowledgeRecord")
+	assertRelationship(t, bootstrap, "CONFIDENCE_SUPPORTS_KNOWLEDGE", "ConfidenceAssessment", "KnowledgeRecord")
+	assertRelationship(t, bootstrap, "KNOWLEDGE_HAS_PROMOTION_DECISION", "KnowledgeRecord", "KnowledgePromotionDecision")
+	assertRelationship(t, bootstrap, "KNOWLEDGE_SUPERSEDES_KNOWLEDGE", "KnowledgeRecord", "KnowledgeRecord")
+	assertRelationship(t, bootstrap, "KNOWLEDGE_REUSED_BY_AGENT_RUN", "KnowledgeRecord", "AgentRun")
+	assertRelationship(t, bootstrap, "KNOWLEDGE_HAS_REUSE_EVENT", "KnowledgeRecord", "KnowledgeReuseEvent")
+}
+
 func TestBootstrapSchema_RelationshipEndpointsAreDeclaredLabels(t *testing.T) {
 	bootstrap := schema.BootstrapSchema()
 	labels := make(map[string]struct{}, len(bootstrap.NodeLabels))

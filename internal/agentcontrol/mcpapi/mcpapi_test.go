@@ -26,6 +26,8 @@ import (
 	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
+	"github.com/MiviaLabs/go-mivia/internal/projectknowledge"
+	knowledgestore "github.com/MiviaLabs/go-mivia/internal/projectknowledge/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
@@ -37,6 +39,30 @@ func TestToolsList_ReturnsTaskAndResearchTools(t *testing.T) {
 	}
 	if !bytes.Contains(res.Body.Bytes(), []byte(`"tasks.create"`)) || !bytes.Contains(res.Body.Bytes(), []byte(`"research_runs.create"`)) {
 		t.Fatalf("expected tool discovery response, got %s", res.Body.String())
+	}
+}
+
+func TestToolsList_KnowledgeToolsOnlyWhenConfiguredAndMapsErrors(t *testing.T) {
+	plain := postMCP(t, newHandler(), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if bytes.Contains(plain.Body.Bytes(), []byte(`"projects.knowledge.candidates.create"`)) {
+		t.Fatalf("knowledge tools must not be exposed without service: %s", plain.Body.String())
+	}
+
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	knowledgeSvc := projectknowledge.New(knowledgestore.NewMemoryStore())
+	handler := mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceAndKnowledge(svc, nil, nil, nil, nil, nil, nil, nil, nil, knowledgeSvc, nil, nil, nil, nil, slog.Default())
+	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.knowledge.candidates.create"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"orgs.knowledge.list"`)) {
+		t.Fatalf("expected configured knowledge tools, got %s", list.Body.String())
+	}
+	invalid := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.knowledge.candidates.create","arguments":{"id":"project_1","knowledge_ref":"knowledge/ref_1","claim_id":"claim_1","claim_ref":"claim/ref_1","summary":"metadata-only implementation guidance","reuse_guidance":"revalidate against current source before reuse","query":"MATCH (n)"}}}`)
+	if !bytes.Contains(invalid.Body.Bytes(), []byte(`"code":-32602`)) {
+		t.Fatalf("expected invalid argument mapping, got %s", invalid.Body.String())
+	}
+	missing := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects.knowledge.get","arguments":{"id":"project_1","knowledge_id":"missing"}}}`)
+	if !bytes.Contains(missing.Body.Bytes(), []byte(`"code":-32002`)) {
+		t.Fatalf("expected not found mapping, got %s", missing.Body.String())
 	}
 }
 

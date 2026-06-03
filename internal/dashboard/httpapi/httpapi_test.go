@@ -71,6 +71,28 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 			t.Fatalf("expected dashboard app to contain project confidence affordance %q", want)
 		}
 	}
+	for _, want := range []string{
+		"Knowledge Promotion", "tabKnowledgePromotion(project.id)", "projectSubview = \"knowledge-promotion\"",
+		"/knowledge?", "/api/v1/orgs/default/knowledge?", "/knowledge/${encodeURIComponent(knowledgeID)}", "/reuse-events",
+		"Project-level knowledge", "Org-level knowledge", "Org promotion requires explicit review and is never automatic.",
+		"scope", "state", "claim_id", "knowledge_ref", "confidence_band", "min_confidence", "max_confidence",
+		"safe promotion metadata", "Reuse guidance", "Evidence refs", "Verifier refs", "Outcome refs",
+		"Promotion decisions", "Supersession state", "Reuse events", "Record reuse",
+	} {
+		if !strings.Contains(app.Body.String(), want) {
+			t.Fatalf("expected dashboard app to contain knowledge promotion affordance %q", want)
+		}
+	}
+	styles := httptest.NewRecorder()
+	mux.ServeHTTP(styles, httptest.NewRequest(http.MethodGet, "/dashboard/styles.css", nil))
+	if styles.Code != http.StatusOK {
+		t.Fatalf("expected styles asset 200, got %d", styles.Code)
+	}
+	for _, want := range []string{"knowledge-layout", "knowledge-filters", "knowledge-row--project", "knowledge-row--org", "scope-pill--project", "scope-pill--org"} {
+		if !strings.Contains(styles.Body.String(), want) {
+			t.Fatalf("expected dashboard styles to contain knowledge promotion affordance %q", want)
+		}
+	}
 	for _, forbidden := range []string{"Evidence Graph\" },\n  { id: \"overview\"", "raw graph data", "source bodies", "provider payloads"} {
 		if strings.Contains(app.Body.String(), forbidden) {
 			t.Fatalf("dashboard app contained forbidden evidence marker %q", forbidden)

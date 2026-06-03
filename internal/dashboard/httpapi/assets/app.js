@@ -35,6 +35,7 @@ const TABS = [
   { id: "graph", label: "Graph" },
   { id: "evidence", label: "Evidence Graph" },
   { id: "confidence", label: "Confidence" },
+  { id: "knowledge", label: "Knowledge Promotion" },
   { id: "ingestion", label: "Ingestion" },
   { id: "workspace", label: "Workspace" },
   { id: "integrations", label: "Integrations" },
@@ -946,6 +947,7 @@ function buildTabs(project, health, latest, graph, dashboard) {
     graph: () => tabGraph(graph),
     evidence: () => tabEvidenceGraph(project.id),
     confidence: () => tabConfidence(project.id),
+    knowledge: () => tabKnowledgePromotion(project.id),
     ingestion: () => tabIngestion(latest, graph),
     workspace: () => tabWorkspace(dashboard.workspace),
     integrations: () => tabIntegrations(project, dashboard.integrations),
@@ -1677,6 +1679,342 @@ function confidenceImpactText(inputs) {
     `${numberValue(inputs?.impact_residual_unknown_count)} unknowns`,
     `${numberValue(inputs?.impact_security_flag_count)} security flags`,
   ]);
+}
+
+function tabKnowledgePromotion(projectID) {
+  const projectListNode = el("div", { class: "rows" }, emptyText("Loading project knowledge..."));
+  const orgListNode = el("div", { class: "rows" }, emptyText("Loading org knowledge..."));
+  const projectPagerNode = el("div", { class: "integration-pager" });
+  const orgPagerNode = el("div", { class: "integration-pager" });
+  const detailNode = el("div", { class: "knowledge-detail" }, emptyText("Select knowledge to inspect safe promotion metadata."));
+  const state = {
+    project: { records: [], nextPageToken: "", loading: false },
+    org: { records: [], nextPageToken: "", loading: false },
+    selectedKnowledgeID: "",
+  };
+  const controls = knowledgeFilterForm(projectID, state, projectListNode, orgListNode, projectPagerNode, orgPagerNode, detailNode);
+  const body = el("div", { class: "knowledge-view" },
+    controls,
+    el("div", { class: "knowledge-layout" },
+      block("Project-level knowledge", projectListNode, projectPagerNode),
+      block("Org-level knowledge",
+        el("p", { class: "knowledge-note", text: "Org promotion requires explicit review and is never automatic." }),
+        orgListNode,
+        orgPagerNode),
+      block("Selected knowledge", detailNode),
+    ),
+  );
+  loadKnowledgeLists(projectID, state, projectListNode, orgListNode, projectPagerNode, orgPagerNode, detailNode, false);
+  return panel("Knowledge Promotion", body);
+}
+
+function knowledgeFilterForm(projectID, state, projectListNode, orgListNode, projectPagerNode, orgPagerNode, detailNode) {
+  const scope = evidenceSelect("Scope", "scope", ["", "project", "org"]);
+  const stateSelect = evidenceSelect("State", "state", ["", "candidate", "validated", "project_promoted", "org_review", "org_promoted", "rejected", "superseded"]);
+  const claimID = evidenceInput("Claim id", "claim_id");
+  const knowledgeRef = evidenceInput("Knowledge ref", "knowledge_ref");
+  const confidenceBand = evidenceSelect("Confidence band", "confidence_band", ["", "high", "medium", "low", "unknown"]);
+  const minConfidence = el("input", { type: "number", min: "0", max: "100", name: "min_confidence", placeholder: "Min confidence", "aria-label": "Min confidence" });
+  const maxConfidence = el("input", { type: "number", min: "0", max: "100", name: "max_confidence", placeholder: "Max confidence", "aria-label": "Max confidence" });
+  const fields = { scope, stateSelect, claimID, knowledgeRef, confidenceBand, minConfidence, maxConfidence };
+  const form = el("form", {
+    class: "knowledge-filters",
+    onSubmit: async (event) => {
+      event.preventDefault();
+      await loadKnowledgeLists(projectID, state, projectListNode, orgListNode, projectPagerNode, orgPagerNode, detailNode, false, fields);
+    },
+  },
+    scope,
+    stateSelect,
+    claimID,
+    knowledgeRef,
+    confidenceBand,
+    minConfidence,
+    maxConfidence,
+    el("button", { type: "submit", class: "compact", text: "Apply" }),
+    el("button", {
+      type: "button",
+      class: "secondary compact",
+      onClick: () => {
+        Object.values(fields).forEach((field) => { field.value = ""; });
+        loadKnowledgeLists(projectID, state, projectListNode, orgListNode, projectPagerNode, orgPagerNode, detailNode, false, fields);
+      },
+      text: "Clear",
+    }),
+  );
+  form.dataset.projectSubview = "knowledge-promotion";
+  return form;
+}
+
+async function loadKnowledgeLists(projectID, state, projectListNode, orgListNode, projectPagerNode, orgPagerNode, detailNode, append, fields) {
+  const filter = knowledgeFilterValues(fields);
+  if (!append) {
+    state.selectedKnowledgeID = "";
+    detailNode.replaceChildren(emptyText("Select knowledge to inspect safe promotion metadata."));
+  }
+  const loads = [];
+  if (filter.scope !== "org") {
+    loads.push(loadKnowledgeList("project", projectID, state.project, projectListNode, projectPagerNode, detailNode, append, filter));
+  } else if (!append) {
+    state.project.records = [];
+    state.project.nextPageToken = "";
+    projectListNode.replaceChildren(emptyText("Project list skipped by scope filter."));
+    clear(projectPagerNode);
+  }
+  if (filter.scope !== "project") {
+    loads.push(loadKnowledgeList("org", projectID, state.org, orgListNode, orgPagerNode, detailNode, append, filter));
+  } else if (!append) {
+    state.org.records = [];
+    state.org.nextPageToken = "";
+    orgListNode.replaceChildren(emptyText("Org list skipped by scope filter."));
+    clear(orgPagerNode);
+  }
+  await Promise.all(loads);
+}
+
+async function loadKnowledgeList(scope, projectID, bucket, listNode, pagerNode, detailNode, append, filter) {
+  if (bucket.loading) return;
+  bucket.loading = true;
+  renderKnowledgePager(scope, projectID, bucket, listNode, pagerNode, detailNode, filter);
+  if (!append) {
+    bucket.records = [];
+    bucket.nextPageToken = "";
+    listNode.replaceChildren(emptyText(scope === "org" ? "Loading org knowledge..." : "Loading project knowledge..."));
+  }
+  if (scope === "org" && filter.state && filter.state !== "org_promoted") {
+    bucket.loading = false;
+    bucket.records = [];
+    bucket.nextPageToken = "";
+    listNode.replaceChildren(emptyText("Org knowledge only lists explicitly org-promoted records."));
+    renderKnowledgePager(scope, projectID, bucket, listNode, pagerNode, detailNode, filter);
+    return;
+  }
+  try {
+    const params = knowledgeQueryParams(scope, append ? bucket.nextPageToken : "", filter);
+    const url = scope === "org"
+      ? `/api/v1/orgs/default/knowledge?${params}`
+      : `/api/v1/projects/${encodeURIComponent(projectID)}/knowledge?${params}`;
+    const data = await fetchJSON(url, 12000);
+    const records = Array.isArray(data.knowledge) ? data.knowledge : [];
+    bucket.records = append ? bucket.records.concat(records) : records;
+    bucket.nextPageToken = data.next_page_token || data.NextPageToken || "";
+    renderKnowledgeRecords(scope, projectID, bucket, listNode, detailNode);
+  } catch (error) {
+    if (!append) listNode.replaceChildren(emptyText(error.message));
+  } finally {
+    bucket.loading = false;
+    renderKnowledgePager(scope, projectID, bucket, listNode, pagerNode, detailNode, filter);
+  }
+}
+
+function knowledgeFilterValues(fields) {
+  if (!fields) return {};
+  return {
+    scope: fields.scope.value.trim(),
+    state: fields.stateSelect.value.trim(),
+    claimID: fields.claimID.value.trim(),
+    knowledgeRef: fields.knowledgeRef.value.trim(),
+    confidenceBand: fields.confidenceBand.value.trim(),
+    minConfidence: confidenceScoreValue(fields.minConfidence.value),
+    maxConfidence: confidenceScoreValue(fields.maxConfidence.value),
+  };
+}
+
+function knowledgeQueryParams(scope, pageToken, filter) {
+  const params = new URLSearchParams({ page_size: "20" });
+  if (pageToken) params.set("page_token", pageToken);
+  setParam(params, "scope", scope);
+  setParam(params, "state", scope === "org" ? "org_promoted" : filter.state);
+  setParam(params, "claim_id", filter.claimID);
+  setParam(params, "knowledge_ref", filter.knowledgeRef);
+  setParam(params, "confidence_band", filter.confidenceBand);
+  setParam(params, "min_confidence", filter.minConfidence);
+  setParam(params, "max_confidence", filter.maxConfidence);
+  return params;
+}
+
+function renderKnowledgeRecords(scope, projectID, bucket, listNode, detailNode) {
+  clear(listNode);
+  if (!bucket.records.length) {
+    listNode.append(emptyText(`No ${scope} knowledge matches the current filters.`));
+    return;
+  }
+  bucket.records.forEach((record) => {
+    const knowledgeID = safeKnowledgeText(record.id);
+    const recordProjectID = safeKnowledgeText(record.project_id) || projectID;
+    listNode.append(el("button", {
+      class: `knowledge-row knowledge-row--${scope}`,
+      type: "button",
+      disabled: !knowledgeID,
+      onClick: () => loadKnowledgeRecordDetail(projectID, recordProjectID, knowledgeID, detailNode),
+    },
+      el("div", { class: "knowledge-row__head" },
+        el("strong", { text: safeKnowledgeText(record.knowledge_ref || record.id) || "knowledge" }),
+        knowledgeScopePill(record.scope || scope),
+      ),
+      el("span", { text: compactJoin([record.state, `${confidenceScoreText(record.confidence_score)} ${record.confidence_band || ""}`, record.claim_ref || record.claim_id]) }),
+      el("span", { text: safeKnowledgeSummary(record.summary) }),
+    ));
+  });
+}
+
+function renderKnowledgePager(scope, projectID, bucket, listNode, pagerNode, detailNode, filter) {
+  clear(pagerNode);
+  if (bucket.loading) {
+    pagerNode.append(el("span", { class: "muted-text", text: `Loading ${scope} knowledge...` }));
+    return;
+  }
+  if (!bucket.nextPageToken) return;
+  pagerNode.append(el("button", {
+    type: "button",
+    class: "compact",
+    onClick: () => loadKnowledgeList(scope, projectID, bucket, listNode, pagerNode, detailNode, true, filter),
+    text: "Load more",
+  }));
+}
+
+async function loadKnowledgeRecordDetail(currentProjectID, recordProjectID, knowledgeID, detailNode) {
+  detailNode.replaceChildren(emptyText("Loading knowledge metadata..."));
+  try {
+    const record = await fetchJSON(`/api/v1/projects/${encodeURIComponent(recordProjectID || currentProjectID)}/knowledge/${encodeURIComponent(knowledgeID)}`, 12000);
+    detailNode.replaceChildren(knowledgeRecordDetail(currentProjectID, record));
+  } catch (error) {
+    detailNode.replaceChildren(emptyText(error.message));
+  }
+}
+
+function knowledgeRecordDetail(currentProjectID, record) {
+  if (!record) return emptyText("Knowledge record unavailable.");
+  const scope = safeKnowledgeText(record.scope);
+  return el("div", { class: `knowledge-chain knowledge-chain--${scope || "project"}` },
+    el("div", { class: "knowledge-detail__head" },
+      knowledgeScopePill(scope),
+      pill(safeKnowledgeText(record.state) || "state unknown", record.state === "org_promoted" ? "warn" : "ok"),
+    ),
+    infoList([
+      ["Knowledge", safeKnowledgeText(record.knowledge_ref || record.id)],
+      ["Claim", safeKnowledgeText(record.claim_ref || record.claim_id)],
+      ["Confidence", compactJoin([confidenceScoreText(record.confidence_score), record.confidence_band])],
+      ["Assessment", safeKnowledgeText(record.confidence_assessment_id)],
+      ["Project", safeKnowledgeText(record.project_id)],
+      ["Org", safeKnowledgeText(record.org_ref)],
+      ["Created", formatDate(record.created_at)],
+      ["Updated", formatDate(record.updated_at)],
+      ["Promoted", formatDate(record.promoted_at)],
+    ]),
+    knowledgeTextBlock("Summary", record.summary),
+    knowledgeTextBlock("Reuse guidance", record.reuse_guidance),
+    knowledgeRefsBlock("Evidence refs", record.evidence_refs),
+    knowledgeRefsBlock("Verifier refs", record.verifier_refs),
+    knowledgeRefsBlock("Outcome refs", record.outcome_refs),
+    knowledgeRefsBlock("Promotion decisions", record.promotion_decisions || record.decisions || record.promotion_refs, knowledgePromotionDecisionRow),
+    knowledgeSupersessionBlock(record),
+    knowledgeRefsBlock("Reuse events", record.reuse_events, knowledgeReuseEventRow),
+    knowledgeReuseForm(currentProjectID, record),
+  );
+}
+
+function knowledgeTextBlock(title, value) {
+  const text = safeKnowledgeSummary(value);
+  return block(title, text ? el("p", { text }) : emptyText(`No ${title.toLowerCase()} recorded.`));
+}
+
+function knowledgeRefsBlock(title, values, renderer) {
+  const items = Array.isArray(values) ? values : [];
+  if (!items.length) return block(title, emptyText(`No ${title.toLowerCase()} recorded.`));
+  const rowRenderer = renderer || ((item) => evidenceMetadataRow(safeKnowledgeText(item), "", ""));
+  return block(title, el("div", { class: "rows" }, items.map(rowRenderer)));
+}
+
+function knowledgePromotionDecisionRow(item) {
+  if (typeof item === "string") return evidenceMetadataRow(safeKnowledgeText(item), "", "");
+  return evidenceMetadataRow(
+    safeKnowledgeText(item.decision_ref || item.id),
+    compactJoin([item.from_state, item.to_state, item.scope, item.verifier_ref, confidenceScoreText(item.confidence_score), formatDate(item.decided_at)]),
+    safeKnowledgeSummary(item.rationale),
+  );
+}
+
+function knowledgeReuseEventRow(item) {
+  if (typeof item === "string") return evidenceMetadataRow(safeKnowledgeText(item), "", "");
+  return evidenceMetadataRow(
+    safeKnowledgeText(item.reuse_ref || item.id),
+    compactJoin([item.outcome, item.revalidated ? "revalidated" : "not revalidated", item.revalidation_ref, item.agent_run_id, item.trace_id, formatDate(item.created_at)]),
+    safeKnowledgeSummary(item.summary),
+  );
+}
+
+function knowledgeSupersessionBlock(record) {
+  return block("Supersession state", infoList([
+    ["Supersedes", safeKnowledgeText(record.supersedes_ref) || "none"],
+    ["Superseded by", safeKnowledgeText(record.superseded_by_ref) || "none"],
+  ]));
+}
+
+function knowledgeReuseForm(currentProjectID, record) {
+  const knowledgeID = safeKnowledgeText(record.id);
+  const recordProjectID = safeKnowledgeText(record.project_id) || currentProjectID;
+  if (!knowledgeID) return null;
+  const reuseRef = evidenceInput("Reuse ref", "reuse_ref");
+  const revalidationRef = evidenceInput("Revalidation ref", "revalidation_ref");
+  const outcome = evidenceSelect("Outcome", "outcome", ["used", "skipped", "stale", "contradicted"]);
+  const revalidated = el("label", { class: "knowledge-check" },
+    el("input", { type: "checkbox", name: "revalidated" }),
+    el("span", { text: "Revalidated" }),
+  );
+  const summaryInput = evidenceInput("Safe summary", "summary");
+  const status = el("span", { class: "muted-text" });
+  const form = el("form", {
+    class: "knowledge-reuse-form",
+    onSubmit: async (event) => {
+      event.preventDefault();
+      const body = {
+        reuse_ref: reuseRef.value.trim(),
+        revalidated: Boolean(revalidated.querySelector("input")?.checked),
+        revalidation_ref: revalidationRef.value.trim(),
+        outcome: outcome.value.trim(),
+        summary: summaryInput.value.trim(),
+      };
+      if (!body.reuse_ref) {
+        status.textContent = "Reuse ref is required.";
+        return;
+      }
+      status.textContent = "Recording reuse event...";
+      try {
+        const eventRecord = await fetchJSONWithOptions(`/api/v1/projects/${encodeURIComponent(recordProjectID)}/knowledge/${encodeURIComponent(knowledgeID)}/reuse-events`, 12000, {
+          method: "POST",
+          headers: { "Accept": "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        record.reuse_events = Array.isArray(record.reuse_events) ? record.reuse_events.concat(eventRecord) : [eventRecord];
+        status.textContent = "Reuse event recorded.";
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    },
+  },
+    reuseRef,
+    outcome,
+    revalidated,
+    revalidationRef,
+    summaryInput,
+    el("button", { type: "submit", class: "compact", text: "Record reuse" }),
+    status,
+  );
+  return block("Record reuse event", form);
+}
+
+function knowledgeScopePill(scope) {
+  const value = safeKnowledgeText(scope) || "project";
+  return el("span", { class: `scope-pill scope-pill--${value === "org" ? "org" : "project"}`, text: value === "org" ? "Org scope" : "Project scope" });
+}
+
+function safeKnowledgeText(value) {
+  return safeEvidenceText(value);
+}
+
+function safeKnowledgeSummary(value) {
+  return safeEvidenceSummary(value);
 }
 
 function tabIngestion(latest, graph) {

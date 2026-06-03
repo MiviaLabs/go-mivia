@@ -4,7 +4,7 @@ Status: Current local guide
 Date: 2026-06-01
 Classification: Internal; PII-prohibited
 
-`mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, context packs, symbol navigation, call graph views, named AST structural search, governed workspace git/read/create/delete/edit operations, redacted agent-run metadata, promotion-gate decisions, and deterministic reliability checks, and keeps source understanding inside the developer machine.
+`mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, context packs, symbol navigation, call graph views, named AST structural search, governed workspace git/read/create/delete/edit operations, redacted agent-run metadata, promotion-gate decisions, Knowledge Promotion metadata, and deterministic reliability checks, and keeps source understanding inside the developer machine.
 
 ## Who It Helps
 
@@ -29,6 +29,7 @@ flowchart LR
   MCP --> ContextPack["Context packs"]
   MCP --> AgentRuns["Redacted agent-run metadata"]
   MCP --> Promotion["Promotion gates"]
+  MCP --> Knowledge["Promoted project and org knowledge"]
   MCP --> Server["mivia-server on localhost"]
   Server --> Project["Approved local project"]
   Server --> Store["Project-scoped graph/search plus SQLite state"]
@@ -38,6 +39,7 @@ flowchart LR
   ContextPack --> Agent
   AgentRuns --> Agent
   Promotion --> Agent
+  Knowledge --> Agent
   Serena --> Code["Edit-time semantic gaps"]
   Shell --> Disk["Tests, build, logs, process control, generated files, arbitrary commands, non-opted-in repos"]
   Code --> Agent
@@ -63,6 +65,9 @@ Mivia MCP, Serena, and shell are complementary:
 | Check governed git status/diff for an opted-in workspace | MCP workspace tools |
 | Read an eligible current file in `read_only` or `edit`, exact-edit/delete an existing eligible file in `edit`, or create a new eligible text file in `edit` | MCP workspace tools before shell, `apply_patch`, or manual file operations |
 | Check whether indexed data is fresh enough for the task | MCP or REST |
+| Query promoted knowledge before current-project planning | MCP `projects.knowledge.list` |
+| Query promoted org knowledge before cross-project claims | MCP `orgs.knowledge.list` |
+| Record promoted knowledge reuse, stale, or contradiction event | MCP `projects.knowledge.reuse_events.record` |
 | Check configured Jira/Confluence provider status | MCP `projects.integrations.status` |
 | Poll Jira/Confluence for an opted-in project | MCP `projects.integrations.poll`, then `projects.integrations.poll_status` |
 | Search or read ingested Jira/Confluence context | MCP `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get` |
@@ -106,6 +111,17 @@ REST is for direct local checks, scripts, and smoke tests. MCP is for agent clie
 | Create Evidence Graph outcome | `POST /projects/{id}/evidence-graph/claims/{claim_id}/outcomes` | `projects.evidence_graph.outcomes.create` |
 | Link Evidence Graph artifact | `POST /projects/{id}/evidence-graph/claims/{claim_id}/artifact-links` | `projects.evidence_graph.artifacts.link` |
 | Link Evidence Graph promotion | `POST /projects/{id}/evidence-graph/claims/{claim_id}/promotion-links` | `projects.evidence_graph.promotions.link` |
+| Create knowledge candidate | `POST /projects/{id}/knowledge/candidates` | `projects.knowledge.candidates.create` |
+| Validate knowledge candidate | `POST /projects/{id}/knowledge/{knowledge_id}/validate` | `projects.knowledge.validate` |
+| Promote project knowledge | `POST /projects/{id}/knowledge/{knowledge_id}/promote-project` | `projects.knowledge.promote_project` |
+| Submit knowledge for org review | `POST /projects/{id}/knowledge/{knowledge_id}/submit-org-review` | `projects.knowledge.submit_org_review` |
+| Promote org knowledge | `POST /projects/{id}/knowledge/{knowledge_id}/promote-org` | `projects.knowledge.promote_org` |
+| Reject knowledge | `POST /projects/{id}/knowledge/{knowledge_id}/reject` | `projects.knowledge.reject` |
+| Supersede knowledge | `POST /projects/{id}/knowledge/{knowledge_id}/supersede` | `projects.knowledge.supersede` |
+| Record knowledge reuse event | `POST /projects/{id}/knowledge/{knowledge_id}/reuse-events` | `projects.knowledge.reuse_events.record` |
+| Get knowledge record | `GET /projects/{id}/knowledge/{knowledge_id}` | `projects.knowledge.get` |
+| List project knowledge | `GET /projects/{id}/knowledge?scope=&state=&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=` | `projects.knowledge.list` |
+| List org knowledge | `GET /orgs/{org_ref}/knowledge?state=org_promoted&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=` | `orgs.knowledge.list` |
 | Run content graph ingestion | `POST /projects/{id}/ingestion-runs` | `projects.ingest` |
 | Rebuild local search index | `POST /projects/{id}/search-index/rebuild` | `projects.search_index.rebuild` |
 | Get ingestion run | `GET /projects/{id}/ingestion-runs/{run_id}` | `projects.ingestion_status` |
@@ -156,6 +172,12 @@ Project integration polling is also asynchronous. Configure Jira and Confluence 
 `agent_runs.*` tools store redacted execution metadata only: project/task IDs, statuses, timestamps, changed project-relative paths, verifier command metadata, artifact refs, promotion decisions, and short summaries/notes. `agent_runs.promote_artifact` records `candidate`, `validated`, `promoted`, or `rejected` decisions for existing artifact refs; validated, promoted, and rejected decisions require a verifier ref and bounded decision text. They reject raw prompts, completions, source dumps, raw stderr, secrets, credentials, provider payloads, absolute roots, and PII.
 
 The Evidence Graph tools and the concrete REST routes listed above store project-scoped metadata only: claims, evidence refs, decisions, actions, outcomes, artifact links, promotion links, safe changed-file refs, run IDs, trace IDs, timestamps, and bounded summaries/rationales. They reject raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, skipped sensitive content, and PII. Dotted MCP names have underscore aliases, for example `projects_evidence_graph_claims_create`.
+
+Knowledge Promotion turns verified Evidence Graph and Confidence Engine conclusions into reusable metadata. Project-level promotion is the default and must be queried before planning in the current project. Org-level promotion is optional, stricter, explicit, never automatic, and must be queried before cross-project claims. Promoted knowledge is guidance, not proof: agents must revalidate current source, context health, and stable docs/tool/route claims with `projects.claims.check` before acting. Agents must record reuse events for used, skipped, stale, or contradicted knowledge. Stale or contradicted knowledge is superseded with `projects.knowledge.supersede`, not deleted.
+
+Exact agent sequence: query project knowledge, query org knowledge if making a cross-project claim, verify current source/context, record Evidence Graph metadata for any new conclusion, score confidence, promote only after gates pass, and record a reuse event.
+
+Knowledge records, promotion decisions, reuse events, summaries, refs, verifier refs, and rationale fields must stay metadata-only. Raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, and PII are prohibited.
 
 Search tools are backed by governed indexed state. Text search is literal-only and returns capped snippets from eligible chunks. File, symbol, reference, and call search use indexed metadata and pagination. Raw FTS syntax and raw SQLite errors are not exposed.
 
