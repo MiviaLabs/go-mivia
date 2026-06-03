@@ -32,6 +32,7 @@ const FILTERS = [
 
 const TABS = [
   { id: "overview", label: "Overview" },
+  { id: "work-plan", label: "Work Plan" },
   { id: "graph", label: "Graph" },
   { id: "evidence", label: "Evidence Graph" },
   { id: "confidence", label: "Confidence" },
@@ -944,6 +945,7 @@ function shortID(value) {
 function buildTabs(project, health, latest, graph, dashboard) {
   const renderers = {
     overview: () => tabOverview(project, health, latest, graph),
+    "work-plan": () => tabWorkPlan(project.id),
     graph: () => tabGraph(graph),
     evidence: () => tabEvidenceGraph(project.id),
     confidence: () => tabConfidence(project.id),
@@ -1035,6 +1037,430 @@ function tabOverview(project, health, latest, graph) {
     composition,
     panel("Context health", contextHealthBlock(project, health)),
   );
+}
+
+function tabWorkPlan(projectID) {
+  const planNode = el("div", { class: "work-plan-current" }, emptyText("Loading current work plan..."));
+  const planListNode = el("div", { class: "rows" }, emptyText("Loading all work plans..."));
+  const planTasksNode = el("div", { class: "work-task-detail" }, emptyText("Select a work plan to inspect task decomposition."));
+  const nextNode = el("div", { class: "work-task-detail" }, emptyText("Loading next safe task..."));
+  const openNode = el("div", { class: "rows" }, emptyText("Loading open tasks..."));
+  const mineNode = el("div", { class: "rows" }, emptyText("Loading open mine..."));
+  const blockedNode = el("div", { class: "rows" }, emptyText("Loading blocked tasks..."));
+  const automationNode = el("div", { class: "rows" }, emptyText("Loading automation runs..."));
+  const graphNode = el("div", { class: "work-task-graph" }, emptyText("Loading task graph..."));
+  const detailNode = el("div", { class: "work-task-detail" }, emptyText("Select a work task to inspect safe metadata."));
+  const state = { plans: [], planTasks: [], openTasks: [], mineTasks: [], blockedTasks: [], automationRuns: [], selectedPlanID: "", selectedTaskID: "" };
+  const body = el("div", { class: "work-plan-view" },
+    el("div", { class: "work-plan-layout" },
+      block("Current Work Plan", planNode),
+      block("Next Safe Task", nextNode),
+    ),
+    el("div", { class: "work-plan-layout work-plan-layout--wide" },
+      block("All Work Plans", planListNode),
+      block("Selected Plan Tasks", planTasksNode),
+    ),
+    el("div", { class: "work-plan-columns work-plan-columns--three" },
+      block("Open Tasks", openNode),
+      block("Open Mine", mineNode),
+      block("Blocked", blockedNode),
+    ),
+    el("div", { class: "work-plan-layout" },
+      block("Automation Runs", automationNode),
+      block("Task Detail", detailNode),
+    ),
+    el("div", { class: "work-plan-layout work-plan-layout--wide" },
+      block("Task Graph", graphNode),
+      block("Task Links", el("div", { class: "work-task-detail" }, emptyText("Select a task to inspect linked evidence, claims, verification, knowledge, and automation runs."))),
+    ),
+  );
+  body.dataset.projectSubview = "work-plan";
+  loadWorkPlanView(projectID, state, { planNode, planListNode, planTasksNode, nextNode, openNode, mineNode, blockedNode, automationNode, graphNode, detailNode });
+  return panel("Work Plan", body);
+}
+
+async function loadWorkPlanView(projectID, state, nodes) {
+  const encoded = encodeURIComponent(projectID);
+  const [plans, next, open, mine, blocked, automation] = await Promise.allSettled([
+    fetchJSON(`/api/v1/projects/${encoded}/work-plans?page_size=10`, 6000),
+    fetchJSON(`/api/v1/projects/${encoded}/work-tasks/next`, 6000),
+    fetchJSON(`/api/v1/projects/${encoded}/work-tasks/open?page_size=24`, 6000),
+    fetchJSON(`/api/v1/projects/${encoded}/work-tasks/mine?page_size=12`, 6000),
+    fetchJSON(`/api/v1/projects/${encoded}/work-tasks/blocked?page_size=12`, 6000),
+    fetchJSON(`/api/v1/projects/${encoded}/automation-runs`, 6000),
+  ]);
+
+  const planRecords = plans.status === "fulfilled" ? workArray(plans.value, "work_plans", "plans") : [];
+  const nextTask = next.status === "fulfilled" ? workTaskRecord(next.value) : null;
+  const openTasks = open.status === "fulfilled" ? workArray(open.value, "work_tasks", "tasks") : [];
+  const mineTasks = mine.status === "fulfilled" ? workArray(mine.value, "work_tasks", "tasks") : [];
+  const blockedTasks = blocked.status === "fulfilled" ? workArray(blocked.value, "work_tasks", "tasks") : [];
+  const automationRuns = automation.status === "fulfilled" ? workArray(automation.value, "automation_runs", "runs") : [];
+
+  state.plans = planRecords;
+  state.openTasks = openTasks;
+  state.mineTasks = mineTasks;
+  state.blockedTasks = blockedTasks;
+  state.automationRuns = automationRuns;
+  if (planRecords.length && !planRecords.some((plan) => workPlanID(plan) === state.selectedPlanID)) {
+    const current = planRecords.find((plan) => ["active", "needs_review"].includes(workStatus(plan))) || planRecords[0];
+    state.selectedPlanID = workPlanID(current);
+  }
+
+  nodes.planNode.replaceChildren(
+    plans.status === "fulfilled"
+      ? workPlanCurrent(planRecords, nextTask)
+      : emptyText(`Work plans unavailable: ${plans.reason?.message || "request failed"}`),
+  );
+  nodes.planListNode.replaceChildren(
+    plans.status === "fulfilled"
+      ? workPlanRows(projectID, planRecords, state, nodes.planTasksNode, nodes.detailNode)
+      : emptyText(`Work plan history unavailable: ${plans.reason?.message || "request failed"}`),
+  );
+  nodes.nextNode.replaceChildren(
+    next.status === "fulfilled"
+      ? workTaskDetail(projectID, nextTask, "No safe next task returned.")
+      : emptyText(`Next safe task unavailable: ${next.reason?.message || "request failed"}`),
+  );
+  nodes.openNode.replaceChildren(
+    open.status === "fulfilled"
+      ? workTaskRows(projectID, openTasks, state, nodes.detailNode)
+      : emptyText(`Open tasks unavailable: ${open.reason?.message || "request failed"}`),
+  );
+  nodes.mineNode.replaceChildren(
+    mine.status === "fulfilled"
+      ? workTaskRows(projectID, mineTasks, state, nodes.detailNode)
+      : emptyText(`Open mine unavailable: ${mine.reason?.message || "request failed"}`),
+  );
+  nodes.blockedNode.replaceChildren(
+    blocked.status === "fulfilled"
+      ? workTaskRows(projectID, blockedTasks, state, nodes.detailNode)
+      : emptyText(`Blocked tasks unavailable: ${blocked.reason?.message || "request failed"}`),
+  );
+  nodes.automationNode.replaceChildren(
+    automation.status === "fulfilled"
+      ? automationRunRows(automationRuns)
+      : emptyText(`Automation runs unavailable: ${automation.reason?.message || "request failed"}`),
+  );
+  nodes.graphNode.replaceChildren(workTaskGraph(projectID, [...openTasks, ...mineTasks, ...blockedTasks], state, nodes.detailNode));
+  if (state.selectedPlanID) {
+    loadWorkPlanTasks(projectID, state.selectedPlanID, state, nodes.planTasksNode, nodes.detailNode);
+  } else {
+    nodes.planTasksNode.replaceChildren(emptyText("No work plan selected."));
+  }
+}
+
+function workPlanCurrent(plans, nextTask) {
+  const current = plans.find((plan) => ["active", "in_progress", "current"].includes(workStatus(plan))) || plans[0] || {};
+  if (!plans.length && !nextTask) return emptyText("No current work plan metadata returned.");
+  return el("div", { class: "work-plan-current__body" },
+    infoList([
+      ["Plan", safeWorkText(current.plan_ref || current.id || current.work_plan_id) || "unknown"],
+      ["Status", safeWorkText(current.status) || "unknown"],
+      ["Owner", safeWorkText(current.owner_agent || current.owner) || "unassigned"],
+      ["Isolation", safeWorkText(current.isolation_mode) || "unspecified"],
+      ["Worktree", safeWorkText(current.git_worktree_ref) || "none"],
+      ["Updated", formatDate(current.updated_at || current.last_updated_at)],
+    ]),
+    workTextBlock("Resume Instructions", current.resume_instructions || nextTask?.resume_instructions),
+    workSafeLinks("Safe metadata links", [
+      workTabLink("Evidence", "evidence"),
+      workTabLink("Confidence", "confidence"),
+      workTabLink("Knowledge", "knowledge"),
+      workTabLink("Activity", "activity"),
+    ]),
+  );
+}
+
+function workPlanRows(projectID, plans, state, planTasksNode, detailNode) {
+  if (!plans.length) return emptyText("No work plan history returned.");
+  return el("div", { class: "rows" }, plans.map((plan) => workPlanButton(projectID, plan, state, planTasksNode, detailNode)));
+}
+
+function workPlanButton(projectID, plan, state, planTasksNode, detailNode) {
+  const planID = workPlanID(plan);
+  const selected = planID && planID === state.selectedPlanID;
+  return el("button", {
+    class: `work-plan-row${selected ? " work-plan-row--selected" : ""}`,
+    type: "button",
+    disabled: !planID,
+    onClick: () => loadWorkPlanTasks(projectID, planID, state, planTasksNode, detailNode),
+  },
+    el("div", { class: "work-task-row__head" },
+      el("strong", { text: safeWorkText(plan.title || plan.plan_ref || planID) || "work plan" }),
+      pill(safeWorkText(plan.status) || "status unknown", workTaskTone(plan.status)),
+    ),
+    el("span", { text: compactJoin([planID, plan.plan_ref, plan.owner_agent || plan.created_by_run_id, plan.isolation_mode, plan.git_worktree_ref, formatDate(plan.updated_at || plan.created_at)]) }),
+  );
+}
+
+async function loadWorkPlanTasks(projectID, planID, state, planTasksNode, detailNode) {
+  state.selectedPlanID = planID;
+  planTasksNode.replaceChildren(emptyText("Loading selected plan task decomposition..."));
+  try {
+    const tasks = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/work-tasks?plan_id=${encodeURIComponent(planID)}&page_size=100`, 6000);
+    const taskRecords = workArray(tasks, "work_tasks", "tasks");
+    state.planTasks = taskRecords;
+    planTasksNode.replaceChildren(workPlanTaskDecomposition(projectID, selectedWorkPlan(state), taskRecords, state, detailNode));
+  } catch (error) {
+    planTasksNode.replaceChildren(emptyText(error.message));
+  }
+}
+
+function selectedWorkPlan(state) {
+  return state.plans.find((plan) => workPlanID(plan) === state.selectedPlanID) || null;
+}
+
+function workPlanTaskDecomposition(projectID, plan, tasks, state, detailNode) {
+  if (!plan) return emptyText("Selected work plan metadata unavailable.");
+  return el("div", { class: "work-task-detail__body" },
+    infoList([
+      ["Plan", workPlanID(plan) || "unknown"],
+      ["Plan Ref", safeWorkText(plan.plan_ref) || "unknown"],
+      ["Status", safeWorkText(plan.status) || "unknown"],
+      ["Owner", safeWorkText(plan.owner_agent || plan.created_by_run_id) || "unassigned"],
+      ["Isolation", safeWorkText(plan.isolation_mode) || "unspecified"],
+      ["Parallel group", safeWorkText(plan.parallel_group_ref) || "none"],
+      ["Workspace", safeWorkText(plan.workspace_ref) || "none"],
+      ["Git base", safeWorkText(plan.git_base_ref) || "none"],
+      ["Git branch", safeWorkText(plan.git_branch_ref) || "none"],
+      ["Git worktree", safeWorkText(plan.git_worktree_ref) || "none"],
+      ["Updated", formatDate(plan.updated_at || plan.created_at)],
+    ]),
+    workTextBlock("Goal", plan.goal_summary),
+    workTextBlock("Resume Summary", plan.resume_summary),
+    tasks.length
+      ? workTaskGraph(projectID, tasks, state, detailNode)
+      : emptyText("No tasks returned for selected work plan."),
+  );
+}
+
+function workTaskRows(projectID, tasks, state, detailNode) {
+  if (!tasks.length) return emptyText("No matching work tasks.");
+  return el("div", { class: "rows" }, tasks.map((task) => workTaskButton(projectID, task, state, detailNode)));
+}
+
+function workTaskButton(projectID, task, state, detailNode) {
+  const taskID = workTaskID(task);
+  return el("button", {
+    class: "work-task-row",
+    type: "button",
+    disabled: !taskID,
+    onClick: () => loadWorkTaskDetail(projectID, taskID, state, detailNode),
+  },
+    el("div", { class: "work-task-row__head" },
+      el("strong", { text: safeWorkText(task.title || task.task_ref || taskID) || "work task" }),
+      pill(safeWorkText(task.status) || "status unknown", workTaskTone(task.status)),
+    ),
+    el("span", { text: compactJoin([taskID, task.owner_agent || task.claimed_by_run_id, task.verification_requirement]) }),
+  );
+}
+
+async function loadWorkTaskDetail(projectID, taskID, state, detailNode) {
+  state.selectedTaskID = taskID;
+  detailNode.replaceChildren(emptyText("Loading work task metadata..."));
+  try {
+    const task = await fetchJSON(`/api/v1/projects/${encodeURIComponent(projectID)}/work-tasks/${encodeURIComponent(taskID)}`, 6000);
+    detailNode.replaceChildren(workTaskDetail(projectID, task, "Work task metadata unavailable."));
+  } catch (error) {
+    detailNode.replaceChildren(emptyText(error.message));
+  }
+}
+
+function workTaskDetail(projectID, task, emptyMessage) {
+  if (!task) return emptyText(emptyMessage);
+  const taskID = workTaskID(task);
+  const deps = workRefs(task.dependency_task_ids || task.dependencies_done || task.dependencies || task.blocked_by_task_ids);
+  const evidenceNeeded = workRefs(task.evidence_needed);
+  const evidence = workRefs(task.evidence_refs);
+  const claims = workRefs(task.claim_refs);
+  const verifierResults = workRefs(task.verifier_result_refs);
+  const contextPacks = workRefs(task.context_pack_refs);
+  const files = safeChangedPaths(task.likely_files_affected || task.changed_files || task.files);
+  const knowledge = workRefs(task.knowledge_candidate_refs || task.knowledge_candidates);
+  const artifacts = workRefs(task.artifact_refs);
+  const agentRuns = workRefs(task.agent_run_ids);
+  return el("div", { class: "work-task-detail__body" },
+    infoList([
+      ["Task", taskID || "unknown"],
+      ["Status", safeWorkText(task.status) || "unknown"],
+      ["Owner agent", safeWorkText(task.owner_agent || task.claimed_by_run_id) || "unassigned"],
+      ["Updated", formatDate(task.updated_at || task.last_updated_at)],
+    ]),
+    workTextBlock("Title", task.title || task.task_title),
+    workTextBlock("Why Safe", task.why_safe),
+    workTextBlock("Verification Requirement", task.verification_requirement),
+    workTextBlock("Resume Instructions", task.resume_instructions),
+    workTextBlock("Blocked Reason", task.blocked_reason),
+    workTextBlock("Safe Next Action", task.safe_next_action),
+    workRefsBlock("Dependencies", deps),
+    workRefsBlock("Evidence Needed", evidenceNeeded),
+    workRefsBlock("Attached Evidence", evidence),
+    workRefsBlock("Attached Claims", claims),
+    workRefsBlock("Verifier Results", verifierResults),
+    workRefsBlock("Context Pack Refs", contextPacks),
+    workRefsBlock("Likely Files Affected", files),
+    workRefsBlock("Knowledge Candidates", knowledge),
+    workRefsBlock("Artifact Refs", artifacts),
+    workRefsBlock("Agent Run Refs", agentRuns),
+    workSafeLinks("Safe metadata links", workTaskLinks(projectID, taskID, evidence, knowledge)),
+  );
+}
+
+function automationRunRows(runs) {
+  if (!runs.length) return emptyText("No automation runs returned.");
+  return el("div", { class: "work-task-table", role: "table", "aria-label": "Automation run metadata" },
+    el("div", { class: "work-task-table__row work-task-table__head", role: "row" },
+      ["Run", "Status", "Task", "Runner", "Attempts", "Summary"].map((label) => el("span", { role: "columnheader", text: label })),
+    ),
+    runs.map((run) => el("div", { class: "work-task-table__row", role: "row" },
+      [
+        safeWorkText(run.id) || "unknown",
+        safeWorkText(run.status) || "unknown",
+        safeWorkText(run.task_id || run.task_ref) || "none",
+        safeWorkText(run.runner_kind) || "unknown",
+        String(run.attempt_count ?? 0),
+        safeWorkText(run.safe_summary || run.failure_category) || "none",
+      ].map((value) => el("span", { role: "cell", text: value })),
+    )),
+  );
+}
+
+function workTaskGraph(projectID, tasks, state, detailNode) {
+  const byID = new Map();
+  tasks.forEach((task) => {
+    const id = workTaskID(task);
+    if (id && !byID.has(id)) byID.set(id, task);
+  });
+  const unique = Array.from(byID.values());
+  if (!unique.length) return emptyText("No task graph metadata returned.");
+  return el("div", { class: "work-task-table", role: "table", "aria-label": "Work task graph metadata" },
+    el("div", { class: "work-task-table__row work-task-table__head", role: "row" },
+      ["Task Ref", "Status", "Owner", "Dependencies", "Evidence", "Verification", "Knowledge Candidates"].map((label) => el("span", { role: "columnheader", text: label })),
+    ),
+    unique.map((task) => {
+      const taskID = workTaskID(task);
+      return el("button", {
+        class: "work-task-table__row",
+        type: "button",
+        role: "row",
+        disabled: !taskID,
+        onClick: () => loadWorkTaskDetail(projectID, taskID, state, detailNode),
+      },
+        [
+          taskID || "unknown",
+          safeWorkText(task.status) || "unknown",
+          safeWorkText(task.owner_agent || task.claimed_by_run_id) || "unassigned",
+          workRefs(task.dependency_task_ids || task.dependencies || task.blocked_by_task_ids).join(", ") || "none",
+          workRefs(task.evidence_refs || task.evidence_needed).join(", ") || "none",
+          safeWorkText(task.verification_requirement) || "not specified",
+          workRefs(task.knowledge_candidate_refs || task.knowledge_candidates).join(", ") || "none",
+        ].map((value) => el("span", { role: "cell", text: value })),
+      );
+    }),
+  );
+}
+
+function workTaskLinks(projectID, taskID, evidence, knowledge) {
+  const links = [
+    workTabLink("Evidence", "evidence", evidence[0] ? { claim_id_search: evidence[0] } : null),
+    workTabLink("Confidence", "confidence", evidence[0] ? { claim_id_search: evidence[0] } : null),
+    workTabLink("Knowledge", "knowledge", knowledge[0] ? { knowledge_ref: knowledge[0] } : null),
+    workTabLink("Activity", "activity", taskID ? { task_id: taskID } : null),
+  ];
+  return links.map((link) => ({ ...link, projectID }));
+}
+
+function workTabLink(label, tab, params) {
+  return { label, tab, params: params || {} };
+}
+
+function workSafeLinks(title, links) {
+  return block(title,
+    el("div", { class: "work-link-list" }, links.map((link) => {
+      const tab = link.tab === "activity" ? selectedRoute().tab : link.tab;
+      const href = link.tab === "activity" ? "" : `#project=${encodeURIComponent(link.projectID || selectedRoute().projectID)}&tab=${encodeURIComponent(tab)}`;
+      return el("button", {
+        class: "secondary compact",
+        type: "button",
+        onClick: () => {
+          if (link.tab === "activity") openActivityDrawer(link.projectID || selectedRoute().projectID);
+          else location.hash = href.slice(1);
+        },
+        text: link.label,
+        title: workLinkTitle(link),
+      });
+    })),
+  );
+}
+
+function workLinkTitle(link) {
+  const params = Object.entries(link.params || {})
+    .map(([key, value]) => `${key}: ${safeWorkText(value)}`)
+    .filter(Boolean)
+    .join(" | ");
+  return params ? `${link.label} metadata | ${params}` : `${link.label} metadata`;
+}
+
+function workTextBlock(title, value) {
+  const text = safeWorkSummary(value);
+  return text ? block(title, el("p", { class: "work-note", text })) : null;
+}
+
+function workRefsBlock(title, refs) {
+  return block(title,
+    refs.length
+      ? el("div", { class: "tag-list" }, refs.map((ref) => el("span", { class: "tag", text: ref })))
+      : emptyText("No metadata refs returned."),
+  );
+}
+
+function workArray(value, ...keys) {
+  if (Array.isArray(value)) return value;
+  for (const key of keys) {
+    if (Array.isArray(value?.[key])) return value[key];
+  }
+  return [];
+}
+
+function workTaskRecord(value) {
+  if (!value || typeof value !== "object") return null;
+  return value.task || value.work_task || value.next_task || value;
+}
+
+function workTaskID(task) {
+  return safeWorkText(task?.task_ref || task?.id || task?.work_task_id || task?.task_id);
+}
+
+function workPlanID(plan) {
+  return safeWorkText(plan?.id || plan?.work_plan_id || plan?.plan_id);
+}
+
+function workStatus(task) {
+  return safeWorkText(task?.status).toLowerCase();
+}
+
+function workTaskTone(status) {
+  const value = safeWorkText(status).toLowerCase();
+  if (["blocked", "failed"].includes(value)) return "warn";
+  if (["completed", "done", "verified"].includes(value)) return "ok";
+  return "muted";
+}
+
+function workRefs(value) {
+  const values = Array.isArray(value) ? value : value ? [value] : [];
+  return values.map((item) => {
+    if (typeof item === "string") return safeWorkText(item);
+    return safeWorkText(item.ref || item.id || item.claim_id || item.evidence_ref || item.knowledge_ref || item.task_ref);
+  }).filter(Boolean);
+}
+
+function safeWorkText(value) {
+  return safeEvidenceText(value);
+}
+
+function safeWorkSummary(value) {
+  return safeEvidenceSummary(value);
 }
 
 function tabGraph(graph) {

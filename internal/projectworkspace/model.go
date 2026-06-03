@@ -40,6 +40,7 @@ type API interface {
 	GitAvailable(ctx context.Context, projectID string) (bool, error)
 	GitStatus(ctx context.Context, projectID string, options GitStatusOptions) (GitStatus, error)
 	GitDiff(ctx context.Context, projectID string, options GitDiffOptions) (GitDiff, error)
+	GitCreateWorktree(ctx context.Context, projectID string, options GitCreateWorktreeOptions) (GitCreateWorktreeResult, error)
 	ReadFile(ctx context.Context, projectID string, options ReadFileOptions) (WorkspaceFile, error)
 	EditFile(ctx context.Context, projectID string, options EditFileOptions) (EditResult, error)
 	CreateFile(ctx context.Context, projectID string, options CreateFileOptions) (CreateFileResult, error)
@@ -87,6 +88,22 @@ type GitDiff struct {
 	Skipped       []DiffSkip `json:"skipped,omitempty"`
 	DiffTruncated bool       `json:"diff_truncated"`
 	NextPageToken string     `json:"next_page_token,omitempty"`
+}
+
+type GitCreateWorktreeOptions struct {
+	WorktreeRef string
+	BranchRef   string
+	BaseRef     string
+	DryRun      bool
+}
+
+type GitCreateWorktreeResult struct {
+	Applied      bool   `json:"applied"`
+	ProjectID    string `json:"project_id"`
+	WorktreeRef  string `json:"worktree_ref"`
+	BranchRef    string `json:"branch_ref"`
+	BaseRef      string `json:"base_ref"`
+	IsolationRef string `json:"isolation_ref"`
 }
 
 type DiffFile struct {

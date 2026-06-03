@@ -72,6 +72,16 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"Work Plan", "tabWorkPlan(project.id)", "projectSubview = \"work-plan\"", "/work-plans?", "/work-tasks/next", "/work-tasks/open?", "/work-tasks/mine?", "/work-tasks/blocked?", "/automation-runs",
+		"/work-tasks?plan_id=${encodeURIComponent(planID)}", "Current Work Plan", "All Work Plans", "Selected Plan Tasks", "Next Safe Task", "Open Tasks", "Open Mine", "Blocked", "Automation Runs", "Task Graph", "Task Detail", "Attached Evidence", "Attached Claims", "Verifier Results", "Knowledge Candidates", "Resume Instructions",
+		"why_safe", "dependencies_done", "dependency_task_ids", "evidence_needed", "context_pack_refs", "likely_files_affected", "verification_requirement", "safe_next_action",
+		"workPlanRows", "workPlanTaskDecomposition", "workTaskDetail", "workTaskGraph", "Safe metadata links", "workTaskLinks", "openActivityDrawer", "safeWorkText", "safeWorkSummary",
+	} {
+		if !strings.Contains(app.Body.String(), want) {
+			t.Fatalf("expected dashboard app to contain work plan affordance %q", want)
+		}
+	}
+	for _, want := range []string{
 		"Knowledge Promotion", "tabKnowledgePromotion(project.id)", "projectSubview = \"knowledge-promotion\"",
 		"/knowledge?", "/api/v1/orgs/default/knowledge?", "/knowledge/${encodeURIComponent(knowledgeID)}", "/reuse-events",
 		"Project-level knowledge", "Org-level knowledge", "Org promotion requires explicit review and is never automatic.",
@@ -87,6 +97,11 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 	mux.ServeHTTP(styles, httptest.NewRequest(http.MethodGet, "/dashboard/styles.css", nil))
 	if styles.Code != http.StatusOK {
 		t.Fatalf("expected styles asset 200, got %d", styles.Code)
+	}
+	for _, want := range []string{"work-plan-view", "work-plan-layout", "work-plan-columns", "work-plan-row", "work-plan-row--selected", "work-task-row", "work-task-table", "work-link-list"} {
+		if !strings.Contains(styles.Body.String(), want) {
+			t.Fatalf("expected dashboard styles to contain work plan affordance %q", want)
+		}
 	}
 	for _, want := range []string{"knowledge-layout", "knowledge-filters", "knowledge-row--project", "knowledge-row--org", "scope-pill--project", "scope-pill--org"} {
 		if !strings.Contains(styles.Body.String(), want) {

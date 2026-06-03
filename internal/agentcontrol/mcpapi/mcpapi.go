@@ -20,6 +20,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/agentcontrol/store"
 	"github.com/MiviaLabs/go-mivia/internal/platform/diagnostics"
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
+	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	automationmcpapi "github.com/MiviaLabs/go-mivia/internal/projectautomation/mcpapi"
+	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectconfidence"
 	confidencemcpapi "github.com/MiviaLabs/go-mivia/internal/projectconfidence/mcpapi"
 	confidencestore "github.com/MiviaLabs/go-mivia/internal/projectconfidence/store"
@@ -34,6 +37,9 @@ import (
 	knowledgestore "github.com/MiviaLabs/go-mivia/internal/projectknowledge/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	projectmcpapi "github.com/MiviaLabs/go-mivia/internal/projectregistry/mcpapi"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+	workplanmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkplan/mcpapi"
+	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 	"github.com/MiviaLabs/go-mivia/internal/research"
 	researchmcpapi "github.com/MiviaLabs/go-mivia/internal/research/mcpapi"
@@ -50,6 +56,7 @@ const ServerInstructions = "This MCP server is the authoritative context and wor
 	"When stable docs or contracts are changed or cited, use projects.claims.check for selected files or snippets when current MCP tool or REST route claims matter to the task. " +
 	"Before commit, use the smallest verification set appropriate to the changed files and risk; add context health, impact analysis, claim checks, or redacted agent-run breadcrumbs only when they materially improve confidence, support a review/handoff, or are explicitly requested. " +
 	"For multi-step reviews, fix loops, or handoffs, consider agent_runs.create, agent_runs.step_append, agent_runs.promote_artifact, agent_runs.complete, and agent_runs.get for redacted run and promotion metadata only; never store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or personal data. " +
+	"When Work Plans and Work Tasks are exposed, decompose work into isolated-worker-ready tasks that a low-intelligence worker can execute from task metadata and attached refs alone; verification must be written for independent orchestrator execution, and worker agents must not run verifier commands unless explicitly allowed. " +
 	"Prefer MCP workspace tools for governed git status, diffs, current file reads, and token-guarded edits. " +
 	"Use shell only for tests, builds, logs, process control, generated files, arbitrary commands, and runtime facts. " +
 	"Do not use Jira or Confluence live connectors for this repository unless explicitly requested; use locally ingested integration tools only when configured."
@@ -66,6 +73,8 @@ type Handler struct {
 	projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter
 	projectKnowledge        *projectknowledge.Service
 	projectKnowledgeInputs  *projectknowledge.PromotionInputAdapter
+	projectWorkPlan         workplanmcpapi.API
+	projectAutomation       automationmcpapi.API
 	integrations            *projectintegrations.Service
 	diagnostics             *diagnostics.Service
 	activity                *agentactivity.Recorder
@@ -120,6 +129,14 @@ func NewHandlerWithActivityEvidenceGraphAndConfidence(service *service.Service, 
 }
 
 func NewHandlerWithActivityEvidenceGraphConfidenceAndKnowledge(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, projectKnowledge *projectknowledge.Service, projectKnowledgeInputs *projectknowledge.PromotionInputAdapter, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
+	return NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeAndWorkPlans(service, research, projects, projectDigest, projectIngest, projectWork, projectEvidence, projectConfidence, projectConfidenceInputs, projectKnowledge, projectKnowledgeInputs, nil, integrations, diagnosticsService, activity, logger)
+}
+
+func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeAndWorkPlans(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, projectKnowledge *projectknowledge.Service, projectKnowledgeInputs *projectknowledge.PromotionInputAdapter, projectWorkPlan workplanmcpapi.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
+	return NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAndAutomation(service, research, projects, projectDigest, projectIngest, projectWork, projectEvidence, projectConfidence, projectConfidenceInputs, projectKnowledge, projectKnowledgeInputs, projectWorkPlan, nil, integrations, diagnosticsService, activity, logger)
+}
+
+func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAndAutomation(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, projectKnowledge *projectknowledge.Service, projectKnowledgeInputs *projectknowledge.PromotionInputAdapter, projectWorkPlan workplanmcpapi.API, projectAutomation automationmcpapi.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:                 service,
 		research:                research,
@@ -132,6 +149,8 @@ func NewHandlerWithActivityEvidenceGraphConfidenceAndKnowledge(service *service.
 		projectConfidenceInputs: projectConfidenceInputs,
 		projectKnowledge:        projectKnowledge,
 		projectKnowledgeInputs:  projectKnowledgeInputs,
+		projectWorkPlan:         projectWorkPlan,
+		projectAutomation:       projectAutomation,
 		integrations:            integrations,
 		diagnostics:             diagnosticsService,
 		activity:                activity,
@@ -363,6 +382,12 @@ func (handler *Handler) callToolParams(r *http.Request, params toolsCallParams) 
 	if evidencemcpapi.IsEvidenceGraphTool(params.Name) {
 		return evidencemcpapi.CallTool(r.Context(), handler.projectEvidence, params.Name, params.Arguments)
 	}
+	if workplanmcpapi.IsWorkPlanTool(params.Name) {
+		return workplanmcpapi.CallTool(r.Context(), handler.projectWorkPlan, params.Name, params.Arguments)
+	}
+	if automationmcpapi.IsAutomationTool(params.Name) {
+		return automationmcpapi.CallTool(r.Context(), handler.projectAutomation, params.Name, params.Arguments)
+	}
 	switch params.Name {
 	case "tasks.create", "tasks_create":
 		var input struct {
@@ -473,6 +498,7 @@ func (handler *Handler) callToolParams(r *http.Request, params toolsCallParams) 
 		"projects.file.outline", "projects_file_outline",
 		"projects.workspace.git_status", "projects_workspace_git_status",
 		"projects.workspace.git_diff", "projects_workspace_git_diff",
+		"projects.workspace.git_worktree_create", "projects_workspace_git_worktree_create",
 		"projects.workspace.file_read", "projects_workspace_file_read",
 		"projects.workspace.file_edit", "projects_workspace_file_edit",
 		"projects.workspace.file_create", "projects_workspace_file_create",
@@ -583,7 +609,39 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
 		return
 	}
+	if errors.Is(err, workplanmcpapi.ErrInvalidInput) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
+	if errors.Is(err, automationmcpapi.ErrInvalidInput) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
+	if errors.Is(err, projectworkplan.ErrInvalidInput) || errors.Is(err, workplanstore.ErrDuplicate) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
+	if errors.Is(err, projectautomation.ErrInvalidInput) || errors.Is(err, automationstore.ErrDuplicate) {
+		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, workplanmcpapi.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, workplanstore.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, automationmcpapi.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
+		return
+	}
+	if errors.Is(err, automationstore.ErrNotFound) {
 		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
 	}
@@ -767,6 +825,12 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 	}
 	if handler.projectKnowledge != nil {
 		tools = append(tools, knowledgemcpapi.ToolDefinitions()...)
+	}
+	if handler.projectWorkPlan != nil {
+		tools = append(tools, workplanmcpapi.ToolDefinitions()...)
+	}
+	if handler.projectAutomation != nil {
+		tools = append(tools, automationmcpapi.ToolDefinitions()...)
 	}
 	if handler.integrations != nil {
 		tools = append(tools, integrationmcpapi.ToolDefinitions()...)

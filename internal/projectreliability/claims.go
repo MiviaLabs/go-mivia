@@ -282,7 +282,7 @@ func normalizeRouteClaim(route string) string {
 		route = before
 	}
 	route = strings.TrimRight(route, "/")
-	for _, placeholder := range []string{"id", "project_id", "run_id", "file_id", "symbol_id", "task_id", "claim_id", "knowledge_id", "org_ref"} {
+	for _, placeholder := range []string{"id", "project_id", "run_id", "file_id", "symbol_id", "plan_id", "task_id", "claim_id", "knowledge_id", "automation_id", "org_ref"} {
 		route = strings.ReplaceAll(route, "{"+placeholder+"}", "*")
 		route = strings.ReplaceAll(route, "<"+placeholder+">", "*")
 	}
@@ -316,6 +316,14 @@ func shouldWildcardRouteSegment(parts []string, index int, segment string) bool 
 			return false
 		}
 		return true
+	case "work-plans":
+		return true
+	case "work-tasks":
+		return segment != "open" && segment != "mine" && segment != "blocked" && segment != "next"
+	case "automations":
+		return true
+	case "automation-runs":
+		return true
 	case "projects", "tasks", "research-runs", "agent-runs", "symbols", "ingestion-runs", "digest-runs":
 		return true
 	default:
@@ -346,7 +354,7 @@ func defaultKnownTools() []string {
 		"projects.search.text", "projects.search.files", "projects.search.symbols", "projects.search.references", "projects.search.calls",
 		"projects.search.ast.queries", "projects.search.ast", "projects.symbol.source", "projects.symbol.references",
 		"projects.symbol.callers", "projects.symbol.callees", "projects.symbol.call_graph", "projects.headings.list", "projects.file.outline",
-		"projects.workspace.git_status", "projects.workspace.git_diff", "projects.workspace.file_read", "projects.workspace.file_edit", "projects.workspace.file_create", "projects.workspace.file_delete",
+		"projects.workspace.git_status", "projects.workspace.git_diff", "projects.workspace.git_worktree_create", "projects.workspace.file_read", "projects.workspace.file_edit", "projects.workspace.file_create", "projects.workspace.file_delete",
 		"projects.diagnostics.ingestion",
 		"projects.evidence_graph.claims.create", "projects.evidence_graph.claims.get", "projects.evidence_graph.claims.list",
 		"projects.evidence_graph.evidence.append", "projects.evidence_graph.decisions.create", "projects.evidence_graph.actions.create",
@@ -358,6 +366,15 @@ func defaultKnownTools() []string {
 		"projects.knowledge.list", "orgs.knowledge.list",
 		"projects.integrations.list", "projects.integrations.status", "projects.integrations.counts", "projects.integrations.poll",
 		"projects.integrations.poll_status", "projects.integrations.search", "projects.jira.issue.get", "projects.confluence.page.get",
+		"projects.work_plans.create", "projects.work_plans.get", "projects.work_plans.list", "projects.work_plans.update_status", "projects.work_plans.resume",
+		"projects.work_tasks.create", "projects.work_tasks.update_status", "projects.work_tasks.claim", "projects.work_tasks.release", "projects.work_tasks.start",
+		"projects.work_tasks.complete", "projects.work_tasks.fail", "projects.work_tasks.block", "projects.work_tasks.list_open",
+		"projects.work_tasks.list_mine", "projects.work_tasks.list_blocked", "projects.work_tasks.get_next",
+		"projects.work_tasks.attach_evidence", "projects.work_tasks.attach_context_pack", "projects.work_tasks.attach_claim",
+		"projects.work_tasks.attach_verifier_result", "projects.work_tasks.promote_knowledge_candidate",
+		"projects.automations.create", "projects.automations.get", "projects.automations.list", "projects.automations.run",
+		"projects.automations.run_parallel_batch", "projects.automation_runs.get", "projects.automation_runs.list",
+		"projects.automation_runs.claim_next", "projects.automation_runs.complete_attempt",
 	})
 }
 
@@ -402,5 +419,22 @@ func defaultKnownRoutes() []string {
 		"/api/v1/projects/*/knowledge/*/submit-org-review", "/api/v1/projects/*/knowledge/*/promote-org", "/api/v1/projects/*/knowledge/*/reject",
 		"/api/v1/projects/*/knowledge/*/supersede", "/api/v1/projects/*/knowledge/*/reuse-events", "/api/v1/projects/*/knowledge/*",
 		"/api/v1/projects/*/knowledge", "/api/v1/orgs/*/knowledge",
+		"/api/v1/projects/*/work-plans", "/api/v1/projects/*/work-plans/*", "/api/v1/projects/*/work-plans/*/status",
+		"/api/v1/projects/*/work-plans/*/resume", "/api/v1/projects/*/work-plans/*/tasks",
+		"/api/v1/projects/*/work-tasks", "/api/v1/projects/*/work-tasks/open", "/api/v1/projects/*/work-tasks/mine",
+		"/api/v1/projects/*/work-tasks/blocked", "/api/v1/projects/*/work-tasks/next", "/api/v1/projects/*/work-tasks/*",
+		"/api/v1/projects/*/work-tasks/*/claim", "/api/v1/projects/*/work-tasks/*/release", "/api/v1/projects/*/work-tasks/*/start",
+		"/api/v1/projects/*/work-tasks/*/complete", "/api/v1/projects/*/work-tasks/*/fail", "/api/v1/projects/*/work-tasks/*/block",
+		"/api/v1/projects/*/work-tasks/*/evidence", "/api/v1/projects/*/work-tasks/*/context-packs",
+		"/api/v1/projects/*/work-tasks/*/claims", "/api/v1/projects/*/work-tasks/*/verifier-results",
+		"/api/v1/projects/*/work-tasks/*/knowledge-candidates",
+		"/api/v1/projects/*/automations", "/api/v1/projects/*/automations/*",
+		"/api/v1/projects/*/automations/*/runs", "/api/v1/projects/*/automations/*/parallel-batches",
+		"/api/v1/projects/*/automation-runs", "/api/v1/projects/*/automation-runs/*",
+		"/api/v1/projects/*/automation-runs/claim-next", "/api/v1/projects/*/automation-runs/*/attempt-result",
+		"/api/v1/projects/{id}/automations", "/api/v1/projects/{id}/automations/{automation_id}",
+		"/api/v1/projects/{id}/automations/{automation_id}/runs", "/api/v1/projects/{id}/automations/{automation_id}/parallel-batches",
+		"/api/v1/projects/{id}/automation-runs", "/api/v1/projects/{id}/automation-runs/claim-next",
+		"/api/v1/projects/{id}/automation-runs/{run_id}", "/api/v1/projects/{id}/automation-runs/{run_id}/attempt-result",
 	}
 }

@@ -292,6 +292,10 @@ func (workspace fakeWorkspace) GitDiff(context.Context, string, projectworkspace
 	return workspace.diff, workspace.err
 }
 
+func (workspace fakeWorkspace) GitCreateWorktree(context.Context, string, projectworkspace.GitCreateWorktreeOptions) (projectworkspace.GitCreateWorktreeResult, error) {
+	return projectworkspace.GitCreateWorktreeResult{}, nil
+}
+
 func (workspace fakeWorkspace) ReadFile(context.Context, string, projectworkspace.ReadFileOptions) (projectworkspace.WorkspaceFile, error) {
 	return projectworkspace.WorkspaceFile{}, nil
 }

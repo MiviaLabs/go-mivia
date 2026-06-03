@@ -46,15 +46,16 @@ func parseAutoIntValue(value any) (int, error) {
 }
 
 type fileConfig struct {
-	Version   int                  `toml:"version"`
-	Server    *fileServerConfig    `toml:"server"`
-	Storage   *fileStorageConfig   `toml:"storage"`
-	SQLite    *fileSQLiteConfig    `toml:"sqlite"`
-	Debug     *fileDebugConfig     `toml:"debug"`
-	Logging   *fileLoggingConfig   `toml:"logging"`
-	Ingestion *fileIngestionConfig `toml:"ingestion"`
-	Workspace *fileWorkspaceConfig `toml:"workspace"`
-	Projects  []fileProjectConfig  `toml:"projects"`
+	Version    int                   `toml:"version"`
+	Server     *fileServerConfig     `toml:"server"`
+	Storage    *fileStorageConfig    `toml:"storage"`
+	SQLite     *fileSQLiteConfig     `toml:"sqlite"`
+	Debug      *fileDebugConfig      `toml:"debug"`
+	Logging    *fileLoggingConfig    `toml:"logging"`
+	Ingestion  *fileIngestionConfig  `toml:"ingestion"`
+	Workspace  *fileWorkspaceConfig  `toml:"workspace"`
+	Automation *fileAutomationConfig `toml:"automation"`
+	Projects   []fileProjectConfig   `toml:"projects"`
 }
 
 type fileServerConfig struct {
@@ -92,6 +93,44 @@ type fileSQLiteConfig struct {
 
 type fileWorkspaceConfig struct {
 	Enabled *bool `toml:"enabled"`
+}
+
+type fileAutomationConfig struct {
+	Enabled                   *bool                       `toml:"enabled"`
+	RunnerEnabled             *bool                       `toml:"runner_enabled"`
+	RequireCodexWhenAvailable *bool                       `toml:"require_codex_when_available"`
+	AllowManualRunner         *bool                       `toml:"allow_manual_runner"`
+	RunnerExecution           *string                     `toml:"runner_execution"`
+	QueueDepth                *int                        `toml:"queue_depth"`
+	GlobalWorkerCount         *int                        `toml:"global_worker_count"`
+	PerProjectWorkerLimit     *int                        `toml:"per_project_worker_limit"`
+	PerAgentWorkerLimit       *int                        `toml:"per_agent_worker_limit"`
+	MaxParallelTasks          *int                        `toml:"max_parallel_tasks"`
+	DefaultMaxRuntime         *string                     `toml:"default_max_runtime"`
+	CodexBinaryPath           *string                     `toml:"codex_binary_path"`
+	Agents                    []fileAutomationAgentConfig `toml:"agents"`
+}
+
+type fileAutomationAgentConfig struct {
+	ID              string                        `toml:"id"`
+	DisplayName     string                        `toml:"display_name"`
+	Purpose         string                        `toml:"purpose"`
+	Enabled         bool                          `toml:"enabled"`
+	AllowedSkills   []string                      `toml:"allowed_skills"`
+	AllowedTools    []string                      `toml:"allowed_tools"`
+	AllowedCommands []fileAutomationCommandConfig `toml:"allowed_commands"`
+	DeniedCommands  []string                      `toml:"denied_commands"`
+	WorkspaceMode   string                        `toml:"workspace_mode"`
+	NetworkPolicy   string                        `toml:"network_policy"`
+	SecretPolicy    string                        `toml:"secret_policy"`
+	LogPolicy       string                        `toml:"log_policy"`
+	MaxRuntime      *string                       `toml:"max_runtime"`
+	MaxRetries      int                           `toml:"max_retries"`
+}
+
+type fileAutomationCommandConfig struct {
+	Command string   `toml:"command"`
+	Args    []string `toml:"args"`
 }
 
 type fileIngestionConfig struct {
@@ -595,11 +634,86 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		base.Workspace.Enabled = *cfg.Workspace.Enabled
 	}
 
+	if cfg.Automation != nil {
+		if cfg.Automation.Enabled != nil {
+			base.Automation.Enabled = *cfg.Automation.Enabled
+		}
+		if cfg.Automation.RunnerEnabled != nil {
+			base.Automation.RunnerEnabled = *cfg.Automation.RunnerEnabled
+		}
+		if cfg.Automation.RequireCodexWhenAvailable != nil {
+			base.Automation.RequireCodexWhenAvailable = *cfg.Automation.RequireCodexWhenAvailable
+		}
+		if cfg.Automation.AllowManualRunner != nil {
+			base.Automation.AllowManualRunner = *cfg.Automation.AllowManualRunner
+		}
+		if cfg.Automation.RunnerExecution != nil {
+			base.Automation.RunnerExecution = *cfg.Automation.RunnerExecution
+		}
+		if cfg.Automation.QueueDepth != nil {
+			base.Automation.QueueDepth = *cfg.Automation.QueueDepth
+		}
+		if cfg.Automation.GlobalWorkerCount != nil {
+			base.Automation.GlobalWorkerCount = *cfg.Automation.GlobalWorkerCount
+		}
+		if cfg.Automation.PerProjectWorkerLimit != nil {
+			base.Automation.PerProjectWorkerLimit = *cfg.Automation.PerProjectWorkerLimit
+		}
+		if cfg.Automation.PerAgentWorkerLimit != nil {
+			base.Automation.PerAgentWorkerLimit = *cfg.Automation.PerAgentWorkerLimit
+		}
+		if cfg.Automation.MaxParallelTasks != nil {
+			base.Automation.MaxParallelTasks = *cfg.Automation.MaxParallelTasks
+		}
+		var err error
+		if base.Automation.DefaultMaxRuntime, err = applyDuration("automation.default_max_runtime", cfg.Automation.DefaultMaxRuntime, base.Automation.DefaultMaxRuntime); err != nil {
+			return Config{}, err
+		}
+		if cfg.Automation.CodexBinaryPath != nil {
+			base.Automation.CodexBinaryPath = *cfg.Automation.CodexBinaryPath
+		}
+		base.Automation.Agents = make([]AutomationAgent, 0, len(cfg.Automation.Agents))
+		for _, agent := range cfg.Automation.Agents {
+			converted, err := agent.toAutomationAgent(base.Automation.DefaultMaxRuntime)
+			if err != nil {
+				return Config{}, err
+			}
+			base.Automation.Agents = append(base.Automation.Agents, converted)
+		}
+	}
+
 	base.Projects = make([]Project, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
 		base.Projects = append(base.Projects, project.toProject())
 	}
 	return base, nil
+}
+
+func (cfg fileAutomationAgentConfig) toAutomationAgent(defaultMaxRuntime time.Duration) (AutomationAgent, error) {
+	maxRuntime, err := applyDuration("automation.agents.max_runtime", cfg.MaxRuntime, defaultMaxRuntime)
+	if err != nil {
+		return AutomationAgent{}, err
+	}
+	commands := make([]AutomationCommand, 0, len(cfg.AllowedCommands))
+	for _, command := range cfg.AllowedCommands {
+		commands = append(commands, AutomationCommand{Command: command.Command, Args: append([]string(nil), command.Args...)})
+	}
+	return AutomationAgent{
+		ID:              cfg.ID,
+		DisplayName:     cfg.DisplayName,
+		Purpose:         cfg.Purpose,
+		Enabled:         cfg.Enabled,
+		AllowedSkills:   append([]string(nil), cfg.AllowedSkills...),
+		AllowedTools:    append([]string(nil), cfg.AllowedTools...),
+		AllowedCommands: commands,
+		DeniedCommands:  append([]string(nil), cfg.DeniedCommands...),
+		WorkspaceMode:   cfg.WorkspaceMode,
+		NetworkPolicy:   cfg.NetworkPolicy,
+		SecretPolicy:    cfg.SecretPolicy,
+		LogPolicy:       cfg.LogPolicy,
+		MaxRuntime:      maxRuntime,
+		MaxRetries:      cfg.MaxRetries,
+	}, nil
 }
 
 func applyDuration(name string, value *string, fallback time.Duration) (time.Duration, error) {

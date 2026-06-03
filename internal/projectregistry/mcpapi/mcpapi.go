@@ -800,6 +800,31 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			PageToken:    input.PageToken,
 		})
 		return toolResult(diff), err
+	case "projects.workspace.git_worktree_create", "projects_workspace_git_worktree_create":
+		var input struct {
+			ID          string          `json:"id"`
+			WorktreeRef string          `json:"worktree_ref"`
+			BranchRef   string          `json:"branch_ref"`
+			BaseRef     string          `json:"base_ref,omitempty"`
+			DryRun      bool            `json:"dry_run,omitempty"`
+			Meta        json.RawMessage `json:"_meta,omitempty"`
+		}
+		if err := decodeRaw(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
+		}
+		if err := validateWorkspaceProjectID(input.ID); err != nil {
+			return nil, err
+		}
+		if workspace == nil {
+			return nil, projectworkspace.ErrWorkspaceDisabled
+		}
+		result, err := workspace.GitCreateWorktree(ctx, strings.TrimSpace(input.ID), projectworkspace.GitCreateWorktreeOptions{
+			WorktreeRef: input.WorktreeRef,
+			BranchRef:   input.BranchRef,
+			BaseRef:     input.BaseRef,
+			DryRun:      input.DryRun,
+		})
+		return toolResult(result), err
 	case "projects.workspace.file_read", "projects_workspace_file_read":
 		var input struct {
 			ID           string          `json:"id"`
@@ -1341,6 +1366,18 @@ func workspaceToolDefinitions() []map[string]any {
 				"max_diff_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": projectworkspace.MaxDiffBytes},
 				"page_token":     map[string]any{"type": "string"},
 			}, []string{"id"}),
+		},
+		{
+			"name":        "projects.workspace.git_worktree_create",
+			"title":       "Create Governed Project Git Worktree",
+			"description": "Create one dedicated git worktree for an opted-in edit-mode local project from safe refs. Returns only metadata refs; never returns roots, filesystem paths, raw command lines, or raw stderr. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":           map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
+				"worktree_ref": map[string]any{"type": "string", "minLength": 1, "maxLength": 200, "description": "Opaque per-plan worktree ref, not a filesystem path."},
+				"branch_ref":   map[string]any{"type": "string", "minLength": 1, "maxLength": 200, "description": "Per-plan branch ref to create."},
+				"base_ref":     map[string]any{"type": "string", "maxLength": 200, "description": "Safe base ref. Defaults to HEAD."},
+				"dry_run":      map[string]any{"type": "boolean"},
+			}, []string{"id", "worktree_ref", "branch_ref"}),
 		},
 		{
 			"name":        "projects.workspace.file_read",

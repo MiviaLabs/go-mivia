@@ -3,6 +3,19 @@ info:
   title: MiviaLabs Agent Control API
   version: 0.1.0
   description: Localhost-only bootstrap REST contract for task, research-run, project context, reliability, and redacted agent-run metadata.
+x-work-plan-task-contract:
+  implementation_status: implemented_guarded_surface
+  purpose: Governed multi-step work should be represented as project-scoped Work Plans and Work Tasks that link context health, context packs, Evidence Graph refs, Confidence Engine assessments, verifier result refs, Agent Activity, AgentRun refs, and Knowledge Promotion candidate refs.
+  availability_rule: Verify the running OpenAPI/runtime surface before calling Work Plan or Work Task routes.
+  safety_rule: Work Plan and Work Task metadata must not store raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
+x-project-automation-contract:
+  implementation_status: implemented_guarded_surface
+  purpose: Project Automation executes or queues Codex CLI work over existing ready Work Tasks; it is not an alternate planning system.
+  runner_execution_modes:
+    in_process: mivia-server executes Codex CLI from the server runtime.
+    external: mivia-server queues codex_cli runs; mivia-automation-runner claims and executes them from the user's logged-in local Codex environment.
+  verifier_rule: A successful Codex CLI exit leaves the run verifier-required and does not complete a Work Task or promote knowledge.
+  safety_rule: Automation metadata must not store raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
 servers:
   - url: http://127.0.0.1:8080/api/v1
 paths:
@@ -404,6 +417,627 @@ paths:
                 $ref: '#/components/schemas/ClaimCheckResult'
         '400':
           $ref: '#/components/responses/BadRequest'
+  /projects/{id}/work-plans:
+    post:
+      operationId: createProjectWorkPlan
+      summary: Create project Work Plan
+      description: Creates one project-scoped metadata-only Work Plan. Raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, and PII are prohibited.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectWorkPlanRequest'
+      responses:
+        '201':
+          description: Created Work Plan
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+    get:
+      operationId: listProjectWorkPlans
+      summary: List project Work Plans
+      description: Lists project-scoped Work Plan metadata with bounded pagination and safe metadata filters.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/WorkPlanStatusQuery'
+        - $ref: '#/components/parameters/OwnerAgentQuery'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Work Plans
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkPlanList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/work-plans/{plan_id}:
+    get:
+      operationId: getProjectWorkPlan
+      summary: Get project Work Plan
+      description: Returns one project-scoped Work Plan metadata record.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PlanID'
+      responses:
+        '200':
+          description: Work Plan
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkPlan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/work-plans/{plan_id}/status:
+    post:
+      operationId: updateProjectWorkPlanStatus
+      summary: Update project Work Plan status
+      description: Updates Work Plan status and resume metadata without storing raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PlanID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectWorkPlanStatusRequest'
+      responses:
+        '200':
+          description: Updated Work Plan
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-plans/{plan_id}/resume:
+    get:
+      operationId: resumeProjectWorkPlan
+      summary: Resume project Work Plan
+      description: Returns metadata needed to resume a Work Plan, including safe task refs, dependency summaries, context refs, and verification requirements.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PlanID'
+      responses:
+        '200':
+          description: Work Plan resume metadata
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkPlan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/work-plans/{plan_id}/tasks:
+    post:
+      operationId: createProjectWorkTask
+      summary: Create project Work Task
+      description: Creates one isolated-worker-ready project Work Task under a Work Plan. Tasks are metadata-only and must include bounded scope, dependencies, evidence needs, context refs, verification requirement, and resume instructions. Each task must be executable by a low-intelligence worker from task metadata and attached refs alone, without prior chat memory or hidden orchestrator context; verification must be written for independent orchestrator execution.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PlanID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectWorkTaskRequest'
+      responses:
+        '201':
+          description: Created Work Task
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks:
+    get:
+      operationId: listProjectWorkTasks
+      summary: List project Work Tasks
+      description: Lists project-scoped Work Task metadata with bounded pagination and safe metadata filters.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PlanIDQuery'
+        - $ref: '#/components/parameters/WorkTaskStatusQuery'
+        - $ref: '#/components/parameters/OwnerAgentQuery'
+        - $ref: '#/components/parameters/ClaimedByRunIDQuery'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Work Tasks
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/work-tasks/open:
+    get:
+      operationId: listOpenProjectWorkTasks
+      summary: List open project Work Tasks
+      description: Lists ready, claimed, in-progress, blocked, needs-review, verifying, and planned Work Tasks according to the service's open-task rules.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PlanIDQuery'
+        - $ref: '#/components/parameters/WorkTaskStatusQuery'
+        - $ref: '#/components/parameters/OwnerAgentQuery'
+        - $ref: '#/components/parameters/ClaimedByRunIDQuery'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Open Work Tasks
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/work-tasks/mine:
+    get:
+      operationId: listMyProjectWorkTasks
+      summary: List Work Tasks claimed by the current run
+      description: Lists project Work Tasks filtered by claimed_by_run_id or run_id.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PlanIDQuery'
+        - $ref: '#/components/parameters/WorkTaskStatusQuery'
+        - $ref: '#/components/parameters/OwnerAgentQuery'
+        - $ref: '#/components/parameters/ClaimedByRunIDQuery'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Claimed Work Tasks
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/work-tasks/blocked:
+    get:
+      operationId: listBlockedProjectWorkTasks
+      summary: List blocked project Work Tasks
+      description: Lists blocked project-scoped Work Task metadata.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PlanIDQuery'
+        - $ref: '#/components/parameters/OwnerAgentQuery'
+        - $ref: '#/components/parameters/ClaimedByRunIDQuery'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/PageToken'
+      responses:
+        '200':
+          description: Blocked Work Tasks
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/work-tasks/next:
+    get:
+      operationId: getNextProjectWorkTask
+      summary: Get next project Work Task
+      description: Selects the next claimable Work Task using safe metadata, dependency readiness, context refs, and verification requirements.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/PlanIDQuery'
+        - $ref: '#/components/parameters/OwnerAgentQuery'
+        - name: run_id
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+        - name: trace_id
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+        - name: include_claimed_by_me
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Next Work Task selection
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskNext'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /projects/{id}/work-tasks/{task_id}:
+    get:
+      operationId: getProjectWorkTask
+      summary: Get project Work Task
+      description: Returns one project-scoped Work Task metadata record.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      responses:
+        '200':
+          description: Work Task
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTask'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /projects/{id}/work-tasks/{task_id}/claim:
+    post:
+      operationId: claimProjectWorkTask
+      summary: Claim project Work Task
+      description: Claims one Work Task for a run using metadata-only refs.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAction'
+      responses:
+        '200':
+          description: Claimed Work Task
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/release:
+    post:
+      operationId: releaseProjectWorkTask
+      summary: Release project Work Task
+      description: Releases a claimed Work Task without deleting task metadata.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAction'
+      responses:
+        '200':
+          description: Released Work Task
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/start:
+    post:
+      operationId: startProjectWorkTask
+      summary: Start project Work Task
+      description: Marks a claimed Work Task in progress and links safe run metadata.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAction'
+      responses:
+        '200':
+          description: Started Work Task
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/status:
+    post:
+      operationId: updateProjectWorkTaskStatus
+      summary: Update project Work Task status
+      description: Moves a Work Task through the governed lifecycle, including cancelling or superseding stale planned metadata.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectWorkTaskStatusRequest'
+      responses:
+        '200':
+          description: Updated Work Task
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/complete:
+    post:
+      operationId: completeProjectWorkTask
+      summary: Complete project Work Task
+      description: Completes a Work Task with bounded outcome text and verifier result refs.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAction'
+      responses:
+        '200':
+          description: Completed Work Task
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/fail:
+    post:
+      operationId: failProjectWorkTask
+      summary: Fail project Work Task
+      description: Marks a Work Task failed with bounded outcome and resume metadata.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAction'
+      responses:
+        '200':
+          description: Failed Work Task
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/block:
+    post:
+      operationId: blockProjectWorkTask
+      summary: Block project Work Task
+      description: Marks a Work Task blocked with bounded blocker refs and resume instructions.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAction'
+      responses:
+        '200':
+          description: Blocked Work Task
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/evidence:
+    post:
+      operationId: attachProjectWorkTaskEvidence
+      summary: Attach Evidence Graph ref to Work Task
+      description: Attaches a safe evidence ref to a Work Task. The request stores refs and bounded notes only.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAttachment'
+      responses:
+        '201':
+          description: Attached evidence ref
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskAttachment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/context-packs:
+    post:
+      operationId: attachProjectWorkTaskContextPack
+      summary: Attach context pack ref to Work Task
+      description: Attaches a bounded context pack ref to a Work Task. Raw source content is not accepted.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAttachment'
+      responses:
+        '201':
+          description: Attached context pack ref
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskAttachment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/claims:
+    post:
+      operationId: attachProjectWorkTaskClaim
+      summary: Attach claim ref to Work Task
+      description: Attaches a safe Evidence Graph or Confidence Engine claim ref to a Work Task.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAttachment'
+      responses:
+        '201':
+          description: Attached claim ref
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskAttachment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/verifier-results:
+    post:
+      operationId: attachProjectWorkTaskVerifierResult
+      summary: Attach verifier result ref to Work Task
+      description: Attaches a verifier result ref to a Work Task. Raw command stderr/stdout and source dumps are prohibited.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAttachment'
+      responses:
+        '201':
+          description: Attached verifier result ref
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskAttachment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/knowledge-candidates:
+    post:
+      operationId: promoteProjectWorkTaskKnowledgeCandidate
+      summary: Promote Work Task knowledge candidate ref
+      description: Links a metadata-only Knowledge Promotion candidate ref to a Work Task.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAttachment'
+      responses:
+        '201':
+          description: Attached knowledge candidate ref
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskAttachment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
   /projects/{id}/evidence-graph/claims:
     post:
       operationId: createProjectEvidenceClaim
@@ -1164,6 +1798,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WorkspaceGitDiff'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /projects/{id}/workspace/git/worktrees:
+    post:
+      operationId: createProjectWorkspaceGitWorktree
+      summary: Create governed project git worktree
+      description: Creates one dedicated git worktree for an opted-in edit-mode workspace from safe refs. Returns only metadata refs; roots, filesystem paths, raw command lines, and raw stderr are never exposed.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkspaceGitWorktreeRequest'
+      responses:
+        '201':
+          description: Governed worktree metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceGitWorktree'
         '400':
           $ref: '#/components/responses/BadRequest'
         '503':
@@ -2102,6 +2760,51 @@ components:
       in: query
       schema:
         type: string
+    PlanID:
+      name: plan_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+    TaskID:
+      name: task_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+    PlanIDQuery:
+      name: plan_id
+      in: query
+      schema:
+        type: string
+        maxLength: 200
+    OwnerAgentQuery:
+      name: owner_agent
+      in: query
+      schema:
+        type: string
+        maxLength: 120
+    ClaimedByRunIDQuery:
+      name: claimed_by_run_id
+      in: query
+      description: The implementation also accepts run_id as an alias for this filter.
+      schema:
+        type: string
+        maxLength: 200
+    WorkPlanStatusQuery:
+      name: status
+      in: query
+      schema:
+        $ref: '#/components/schemas/ProjectWorkPlanStatus'
+    WorkTaskStatusQuery:
+      name: status
+      in: query
+      schema:
+        $ref: '#/components/schemas/ProjectWorkTaskStatus'
     KnowledgeID:
       name: knowledge_id
       in: path
@@ -2145,6 +2848,25 @@ components:
       schema:
         type: integer
         minimum: 0
+  headers:
+    NoStore:
+      description: Responses are metadata-only and are not intended for intermediary caching.
+      schema:
+        type: string
+        enum: [no-store]
+  requestBodies:
+    ProjectWorkTaskAction:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProjectWorkTaskActionRequest'
+    ProjectWorkTaskAttachment:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AttachProjectWorkTaskRefRequest'
   responses:
     BadRequest:
       description: Invalid request
@@ -2158,8 +2880,20 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Resource already exists or transition conflicts with current metadata state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     ServiceUnavailable:
       description: Runtime dependency unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnsupportedMediaType:
+      description: Request content type must be application/json
       content:
         application/json:
           schema:
@@ -2578,7 +3312,7 @@ components:
         context_health:
           $ref: '#/components/schemas/ContextHealth'
         latest_run:
-          $ref: '#/components/schemas/IngestionRun'
+          $ref: '#/components/schemas/ProjectIngestionRun'
         graph:
           type: object
           description: Bounded file, symbol, heading, AST coverage, and search-index metadata for dashboards. Symbol summaries include `total_count` for all indexed symbols, bounded display `sampled_count` / `sample`, semantic buckets (`by_module`, `by_namespace`, `by_assembly`, `by_package`) when reliable parsed metadata exists, and `by_code_area` / `by_path_bucket` for repository-relative path buckets over all indexed symbols. `concentration_basis` identifies which bucket is primary, what metadata source backs it, and the exact `denominator_count` for percentages. Path buckets are approximate code areas, not language-level module/package/namespace/assembly boundaries. It never contains source text or raw diff content.
@@ -3089,6 +3823,46 @@ components:
           type: string
         reason:
           type: string
+    CreateWorkspaceGitWorktreeRequest:
+      type: object
+      additionalProperties: false
+      required: [worktree_ref, branch_ref]
+      properties:
+        worktree_ref:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Opaque per-plan worktree ref, not a filesystem path.
+        branch_ref:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Per-plan branch ref to create.
+        base_ref:
+          type: string
+          maxLength: 200
+          description: Safe base ref. Defaults to HEAD.
+        dry_run:
+          type: boolean
+          default: false
+    WorkspaceGitWorktree:
+      type: object
+      additionalProperties: false
+      required: [applied, project_id, worktree_ref, branch_ref, base_ref, isolation_ref]
+      properties:
+        applied:
+          type: boolean
+        project_id:
+          type: string
+        worktree_ref:
+          type: string
+        branch_ref:
+          type: string
+        base_ref:
+          type: string
+        isolation_ref:
+          type: string
+          description: Opaque metadata ref for Work Plan isolation; not a filesystem path.
     WorkspaceFile:
       type: object
       additionalProperties: false
@@ -3990,6 +4764,302 @@ components:
           type: integer
         ByteEnd:
           type: integer
+    ProjectWorkPlanStatus:
+      type: string
+      enum: [planned, active, blocked, needs_review, done, failed, cancelled, superseded]
+    ProjectWorkTaskStatus:
+      type: string
+      enum: [planned, ready, claimed, in_progress, blocked, needs_review, verifying, done, failed, cancelled, superseded]
+    ProjectWorkTaskDecompositionQuality:
+      type: string
+      enum: [draft, ready, too_broad, missing_evidence, missing_context, missing_verification, missing_resume]
+    ProjectWorkPlan:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, plan_ref, title, goal_summary, status, created_at, updated_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        plan_ref: {type: string}
+        user_request_ref: {type: string}
+        title: {type: string}
+        goal_summary: {type: string}
+        status:
+          $ref: '#/components/schemas/ProjectWorkPlanStatus'
+        owner_agent: {type: string}
+        created_by_run_id: {type: string}
+        trace_id: {type: string}
+        current_task_id: {type: string}
+        resume_summary: {type: string}
+        isolation_mode:
+          type: string
+          enum: [shared, dedicated_worktree, unavailable]
+        parallel_group_ref: {type: string}
+        workspace_ref: {type: string}
+        git_base_ref: {type: string}
+        git_branch_ref: {type: string}
+        git_worktree_ref: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+      description: Metadata-only Work Plan. Parallel executable plans should use dedicated_worktree isolation refs when MCP workspace git support is available. It links to AgentRun and WorkTask refs but does not replace AgentRun or AgentStep.
+    ProjectWorkTask:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, plan_id, task_ref, title, status, verification_requirement, decomposition_quality, created_at, updated_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        plan_id: {type: string}
+        task_ref: {type: string}
+        title: {type: string}
+        description: {type: string}
+        status:
+          $ref: '#/components/schemas/ProjectWorkTaskStatus'
+        owner_agent: {type: string}
+        claimed_by_run_id: {type: string}
+        trace_id: {type: string}
+        evidence_needed:
+          type: array
+          items: {type: string}
+        context_pack_refs:
+          type: array
+          items: {type: string}
+        likely_files_affected:
+          type: array
+          items: {type: string}
+        dependency_task_ids:
+          type: array
+          items: {type: string}
+        verification_requirement: {type: string}
+        expected_output: {type: string}
+        failure_criteria: {type: string}
+        outcome: {type: string}
+        resume_instructions: {type: string}
+        blocked_reason: {type: string}
+        blocked_by_task_ids:
+          type: array
+          items: {type: string}
+        knowledge_candidate_refs:
+          type: array
+          items: {type: string}
+        evidence_refs:
+          type: array
+          items: {type: string}
+        claim_refs:
+          type: array
+          items: {type: string}
+        verifier_result_refs:
+          type: array
+          items: {type: string}
+        artifact_refs:
+          type: array
+          items: {type: string}
+        agent_run_ids:
+          type: array
+          items: {type: string}
+        decomposition_quality:
+          $ref: '#/components/schemas/ProjectWorkTaskDecompositionQuality'
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        claimed_at: {type: string, format: date-time}
+        started_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time}
+      description: Metadata-only Work Task for isolated low-intelligence worker execution. It must be executable from task metadata and attached refs alone, without prior chat memory or hidden orchestrator context, and stores bounded refs and summaries only; raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, and PII are prohibited.
+    ProjectWorkTaskAttachment:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, plan_id, task_id, kind, ref, created_at]
+      properties:
+        id: {type: string}
+        project_id: {type: string}
+        plan_id: {type: string}
+        task_id: {type: string}
+        kind: {type: string, enum: [evidence, context_pack, claim, verifier_result, knowledge_candidate]}
+        ref: {type: string}
+        attached_by_run_id: {type: string}
+        trace_id: {type: string}
+        note: {type: string}
+        created_at: {type: string, format: date-time}
+      description: Metadata-only attachment linking a Work Task to existing evidence, context pack, claim, verifier result, or knowledge candidate refs.
+    ProjectWorkPlanList:
+      type: object
+      additionalProperties: false
+      required: [work_plans]
+      properties:
+        work_plans:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectWorkPlan'
+        next_page_token: {type: string}
+    ProjectWorkTaskList:
+      type: object
+      additionalProperties: false
+      required: [work_tasks]
+      properties:
+        work_tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectWorkTask'
+        next_page_token: {type: string}
+    ProjectWorkTaskDependencySummary:
+      type: object
+      additionalProperties: false
+      required: [task_id, status, ready]
+      properties:
+        task_id: {type: string}
+        status:
+          $ref: '#/components/schemas/ProjectWorkTaskStatus'
+        ready: {type: boolean}
+    ProjectWorkTaskNext:
+      type: object
+      additionalProperties: false
+      required: [found, open_count, blocked_count, claimed_count]
+      properties:
+        found: {type: boolean}
+        task:
+          $ref: '#/components/schemas/ProjectWorkTask'
+        plan:
+          $ref: '#/components/schemas/ProjectWorkPlan'
+        dependency_summary:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectWorkTaskDependencySummary'
+        evidence_refs:
+          type: array
+          items: {type: string}
+        context_pack_refs:
+          type: array
+          items: {type: string}
+        resume_instructions: {type: string}
+        required_verification: {type: string}
+        safe_reason: {type: string}
+        open_count: {type: integer, minimum: 0}
+        blocked_count: {type: integer, minimum: 0}
+        claimed_count: {type: integer, minimum: 0}
+        reason: {type: string}
+      description: Safe metadata response for next-task selection. It does not contain raw source, prompts, stderr, provider payloads, roots, secrets, external URLs, or PII.
+    CreateProjectWorkPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [plan_ref, title, goal_summary]
+      properties:
+        plan_ref: {type: string, minLength: 1, maxLength: 200}
+        user_request_ref: {type: string, maxLength: 200}
+        title: {type: string, minLength: 1, maxLength: 200}
+        goal_summary: {type: string, minLength: 1, maxLength: 500}
+        owner_agent: {type: string, maxLength: 120}
+        created_by_run_id: {type: string, maxLength: 200}
+        trace_id: {type: string, maxLength: 200}
+        resume_summary: {type: string, maxLength: 500}
+        isolation_mode:
+          type: string
+          enum: [shared, dedicated_worktree, unavailable]
+        parallel_group_ref: {type: string, maxLength: 200}
+        workspace_ref: {type: string, maxLength: 200}
+        git_base_ref: {type: string, maxLength: 200}
+        git_branch_ref: {type: string, maxLength: 200}
+        git_worktree_ref: {type: string, maxLength: 200}
+      description: Metadata-only request. Do not include raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
+    UpdateProjectWorkPlanStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        plan_id:
+          type: string
+          maxLength: 200
+          description: Optional in the body; the path parameter is authoritative.
+        status:
+          $ref: '#/components/schemas/ProjectWorkPlanStatus'
+        resume_summary: {type: string, maxLength: 500}
+        current_task_id: {type: string, maxLength: 200}
+    CreateProjectWorkTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [task_ref, title, verification_requirement]
+      properties:
+        plan_id:
+          type: string
+          maxLength: 200
+          description: Optional in the body; the path parameter is authoritative.
+        task_ref: {type: string, minLength: 1, maxLength: 200}
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 1000}
+        owner_agent: {type: string, maxLength: 120}
+        trace_id: {type: string, maxLength: 200}
+        evidence_needed:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        context_pack_refs:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        likely_files_affected:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 300}
+        dependency_task_ids:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        verification_requirement: {type: string, minLength: 1, maxLength: 500}
+        expected_output: {type: string, maxLength: 500}
+        failure_criteria: {type: string, maxLength: 500}
+        resume_instructions: {type: string, maxLength: 500}
+        knowledge_candidate_refs:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        decomposition_quality:
+          $ref: '#/components/schemas/ProjectWorkTaskDecompositionQuality'
+      description: Create one small, single-objective, bounded Work Task. The task must be isolated-worker-ready, low-intelligence-model-ready, and metadata-only, with verification written for independent orchestrator execution.
+    ProjectWorkTaskActionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        task_id:
+          type: string
+          maxLength: 200
+          description: Optional in the body; the path parameter is authoritative.
+        owner_agent: {type: string, maxLength: 120}
+        run_id: {type: string, maxLength: 200}
+        trace_id: {type: string, maxLength: 200}
+        outcome: {type: string, maxLength: 500}
+        blocked_reason: {type: string, maxLength: 500}
+        blocked_by_task_ids:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        resume_instructions: {type: string, maxLength: 500}
+        verifier_result_refs:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+      description: Metadata-only action request for Work Task state changes. Raw command output, prompts, completions, provider payloads, roots, secrets, external URLs, and PII are prohibited.
+    UpdateProjectWorkTaskStatusRequest:
+      allOf:
+        - $ref: '#/components/schemas/ProjectWorkTaskActionRequest'
+        - type: object
+          additionalProperties: false
+          required: [status]
+          properties:
+            status:
+              $ref: '#/components/schemas/ProjectWorkTaskStatus'
+    AttachProjectWorkTaskRefRequest:
+      type: object
+      additionalProperties: false
+      required: [ref]
+      properties:
+        task_id:
+          type: string
+          maxLength: 200
+          description: Optional in the body; the path parameter is authoritative.
+        ref: {type: string, minLength: 1, maxLength: 200}
+        attached_by_run_id: {type: string, maxLength: 200}
+        trace_id: {type: string, maxLength: 200}
+        note: {type: string, maxLength: 500}
+      description: Metadata-only attachment request. The ref must point to an existing context pack, Evidence Graph claim/evidence, verifier result, or Knowledge Promotion candidate.
     ProjectEvidenceClaimStatus:
       type: string
       enum: [candidate, validated, promoted, rejected]
@@ -4446,7 +5516,7 @@ components:
       properties:
         decision_ref: {type: string, minLength: 1, maxLength: 200}
         verifier_ref: {type: string, minLength: 1, maxLength: 200}
-        rationale: {type: string, minLength: 1, maxLength: 500}
+        rationale: {type: string, minLength: 1, maxLength: 1000}
     SubmitProjectKnowledgeOrgReviewRequest:
       type: object
       additionalProperties: false
@@ -4455,7 +5525,7 @@ components:
         org_ref: {type: string, enum: [default]}
         decision_ref: {type: string, minLength: 1, maxLength: 200}
         verifier_ref: {type: string, minLength: 1, maxLength: 200}
-        rationale: {type: string, minLength: 1, maxLength: 500}
+        rationale: {type: string, minLength: 1, maxLength: 1000}
         decided_by: {type: string, minLength: 1, maxLength: 120}
     PromoteOrgKnowledgeRequest:
       type: object
@@ -4466,7 +5536,7 @@ components:
         org_ref: {type: string, enum: [default]}
         decision_ref: {type: string, minLength: 1, maxLength: 200}
         verifier_ref: {type: string, minLength: 1, maxLength: 200}
-        rationale: {type: string, minLength: 1, maxLength: 500}
+        rationale: {type: string, minLength: 1, maxLength: 1000}
         decided_by: {type: string, minLength: 1, maxLength: 120}
     RejectProjectKnowledgeRequest:
       allOf:
@@ -4479,7 +5549,7 @@ components:
         superseded_by_ref: {type: string, minLength: 1, maxLength: 200}
         decision_ref: {type: string, minLength: 1, maxLength: 200}
         verifier_ref: {type: string, minLength: 1, maxLength: 200}
-        rationale: {type: string, minLength: 1, maxLength: 500}
+        rationale: {type: string, minLength: 1, maxLength: 1000}
         decided_by: {type: string, maxLength: 120}
     RecordProjectKnowledgeReuseEventRequest:
       type: object

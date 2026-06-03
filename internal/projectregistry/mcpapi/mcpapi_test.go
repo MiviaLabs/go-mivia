@@ -511,6 +511,33 @@ func TestCallToolWithWorkspace_CreateAndDeleteAliases(t *testing.T) {
 	}
 }
 
+func TestCallToolWithWorkspace_GitWorktreeCreate(t *testing.T) {
+	registry, digest := newServices(t)
+	workspace := &fakeWorkspaceAPI{}
+
+	if !hasToolDefinition(mcpapi.ToolDefinitionsWithWorkspace(false, true), "projects.workspace.git_worktree_create") {
+		t.Fatal("expected git worktree create tool definition")
+	}
+
+	result, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects_workspace_git_worktree_create", marshalArgs(t, map[string]any{
+		"id":           "example-service",
+		"worktree_ref": "worktree/mcp-plan",
+		"branch_ref":   "codex/mcp-plan",
+		"base_ref":     "main",
+		"dry_run":      true,
+	}))
+	if err != nil {
+		t.Fatalf("workspace worktree create alias: %v", err)
+	}
+	if workspace.worktree.ProjectID != "example-service" || workspace.worktree.Options.WorktreeRef != "worktree/mcp-plan" || workspace.worktree.Options.BranchRef != "codex/mcp-plan" || workspace.worktree.Options.BaseRef != "main" || !workspace.worktree.Options.DryRun {
+		t.Fatalf("unexpected worktree dispatch: %#v", workspace.worktree)
+	}
+	got := result["structuredContent"].(projectworkspace.GitCreateWorktreeResult)
+	if got.IsolationRef == "" || strings.Contains(marshalResult(t, result), "/home/") || strings.Contains(marshalResult(t, result), "\\\\wsl.localhost") {
+		t.Fatalf("unexpected worktree result: %s", marshalResult(t, result))
+	}
+}
+
 func TestToolDefinitionsUseClientAdmissibleInputSchemas(t *testing.T) {
 	toolSets := [][]map[string]any{
 		mcpapi.ToolDefinitionsWithIngestion(true),
@@ -972,6 +999,10 @@ type fakeWorkspaceAPI struct {
 		ProjectID string
 		Options   projectworkspace.DeleteFileOptions
 	}
+	worktree struct {
+		ProjectID string
+		Options   projectworkspace.GitCreateWorktreeOptions
+	}
 }
 
 func (fake *fakeWorkspaceAPI) GitAvailable(context.Context, string) (bool, error) {
@@ -984,6 +1015,19 @@ func (fake *fakeWorkspaceAPI) GitStatus(context.Context, string, projectworkspac
 
 func (fake *fakeWorkspaceAPI) GitDiff(context.Context, string, projectworkspace.GitDiffOptions) (projectworkspace.GitDiff, error) {
 	return projectworkspace.GitDiff{}, nil
+}
+
+func (fake *fakeWorkspaceAPI) GitCreateWorktree(_ context.Context, projectID string, options projectworkspace.GitCreateWorktreeOptions) (projectworkspace.GitCreateWorktreeResult, error) {
+	fake.worktree.ProjectID = projectID
+	fake.worktree.Options = options
+	return projectworkspace.GitCreateWorktreeResult{
+		Applied:      !options.DryRun,
+		ProjectID:    projectID,
+		WorktreeRef:  options.WorktreeRef,
+		BranchRef:    options.BranchRef,
+		BaseRef:      options.BaseRef,
+		IsolationRef: "workspace:" + projectID + ":worktree:" + options.WorktreeRef,
+	}, nil
 }
 
 func (fake *fakeWorkspaceAPI) ReadFile(context.Context, string, projectworkspace.ReadFileOptions) (projectworkspace.WorkspaceFile, error) {

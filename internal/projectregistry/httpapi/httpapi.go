@@ -77,6 +77,7 @@ func RegisterRoutesWithWorkspaceIntegrationsAndActivity(mux *http.ServeMux, regi
 	if workspace != nil {
 		mux.Handle("GET /api/v1/projects/{id}/workspace/git/status", workspaceGitStatusHandler(workspace))
 		mux.Handle("GET /api/v1/projects/{id}/workspace/git/diff", workspaceGitDiffHandler(workspace))
+		mux.Handle("POST /api/v1/projects/{id}/workspace/git/worktrees", workspaceGitCreateWorktreeHandler(workspace))
 		mux.Handle("GET /api/v1/projects/{id}/workspace/files/read", workspaceFileReadHandler(workspace))
 		mux.Handle("POST /api/v1/projects/{id}/workspace/files/edit", workspaceFileEditHandler(workspace))
 		mux.Handle("POST /api/v1/projects/{id}/workspace/files/create", workspaceFileCreateHandler(workspace))
@@ -645,6 +646,32 @@ func workspaceGitDiffHandler(workspace projectworkspace.API) http.Handler {
 			PageToken:    r.URL.Query().Get("page_token"),
 		})
 		writeWorkspaceResult(w, diff, err, http.StatusOK)
+	})
+}
+
+func workspaceGitCreateWorktreeHandler(workspace projectworkspace.API) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			WorktreeRef string `json:"worktree_ref"`
+			BranchRef   string `json:"branch_ref"`
+			BaseRef     string `json:"base_ref,omitempty"`
+			DryRun      bool   `json:"dry_run,omitempty"`
+		}
+		if !httpserver.RequireJSON(r) {
+			httpserver.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "content type must be application/json")
+			return
+		}
+		if err := httpserver.DecodeJSON(r, &input); err != nil {
+			writeWorkspaceResult(w, nil, projectworkspace.ErrInvalidInput, http.StatusOK)
+			return
+		}
+		result, err := workspace.GitCreateWorktree(r.Context(), strings.TrimSpace(r.PathValue("id")), projectworkspace.GitCreateWorktreeOptions{
+			WorktreeRef: input.WorktreeRef,
+			BranchRef:   input.BranchRef,
+			BaseRef:     input.BaseRef,
+			DryRun:      input.DryRun,
+		})
+		writeWorkspaceResult(w, result, err, http.StatusCreated)
 	})
 }
 

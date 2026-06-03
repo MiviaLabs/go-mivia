@@ -32,6 +32,18 @@ func TestToolDefinitionsExposeKnowledgeToolsWithStrictSchemas(t *testing.T) {
 	if !bytes.Contains(encoded, []byte(`"additionalProperties":false`)) {
 		t.Fatalf("expected strict schemas, got %s", string(encoded))
 	}
+	for _, name := range []string{
+		"projects.knowledge.validate",
+		"projects.knowledge.promote_project",
+		"projects.knowledge.submit_org_review",
+		"projects.knowledge.promote_org",
+		"projects.knowledge.reject",
+		"projects.knowledge.supersede",
+	} {
+		if got := rationaleMaxLength(t, name); got != 1000 {
+			t.Fatalf("expected %s rationale maxLength 1000, got %d", name, got)
+		}
+	}
 }
 
 func TestCallToolLifecycleReturnsStructuredContentAndJSONText(t *testing.T) {
@@ -159,6 +171,25 @@ func structuredString(t *testing.T, result map[string]any, field string) string 
 	}
 	value, _ := object[field].(string)
 	return value
+}
+
+func rationaleMaxLength(t *testing.T, name string) int {
+	t.Helper()
+	for _, definition := range ToolDefinitions() {
+		if definition["name"] != name {
+			continue
+		}
+		schema := definition["inputSchema"].(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		rationale := properties["rationale"].(map[string]any)
+		maxLength, ok := rationale["maxLength"].(int)
+		if !ok {
+			t.Fatalf("missing integer maxLength for %s rationale: %#v", name, rationale)
+		}
+		return maxLength
+	}
+	t.Fatalf("missing tool definition %s", name)
+	return 0
 }
 
 type fakeEvidenceReader struct {

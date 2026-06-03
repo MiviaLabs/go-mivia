@@ -70,6 +70,95 @@ unexpected = true
 	}
 }
 
+func TestLoadFileConfig_AcceptsDisabledAutomationConfig(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[automation]
+enabled = false
+runner_enabled = false
+runner_execution = "external"
+require_codex_when_available = true
+allow_manual_runner = false
+queue_depth = 32
+global_worker_count = 2
+per_project_worker_limit = 1
+per_agent_worker_limit = 1
+max_parallel_tasks = 2
+default_max_runtime = "5m"
+codex_binary_path = "codex"
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected automation config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected automation config to apply: %v", err)
+	}
+	if merged.Automation.Enabled || merged.Automation.RunnerEnabled {
+		t.Fatalf("expected disabled automation defaults, got %+v", merged.Automation)
+	}
+	if merged.Automation.QueueDepth != 32 || merged.Automation.MaxParallelTasks != 2 {
+		t.Fatalf("unexpected automation limits: %+v", merged.Automation)
+	}
+	if merged.Automation.RunnerExecution != "external" {
+		t.Fatalf("unexpected runner execution: %+v", merged.Automation)
+	}
+}
+
+func TestLoadFileConfig_RejectsInvalidAutomationSettings(t *testing.T) {
+	for name, body := range map[string]string{
+		"runner_without_enabled": `
+version = 1
+
+[automation]
+enabled = false
+runner_enabled = true
+`,
+		"zero_parallel": `
+version = 1
+
+[automation]
+max_parallel_tasks = 0
+`,
+		"unknown_field": `
+version = 1
+
+[automation]
+unexpected = true
+`,
+		"unknown_runner_execution": `
+version = 1
+
+[automation]
+runner_execution = "container_magic"
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeTempConfig(t, body)
+			cfg, err := loadFileConfig(path)
+			if name == "unknown_field" {
+				if err == nil {
+					t.Fatal("expected unknown automation field to fail")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected TOML decode to succeed before validation: %v", err)
+			}
+			merged, err := cfg.applyTo(defaultConfig(path))
+			if err != nil {
+				t.Fatalf("expected TOML apply to succeed before validation: %v", err)
+			}
+			if err := merged.Validate(); err == nil {
+				t.Fatal("expected invalid automation settings to fail validation")
+			}
+		})
+	}
+}
+
 func TestLoadFileConfig_RejectsInvalidAutoIntegerSettings(t *testing.T) {
 	for name, body := range map[string]string{
 		"server_zero_cpu": `

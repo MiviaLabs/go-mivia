@@ -29,6 +29,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectknowledge"
 	knowledgestore "github.com/MiviaLabs/go-mivia/internal/projectknowledge/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+	workplanmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkplan/mcpapi"
+	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 )
 
@@ -66,6 +69,77 @@ func TestToolsList_KnowledgeToolsOnlyWhenConfiguredAndMapsErrors(t *testing.T) {
 	}
 }
 
+func TestToolsListAndCall_WorkPlanToolsOnlyWhenConfigured(t *testing.T) {
+	plain := postMCP(t, newHandler(), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if bytes.Contains(plain.Body.Bytes(), []byte(`"projects.work_plans.create"`)) {
+		t.Fatalf("work plan tools must not be exposed without service: %s", plain.Body.String())
+	}
+
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	handler := mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeAndWorkPlans(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, topLevelWorkPlanAPI{}, nil, nil, nil, slog.Default())
+	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	for _, name := range []string{
+		"projects.work_plans.create",
+		"projects.work_plans.resume",
+		"projects.work_tasks.create",
+		"projects.work_tasks.claim",
+		"projects.work_tasks.start",
+		"projects.work_tasks.complete",
+		"projects.work_tasks.list_blocked",
+		"projects.work_tasks.promote_knowledge_candidate",
+	} {
+		if !bytes.Contains(list.Body.Bytes(), []byte(`"`+name+`"`)) {
+			t.Fatalf("expected work plan tool %s, got %s", name, list.Body.String())
+		}
+	}
+	if !bytes.Contains(list.Body.Bytes(), []byte("MUST be used before multi-step project work")) ||
+		!bytes.Contains(list.Body.Bytes(), []byte("MUST be called before an agent edits files")) ||
+		!bytes.Contains(list.Body.Bytes(), []byte("isolated low-intelligence worker")) {
+		t.Fatalf("expected strict workflow descriptions, got %s", list.Body.String())
+	}
+
+	createPlan := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.work_plans.create","arguments":{"id":"example-service","plan_ref":"plan/ref","title":"Top-level route","goal_summary":"Route metadata-only work plan tools"}}}`)
+	if bytes.Contains(createPlan.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(createPlan.Body.Bytes(), []byte(`"plan_id":"plan-1"`)) {
+		t.Fatalf("expected work plan create route success, got %s", createPlan.Body.String())
+	}
+	claimTask := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects_work_tasks_claim","arguments":{"id":"example-service","task_id":"task-1","owner_agent":"worker-4","run_id":"run-1"}}}`)
+	if bytes.Contains(claimTask.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(claimTask.Body.Bytes(), []byte(`"task_id":"task-1"`)) {
+		t.Fatalf("expected underscore work task route success, got %s", claimTask.Body.String())
+	}
+	invalid := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.work_plans.create","arguments":{"id":"example-service","plan_ref":"plan/ref","title":"Top-level route","goal_summary":"raw prompt: token=secret"}}}`)
+	if !bytes.Contains(invalid.Body.Bytes(), []byte(`"code":-32602`)) {
+		t.Fatalf("expected invalid argument mapping, got %s", invalid.Body.String())
+	}
+}
+
+func TestToolsCall_WorkPlanServiceErrorsMapToClientErrors(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	handler := mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeAndWorkPlans(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, workPlans, nil, nil, nil, slog.Default())
+
+	createPlan := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"projects.work_plans.create","arguments":{"id":"example-service","plan_ref":"plan/ref","title":"Top-level route","goal_summary":"Route metadata-only work plan tools","created_by_run_id":"agent_run_1"}}}`)
+	if bytes.Contains(createPlan.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected real work plan create success, got %s", createPlan.Body.String())
+	}
+	var created rpcResponse
+	if err := json.Unmarshal(createPlan.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create plan: %v", err)
+	}
+	planID := created.Result.StructuredContent["id"].(string)
+
+	richTask := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.work_tasks.create","arguments":{"id":"example-service","plan_id":"`+planID+`","task_ref":"task/rich","title":"Prepare isolated fixture","description":"Metadata-only task; no raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, or PII.","owner_agent":"gpt-5.5-low-worker","evidence_needed":["current source and focused verifier refs"],"context_pack_refs":["context-pack:manifest:68c3ee2ad1556459"],"likely_files_affected":["tmp/mivia-workplan-smoke"],"verification_requirement":"orchestrator runs focused tests after worker output is reviewed","resume_instructions":"resume by claiming the next ready task and reading attached refs","expected_output":"safe metadata-only task output","failure_block_criteria":"block if context health is stale","knowledge_candidate_expectation":"none for smoke test","run_id":"agent_run_1","trace_id":"trace_1"}}}`)
+	if bytes.Contains(richTask.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(richTask.Body.Bytes(), []byte(`"status":"ready"`)) || !bytes.Contains(richTask.Body.Bytes(), []byte(`"agent_run_ids":["agent_run_1"]`)) {
+		t.Fatalf("expected rich task create success, got %s", richTask.Body.String())
+	}
+
+	invalidTask := postMCP(t, handler, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects.work_tasks.create","arguments":{"id":"example-service","plan_id":"missing-plan","task_ref":"task/missing","title":"Missing plan","evidence_needed":["current source"],"verification_requirement":"focused tests","resume_instructions":"continue safely"}}}`)
+	if !bytes.Contains(invalidTask.Body.Bytes(), []byte(`"code":-32002`)) {
+		t.Fatalf("expected missing plan to map to not found, got %s", invalidTask.Body.String())
+	}
+}
+
 func TestInitialize_ReturnsServerInstructions(t *testing.T) {
 	res := postMCP(t, newHandler(), `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0.0.0"}}}`)
 	if res.Code != http.StatusOK {
@@ -81,7 +155,8 @@ func TestInitialize_ReturnsServerInstructions(t *testing.T) {
 		!bytes.Contains(res.Body.Bytes(), []byte(`projects.impact.analyze with changed paths when blast radius is unclear`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`projects.context_health`)) ||
 		!bytes.Contains(res.Body.Bytes(), []byte(`projects.claims.check`)) ||
-		!bytes.Contains(res.Body.Bytes(), []byte(`agent_runs.step_append`)) {
+		!bytes.Contains(res.Body.Bytes(), []byte(`agent_runs.step_append`)) ||
+		!bytes.Contains(res.Body.Bytes(), []byte(`isolated-worker-ready tasks`)) {
 		t.Fatalf("expected initialize instructions, got %s", res.Body.String())
 	}
 }
@@ -269,6 +344,13 @@ func TestToolsCall_AgentRunLifecycleIsRedacted(t *testing.T) {
 	complete := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"agent_runs.complete","arguments":{"run_id":"`+runID+`","status":"completed"}}}`)
 	if bytes.Contains(complete.Body.Bytes(), []byte(`"error"`)) {
 		t.Fatalf("expected complete success, got %s", complete.Body.String())
+	}
+}
+
+func TestToolsCall_AgentRunAllowsSafetyGuidanceSummary(t *testing.T) {
+	res := postMCP(t, newHandler(), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agent_runs.create","arguments":{"project_id":"example-service","trace_id":"smoke-20260603-workplan","summary":"Smoke-test Work Plan MCP workflow. Metadata-only refs; no raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, or PII."}}}`)
+	if bytes.Contains(res.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(res.Body.Bytes(), []byte(`"trace_id":"smoke-20260603-workplan"`)) {
+		t.Fatalf("expected safety guidance summary to be accepted, got %s", res.Body.String())
 	}
 }
 
@@ -873,6 +955,7 @@ func TestProjectWorkspaceMCPToolsListWhenConfigured(t *testing.T) {
 
 	list := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.git_status"`)) ||
+		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.git_worktree_create"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.file_read"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.file_create"`)) ||
 		!bytes.Contains(list.Body.Bytes(), []byte(`"projects.workspace.file_delete"`)) {
@@ -899,7 +982,12 @@ func TestProjectWorkspaceMCPToolsListWhenConfigured(t *testing.T) {
 		t.Fatalf("unexpected workspace create dry-run response: %s", create.Body.String())
 	}
 
-	deleteBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.workspace.file_delete","arguments":{"id":"example-service","relative_path":"main.go","edit_token":%q,"dry_run":true}}}`, readResponse.Result.StructuredContent.EditToken)
+	worktree := postMCP(t, handler, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects_workspace_git_worktree_create","arguments":{"id":"example-service","worktree_ref":"worktree/test","branch_ref":"codex/test","dry_run":true}}}`)
+	if bytes.Contains(worktree.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(worktree.Body.Bytes(), []byte(`"applied":false`)) || bytes.Contains(worktree.Body.Bytes(), []byte(root)) {
+		t.Fatalf("unexpected workspace worktree dry-run response: %s", worktree.Body.String())
+	}
+
+	deleteBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"projects.workspace.file_delete","arguments":{"id":"example-service","relative_path":"main.go","edit_token":%q,"dry_run":true}}}`, readResponse.Result.StructuredContent.EditToken)
 	deleteRes := postMCP(t, handler, deleteBody)
 	if bytes.Contains(deleteRes.Body.Bytes(), []byte(`"error"`)) || !bytes.Contains(deleteRes.Body.Bytes(), []byte(`"deleted":false`)) || !bytes.Contains(deleteRes.Body.Bytes(), []byte(`"relative_path":"main.go"`)) {
 		t.Fatalf("unexpected workspace delete dry-run response: %s", deleteRes.Body.String())
@@ -1000,3 +1088,42 @@ type failingGitRunner struct{}
 func (failingGitRunner) Run(context.Context, string, int, ...string) ([]byte, bool, error) {
 	return nil, false, projectworkspace.ErrGitUnavailable
 }
+
+type topLevelWorkPlanAPI struct{}
+
+func (topLevelWorkPlanAPI) CallWorkPlanTool(_ context.Context, name string, arguments json.RawMessage) (any, error) {
+	var input map[string]any
+	if err := json.Unmarshal(arguments, &input); err != nil {
+		return nil, err
+	}
+	projectID, _ := input["id"].(string)
+	result := map[string]any{
+		"project_id":       projectID,
+		"plan_id":          "plan-1",
+		"task_id":          "task-1",
+		"status":           "active",
+		"updated_at":       "2026-06-03T00:00:00Z",
+		"safe_next_action": "continue work plan workflow",
+	}
+	if strings.Contains(name, "work_tasks") {
+		if taskID, _ := input["task_id"].(string); taskID != "" {
+			result["task_id"] = taskID
+		}
+		result["evidence_needed"] = []string{"source evidence"}
+		result["context_pack_refs"] = []string{}
+		result["likely_files_affected"] = []string{"internal/agentcontrol/mcpapi/mcpapi.go"}
+		result["dependency_task_ids"] = []string{}
+		result["verification_requirement"] = "focused MCP routing test"
+		result["resume_instructions"] = "continue from top-level route"
+		result["claim_refs"] = []string{}
+		result["evidence_refs"] = []string{}
+		result["verifier_result_refs"] = []string{}
+		result["knowledge_candidate_refs"] = []string{}
+	}
+	if name == "projects.work_plans.create" {
+		result["plan_ref"] = input["plan_ref"]
+	}
+	return result, nil
+}
+
+var _ workplanmcpapi.API = topLevelWorkPlanAPI{}

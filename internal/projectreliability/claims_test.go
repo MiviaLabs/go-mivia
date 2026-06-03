@@ -135,6 +135,62 @@ func TestClaimChecker_VerifiesKnowledgeToolsRoutesAndAliases(t *testing.T) {
 	}
 }
 
+func TestClaimChecker_VerifiesWorkPlanToolsRoutesAndAliases(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		ProjectID:       "example-service",
+		IncludeVerified: true,
+		Documents: []ClaimDocument{{
+			Path: "api/mcp/agent-control.v1.md",
+			Text: "Use projects.work_plans.create, projects_work_plans_resume, projects.work_tasks.get_next, projects_work_tasks_attach_verifier_result, POST /api/v1/projects/{id}/work-plans/{plan_id}/resume, POST /api/v1/projects/example-service/work-tasks/task-123/claim, GET /api/v1/projects/example-service/work-tasks/next, and POST /api/v1/projects/{id}/work-tasks/{task_id}/knowledge-candidates.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	for _, claim := range []string{
+		"projects.work_plans.create",
+		"projects_work_plans_resume",
+		"projects.work_tasks.get_next",
+		"projects_work_tasks_attach_verifier_result",
+		"/api/v1/projects/{id}/work-plans/{plan_id}/resume",
+		"/api/v1/projects/example-service/work-tasks/task-123/claim",
+		"/api/v1/projects/example-service/work-tasks/next",
+		"/api/v1/projects/{id}/work-tasks/{task_id}/knowledge-candidates",
+	} {
+		assertClaimStatus(t, result, claim, "verified")
+	}
+}
+
+func TestClaimChecker_VerifiesAutomationToolsRoutesAndAliases(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		ProjectID:       "example-service",
+		IncludeVerified: true,
+		Documents: []ClaimDocument{{
+			Path: "api/mcp/agent-control.v1.md",
+			Text: "Use projects.automations.create, projects_automations_run_parallel_batch, projects.automation_runs.list, projects.automation_runs.claim_next, projects_automation_runs_complete_attempt, GET /api/v1/projects/{id}/automations/{automation_id}, POST /api/v1/projects/{id}/automations/{automation_id}/runs, POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches, GET /api/v1/projects/{id}/automation-runs, POST /api/v1/projects/{id}/automation-runs/claim-next, GET /api/v1/projects/{id}/automation-runs/{run_id}, and POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	for _, claim := range []string{
+		"projects.automations.create",
+		"projects_automations_run_parallel_batch",
+		"projects.automation_runs.list",
+		"projects.automation_runs.claim_next",
+		"projects_automation_runs_complete_attempt",
+		"/api/v1/projects/{id}/automations/{automation_id}",
+		"/api/v1/projects/{id}/automations/{automation_id}/runs",
+		"/api/v1/projects/{id}/automations/{automation_id}/parallel-batches",
+		"/api/v1/projects/{id}/automation-runs",
+		"/api/v1/projects/{id}/automation-runs/claim-next",
+		"/api/v1/projects/{id}/automation-runs/{run_id}",
+		"/api/v1/projects/{id}/automation-runs/{run_id}/attempt-result",
+	} {
+		assertClaimStatus(t, result, claim, "verified")
+	}
+}
+
 func TestClaimChecker_FlagsStaleToolAndTaskLink(t *testing.T) {
 	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
 		Documents: []ClaimDocument{{

@@ -23,14 +23,15 @@ type configCheckReport struct {
 }
 
 type redactedConfigSummary struct {
-	HTTPAddr      redactedValue            `json:"http_addr"`
-	LadybugPath   redactedValue            `json:"ladybug_path"`
-	SQLitePath    redactedValue            `json:"sqlite_path"`
-	Logging       redactedLoggingSummary   `json:"logging"`
-	Ingestion     redactedIngestionSummary `json:"ingestion"`
-	Workspace     redactedWorkspaceSummary `json:"workspace"`
-	AgentActivity redactedActivitySummary  `json:"agent_activity"`
-	Projects      []redactedProjectSummary `json:"projects"`
+	HTTPAddr      redactedValue             `json:"http_addr"`
+	LadybugPath   redactedValue             `json:"ladybug_path"`
+	SQLitePath    redactedValue             `json:"sqlite_path"`
+	Logging       redactedLoggingSummary    `json:"logging"`
+	Ingestion     redactedIngestionSummary  `json:"ingestion"`
+	Workspace     redactedWorkspaceSummary  `json:"workspace"`
+	AgentActivity redactedActivitySummary   `json:"agent_activity"`
+	Automation    redactedAutomationSummary `json:"automation"`
+	Projects      []redactedProjectSummary  `json:"projects"`
 }
 
 type redactedLoggingSummary struct {
@@ -59,6 +60,21 @@ type redactedWorkspaceSummary struct {
 
 type redactedActivitySummary struct {
 	RetainRawPayloads bool `json:"retain_raw_payloads"`
+}
+
+type redactedAutomationSummary struct {
+	Enabled                   bool          `json:"enabled"`
+	RunnerEnabled             bool          `json:"runner_enabled"`
+	RequireCodexWhenAvailable bool          `json:"require_codex_when_available"`
+	AllowManualRunner         bool          `json:"allow_manual_runner"`
+	RunnerExecution           string        `json:"runner_execution"`
+	QueueDepth                int           `json:"queue_depth"`
+	GlobalWorkerCount         int           `json:"global_worker_count"`
+	PerProjectWorkerLimit     int           `json:"per_project_worker_limit"`
+	PerAgentWorkerLimit       int           `json:"per_agent_worker_limit"`
+	MaxParallelTasks          int           `json:"max_parallel_tasks"`
+	AgentCount                int           `json:"agent_count"`
+	CodexBinaryPath           redactedValue `json:"codex_binary_path"`
 }
 
 type redactedProjectSummary struct {
@@ -190,7 +206,21 @@ func redactedSummary(cfg config.Config) *redactedConfigSummary {
 		},
 		Workspace:     redactedWorkspaceSummary{Enabled: cfg.Workspace.Enabled},
 		AgentActivity: redactedActivitySummary{RetainRawPayloads: cfg.AgentActivity.RetainRawPayloads},
-		Projects:      projects,
+		Automation: redactedAutomationSummary{
+			Enabled:                   cfg.Automation.Enabled,
+			RunnerEnabled:             cfg.Automation.RunnerEnabled,
+			RequireCodexWhenAvailable: cfg.Automation.RequireCodexWhenAvailable,
+			AllowManualRunner:         cfg.Automation.AllowManualRunner,
+			RunnerExecution:           cfg.Automation.RunnerExecution,
+			QueueDepth:                cfg.Automation.QueueDepth,
+			GlobalWorkerCount:         cfg.Automation.GlobalWorkerCount,
+			PerProjectWorkerLimit:     cfg.Automation.PerProjectWorkerLimit,
+			PerAgentWorkerLimit:       cfg.Automation.PerAgentWorkerLimit,
+			MaxParallelTasks:          cfg.Automation.MaxParallelTasks,
+			AgentCount:                len(cfg.Automation.Agents),
+			CodexBinaryPath:           redactPath(cfg.Automation.CodexBinaryPath),
+		},
+		Projects: projects,
 	}
 }
 
@@ -272,6 +302,8 @@ func configErrorCategory(err error) string {
 		return "invalid_bind"
 	case strings.Contains(err.Error(), "MIVIA_INGESTION_"), strings.Contains(err.Error(), "ingestion"):
 		return "invalid_ingestion"
+	case strings.Contains(err.Error(), "MIVIA_AUTOMATION_"), strings.Contains(err.Error(), "automation"):
+		return "invalid_automation"
 	case strings.Contains(err.Error(), "workspace_mode"), strings.Contains(err.Error(), "MIVIA_WORKSPACE_"):
 		return "invalid_workspace"
 	case strings.Contains(err.Error(), "missing config file"):
@@ -287,6 +319,8 @@ func configErrorMessage(err error) string {
 		return "HTTP bind address must be loopback."
 	case "invalid_ingestion":
 		return "Ingestion settings failed validation."
+	case "invalid_automation":
+		return "Automation settings failed validation."
 	case "invalid_workspace":
 		return "Workspace settings failed validation."
 	case "missing_config":

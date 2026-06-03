@@ -3,6 +3,7 @@ package projectknowledge_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,35 @@ func TestProjectPromotionGateRequiresEvidenceAndConfidence(t *testing.T) {
 	claim.PromotionLinks[0].ClaimID = "claim_2"
 	if _, err := foreignPromotionLinkSvc.ValidateCandidate(ctx, projectknowledge.ValidateCandidateInput{ProjectID: "project_1", KnowledgeID: foreignPromotionLinkCandidate.ID, DecisionRef: "foreign_promotion_link_validation", VerifierRef: "verifier_ref", Rationale: "foreign promotion link", Gate: projectknowledge.ProjectGateInput{Claim: claim, Confidence: highConfidence()}}); !errors.Is(err, projectknowledge.ErrInvalidInput) {
 		t.Fatalf("expected foreign promotion link rejection, got %v", err)
+	}
+}
+
+func TestProjectPromotionAcceptsBoundedLongRationale(t *testing.T) {
+	ctx := context.Background()
+	svc := newService()
+	candidate := mustCreateCandidate(t, ctx, svc)
+	longRationale := strings.Repeat("a", 900)
+
+	validated, err := svc.ValidateCandidate(ctx, projectknowledge.ValidateCandidateInput{ProjectID: "project_1", KnowledgeID: candidate.ID, DecisionRef: "knowledge_validated", VerifierRef: "verifier_ref", Rationale: longRationale, Gate: projectknowledge.ProjectGateInput{Claim: highClaim(), Confidence: highConfidence()}})
+	if err != nil {
+		t.Fatalf("ValidateCandidate with bounded long rationale returned error: %v", err)
+	}
+	if validated.State != projectknowledge.StateValidated {
+		t.Fatalf("unexpected validated state %q", validated.State)
+	}
+
+	promoted, err := svc.PromoteProject(ctx, projectknowledge.PromoteProjectInput{ProjectID: "project_1", KnowledgeID: candidate.ID, DecisionRef: "knowledge_project_promoted", VerifierRef: "verifier_ref", Rationale: longRationale, Gate: projectknowledge.ProjectGateInput{Claim: highClaim(), Confidence: highConfidence()}})
+	if err != nil {
+		t.Fatalf("PromoteProject with bounded long rationale returned error: %v", err)
+	}
+	if promoted.State != projectknowledge.StateProjectPromoted {
+		t.Fatalf("unexpected promoted state %q", promoted.State)
+	}
+
+	tooLongSvc := newService()
+	tooLongCandidate := mustCreateCandidate(t, ctx, tooLongSvc)
+	if _, err := tooLongSvc.ValidateCandidate(ctx, projectknowledge.ValidateCandidateInput{ProjectID: "project_1", KnowledgeID: tooLongCandidate.ID, DecisionRef: "knowledge_validated", VerifierRef: "verifier_ref", Rationale: strings.Repeat("a", 1001), Gate: projectknowledge.ProjectGateInput{Claim: highClaim(), Confidence: highConfidence()}}); !errors.Is(err, projectknowledge.ErrInvalidInput) {
+		t.Fatalf("expected over-limit rationale rejection, got %v", err)
 	}
 }
 

@@ -1,0 +1,851 @@
+package projectautomation
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+)
+
+var ErrInvalidInput = errors.New("invalid project automation input")
+
+var (
+	refPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
+	emailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+	phonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
+)
+
+type Store interface {
+	CreateAutomation(context.Context, Automation) (Automation, error)
+	GetAutomation(context.Context, string, string) (Automation, error)
+	ListAutomations(context.Context, AutomationFilter) ([]Automation, error)
+	UpdateAutomation(context.Context, Automation) (Automation, error)
+	CreateRun(context.Context, AutomationRun) (AutomationRun, error)
+	GetRun(context.Context, string, string) (AutomationRun, error)
+	ListRuns(context.Context, RunFilter) ([]AutomationRun, error)
+	UpdateRun(context.Context, AutomationRun) (AutomationRun, error)
+	CreateAttempt(context.Context, AutomationAttempt) (AutomationAttempt, error)
+	CreateParallelBatch(context.Context, AutomationParallelBatch) (AutomationParallelBatch, error)
+	GetParallelBatch(context.Context, string, string) (AutomationParallelBatch, error)
+}
+
+type WorkTaskAPI interface {
+	GetWorkTask(context.Context, string, string) (projectworkplan.WorkTask, error)
+	ListOpenWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error)
+	ClaimWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
+	StartWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
+	AttachEvidence(context.Context, projectworkplan.AttachInput) (projectworkplan.Attachment, error)
+	AttachVerifierResult(context.Context, projectworkplan.AttachInput) (projectworkplan.Attachment, error)
+	CompleteWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
+	FailWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
+	BlockWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
+}
+
+type Service struct {
+	store          Store
+	workTasks      WorkTaskAPI
+	options        Options
+	now            func() time.Time
+	newID          func(string) string
+	codexAvailable func() bool
+	codexPath      func() (string, bool)
+	codexRunner    func(context.Context, CodexCommand, int64) (CodexRunResult, error)
+}
+
+func New(store Store, workTasks WorkTaskAPI, options Options) *Service {
+	if options.MaxParallelTasks <= 0 {
+		options.MaxParallelTasks = 1
+	}
+	if strings.TrimSpace(options.RunnerExecution) == "" {
+		options.RunnerExecution = RunnerExecutionInProcess
+	}
+	agents := append([]AutomationAgent(nil), options.Agents...)
+	options.Agents = agents
+	return &Service{
+		store:     store,
+		workTasks: workTasks,
+		options:   options,
+		now:       func() time.Time { return time.Now().UTC() },
+		newID:     newID,
+		codexRunner: func(ctx context.Context, command CodexCommand, maxOutputBytes int64) (CodexRunResult, error) {
+			return RunCodexCommand(ctx, command, maxOutputBytes)
+		},
+		codexPath: func() (string, bool) {
+			return DetectCodex(options.CodexBinaryPath)
+		},
+		codexAvailable: func() bool {
+			_, ok := DetectCodex(options.CodexBinaryPath)
+			return ok
+		},
+	}
+}
+
+func (svc *Service) CreateAutomation(ctx context.Context, input CreateAutomationInput) (Automation, error) {
+	if svc.store == nil {
+		return Automation{}, fmt.Errorf("%w: store is required", ErrInvalidInput)
+	}
+	projectID, err := safeRef(input.ProjectID, "project_id")
+	if err != nil {
+		return Automation{}, err
+	}
+	automationRef, err := safeRef(input.AutomationRef, "automation_ref")
+	if err != nil {
+		return Automation{}, err
+	}
+	title, err := safeRequiredText(input.Title, "title", 200)
+	if err != nil {
+		return Automation{}, err
+	}
+	purpose, err := safeRequiredText(input.Purpose, "purpose", 500)
+	if err != nil {
+		return Automation{}, err
+	}
+	agentID, err := safeRef(input.AgentID, "agent_id")
+	if err != nil {
+		return Automation{}, err
+	}
+	planID, err := safeOptionalRef(input.PlanID, "plan_id")
+	if err != nil {
+		return Automation{}, err
+	}
+	taskRefs, err := safeRefList(input.AllowedTaskRefs, "allowed_task_refs")
+	if err != nil {
+		return Automation{}, err
+	}
+	permissionRef, err := safeRef(input.PermissionRef, "permission_ref")
+	if err != nil {
+		return Automation{}, err
+	}
+	runID, err := safeOptionalRef(input.CreatedByRunID, "created_by_run_id")
+	if err != nil {
+		return Automation{}, err
+	}
+	traceID, err := safeOptionalRef(input.TraceID, "trace_id")
+	if err != nil {
+		return Automation{}, err
+	}
+	now := svc.now()
+	value := Automation{
+		ID: svc.newID("automation"), ProjectID: projectID, AutomationRef: automationRef, Title: title, Purpose: purpose,
+		Status: AutomationStatusDraft, AgentID: agentID, PlanID: planID, AllowedTaskRefs: taskRefs, TriggerKind: TriggerKindManual,
+		PermissionRef: permissionRef, CreatedByRunID: runID, TraceID: traceID, CreatedAt: now, UpdatedAt: now,
+	}
+	return svc.store.CreateAutomation(ctx, value)
+}
+
+func (svc *Service) GetAutomation(ctx context.Context, projectID, automationID string) (Automation, error) {
+	projectID, automationID, err := safeProjectObject(projectID, automationID, "automation_id")
+	if err != nil {
+		return Automation{}, err
+	}
+	return svc.store.GetAutomation(ctx, projectID, automationID)
+}
+
+func (svc *Service) ListAutomations(ctx context.Context, filter AutomationFilter) ([]Automation, error) {
+	projectID, err := safeRef(filter.ProjectID, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	filter.ProjectID = projectID
+	if filter.Status != "" {
+		if _, err := safeAutomationStatus(filter.Status); err != nil {
+			return nil, err
+		}
+	}
+	if filter.AgentID != "" {
+		if filter.AgentID, err = safeOptionalRef(filter.AgentID, "agent_id"); err != nil {
+			return nil, err
+		}
+	}
+	return svc.store.ListAutomations(ctx, filter)
+}
+
+func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (AutomationRun, error) {
+	if svc.store == nil {
+		return AutomationRun{}, fmt.Errorf("%w: store is required", ErrInvalidInput)
+	}
+	projectID, automationID, err := safeProjectObject(input.ProjectID, input.AutomationID, "automation_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, projectID, automationID)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	taskID, err := safeOptionalRef(input.TaskID, "task_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	planID, err := safeOptionalRef(firstNonEmpty(input.PlanID, automation.PlanID), "plan_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	owner, err := safeOptionalRef(firstNonEmpty(input.OwnerAgent, automation.AgentID), "owner_agent")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	runnerKind, err := svc.resolveRunnerKind(input.RunnerKind)
+	if err != nil {
+		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
+	}
+	orchestratorRunID, err := safeOptionalRef(input.OrchestratorRunID, "orchestrator_run_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	parentRunID, err := safeOptionalRef(input.ParentRunID, "parent_run_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	now := svc.now()
+	run := AutomationRun{
+		ID: svc.newID("automation_run"), ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID,
+		TaskID: taskID, Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: orchestratorRunID,
+		ParentRunID: parentRunID, CreatedAt: now, UpdatedAt: now,
+	}
+	return svc.store.CreateRun(ctx, run)
+}
+
+func (svc *Service) GetRun(ctx context.Context, projectID, runID string) (AutomationRun, error) {
+	projectID, runID, err := safeProjectObject(projectID, runID, "run_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	return svc.store.GetRun(ctx, projectID, runID)
+}
+
+func (svc *Service) ListRuns(ctx context.Context, filter RunFilter) ([]AutomationRun, error) {
+	projectID, err := safeRef(filter.ProjectID, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	filter.ProjectID = projectID
+	return svc.store.ListRuns(ctx, filter)
+}
+
+func (svc *Service) RunNow(ctx context.Context, input SubmitRunInput) (AutomationRun, error) {
+	run, err := svc.SubmitRun(ctx, input)
+	if err != nil {
+		return run, err
+	}
+	if svc.options.RunnerExecution == RunnerExecutionExternal {
+		run.SafeSummary = "external_runner_queued"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	if svc.workTasks == nil {
+		return svc.failRun(ctx, run, RunStatusRunnerUnavailable, "work_task_api_unavailable")
+	}
+	if !svc.options.Enabled || !svc.options.RunnerEnabled {
+		return svc.failRun(ctx, run, RunStatusPolicyDenied, "automation_runner_disabled")
+	}
+	if run.RunnerKind == RunnerKindCodexCLI && !svc.codexAvailable() {
+		return svc.failRun(ctx, run, RunStatusRunnerUnavailable, "codex_cli_unavailable")
+	}
+	run, task, err := svc.prepareRunForExecution(ctx, run)
+	if err != nil {
+		return run, err
+	}
+	if run.RunnerKind != RunnerKindCodexCLI {
+		attempt := AutomationAttempt{ID: svc.newID("automation_attempt"), ProjectID: run.ProjectID, AutomationRunID: run.ID, AttemptNumber: 1, RunnerKind: run.RunnerKind, Status: RunStatusCompleted, CreatedAt: svc.now(), FinishedAt: svc.now()}
+		if _, err := svc.store.CreateAttempt(ctx, attempt); err != nil {
+			return svc.failRun(ctx, run, RunStatusFailed, "attempt_record_failed")
+		}
+		return run, nil
+	}
+	return svc.runCodexTask(ctx, run, task)
+}
+
+func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (ClaimedRun, error) {
+	if svc.store == nil || svc.workTasks == nil {
+		return ClaimedRun{}, fmt.Errorf("%w: store and work task api are required", ErrInvalidInput)
+	}
+	if !svc.options.Enabled || !svc.options.RunnerEnabled {
+		return ClaimedRun{}, fmt.Errorf("%w: automation_runner_disabled", ErrInvalidInput)
+	}
+	projectID, err := safeRef(input.ProjectID, "project_id")
+	if err != nil {
+		return ClaimedRun{}, err
+	}
+	agentID, err := safeOptionalRef(input.AgentID, "agent_id")
+	if err != nil {
+		return ClaimedRun{}, err
+	}
+	runnerKind := strings.TrimSpace(input.RunnerKind)
+	if runnerKind == "" {
+		runnerKind = RunnerKindCodexCLI
+	}
+	if runnerKind != RunnerKindCodexCLI {
+		return ClaimedRun{}, fmt.Errorf("%w: external runner supports codex_cli only", ErrInvalidInput)
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
+	if err != nil {
+		return ClaimedRun{}, err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.Before(runs[j].CreatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI {
+			continue
+		}
+		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
+			continue
+		}
+		claimed, task, err := svc.prepareRunForExecution(ctx, run)
+		if err != nil {
+			continue
+		}
+		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
+		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, nil
+	}
+	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
+}
+
+func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptInput) (AutomationRun, error) {
+	projectID, runID, err := safeProjectObject(input.ProjectID, input.RunID, "run_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run, err := svc.store.GetRun(ctx, projectID, runID)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	status, err := safeAttemptStatus(input.Status)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	failureCategory, err := safeText(input.FailureCategory, "failure_category", 200)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	verifierRefs, err := safeRefList(input.VerifierResultRefs, "verifier_result_refs")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	evidenceRefs, err := safeRefList(input.EvidenceRefs, "evidence_refs")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	claimRefs, err := safeRefList(input.ClaimRefs, "claim_refs")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	knowledgeRefs, err := safeRefList(input.KnowledgeRefs, "knowledge_candidate_refs")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	now := svc.now()
+	attempt := AutomationAttempt{
+		ID:                 svc.newID("automation_attempt"),
+		ProjectID:          projectID,
+		AutomationRunID:    run.ID,
+		AttemptNumber:      run.AttemptCount,
+		RunnerKind:         run.RunnerKind,
+		CommandRef:         "external_codex_cli:" + run.ID,
+		Status:             status,
+		FailureCategory:    failureCategory,
+		DurationMS:         input.DurationMS,
+		VerifierResultRefs: verifierRefs,
+		EvidenceRefs:       append([]string{"automation_run:" + run.ID}, evidenceRefs...),
+		ClaimRefs:          claimRefs,
+		KnowledgeRefs:      knowledgeRefs,
+		CreatedAt:          now,
+		FinishedAt:         now,
+	}
+	if _, err := svc.store.CreateAttempt(ctx, attempt); err != nil {
+		return svc.failRun(ctx, run, RunStatusFailed, "attempt_record_failed")
+	}
+	run.FailureCategory = failureCategory
+	run.FinishedAt = now
+	run.UpdatedAt = now
+	switch status {
+	case RunStatusCompleted:
+		run.Status = RunStatusVerifying
+		run.SafeSummary = "external_codex_cli_completed_verification_required"
+	case RunStatusTimeout:
+		run.Status = RunStatusTimeout
+	case RunStatusFailed:
+		run.Status = RunStatusFailed
+	default:
+		run.Status = status
+	}
+	return svc.store.UpdateRun(ctx, run)
+}
+
+func (svc *Service) ComputeParallelBatch(ctx context.Context, input ComputeParallelBatchInput) (AutomationParallelBatch, error) {
+	if svc.store == nil || svc.workTasks == nil {
+		return AutomationParallelBatch{}, fmt.Errorf("%w: store and work task api are required", ErrInvalidInput)
+	}
+	projectID, err := safeRef(input.ProjectID, "project_id")
+	if err != nil {
+		return AutomationParallelBatch{}, err
+	}
+	planID, err := safeOptionalRef(input.PlanID, "plan_id")
+	if err != nil {
+		return AutomationParallelBatch{}, err
+	}
+	orchestratorRunID, err := safeRef(input.OrchestratorRunID, "orchestrator_run_id")
+	if err != nil {
+		return AutomationParallelBatch{}, err
+	}
+	automationRunID, err := safeOptionalRef(input.AutomationRunID, "automation_run_id")
+	if err != nil {
+		return AutomationParallelBatch{}, err
+	}
+	maxTasks := input.MaxTasks
+	if maxTasks <= 0 || maxTasks > svc.options.MaxParallelTasks {
+		maxTasks = svc.options.MaxParallelTasks
+	}
+	tasks, err := svc.candidateTasks(ctx, projectID, planID, input.TaskIDs)
+	if err != nil {
+		return AutomationParallelBatch{}, err
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].TaskRef < tasks[j].TaskRef })
+	selected := make([]projectworkplan.WorkTask, 0, maxTasks)
+	usedFiles := map[string]string{}
+	for _, task := range tasks {
+		if len(selected) == maxTasks {
+			break
+		}
+		if err := validateExecutableTask(task); err != nil {
+			continue
+		}
+		if conflict := firstFileConflict(task, usedFiles); conflict != "" {
+			continue
+		}
+		for _, file := range task.LikelyFilesAffected {
+			usedFiles[strings.ToLower(file)] = task.ID
+		}
+		selected = append(selected, task)
+	}
+	if len(selected) == 0 {
+		return AutomationParallelBatch{}, fmt.Errorf("%w: no parallel-safe tasks", ErrInvalidInput)
+	}
+	taskIDs := make([]string, 0, len(selected))
+	for _, task := range selected {
+		taskIDs = append(taskIDs, task.ID)
+	}
+	now := svc.now()
+	batch := AutomationParallelBatch{
+		ID: svc.newID("automation_batch"), ProjectID: projectID, AutomationRunID: automationRunID, OrchestratorRunID: orchestratorRunID,
+		PlanID: planID, TaskIDs: taskIDs, Status: BatchStatusPlanned, SafetyReason: "ready_tasks_with_done_dependencies_and_disjoint_file_scope", CreatedAt: now, UpdatedAt: now,
+	}
+	return svc.store.CreateParallelBatch(ctx, batch)
+}
+
+func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRun) (AutomationRun, projectworkplan.WorkTask, error) {
+	task, err := svc.resolveTask(ctx, run)
+	if err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "task_unavailable")
+		return updated, projectworkplan.WorkTask{}, err
+	}
+	if err := validateExecutableTask(task); err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusPolicyDenied, err.Error())
+		return updated, projectworkplan.WorkTask{}, err
+	}
+	run.TaskID = task.ID
+	run.PlanID = task.PlanID
+	run.WorkTaskStatus = task.Status
+	run.Status = RunStatusClaiming
+	run.UpdatedAt = svc.now()
+	if run, err = svc.store.UpdateRun(ctx, run); err != nil {
+		return run, projectworkplan.WorkTask{}, err
+	}
+	if _, err := svc.workTasks.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: run.ProjectID, TaskID: task.ID, OwnerAgent: run.AgentID, RunID: run.ID, TraceID: run.TraceID}); err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "claim_failed")
+		return updated, projectworkplan.WorkTask{}, err
+	}
+	run.Status = RunStatusStarting
+	run.UpdatedAt = svc.now()
+	if run, err = svc.store.UpdateRun(ctx, run); err != nil {
+		return run, projectworkplan.WorkTask{}, err
+	}
+	if _, err := svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: run.ProjectID, TaskID: task.ID, OwnerAgent: run.AgentID, RunID: run.ID, TraceID: run.TraceID}); err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "start_failed")
+		return updated, projectworkplan.WorkTask{}, err
+	}
+	run.Status = RunStatusRunning
+	run.AttemptCount++
+	run.StartedAt = svc.now()
+	run.UpdatedAt = run.StartedAt
+	run, err = svc.store.UpdateRun(ctx, run)
+	return run, task, err
+}
+
+func (svc *Service) candidateTasks(ctx context.Context, projectID string, planID string, taskIDs []string) ([]projectworkplan.WorkTask, error) {
+	if len(taskIDs) > 0 {
+		refs, err := safeRefList(taskIDs, "task_ids")
+		if err != nil {
+			return nil, err
+		}
+		out := make([]projectworkplan.WorkTask, 0, len(refs))
+		for _, taskID := range refs {
+			task, err := svc.workTasks.GetWorkTask(ctx, projectID, taskID)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, task)
+		}
+		return out, nil
+	}
+	return svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+}
+
+func (svc *Service) resolveRunnerKind(requested string) (string, error) {
+	kind := strings.TrimSpace(requested)
+	external := svc.options.RunnerExecution == RunnerExecutionExternal
+	if kind == "" {
+		if svc.options.RunnerEnabled && (external || svc.codexAvailable()) {
+			return RunnerKindCodexCLI, nil
+		}
+		if svc.options.AllowManualRunner {
+			return RunnerKindManual, nil
+		}
+		return "", fmt.Errorf("%w: codex_cli_unavailable", ErrInvalidInput)
+	}
+	switch kind {
+	case RunnerKindCodexCLI:
+		if !svc.options.RunnerEnabled {
+			return "", fmt.Errorf("%w: runner_disabled", ErrInvalidInput)
+		}
+		if !external && !svc.codexAvailable() {
+			return "", fmt.Errorf("%w: codex_cli_unavailable", ErrInvalidInput)
+		}
+		return kind, nil
+	case RunnerKindManual:
+		if !svc.options.AllowManualRunner {
+			return "", fmt.Errorf("%w: manual_runner_denied", ErrInvalidInput)
+		}
+		if svc.options.RequireCodexWhenAvailable && svc.options.RunnerEnabled && svc.codexAvailable() {
+			return "", fmt.Errorf("%w: codex_cli_required", ErrInvalidInput)
+		}
+		return kind, nil
+	default:
+		return "", fmt.Errorf("%w: unknown_runner_kind", ErrInvalidInput)
+	}
+}
+
+func (svc *Service) runCodexTask(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
+	binaryPath, ok := svc.codexPath()
+	if !ok {
+		return svc.failRun(ctx, run, RunStatusRunnerUnavailable, "codex_cli_unavailable")
+	}
+	inputPath, cleanup, err := svc.writeCodexInput(run, task)
+	if err != nil {
+		return svc.failRun(ctx, run, RunStatusFailed, "codex_input_create_failed")
+	}
+	defer cleanup()
+
+	timeout := automationMaxRuntime(svc.options.Agents, run.AgentID, svc.options.DefaultMaxRuntime)
+	command, err := BuildCodexCommand(CodexCommandInput{
+		BinaryPath: binaryPath,
+		InputPath:  inputPath,
+		Timeout:    timeout,
+		EnvAllow:   map[string]string{},
+	})
+	if err != nil {
+		return svc.failRun(ctx, run, RunStatusPolicyDenied, err.Error())
+	}
+
+	started := svc.now()
+	result, err := svc.codexRunner(ctx, command, 64*1024)
+	finished := svc.now()
+	attemptStatus := RunStatusCompleted
+	failureCategory := ""
+	if err != nil {
+		if result.TimedOut {
+			attemptStatus = RunStatusTimeout
+			failureCategory = "codex_cli_timeout"
+		} else {
+			attemptStatus = RunStatusFailed
+			failureCategory = "codex_cli_failed"
+		}
+	}
+	attempt := AutomationAttempt{
+		ID:                 svc.newID("automation_attempt"),
+		ProjectID:          run.ProjectID,
+		AutomationRunID:    run.ID,
+		AttemptNumber:      1,
+		RunnerKind:         run.RunnerKind,
+		CommandRef:         "codex_cli:" + run.ID,
+		Status:             attemptStatus,
+		FailureCategory:    failureCategory,
+		DurationMS:         result.Duration.Milliseconds(),
+		EvidenceRefs:       []string{"automation_run:" + run.ID},
+		ClaimRefs:          nil,
+		KnowledgeRefs:      nil,
+		CreatedAt:          started,
+		FinishedAt:         finished,
+		VerifierResultRefs: nil,
+	}
+	if _, createErr := svc.store.CreateAttempt(ctx, attempt); createErr != nil {
+		return svc.failRun(ctx, run, RunStatusFailed, "attempt_record_failed")
+	}
+	if err != nil {
+		return svc.failRun(ctx, run, attemptStatus, failureCategory)
+	}
+	run.Status = RunStatusVerifying
+	run.SafeSummary = "codex_cli_completed_verification_required"
+	run.FinishedAt = finished
+	run.UpdatedAt = finished
+	return svc.store.UpdateRun(ctx, run)
+}
+
+type CodexTaskInput struct {
+	SchemaVersion           int      `json:"schema_version"`
+	ProjectID               string   `json:"project_id"`
+	AutomationRunID         string   `json:"automation_run_id"`
+	TraceID                 string   `json:"trace_id,omitempty"`
+	PlanID                  string   `json:"plan_id"`
+	TaskID                  string   `json:"task_id"`
+	TaskRef                 string   `json:"task_ref"`
+	Title                   string   `json:"title"`
+	Description             string   `json:"description,omitempty"`
+	EvidenceNeeded          []string `json:"evidence_needed,omitempty"`
+	ContextPackRefs         []string `json:"context_pack_refs,omitempty"`
+	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
+	VerificationRequirement string   `json:"verification_requirement"`
+	ExpectedOutput          string   `json:"expected_output,omitempty"`
+	FailureCriteria         string   `json:"failure_criteria,omitempty"`
+	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
+	RunnerInstructions      []string `json:"runner_instructions"`
+}
+
+func (svc *Service) writeCodexInput(run AutomationRun, task projectworkplan.WorkTask) (string, func(), error) {
+	payload := codexInputForRun(run, task)
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", nil, err
+	}
+	dir, err := os.MkdirTemp("", "mivia-automation-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	path := filepath.Join(dir, "codex-input.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
+}
+
+func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTaskInput {
+	return CodexTaskInput{
+		SchemaVersion:           1,
+		ProjectID:               run.ProjectID,
+		AutomationRunID:         run.ID,
+		TraceID:                 run.TraceID,
+		PlanID:                  task.PlanID,
+		TaskID:                  task.ID,
+		TaskRef:                 task.TaskRef,
+		Title:                   task.Title,
+		Description:             task.Description,
+		EvidenceNeeded:          append([]string(nil), task.EvidenceNeeded...),
+		ContextPackRefs:         append([]string(nil), task.ContextPackRefs...),
+		LikelyFilesAffected:     append([]string(nil), task.LikelyFilesAffected...),
+		VerificationRequirement: task.VerificationRequirement,
+		ExpectedOutput:          task.ExpectedOutput,
+		FailureCriteria:         task.FailureCriteria,
+		ResumeInstructions:      task.ResumeInstructions,
+		RunnerInstructions: []string{
+			"Use the Mivia MCP project id from this input.",
+			"Do not store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or PII.",
+			"Use only the bounded task scope and likely affected files unless current source proves a narrower necessary change.",
+			"Do not run verifier commands unless this task explicitly allows worker verification.",
+			"Leave verifier execution and task completion to the orchestrator.",
+		},
+	}
+}
+
+func automationMaxRuntime(agents []AutomationAgent, agentID string, fallback time.Duration) time.Duration {
+	for _, agent := range agents {
+		if agent.ID == agentID && agent.MaxRuntime > 0 {
+			return agent.MaxRuntime
+		}
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return 10 * time.Minute
+}
+
+func (svc *Service) createRejectedRun(ctx context.Context, automation Automation, planID string, taskID string, owner string, input SubmitRunInput, status string, reason string) (AutomationRun, error) {
+	now := svc.now()
+	run := AutomationRun{ID: svc.newID("automation_run"), ProjectID: automation.ProjectID, AutomationID: automation.ID, AgentID: firstNonEmpty(owner, automation.AgentID), PlanID: planID, TaskID: taskID, Status: status, RunnerKind: strings.TrimSpace(input.RunnerKind), FailureCategory: safeFailure(reason), CreatedAt: now, UpdatedAt: now, FinishedAt: now}
+	return svc.store.CreateRun(ctx, run)
+}
+
+func (svc *Service) failRun(ctx context.Context, run AutomationRun, status string, reason string) (AutomationRun, error) {
+	run.Status = status
+	run.FailureCategory = safeFailure(reason)
+	run.FinishedAt = svc.now()
+	run.UpdatedAt = run.FinishedAt
+	return svc.store.UpdateRun(ctx, run)
+}
+
+func (svc *Service) resolveTask(ctx context.Context, run AutomationRun) (projectworkplan.WorkTask, error) {
+	if run.TaskID != "" {
+		return svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: run.ProjectID, PlanID: run.PlanID, OwnerAgent: run.AgentID})
+	if err != nil {
+		return projectworkplan.WorkTask{}, err
+	}
+	for _, task := range tasks {
+		if err := validateExecutableTask(task); err == nil {
+			return task, nil
+		}
+	}
+	return projectworkplan.WorkTask{}, fmt.Errorf("%w: no ready task", ErrInvalidInput)
+}
+
+func validateExecutableTask(task projectworkplan.WorkTask) error {
+	if task.Status != projectworkplan.WorkTaskStatusReady {
+		return fmt.Errorf("%w: task_not_ready", ErrInvalidInput)
+	}
+	if task.DecompositionQuality != projectworkplan.DecompositionReady {
+		return fmt.Errorf("%w: decomposition_not_ready", ErrInvalidInput)
+	}
+	if strings.TrimSpace(task.VerificationRequirement) == "" {
+		return fmt.Errorf("%w: missing_verification", ErrInvalidInput)
+	}
+	return nil
+}
+
+func firstFileConflict(task projectworkplan.WorkTask, used map[string]string) string {
+	for _, file := range task.LikelyFilesAffected {
+		key := strings.ToLower(strings.TrimSpace(file))
+		if key == "" {
+			continue
+		}
+		if used[key] != "" {
+			return key
+		}
+	}
+	return ""
+}
+
+func safeProjectObject(projectID, objectID, field string) (string, string, error) {
+	projectID, err := safeRef(projectID, "project_id")
+	if err != nil {
+		return "", "", err
+	}
+	objectID, err = safeRef(objectID, field)
+	if err != nil {
+		return "", "", err
+	}
+	return projectID, objectID, nil
+}
+
+func safeRef(value, field string) (string, error) {
+	value = strings.TrimSpace(value)
+	if !refPattern.MatchString(value) {
+		return "", fmt.Errorf("%w: %s must be a safe ref", ErrInvalidInput, field)
+	}
+	return value, nil
+}
+
+func safeOptionalRef(value, field string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	return safeRef(value, field)
+}
+
+func safeRefList(values []string, field string) ([]string, error) {
+	if len(values) > 100 {
+		return nil, fmt.Errorf("%w: %s has too many values", ErrInvalidInput, field)
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		safe, err := safeRef(value, field)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, safe)
+	}
+	return out, nil
+}
+
+func safeRequiredText(value, field string, max int) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%w: %s is required", ErrInvalidInput, field)
+	}
+	return safeText(value, field, max)
+}
+
+func safeText(value, field string, max int) (string, error) {
+	value = strings.TrimSpace(value)
+	if len(value) > max {
+		return "", fmt.Errorf("%w: %s is too long", ErrInvalidInput, field)
+	}
+	unsafeMarkers := []string{"BEGIN PRIVATE KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "provider_payload", "raw_prompt", "raw_completion", "raw_stderr", "ghp_", "sk-"}
+	lower := strings.ToLower(value)
+	for _, marker := range unsafeMarkers {
+		if strings.Contains(lower, strings.ToLower(marker)) {
+			return "", fmt.Errorf("%w: %s contains unsafe marker", ErrInvalidInput, field)
+		}
+	}
+	if emailPattern.MatchString(value) || phonePattern.MatchString(value) {
+		return "", fmt.Errorf("%w: %s contains pii-like content", ErrInvalidInput, field)
+	}
+	return value, nil
+}
+
+func safeAutomationStatus(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case AutomationStatusDraft, AutomationStatusEnabled, AutomationStatusDisabled, AutomationStatusRunning, AutomationStatusPaused, AutomationStatusFailed, AutomationStatusCancelled, AutomationStatusSuperseded:
+		return strings.TrimSpace(value), nil
+	default:
+		return "", fmt.Errorf("%w: unknown automation status", ErrInvalidInput)
+	}
+}
+
+func safeAttemptStatus(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case RunStatusCompleted, RunStatusFailed, RunStatusTimeout, RunStatusBlocked, RunStatusCancelled:
+		return strings.TrimSpace(value), nil
+	default:
+		return "", fmt.Errorf("%w: unknown attempt status", ErrInvalidInput)
+	}
+}
+
+func safeFailure(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, " ", "_")
+	if value == "" {
+		return "unknown"
+	}
+	if len(value) > 100 {
+		return value[:100]
+	}
+	return value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func newID(prefix string) string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+	}
+	return prefix + "_" + hex.EncodeToString(buf[:])
+}

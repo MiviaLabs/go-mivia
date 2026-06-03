@@ -542,9 +542,10 @@ func TestProjectWorkspaceRoutes_ReadAndEdit(t *testing.T) {
 			Text:         "package main\n",
 			EditToken:    "opaque-token",
 		},
-		edit:   projectworkspace.EditResult{Applied: true, IngestionRunID: "ingest-path-1"},
-		create: projectworkspace.CreateFileResult{Applied: true, IngestionRunID: "create-path-1"},
-		delete: projectworkspace.DeleteFileResult{Deleted: true, ProjectID: "example-service", RelativePath: "main.go", IngestionRunID: "delete-path-1"},
+		edit:     projectworkspace.EditResult{Applied: true, IngestionRunID: "ingest-path-1"},
+		create:   projectworkspace.CreateFileResult{Applied: true, IngestionRunID: "create-path-1"},
+		delete:   projectworkspace.DeleteFileResult{Deleted: true, ProjectID: "example-service", RelativePath: "main.go", IngestionRunID: "delete-path-1"},
+		worktree: projectworkspace.GitCreateWorktreeResult{Applied: true, ProjectID: "example-service", WorktreeRef: "worktree/rest-plan", BranchRef: "codex/rest-plan", BaseRef: "main", IsolationRef: "workspace:example-service:worktree:worktree/rest-plan"},
 	}
 	mux := http.NewServeMux()
 	httpapi.RegisterRoutesWithWorkspace(mux, registry, digest, nil, workspace)
@@ -587,6 +588,16 @@ func TestProjectWorkspaceRoutes_ReadAndEdit(t *testing.T) {
 	if deleteRes.Code != http.StatusOK || !strings.Contains(deleteRes.Body.String(), "delete-path-1") {
 		t.Fatalf("unexpected workspace delete response %d: %s", deleteRes.Code, deleteRes.Body.String())
 	}
+
+	worktreeBody := `{"worktree_ref":"worktree/rest-plan","branch_ref":"codex/rest-plan","base_ref":"main"}`
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/projects/example-service/workspace/git/worktrees", strings.NewReader(worktreeBody))
+	req.Header.Set("Content-Type", "application/json")
+	worktree := httptest.NewRecorder()
+	mux.ServeHTTP(worktree, req)
+	if worktree.Code != http.StatusCreated || !strings.Contains(worktree.Body.String(), "workspace:example-service:worktree:worktree/rest-plan") {
+		t.Fatalf("unexpected workspace worktree response %d: %s", worktree.Code, worktree.Body.String())
+	}
+	assertDoesNotLeak(t, worktree.Body.String(), "/home/", "\\\\wsl.localhost", "root_path")
 }
 
 func TestProjectWorkspaceRoutes_GitUnavailableIsExplicit(t *testing.T) {
@@ -700,11 +711,12 @@ func TestProjectIntegrationRoutesExposeLocalDataOnly(t *testing.T) {
 }
 
 type fakeWorkspaceAPI struct {
-	file   projectworkspace.WorkspaceFile
-	edit   projectworkspace.EditResult
-	create projectworkspace.CreateFileResult
-	delete projectworkspace.DeleteFileResult
-	err    error
+	file     projectworkspace.WorkspaceFile
+	edit     projectworkspace.EditResult
+	create   projectworkspace.CreateFileResult
+	delete   projectworkspace.DeleteFileResult
+	worktree projectworkspace.GitCreateWorktreeResult
+	err      error
 }
 
 func (fake *fakeWorkspaceAPI) GitStatus(context.Context, string, projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {
@@ -723,6 +735,10 @@ func (fake *fakeWorkspaceAPI) GitAvailable(context.Context, string) (bool, error
 
 func (fake *fakeWorkspaceAPI) GitDiff(context.Context, string, projectworkspace.GitDiffOptions) (projectworkspace.GitDiff, error) {
 	return projectworkspace.GitDiff{ProjectID: "example-service"}, nil
+}
+
+func (fake *fakeWorkspaceAPI) GitCreateWorktree(context.Context, string, projectworkspace.GitCreateWorktreeOptions) (projectworkspace.GitCreateWorktreeResult, error) {
+	return fake.worktree, fake.err
 }
 
 func (fake *fakeWorkspaceAPI) ReadFile(context.Context, string, projectworkspace.ReadFileOptions) (projectworkspace.WorkspaceFile, error) {

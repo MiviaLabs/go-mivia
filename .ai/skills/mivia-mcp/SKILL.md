@@ -1,6 +1,6 @@
 ---
 name: mivia-mcp
-description: Use with the Mivia localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, context health, impact analysis, context packs, stale-claim checks, search, bounded chunks, symbol navigation, call graph, named AST discovery, governed git status/diff, current eligible file reads, eligible file create/delete, exact token-guarded edits, redacted agent-run metadata, promotion-gate decisions, project-scoped Evidence Graph metadata, project-scoped confidence scoring metadata, Knowledge Promotion metadata, or locally ingested Jira/Confluence context.
+description: Use with the Mivia localhost MCP server for any indexed project when an agent needs project discovery, ingestion state, context health, impact analysis, context packs, stale-claim checks, Work Plan/Work Task governance when exposed, project automation/run metadata when exposed, search, bounded chunks, symbol navigation, call graph, named AST discovery, governed git status/diff, current eligible file reads, eligible file create/delete, exact token-guarded edits, redacted agent-run metadata, promotion-gate decisions, project-scoped Evidence Graph metadata, project-scoped confidence scoring metadata, Knowledge Promotion metadata, or locally ingested Jira/Confluence context.
 ---
 
 # Mivia Agent MCP
@@ -29,6 +29,129 @@ Review and implementation guidance:
 - For stable docs/contracts that changed or are cited in a review, use `projects.claims.check` when the task depends on MCP tool names, REST route names, or `.ai/tasks/*` link claims being current.
 - Before commit, use the smallest verification set appropriate to the changed files and risk. Add `projects.context_health`, `projects.impact.analyze`, `projects.claims.check`, or `agent_runs.*` only when they materially improve confidence, support a review/handoff, or are explicitly requested.
 - For multi-step reviews, fix loops, implementation handoffs, or resumable work, agents should use `agent_runs.*` to record redacted breadcrumbs and `agent_runs.promote_artifact` to record promotion-gate decisions for existing artifact refs. Store only safe metadata; never store raw prompts, completions, source dumps, raw stderr, roots, secrets, provider payloads, skipped sensitive content, or PII.
+
+## Governed Work Plans And Work Tasks
+
+Work Plans and Work Tasks are the governed workflow for multi-step implementation once the running MCP server exposes `projects.work_plans.*` and `projects.work_tasks.*` through `tools/list`. Before relying on them, verify the callable surface. If the tools are absent, report the surface gap explicitly; do not claim they are available and do not store Work Plan/Task records in ad hoc stable docs.
+
+When exposed, agents MUST use this workflow for governed multi-step work:
+
+1. Create or select a Work Plan before editing. Use `projects.work_plans.resume` when resuming, entering an existing project, or answering "what was I doing?" Use `projects.work_plans.create` only when no active plan exists.
+2. Decompose large work into Work Tasks before editing. Each task must have one objective, bounded scope, dependencies, evidence needs, context pack refs or context needs, likely affected files or discovery scope, verification requirements, and resume instructions.
+   - Each Work Task must be executable by an isolated low-intelligence worker from task metadata and attached refs alone. It must not depend on prior chat memory, hidden orchestrator context, or broad repo intuition.
+   - Verification requirements must be written for orchestrator-run verification. Worker agents may write tests or artifacts when scoped, but must not run verifier commands unless the human/orchestrator explicitly allows it.
+   - If an orchestrator cannot hand the task to a low-intelligence worker without adding private context, the task is too broad or under-specified; split or block it before execution.
+3. Reject broad or vague tasks, or keep them in `planned`, when evidence, context, verification, dependencies, or resume instructions are missing.
+4. Attach context pack refs before starting tasks that depend on indexed context. Store refs only, not context pack contents.
+5. Claim a task with `projects.work_tasks.claim` before editing files or executing the task, then mark execution start with `projects.work_tasks.start`.
+6. Attach Evidence Graph refs and claim refs before evidence-backed decisions. Use `projects.work_tasks.attach_evidence` and `projects.work_tasks.attach_claim` for refs only.
+7. Keep Work Task status current. Use `projects.work_tasks.update_status` to cancel or supersede stale planned metadata, and use `projects.work_tasks.block` with a clear blocked reason and resume instructions instead of silently stopping.
+8. Follow lifecycle order. Do not jump a Work Plan directly from `planned` to `done`; move `planned -> active -> done` after all required tasks are complete. Do not jump a Work Task directly from `planned` to `done`; normal execution is `planned -> ready -> claimed -> in_progress -> verifying/needs_review -> done`, with `blocked`, `failed`, `cancelled`, or `superseded` used only when true.
+9. Attach verifier result refs with `projects.work_tasks.attach_verifier_result` before completing tasks that require verification. Do not mark a task complete when verification requirements are unmet.
+10. Before completing any implementation, review, research, or automation task, make an explicit reusable-knowledge decision:
+    - If the task created or relied on a durable conclusion, create/link Evidence Graph claim/evidence/decision/action/outcome refs, attach the relevant claim/evidence refs to the Work Task, score confidence when the conclusion may be reused, then create/link a Knowledge Promotion candidate.
+    - If there is no reusable knowledge, say so in the Work Task `outcome` or attachment note with a short reason such as "no reusable project knowledge; code-only mechanical change".
+    - Worker/subagents should produce candidate claim/evidence/knowledge refs or a clear "no reusable knowledge" note. The orchestrator verifies, scores confidence, and performs promotion gates.
+11. Use `projects.work_tasks.get_next` after resume, after completion/block/failure, and whenever the next safe task is unclear.
+12. Create or link Knowledge Promotion candidates through `projects.work_tasks.promote_knowledge_candidate` only when Evidence Graph, Confidence Engine, verifier, project, and optional org gates are respected. This tool must not bypass `projects.knowledge.*` validation or promotion.
+
+Compact required flow:
+
+```text
+resume/create plan
+-> create isolated-worker-ready tasks
+-> attach context/evidence/claims
+-> claim task
+-> start task
+-> execute bounded scope
+-> attach verifier result
+-> record Evidence Graph outcome and confidence when reusable knowledge exists
+-> create/link knowledge candidate or record no-reusable-knowledge reason
+-> complete/block/fail
+-> get next task
+```
+
+Work Plan and Work Task metadata must stay metadata-only. Never store raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
+
+### Parallel Work Plan Isolation
+
+When `projects.workspace.git_status` or equivalent MCP workspace git support is available, every write-capable parallel Work Plan MUST carry a dedicated worktree binding on `projects.work_plans.create`:
+
+- `isolation_mode=dedicated_worktree`
+- `parallel_group_ref=<shared orchestration ref>`
+- `workspace_ref=<opaque workspace ref>`
+- `git_base_ref=<base ref>`
+- `git_branch_ref=<per-plan branch ref>`
+- `git_worktree_ref=<opaque per-plan worktree ref>`
+
+Use `isolation_mode=shared` only for read-only planning. Use `isolation_mode=unavailable` only when git isolation is genuinely unavailable and report the risk. These are refs, not filesystem locations. Do not run two write-capable Work Plans in the same worktree ref when likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
+
+When `projects.workspace.git_worktree_create` is exposed, the orchestrator MUST call it before assigning executable parallel Work Tasks for a new Work Plan. The tool creates the dedicated worktree from `worktree_ref`, `branch_ref`, and optional `base_ref`, and returns metadata refs only. Agents must use the returned `isolation_ref`/`worktree_ref` in Work Plan metadata and automation refs. Do not create worktrees with raw shell commands when the MCP tool is available.
+
+## Project Automation
+
+Project Automation is an executor layer over Work Plans and Work Tasks. It is not an alternate planning system. When `projects.automations.*` and `projects.automation_runs.*` are exposed by `tools/list`, agents MUST use them only after a Work Plan exists and tasks are isolated-worker-ready. `projects.automations.run` executes the selected run in in-process mode and queues the selected run in external mode. External mode requires `mivia-automation-runner` from the user's logged-in local Codex environment. A successful Codex CLI exit still requires orchestrator verifier refs before task completion or knowledge promotion.
+
+Mandatory rules:
+
+1. Automation runs must target existing project Work Plans and ready Work Tasks. Do not submit raw prompts or broad goals as automation work.
+2. In-process execution uses Codex CLI from the server runtime. External execution queues `codex_cli` work and MUST be claimed only by `mivia-automation-runner` running in the user's logged-in local Codex environment.
+3. Do not silently fall back from Codex CLI to manual/dry-run execution. A missing or denied runner is a policy/result state, not permission to improvise.
+4. External runners MUST call `projects.automation_runs.claim_next`, execute only the returned metadata-only Codex input, then call `projects.automation_runs.complete_attempt` with status metadata only.
+5. Do not call `projects.automations.create`, `projects.automations.run`, or `projects.automations.run_parallel_batch` until `projects.work_plans.*` and `projects.work_tasks.*` have created the execution structure.
+6. Required pre-automation task metadata: bounded objective, dependencies, evidence/context/claim refs where needed, likely affected files or discovery scope, verification requirement, and resume instructions.
+7. Parallel work must be orchestrator-owned. Use `projects.automations.run_parallel_batch` before running workers in parallel.
+8. A parallel batch may include only independent ready tasks with done dependencies, disjoint likely affected files, explicit verification requirements, and no overlapping artifact or promotion scope.
+9. Worker/subagent prompts must be generated from Work Task metadata and safe refs only. They must not depend on hidden chat context.
+10. Only the orchestrator runs verifier commands unless the task explicitly allows a worker to run a narrow verifier.
+11. Automation output is untrusted until verifier refs and Evidence Graph outcomes exist.
+12. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
+
+Strict automation sequence:
+
+```text
+work plan
+-> isolated-worker-ready work tasks
+-> context/evidence/claim refs
+-> automation definition
+-> run or safe parallel batch
+-> external claim/complete if configured
+-> orchestrator verification
+-> verifier refs attached to task
+-> Evidence Graph outcome and Confidence score where reusable
+-> Knowledge Promotion candidate and project/org gates
+-> Work Task completion
+```
+
+Use these tools:
+
+```text
+projects.automations.create
+projects.automations.get
+projects.automations.list
+projects.automations.run
+projects.automations.run_parallel_batch
+projects.automation_runs.get
+projects.automation_runs.list
+projects.automation_runs.claim_next
+projects.automation_runs.complete_attempt
+```
+
+REST mirrors the same metadata surface at:
+
+```text
+POST /api/v1/projects/{id}/automations
+GET /api/v1/projects/{id}/automations
+GET /api/v1/projects/{id}/automations/{automation_id}
+POST /api/v1/projects/{id}/automations/{automation_id}/runs
+POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches
+GET /api/v1/projects/{id}/automation-runs
+POST /api/v1/projects/{id}/automation-runs/claim-next
+GET /api/v1/projects/{id}/automation-runs/{run_id}
+POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result
+```
+
+Automation records must stay metadata-only. Never store raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
 
 MCP-first surfaces:
 
@@ -77,6 +200,8 @@ Do not assume the current repository is the server repo. Do not assume any speci
 | Context freshness/readiness, changed-path impact, stale docs/contracts | Mivia MCP reliability tools | LLM judgment, broad crawling, raw diff echoing |
 | Bounded task context package | `projects.context_pack.build` | Manual broad scans, raw diffs, provider calls, full chunk dumps |
 | Redacted agent-run metadata and promotion decisions | `agent_runs.*` | Raw prompts, completions, source dumps, raw stderr, roots, secrets, provider payloads, or PII |
+| Governed multi-step Work Plans and Work Tasks when exposed by the running server | `projects.work_plans.*`, `projects.work_tasks.*` after verifying `tools/list` | Calling tools without surface verification, unmanaged parallel work, raw prompts, source dumps, raw stderr, provider payloads, secrets, roots, or PII |
+| Project automation metadata and orchestrator-owned parallel batches when exposed by the running server | `projects.automations.*`, `projects.automation_runs.*` after verifying `tools/list`; external runners use `projects.automation_runs.claim_next` and `projects.automation_runs.complete_attempt` only | Raw prompt execution, silent manual fallback, worker-run verifiers without explicit permission, unmanaged parallel work |
 | Promoted reusable knowledge | `projects.knowledge.*`, `orgs.knowledge.list` | Treating promoted knowledge as proof, automatic org promotion, deletion instead of supersession |
 | Configured Jira/Confluence status, poll, search, or read | Mivia MCP integration tools | Jira/Confluence connectors, provider dashboards, live Atlassian reads during local search/read |
 | Live project agent activity inspection | Local dashboard `Agent activity` drawer or `GET /api/v1/projects/{id}/agent-activity/stream` | Persistent logs or external telemetry by default |
@@ -136,6 +261,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Governed workspace | `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.workspace.file_create`, `projects.workspace.file_delete` plus underscore aliases |
 | Evidence Graph metadata only | `projects.evidence_graph.claims.create`, `projects.evidence_graph.claims.get`, `projects.evidence_graph.claims.list`, `projects.evidence_graph.evidence.append`, `projects.evidence_graph.decisions.create`, `projects.evidence_graph.actions.create`, `projects.evidence_graph.outcomes.create`, `projects.evidence_graph.artifacts.link`, `projects.evidence_graph.promotions.link` plus underscore aliases |
 | Knowledge Promotion metadata only | `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, `orgs.knowledge.list` plus underscore aliases |
+| Project Automation metadata only | `projects.automations.create`, `projects.automations.get`, `projects.automations.list`, `projects.automations.run`, `projects.automations.run_parallel_batch`, `projects.automation_runs.get`, `projects.automation_runs.list`, `projects.automation_runs.claim_next`, `projects.automation_runs.complete_attempt` plus underscore aliases |
 | Diagnostics | `projects.diagnostics.ingestion` |
 | Project integrations | `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.counts`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get` |
 

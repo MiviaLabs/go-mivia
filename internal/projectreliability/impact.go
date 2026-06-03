@@ -440,7 +440,7 @@ func addPathImpact(result ImpactAnalysis, path string, addUnknown bool) ImpactAn
 		result.AffectedTools = appendUnique(result.AffectedTools, "projects.ingest", "projects.files.list", "projects.search.*")
 	case strings.HasPrefix(path, "internal/projectworkspace/"):
 		result = addDomain(result, "workspace", "workspace git/read/edit behavior", path)
-		result.AffectedTools = appendUnique(result.AffectedTools, "projects.workspace.git_status", "projects.workspace.git_diff", "projects.workspace.file_read", "projects.workspace.file_edit")
+		result.AffectedTools = appendUnique(result.AffectedTools, "projects.workspace.git_status", "projects.workspace.git_diff", "projects.workspace.git_worktree_create", "projects.workspace.file_read", "projects.workspace.file_edit")
 		result.SecurityFlags = appendUnique(result.SecurityFlags, "token_guarded_edit_boundary")
 	case strings.HasPrefix(path, "internal/projectregistry/mcpapi/"):
 		result = addDomain(result, "mcp_project_tools", "project MCP tool definitions or routing", path)

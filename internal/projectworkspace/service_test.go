@@ -500,6 +500,83 @@ func TestWorkspaceService_GitStatusRunsAgainstConfiguredRoot(t *testing.T) {
 	}
 }
 
+func TestWorkspaceService_GitCreateWorktreeUsesSafeRefsAndDoesNotReturnPath(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	runner := &recordingGitRunner{}
+	svc.SetGitRunner(runner)
+
+	result, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
+		WorktreeRef: "worktree/plan-1",
+		BranchRef:   "codex/plan-1",
+		BaseRef:     "main",
+	})
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	if !result.Applied || result.WorktreeRef != "worktree/plan-1" || result.BranchRef != "codex/plan-1" || result.IsolationRef == "" {
+		t.Fatalf("unexpected worktree result: %#v", result)
+	}
+	if strings.Contains(result.IsolationRef, root) {
+		t.Fatalf("result leaked root: %#v", result)
+	}
+	if runner.root != filepath.Clean(root) {
+		t.Fatalf("expected git to run at root %q, got %q", filepath.Clean(root), runner.root)
+	}
+	if len(runner.args) != 6 || runner.args[0] != "worktree" || runner.args[1] != "add" || runner.args[2] != "-b" || runner.args[3] != "codex/plan-1" || runner.args[5] != "main" {
+		t.Fatalf("unexpected git worktree args: %#v", runner.args)
+	}
+	if !strings.Contains(runner.args[4], ".mivia-worktrees") || strings.Contains(runner.args[4], "worktree/plan-1") {
+		t.Fatalf("expected internal sanitized target path, got %#v", runner.args)
+	}
+
+	encoded := strings.Join([]string{result.ProjectID, result.WorktreeRef, result.BranchRef, result.BaseRef, result.IsolationRef}, " ")
+	if strings.Contains(encoded, root) || strings.Contains(encoded, runner.args[4]) {
+		t.Fatalf("metadata result leaked filesystem target: result=%#v target=%q", result, runner.args[4])
+	}
+}
+
+func TestWorkspaceService_GitCreateWorktreeRejectsReadOnlyAndUnsafeRefs(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	readOnly := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeReadOnly), nil, Options{Enabled: true})
+	if _, err := readOnly.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{WorktreeRef: "worktree/plan-1", BranchRef: "codex/plan-1"}); !errors.Is(err, ErrWorkspaceReadOnly) {
+		t.Fatalf("expected read-only rejection, got %v", err)
+	}
+
+	edit := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	if _, err := edit.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{WorktreeRef: "../bad", BranchRef: "codex/plan-1"}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected unsafe worktree ref rejection, got %v", err)
+	}
+	if _, err := edit.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{WorktreeRef: "worktree/plan-1", BranchRef: "/bad"}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected unsafe branch ref rejection, got %v", err)
+	}
+}
+
+func TestWorkspaceService_GitCreateWorktreeDryRunDoesNotRunGit(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	runner := &recordingGitRunner{}
+	svc.SetGitRunner(runner)
+
+	result, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
+		WorktreeRef: "worktree/plan-1",
+		BranchRef:   "codex/plan-1",
+		DryRun:      true,
+	})
+	if err != nil {
+		t.Fatalf("dry-run create worktree: %v", err)
+	}
+	if result.Applied || result.BaseRef != defaultWorktreeBaseRef {
+		t.Fatalf("unexpected dry-run result: %#v", result)
+	}
+	if runner.args != nil {
+		t.Fatalf("dry-run should not call git, got %#v", runner.args)
+	}
+}
+
 func TestWorkspaceService_GitDiffReturnsCredentialReferenceConfigDiff(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "configs/mivia-server.example.toml", "[projects.integrations.jira]\n")

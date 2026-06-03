@@ -61,6 +61,7 @@ type Config struct {
 	Ingestion         Ingestion
 	Workspace         Workspace
 	AgentActivity     AgentActivity
+	Automation        Automation
 	Projects          []Project
 }
 
@@ -89,6 +90,44 @@ type Workspace struct {
 
 type AgentActivity struct {
 	RetainRawPayloads bool
+}
+
+type Automation struct {
+	Enabled                   bool
+	RunnerEnabled             bool
+	RequireCodexWhenAvailable bool
+	AllowManualRunner         bool
+	RunnerExecution           string
+	QueueDepth                int
+	GlobalWorkerCount         int
+	PerProjectWorkerLimit     int
+	PerAgentWorkerLimit       int
+	MaxParallelTasks          int
+	DefaultMaxRuntime         time.Duration
+	CodexBinaryPath           string
+	Agents                    []AutomationAgent
+}
+
+type AutomationAgent struct {
+	ID              string
+	DisplayName     string
+	Purpose         string
+	Enabled         bool
+	AllowedSkills   []string
+	AllowedTools    []string
+	AllowedCommands []AutomationCommand
+	DeniedCommands  []string
+	WorkspaceMode   string
+	NetworkPolicy   string
+	SecretPolicy    string
+	LogPolicy       string
+	MaxRuntime      time.Duration
+	MaxRetries      int
+}
+
+type AutomationCommand struct {
+	Command string
+	Args    []string
 }
 
 type Ingestion struct {
@@ -259,7 +298,26 @@ func defaultConfig(configPath string) Config {
 		ShutdownTimeout:   defaultShutdownTimeout,
 		Ingestion:         defaultIngestion(),
 		Workspace:         Workspace{Enabled: false},
+		Automation:        defaultAutomation(),
 		Projects:          nil,
+	}
+}
+
+func defaultAutomation() Automation {
+	return Automation{
+		Enabled:                   false,
+		RunnerEnabled:             false,
+		RequireCodexWhenAvailable: true,
+		AllowManualRunner:         false,
+		RunnerExecution:           "in_process",
+		QueueDepth:                16,
+		GlobalWorkerCount:         1,
+		PerProjectWorkerLimit:     1,
+		PerAgentWorkerLimit:       1,
+		MaxParallelTasks:          1,
+		DefaultMaxRuntime:         10 * time.Minute,
+		CodexBinaryPath:           "",
+		Agents:                    nil,
 	}
 }
 
@@ -458,6 +516,9 @@ func (cfg Config) Validate() error {
 	if cfg.AgentActivity.RetainRawPayloads && !cfg.Debug.Enabled {
 		return errors.New("MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS requires MIVIA_DEBUG_ENABLED")
 	}
+	if err := cfg.Automation.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -529,6 +590,65 @@ func (ingestion Ingestion) Validate() error {
 	}
 	if ingestion.SensitiveMarkerPolicy != sensitiveMarkerPolicySkipFile {
 		return fmt.Errorf("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY must be %q", sensitiveMarkerPolicySkipFile)
+	}
+	return nil
+}
+
+func (automation Automation) Validate() error {
+	if automation.RunnerEnabled && !automation.Enabled {
+		return errors.New("MIVIA_AUTOMATION_RUNNER_ENABLED requires MIVIA_AUTOMATION_ENABLED")
+	}
+	switch strings.TrimSpace(automation.RunnerExecution) {
+	case "in_process", "external":
+	default:
+		return errors.New("MIVIA_AUTOMATION_RUNNER_EXECUTION must be in_process or external")
+	}
+	if automation.QueueDepth <= 0 {
+		return errors.New("MIVIA_AUTOMATION_QUEUE_DEPTH must be positive")
+	}
+	if automation.GlobalWorkerCount <= 0 {
+		return errors.New("MIVIA_AUTOMATION_GLOBAL_WORKER_COUNT must be positive")
+	}
+	if automation.PerProjectWorkerLimit <= 0 || automation.PerProjectWorkerLimit > automation.GlobalWorkerCount {
+		return errors.New("MIVIA_AUTOMATION_PER_PROJECT_WORKER_LIMIT must be a positive integer <= MIVIA_AUTOMATION_GLOBAL_WORKER_COUNT")
+	}
+	if automation.PerAgentWorkerLimit <= 0 || automation.PerAgentWorkerLimit > automation.PerProjectWorkerLimit {
+		return errors.New("MIVIA_AUTOMATION_PER_AGENT_WORKER_LIMIT must be a positive integer <= MIVIA_AUTOMATION_PER_PROJECT_WORKER_LIMIT")
+	}
+	if automation.MaxParallelTasks <= 0 {
+		return errors.New("MIVIA_AUTOMATION_MAX_PARALLEL_TASKS must be positive")
+	}
+	if automation.DefaultMaxRuntime <= 0 {
+		return errors.New("MIVIA_AUTOMATION_DEFAULT_MAX_RUNTIME must be positive")
+	}
+	if strings.ContainsAny(automation.CodexBinaryPath, "\r\n\x00") {
+		return errors.New("MIVIA_AUTOMATION_CODEX_BINARY_PATH must not contain control characters")
+	}
+	for _, agent := range automation.Agents {
+		if err := agent.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (agent AutomationAgent) Validate() error {
+	if strings.TrimSpace(agent.ID) == "" {
+		return errors.New("automation agents require id")
+	}
+	if strings.TrimSpace(agent.Purpose) == "" {
+		return fmt.Errorf("automation agent %q requires purpose", agent.ID)
+	}
+	if agent.MaxRuntime < 0 {
+		return fmt.Errorf("automation agent %q max_runtime must be non-negative", agent.ID)
+	}
+	if agent.MaxRetries < 0 {
+		return fmt.Errorf("automation agent %q max_retries must be non-negative", agent.ID)
+	}
+	for _, command := range agent.AllowedCommands {
+		if strings.TrimSpace(command.Command) == "" {
+			return fmt.Errorf("automation agent %q allowed_commands require command", agent.ID)
+		}
 	}
 	return nil
 }

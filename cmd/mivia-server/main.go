@@ -26,6 +26,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/logging"
 	sqliteplatform "github.com/MiviaLabs/go-mivia/internal/platform/sqlite"
 	sqliteschema "github.com/MiviaLabs/go-mivia/internal/platform/sqlite/schema"
+	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	automationhttpapi "github.com/MiviaLabs/go-mivia/internal/projectautomation/httpapi"
+	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectconfidence"
 	confidencehttpapi "github.com/MiviaLabs/go-mivia/internal/projectconfidence/httpapi"
 	confidencestore "github.com/MiviaLabs/go-mivia/internal/projectconfidence/store"
@@ -43,6 +46,9 @@ import (
 	projecthttpapi "github.com/MiviaLabs/go-mivia/internal/projectregistry/httpapi"
 	projectstore "github.com/MiviaLabs/go-mivia/internal/projectregistry/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectreliability"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+	workplanhttpapi "github.com/MiviaLabs/go-mivia/internal/projectworkplan/httpapi"
+	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkspace"
 	"github.com/MiviaLabs/go-mivia/internal/research"
 	researchhttpapi "github.com/MiviaLabs/go-mivia/internal/research/httpapi"
@@ -218,6 +224,18 @@ func run() error {
 	projectEvidenceService := projectevidence.New(evidencestore.NewLadybugStore(projectGraph))
 	projectConfidenceService := projectconfidence.New(confidencestore.NewLadybugStore(projectGraph))
 	projectKnowledgeService := projectknowledge.New(knowledgestore.NewLadybugStore(projectGraph))
+	projectWorkPlanService := projectworkplan.New(workplanstore.NewLadybugStore(projectGraph))
+	projectAutomationService := projectautomation.New(automationstore.NewMemoryStore(), projectWorkPlanService, projectautomation.Options{
+		Enabled:                   cfg.Automation.Enabled,
+		RunnerEnabled:             cfg.Automation.RunnerEnabled,
+		RequireCodexWhenAvailable: cfg.Automation.RequireCodexWhenAvailable,
+		AllowManualRunner:         cfg.Automation.AllowManualRunner,
+		RunnerExecution:           cfg.Automation.RunnerExecution,
+		MaxParallelTasks:          cfg.Automation.MaxParallelTasks,
+		DefaultMaxRuntime:         cfg.Automation.DefaultMaxRuntime,
+		CodexBinaryPath:           cfg.Automation.CodexBinaryPath,
+		Agents:                    automationAgents(cfg.Automation.Agents),
+	})
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
 		LiveUpdatesEnabled:       cfg.Ingestion.LiveUpdatesEnabled,
 		DebounceInterval:         cfg.Ingestion.DebounceInterval,
@@ -253,6 +271,9 @@ func run() error {
 	activityRecorder := agentactivity.NewRecorderWithStore(500, activityStore)
 	agentService.SetPolicyRecorder(activityRecorder)
 	projectIngestionService.SetPolicyRecorder(activityRecorder)
+	if workPlanRecorder, ok := any(projectWorkPlanService).(interface{ SetActivityRecorder(*agentactivity.Recorder) }); ok {
+		workPlanRecorder.SetActivityRecorder(activityRecorder)
+	}
 	if workspaceRecorder, ok := projectWorkspaceService.(interface{ SetPolicyRecorder(*agentactivity.Recorder) }); ok {
 		workspaceRecorder.SetPolicyRecorder(activityRecorder)
 	}
@@ -286,6 +307,8 @@ func run() error {
 	evidencehttpapi.RegisterRoutes(mux, projectEvidenceService)
 	confidencehttpapi.RegisterRoutes(mux, projectConfidenceService, projectConfidenceInputs)
 	knowledgehttpapi.RegisterRoutes(mux, projectKnowledgeService, projectKnowledgeInputs)
+	workplanhttpapi.RegisterRoutes(mux, projectWorkPlanService)
+	automationhttpapi.RegisterRoutes(mux, projectAutomationService)
 	var diagnosticsService *diagnostics.Service
 	if diagnostics.Enabled(cfg.Debug.Enabled, cfg.HTTPAddr) {
 		diagnosticsService = diagnostics.NewService(projectingestion.DiagnosticsSource{
@@ -297,7 +320,7 @@ func run() error {
 		}, diagnostics.RuntimeOptions{Enabled: cfg.Debug.RuntimeMetricsEnabled})
 		diagnostics.RegisterRoutes(mux, diagnosticsService)
 	}
-	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceAndKnowledge(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectConfidenceService, projectConfidenceInputs, projectKnowledgeService, projectKnowledgeInputs, projectIntegrationService, diagnosticsService, activityRecorder, logger))
+	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAndAutomation(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectConfidenceService, projectConfidenceInputs, projectKnowledgeService, projectKnowledgeInputs, projectWorkPlanService, projectAutomationService, projectIntegrationService, diagnosticsService, activityRecorder, logger))
 
 	handler := httpserver.Chain(
 		mux,
@@ -503,4 +526,37 @@ func effectiveInitialScanOnStart(configured bool, interruptedIngestionRuns int) 
 		return false
 	}
 	return configured
+}
+
+func automationAgents(configAgents []config.AutomationAgent) []projectautomation.AutomationAgent {
+	if len(configAgents) == 0 {
+		return nil
+	}
+	agents := make([]projectautomation.AutomationAgent, 0, len(configAgents))
+	for _, agent := range configAgents {
+		commands := make([]projectautomation.CommandSpec, 0, len(agent.AllowedCommands))
+		for _, command := range agent.AllowedCommands {
+			commands = append(commands, projectautomation.CommandSpec{
+				Command: command.Command,
+				Args:    append([]string(nil), command.Args...),
+			})
+		}
+		agents = append(agents, projectautomation.AutomationAgent{
+			ID:              agent.ID,
+			DisplayName:     agent.DisplayName,
+			Purpose:         agent.Purpose,
+			Enabled:         agent.Enabled,
+			AllowedSkills:   append([]string(nil), agent.AllowedSkills...),
+			AllowedTools:    append([]string(nil), agent.AllowedTools...),
+			AllowedCommands: commands,
+			DeniedCommands:  append([]string(nil), agent.DeniedCommands...),
+			WorkspaceMode:   agent.WorkspaceMode,
+			NetworkPolicy:   agent.NetworkPolicy,
+			SecretPolicy:    agent.SecretPolicy,
+			LogPolicy:       agent.LogPolicy,
+			MaxRuntime:      agent.MaxRuntime,
+			MaxRetries:      agent.MaxRetries,
+		})
+	}
+	return agents
 }

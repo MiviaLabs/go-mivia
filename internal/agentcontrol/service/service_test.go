@@ -427,3 +427,46 @@ func TestAgentRunVerifierCommandSplitsSimpleWordsIntoArgs(t *testing.T) {
 		t.Fatalf("expected split command args, got %#v", verifier.Args)
 	}
 }
+
+func TestAgentRunVerifierArgsAllowSupportedLanguageSelectors(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	cases := []model.AgentVerifier{
+		{Command: "go", Args: []string{"test", "./internal/projectworkplan/..."}, Scope: "go focused packages", Status: "passed"},
+		{Command: "pytest", Args: []string{"tests/test_api.py::test_create_plan"}, Scope: "python pytest node id", Status: "passed"},
+		{Command: "npm", Args: []string{"test", "--workspace=@mivia/dashboard", "--", "work-plan.spec.ts"}, Scope: "javascript workspace test", Status: "passed"},
+		{Command: "pnpm", Args: []string{"vitest", "run", "src/work-plan.spec.tsx"}, Scope: "typescript react spec", Status: "passed"},
+		{Command: "dotnet", Args: []string{"test", "tests/Mivia.AgentControl.Tests/Mivia.AgentControl.Tests.csproj"}, Scope: "csharp project test", Status: "passed"},
+		{Command: "dart", Args: []string{"test", "test/work_plan_test.dart"}, Scope: "dart package test", Status: "passed"},
+	}
+	for _, verifier := range cases {
+		run, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+			ProjectID: "example-service",
+			Verifiers: []model.AgentVerifier{verifier},
+		})
+		if err != nil {
+			t.Fatalf("expected verifier %#v to be accepted: %v", verifier, err)
+		}
+		if run.Verifiers[0].Scope != verifier.Scope {
+			t.Fatalf("expected scope %q to be preserved, got %#v", verifier.Scope, run.Verifiers[0])
+		}
+	}
+}
+
+func TestAgentRunVerifierArgsRejectTraversalAndRoots(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	for _, arg := range []string{"../secret", "tests/../secret", "/home/mac/project", "C:/Users/PC/project"} {
+		_, err := svc.CreateAgentRun(context.Background(), model.CreateAgentRunInput{
+			ProjectID: "example-service",
+			Verifiers: []model.AgentVerifier{{
+				Command: "go",
+				Args:    []string{"test", arg},
+				Status:  "failed",
+			}},
+		})
+		if !errors.Is(err, service.ErrInvalidInput) {
+			t.Fatalf("expected unsafe verifier arg %q to be rejected, got %v", arg, err)
+		}
+	}
+}

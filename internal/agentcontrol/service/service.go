@@ -501,7 +501,7 @@ func containsProhibitedData(value string) bool {
 }
 
 func containsProhibitedMarker(value string) bool {
-	normalized := strings.ToLower(value)
+	normalized := redactSafeProhibitionPhrases(strings.ToLower(value))
 	disallowed := []string{
 		"match (",
 		"select ",
@@ -528,6 +528,39 @@ func containsProhibitedMarker(value string) bool {
 		}
 	}
 	return false
+}
+
+func redactSafeProhibitionPhrases(value string) string {
+	if strings.Contains(value, "no raw prompt") || strings.Contains(value, "never store") || strings.Contains(value, "must not store") || strings.Contains(value, "do not store") || strings.Contains(value, "would store") || strings.Contains(value, "must not expose") || strings.Contains(value, "do not expose") || strings.Contains(value, "would expose") || strings.Contains(value, "must not include") || strings.Contains(value, "do not include") || strings.Contains(value, "would include") || strings.Contains(value, "prohibited") {
+		for _, marker := range []string{
+			"raw prompts",
+			"raw prompt",
+			"raw completions",
+			"raw completion",
+			"raw source",
+			"source dumps",
+			"source dump",
+			"raw stderr",
+			"provider payloads",
+			"provider payload",
+			"credentials",
+			"credential",
+			"secrets",
+			"secret",
+			"roots",
+			"root",
+			"paths",
+			"path",
+		} {
+			value = strings.ReplaceAll(value, marker, "")
+		}
+	}
+	for _, prefix := range []string{"no", "never store", "must not store", "do not store", "would store", "must not expose", "do not expose", "would expose", "must not include", "do not include", "would include"} {
+		for _, marker := range []string{"raw prompts", "raw prompt", "raw completions", "raw completion", "raw source", "source dumps", "source dump", "raw stderr", "provider payloads", "provider payload", "credentials", "credential", "secrets", "secret", "roots", "root", "paths", "path"} {
+			value = strings.ReplaceAll(value, prefix+" "+marker, "")
+		}
+	}
+	return value
 }
 
 func safeIdentifier(value string, field string) (string, error) {
@@ -609,7 +642,7 @@ func safeVerifiers(verifiers []model.AgentVerifier) ([]model.AgentVerifier, erro
 			}
 			args = append(args, clean)
 		}
-		scope, err := safeOptionalIdentifier(verifier.Scope, "verifier.scope")
+		scope, err := safeOptionalText(verifier.Scope, "verifier.scope", 200)
 		if err != nil {
 			return nil, err
 		}
@@ -653,7 +686,7 @@ func safeVerifierArg(value string) (string, error) {
 	if value == "" {
 		return "", fmt.Errorf("%w: verifier arg is required", ErrInvalidInput)
 	}
-	if len(value) > 200 || strings.HasPrefix(value, "/") || filepath.IsAbs(value) {
+	if len(value) > 200 || strings.HasPrefix(value, "/") || filepath.IsAbs(value) || looksLikeRootPath(value) {
 		return "", fmt.Errorf("%w: verifier arg is unsafe", ErrInvalidInput)
 	}
 	if strings.Contains(value, "://") {
@@ -662,10 +695,26 @@ func safeVerifierArg(value string) (string, error) {
 		}
 		return value, nil
 	}
-	if containsProhibitedData(value) {
+	if containsPathTraversal(value) || containsProhibitedData(value) {
 		return "", fmt.Errorf("%w: verifier arg is unsafe", ErrInvalidInput)
 	}
 	return value, nil
+}
+
+func containsPathTraversal(value string) bool {
+	normalized := strings.ReplaceAll(value, "\\", "/")
+	if normalized == ".." || strings.HasPrefix(normalized, "../") || strings.HasSuffix(normalized, "/..") || strings.Contains(normalized, "/../") {
+		return true
+	}
+	return false
+}
+
+func looksLikeRootPath(value string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(value, "\\", "/"))
+	return strings.Contains(normalized, "/home/") ||
+		strings.Contains(normalized, "/users/") ||
+		strings.Contains(normalized, "wsl.localhost/") ||
+		regexp.MustCompile(`^[a-z]:/`).MatchString(normalized)
 }
 
 func isSafeLoopbackURL(value string) bool {

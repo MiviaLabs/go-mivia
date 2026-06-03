@@ -78,6 +78,23 @@ sensitive_marker_policy = "skip_file"
 # surfaces for projects that also opt in with workspace_mode below.
 enabled = false
 
+[automation]
+# Disabled by default. Runner execution must be explicitly enabled after review.
+enabled = false
+runner_enabled = false
+# in_process runs Codex inside mivia-server. external queues runs for
+# mivia-automation-runner, which should run in the user's logged-in local shell.
+runner_execution = "in_process"
+require_codex_when_available = true
+allow_manual_runner = false
+queue_depth = 16
+global_worker_count = 1
+per_project_worker_limit = 1
+per_agent_worker_limit = 1
+max_parallel_tasks = 1
+default_max_runtime = "10m"
+# codex_binary_path = "codex"
+
 [[projects]]
 id = "example-service"
 # Optional safe lookup IDs accepted anywhere a project id is accepted. Use this

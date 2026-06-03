@@ -18,6 +18,8 @@ import (
 
 var ErrInvalidInput = errors.New("invalid input")
 
+const decisionRationaleMaxLength = 1000
+
 var emailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
 var phonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
 
@@ -461,7 +463,7 @@ func (svc *Service) newDecision(record KnowledgeRecord, toState string, scope st
 	if err != nil {
 		return PromotionDecision{}, err
 	}
-	rationale, err = safeRequiredText(rationale, "rationale", 500)
+	rationale, err = safeRequiredText(rationale, "rationale", decisionRationaleMaxLength)
 	if err != nil {
 		return PromotionDecision{}, err
 	}
@@ -579,7 +581,7 @@ func validateOrgGate(record KnowledgeRecord, decisions []PromotionDecision, inpu
 	if _, err := safeRefIdentifier(input.VerifierRef, "verifier_ref"); err != nil {
 		return err
 	}
-	if _, err := safeRequiredText(input.Rationale, "rationale", 500); err != nil {
+	if _, err := safeRequiredText(input.Rationale, "rationale", decisionRationaleMaxLength); err != nil {
 		return err
 	}
 	if _, err := safeActorRef(input.DecidedBy, "decided_by"); err != nil {
@@ -740,7 +742,7 @@ func validateClaimRecordMetadata(record projectevidence.ClaimRecord) error {
 		if _, err := safeRefIdentifier(decision.VerifierRef, "verifier_ref"); err != nil {
 			return err
 		}
-		if _, err := safeRequiredText(decision.Rationale, "decision_rationale", 500); err != nil {
+		if _, err := safeRequiredText(decision.Rationale, "decision_rationale", decisionRationaleMaxLength); err != nil {
 			return err
 		}
 	}

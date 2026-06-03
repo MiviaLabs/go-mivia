@@ -25,6 +25,8 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 )
 
+const defaultWorktreeBaseRef = "HEAD"
+
 type Options struct {
 	Enabled bool
 }
@@ -193,6 +195,63 @@ func (svc *Service) GitDiff(ctx context.Context, projectID string, options GitDi
 	return result, nil
 }
 
+func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, options GitCreateWorktreeOptions) (GitCreateWorktreeResult, error) {
+	project, err := svc.project(projectID, true)
+	if err != nil {
+		return GitCreateWorktreeResult{}, err
+	}
+	worktreeRef, err := safeGitRef(options.WorktreeRef)
+	if err != nil {
+		return GitCreateWorktreeResult{}, err
+	}
+	branchRef, err := safeGitRef(options.BranchRef)
+	if err != nil {
+		return GitCreateWorktreeResult{}, err
+	}
+	baseRef := strings.TrimSpace(options.BaseRef)
+	if baseRef == "" {
+		baseRef = defaultWorktreeBaseRef
+	}
+	baseRef, err = safeGitRef(baseRef)
+	if err != nil {
+		return GitCreateWorktreeResult{}, err
+	}
+	isolationRef := "workspace:" + project.ID + ":worktree:" + worktreeRef
+	result := GitCreateWorktreeResult{
+		Applied:      !options.DryRun,
+		ProjectID:    project.ID,
+		WorktreeRef:  worktreeRef,
+		BranchRef:    branchRef,
+		BaseRef:      baseRef,
+		IsolationRef: isolationRef,
+	}
+	if options.DryRun {
+		return result, nil
+	}
+	target, err := worktreeTargetPath(project, worktreeRef)
+	if err != nil {
+		return GitCreateWorktreeResult{}, err
+	}
+	lock := svc.lockFor(project.ID + "\x00git-worktree\x00" + worktreeRef)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, err := os.Stat(target); err == nil {
+		return GitCreateWorktreeResult{}, ErrEditConflict
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return GitCreateWorktreeResult{}, ErrInvalidInput
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return GitCreateWorktreeResult{}, ErrInvalidInput
+	}
+	if _, _, err := svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "add", "-b", branchRef, target, baseRef); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return GitCreateWorktreeResult{}, err
+		}
+		return GitCreateWorktreeResult{}, ErrGitUnavailable
+	}
+	return result, nil
+}
+
 func (svc *Service) ReadFile(ctx context.Context, projectID string, options ReadFileOptions) (WorkspaceFile, error) {
 	project, err := svc.project(projectID, false)
 	if err != nil {
@@ -208,6 +267,63 @@ func (svc *Service) ReadFile(ctx context.Context, projectID string, options Read
 		return WorkspaceFile{}, err
 	}
 	return svc.workspaceFile(project, fileID, relativePath, content, info, maxBytes), nil
+}
+
+func safeGitRef(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 200 {
+		return "", ErrInvalidInput
+	}
+	if strings.Contains(value, "\\") || strings.Contains(value, "..") || strings.Contains(value, " ") || strings.HasPrefix(value, "/") || filepath.IsAbs(value) {
+		return "", ErrInvalidInput
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			continue
+		}
+		switch r {
+		case '.', '_', '-', '/', ':', '@', '+':
+			continue
+		default:
+			return "", ErrInvalidInput
+		}
+	}
+	return value, nil
+}
+
+func worktreeTargetPath(project projectregistry.Project, worktreeRef string) (string, error) {
+	root := filepath.Clean(project.CanonicalRootPath)
+	parent := filepath.Dir(root)
+	name := safeWorktreeDirName(project.ID + "-" + worktreeRef)
+	if name == "" {
+		return "", ErrInvalidInput
+	}
+	base := filepath.Join(parent, ".mivia-worktrees", project.ID)
+	target := filepath.Join(base, name)
+	cleanTarget := filepath.Clean(target)
+	relative, err := filepath.Rel(base, cleanTarget)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", ErrInvalidInput
+	}
+	return cleanTarget, nil
+}
+
+func safeWorktreeDirName(value string) string {
+	value = strings.TrimSpace(value)
+	var builder strings.Builder
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			builder.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '.', '_', '-':
+			builder.WriteRune(r)
+		case '/', ':', '@', '+':
+			builder.WriteRune('-')
+		}
+	}
+	return strings.Trim(builder.String(), ".-")
 }
 
 func (svc *Service) EditFile(ctx context.Context, projectID string, options EditFileOptions) (EditResult, error) {

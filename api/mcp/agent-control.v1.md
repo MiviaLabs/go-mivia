@@ -28,6 +28,134 @@ Classification: Internal; local project-integration rich-content exception only
 
 ## Tools
 
+### Work Plan And Work Task Contract
+
+Work Plans and Work Tasks are the governed workflow for multi-step implementation when the running server exposes them through `tools/list`. Agents must verify the callable surface before use and must report any surface gap instead of pretending tools exist.
+
+When exposed, agents MUST use Work Plans and Work Tasks for governed multi-step work:
+
+1. `projects.work_plans.create` or `projects.work_plans.resume` creates/selects the plan before editing.
+2. `projects.work_tasks.create` decomposes broad work into small low-intelligence-agent-ready tasks with one objective, bounded scope, dependencies, evidence needs, context pack refs or context needs, verification requirements, likely affected files, and resume instructions. Each task must be executable by an isolated low-intelligence worker from task metadata and attached refs alone, without prior chat memory, hidden orchestrator context, or broad repo intuition. Verification must be written so the orchestrator can run it independently; scoped workers may write tests or artifacts but must not run verifier commands unless explicitly allowed.
+3. `projects.work_tasks.claim` and `projects.work_tasks.start` are required before execution.
+4. Context-dependent tasks must attach context pack refs with `projects.work_tasks.attach_context_pack`.
+5. Evidence-backed tasks must attach Evidence Graph or claim refs with `projects.work_tasks.attach_evidence` and `projects.work_tasks.attach_claim`.
+6. Tasks with verification requirements must attach verifier result refs with `projects.work_tasks.attach_verifier_result` before completion.
+7. Lifecycle order is mandatory. Work Plans normally move `planned -> active -> done`; do not jump `planned -> done`. Work Tasks normally move `planned -> ready -> claimed -> in_progress -> verifying/needs_review -> done`; use `blocked`, `failed`, `cancelled`, or `superseded` only when that state is true.
+8. `projects.work_tasks.complete`, `projects.work_tasks.block`, `projects.work_tasks.fail`, or `projects.work_tasks.update_status` must keep status current; blocked tasks require a blocked reason and resume instructions.
+9. Before completing implementation, review, research, or automation tasks, agents must make a reusable-knowledge decision. If a durable conclusion exists, attach Evidence Graph claim/evidence refs, score confidence when reusable, and create/link a Knowledge Promotion candidate. If no reusable knowledge exists, record a short no-reusable-knowledge reason in the task outcome or attachment note.
+10. `projects.work_tasks.get_next` is required after resume, completion, block, or uncertainty.
+11. `projects.work_tasks.promote_knowledge_candidate` may create or link only a Knowledge Promotion candidate. It must not bypass Evidence Graph, Confidence Engine, verifier, project, or org promotion gates.
+
+Dotted tools and underscore aliases:
+
+```text
+projects.work_plans.create
+projects.work_plans.get
+projects.work_plans.list
+projects.work_plans.update_status
+projects.work_plans.resume
+projects.work_tasks.create
+projects.work_tasks.update_status
+projects.work_tasks.claim
+projects.work_tasks.release
+projects.work_tasks.start
+projects.work_tasks.complete
+projects.work_tasks.fail
+projects.work_tasks.block
+projects.work_tasks.list_open
+projects.work_tasks.list_mine
+projects.work_tasks.list_blocked
+projects.work_tasks.get_next
+projects.work_tasks.attach_evidence
+projects.work_tasks.attach_context_pack
+projects.work_tasks.attach_claim
+projects.work_tasks.attach_verifier_result
+projects.work_tasks.promote_knowledge_candidate
+```
+
+All Work Plan and Work Task metadata must remain metadata-only. Raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, and PII are prohibited.
+
+Subagents are not exempt from Evidence Graph or Knowledge Promotion. Worker/subagents must return safe candidate claim refs, evidence refs, verifier refs, confidence refs when available, and knowledge candidate refs, or explicitly state `no_reusable_knowledge` with a bounded reason. The orchestrator is responsible for verifier execution, confidence scoring, and project/org promotion gates.
+
+### Parallel Work Plan Isolation
+
+When MCP workspace git support is available, each parallel Work Plan MUST declare its own metadata-only isolation refs on `projects.work_plans.create`:
+
+- `isolation_mode`: use `dedicated_worktree` for executable parallel plans, `shared` only for read-only planning, and `unavailable` when git isolation cannot be provided.
+- `parallel_group_ref`: common ref shared by Work Plans that are orchestrated together.
+- `workspace_ref`, `git_base_ref`, `git_branch_ref`, and `git_worktree_ref`: opaque refs only, never filesystem locations.
+
+Agents MUST NOT run two write-capable Work Plans in the same worktree ref when their likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
+
+When exposed, `projects.workspace.git_worktree_create` MUST be used by the orchestrator before assigning executable parallel Work Tasks for a new Work Plan. It accepts `worktree_ref`, `branch_ref`, optional `base_ref`, and `dry_run`, creates the dedicated git worktree through the governed workspace boundary, and returns metadata refs only. Agents must use the returned `isolation_ref`/`worktree_ref` in Work Plan metadata and automation refs. Do not create worktrees with raw shell commands when the MCP tool is available.
+
+### Project Automation Contract
+
+Project automation is an executor over Work Plans and Work Tasks. It is not an alternate task system and must not execute raw prompts directly.
+
+When exposed, automation tools MUST follow these rules:
+
+1. Automation runs operate only on existing project Work Plans and ready Work Tasks. Agents MUST NOT call `projects.automations.create`, `projects.automations.run`, or `projects.automations.run_parallel_batch` as a substitute for `projects.work_plans.*` or `projects.work_tasks.*`.
+2. If automation uses in-process runner execution and Codex CLI is available in the server runtime, executable automation MUST use `codex_cli`.
+3. If automation uses external runner execution, `projects.automations.run` queues `codex_cli` work and the local `mivia-automation-runner` MUST run from the user's logged-in Codex environment.
+4. Automation MUST NOT silently fall back from Codex CLI to manual/dry-run execution.
+5. Required pre-automation state: selected Work Task has bounded scope, dependency state, context/evidence/claim refs where needed, likely affected files, verification requirement, and resume instructions.
+6. Parallel work MUST be orchestrator-owned through a safe parallel batch.
+7. Parallel batches may include only independent ready Work Tasks with satisfied dependencies and disjoint write/verifier/artifact scope.
+8. Worker/subagent prompts must be generated from Work Task metadata and safe refs only.
+9. Automation output is untrusted until verifier refs and Evidence Graph outcomes exist.
+10. Any reusable conclusion from automation MUST be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
+
+Dotted tools and underscore aliases:
+
+```text
+projects.automations.create
+projects.automations.get
+projects.automations.list
+projects.automations.run
+projects.automations.run_parallel_batch
+projects.automation_runs.get
+projects.automation_runs.list
+projects.automation_runs.claim_next
+projects.automation_runs.complete_attempt
+```
+
+Automation records must remain metadata-only. Raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, and PII are prohibited.
+
+Project-scoped REST routes:
+
+```text
+POST /api/v1/projects/{id}/automations
+GET /api/v1/projects/{id}/automations
+GET /api/v1/projects/{id}/automations/{automation_id}
+POST /api/v1/projects/{id}/automations/{automation_id}/runs
+POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches
+GET /api/v1/projects/{id}/automation-runs
+POST /api/v1/projects/{id}/automation-runs/claim-next
+GET /api/v1/projects/{id}/automation-runs/{run_id}
+POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result
+```
+
+`POST /api/v1/projects/{id}/automations/{automation_id}/runs` executes one automation run in in-process mode and queues one automation run in external mode. External runners call `POST /api/v1/projects/{id}/automation-runs/claim-next`, execute `codex exec --json --input-file <metadata-only-file>` locally, then call `POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result`. A successful Codex CLI exit leaves the run in verifier-required state; it does not prove verification, task completion, claim validation, confidence, or knowledge promotion.
+
+Strict end-to-end automation sequence:
+
+```text
+projects.work_plans.resume/list/create
+-> projects.work_tasks.create for isolated-worker-ready tasks
+-> projects.work_tasks.attach_context_pack / attach_evidence / attach_claim as needed
+-> projects.automations.create over the existing plan/tasks
+-> projects.automations.run or run_parallel_batch
+-> external runner claim/complete when runner_execution=external
+-> orchestrator verifier runs outside workers
+-> projects.work_tasks.attach_verifier_result
+-> Evidence Graph decisions/actions/outcomes for reusable conclusions
+-> projects.confidence.claims.score when knowledge may be reused
+-> projects.work_tasks.promote_knowledge_candidate
+-> projects.knowledge.validate / promote_project / optional org review/promote
+-> projects.work_tasks.complete only after verification requirements are satisfied
+```
+
 ### `tasks.create`
 
 Input schema:
@@ -523,7 +651,7 @@ Output: structured `KnowledgeRecord` metadata plus a JSON text content block.
 
 Alias: `projects_knowledge_validate`
 
-Input schema: `id`, `knowledge_id`, `decision_ref`, `verifier_ref`, and bounded `rationale`.
+Input schema: `id`, `knowledge_id`, `decision_ref`, `verifier_ref`, and bounded 1000-character `rationale`.
 
 Output: structured `KnowledgeRecord` metadata plus a JSON text content block.
 
@@ -531,7 +659,7 @@ Output: structured `KnowledgeRecord` metadata plus a JSON text content block.
 
 Alias: `projects_knowledge_promote_project`
 
-Input schema: `id`, `knowledge_id`, `decision_ref`, `verifier_ref`, and bounded `rationale`.
+Input schema: `id`, `knowledge_id`, `decision_ref`, `verifier_ref`, and bounded 1000-character `rationale`.
 
 Output: structured `KnowledgeRecord` metadata plus a JSON text content block with `state=project_promoted` when the project promotion gate passes.
 
@@ -539,7 +667,7 @@ Output: structured `KnowledgeRecord` metadata plus a JSON text content block wit
 
 Alias: `projects_knowledge_submit_org_review`
 
-Input schema: `id`, `knowledge_id`, `org_ref` (`default`), `decision_ref`, `verifier_ref`, bounded `rationale`, and safe `decided_by`.
+Input schema: `id`, `knowledge_id`, `org_ref` (`default`), `decision_ref`, `verifier_ref`, bounded 1000-character `rationale`, and safe `decided_by`.
 
 Output: structured `KnowledgeRecord` metadata plus a JSON text content block with `state=org_review`. This is not org promotion.
 
@@ -547,7 +675,7 @@ Output: structured `KnowledgeRecord` metadata plus a JSON text content block wit
 
 Alias: `projects_knowledge_promote_org`
 
-Input schema: `id`, `knowledge_id`, explicit `scope=org`, `org_ref=default`, `decision_ref`, `verifier_ref`, bounded `rationale`, and safe `decided_by`.
+Input schema: `id`, `knowledge_id`, explicit `scope=org`, `org_ref=default`, `decision_ref`, `verifier_ref`, bounded 1000-character `rationale`, and safe `decided_by`.
 
 Output: structured `KnowledgeRecord` metadata plus a JSON text content block with `state=org_promoted` only after stricter org gates pass.
 
@@ -555,7 +683,7 @@ Output: structured `KnowledgeRecord` metadata plus a JSON text content block wit
 
 Alias: `projects_knowledge_reject`
 
-Input schema: `id`, `knowledge_id`, `decision_ref`, `verifier_ref`, bounded `rationale`, and optional safe `decided_by`.
+Input schema: `id`, `knowledge_id`, `decision_ref`, `verifier_ref`, bounded 1000-character `rationale`, and optional safe `decided_by`.
 
 Output: structured rejected `KnowledgeRecord` metadata plus a JSON text content block.
 
@@ -563,7 +691,7 @@ Output: structured rejected `KnowledgeRecord` metadata plus a JSON text content 
 
 Alias: `projects_knowledge_supersede`
 
-Input schema: `id`, `knowledge_id`, `superseded_by_ref`, `decision_ref`, `verifier_ref`, bounded `rationale`, and optional safe `decided_by`.
+Input schema: `id`, `knowledge_id`, `superseded_by_ref`, `decision_ref`, `verifier_ref`, bounded 1000-character `rationale`, and optional safe `decided_by`.
 
 Output: structured superseded `KnowledgeRecord` metadata plus a JSON text content block. Use this for stale or contradicted promoted knowledge instead of deletion.
 

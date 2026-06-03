@@ -114,6 +114,11 @@ file_path = "/tmp/private/mivia.log"
 content_graph_enabled = true
 live_updates_enabled = true
 
+[automation]
+enabled = false
+runner_enabled = false
+codex_binary_path = "/private/bin/codex"
+
 [[projects]]
 id = "example-service"
 display_name = "Example"
@@ -139,7 +144,7 @@ project_keys = ["MIVIA"]
 		t.Fatalf("expected valid config, exit=%d stdout=%s stderr=%s", exitCode, stdout.String(), stderr.String())
 	}
 	raw := stdout.String()
-	for _, forbidden := range []string{configPath, projectRoot, "/tmp/private", "/home/user", "127.0.0.1:9090", "https://example.atlassian.net", "JIRA_EMAIL", "jira-token"} {
+	for _, forbidden := range []string{configPath, projectRoot, "/tmp/private", "/private/bin", "/home/user", "127.0.0.1:9090", "https://example.atlassian.net", "JIRA_EMAIL", "jira-token"} {
 		if strings.Contains(raw, forbidden) {
 			t.Fatalf("redacted report leaked %q: %s", forbidden, raw)
 		}
@@ -153,6 +158,9 @@ project_keys = ["MIVIA"]
 	}
 	if got := report.Effective.Projects[0].Integrations.Jira.CredentialRefs; !got.Present || got.Class != "credential_ref" {
 		t.Fatalf("expected credential refs to be class-only, got %#v", got)
+	}
+	if got := report.Effective.Automation.CodexBinaryPath; !got.Present || got.Class != "path" {
+		t.Fatalf("expected automation codex binary path to be redacted, got %#v", got)
 	}
 }
 
@@ -177,6 +185,19 @@ content_graph_enabled = false
 `)
 
 	assertConfigCheckInvalid(t, configPath, "invalid_ingestion", []string{configPath})
+}
+
+func TestConfigCheckRedactedJSONInvalidAutomation(t *testing.T) {
+	configPath := writeConfigFixture(t, `
+version = 1
+
+[automation]
+enabled = false
+runner_enabled = true
+codex_binary_path = "/private/bin/codex"
+`)
+
+	assertConfigCheckInvalid(t, configPath, "invalid_automation", []string{configPath, "/private/bin/codex"})
 }
 
 func TestConfigCheckRedactedJSONInvalidWorkspace(t *testing.T) {
