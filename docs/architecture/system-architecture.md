@@ -23,6 +23,8 @@ Local task plans and research plans are not stable technical documentation. Do n
 - Project workspace services: `internal/projectworkspace` handles governed git status/diff, current eligible file reads with opaque edit tokens, and token-guarded exact byte-span edits for explicitly opted-in workspaces.
 - Project evidence services: `internal/projectevidence` stores project-scoped Evidence Graph metadata for claims, evidence refs, decisions, actions, outcomes, artifact links, and promotion links through REST and MCP without raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, or PII.
 - Project confidence services: `internal/projectconfidence` calculates and stores deterministic metadata-only confidence assessments for Evidence Graph claims through REST and MCP. The implemented confidence routes are `POST /api/v1/projects/{id}/confidence/claims/{claim_id}/score`, `GET /api/v1/projects/{id}/confidence/claims/{claim_id}`, and `GET /api/v1/projects/{id}/confidence/claims?band=&min_score=&max_score=&recommendation=&run_id=&trace_id=&page_size=&page_token=`. The implemented MCP tools are `projects.confidence.claims.score`, `projects.confidence.claims.get`, and `projects.confidence.claims.list` with underscore aliases. They expose score, band, recommendation, bounded factors, and safe input counters only; no raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI/provider scoring, embedding scoring, or vector scoring are stored or returned.
+- Project work plan services: `internal/projectworkplan` stores metadata-only Work Plans and Work Tasks for governed multi-step execution. Work Tasks must be decomposed for isolated low-intelligence workers, claimed before execution, and completed only after verifier refs plus independent review refs or a bounded tiny-task review exemption. Implementer self-review is rejected when both run IDs are known. Work Task records link context pack refs, Evidence Graph refs, confidence refs, verifier refs, review refs, AgentRun refs, and Knowledge Promotion candidate refs without storing raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
+- Project automation services: `internal/projectautomation` stores metadata-only automation definitions and runs over existing Work Plans and ready Work Tasks. Automation is an executor layer, not a planning substitute. Codex CLI execution is required when available and enabled, external execution is claimed by `mivia-automation-runner` in the user's logged-in local Codex environment, and automation output remains untrusted until independent review refs, verifier refs, Evidence Graph outcomes, confidence scoring where reusable, and Knowledge Promotion gates are complete.
 - Project knowledge services: `internal/projectknowledge` turns verified Evidence Graph and Confidence Engine conclusions into metadata-only reusable knowledge. Project-level promotion is the default. Org-level promotion is optional, stricter, explicit, never automatic, and limited to `org_ref=default` in v1. Implemented REST routes are `POST /api/v1/projects/{id}/knowledge/candidates`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/validate`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/promote-project`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/submit-org-review`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/promote-org`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/reject`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/supersede`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/reuse-events`, `GET /api/v1/projects/{id}/knowledge/{knowledge_id}`, `GET /api/v1/projects/{id}/knowledge?scope=&state=&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=`, and `GET /api/v1/orgs/{org_ref}/knowledge?state=org_promoted&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=`. Implemented MCP tools are `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, and `orgs.knowledge.list` with underscore aliases. Knowledge records must not store raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
 - Stores: Ladybug graph abstraction for graph data; lazy-opened Pebble-backed Ladybug graphs for durable content-graph persistence; SQLite for local app configuration, ingestion state, extractor cache, and FTS-backed governed search. Content-graph projects can use persistent project-scoped graph/search stores or process-local memory; persistent stores derive from the configured Ladybug path parent under `projects/<project-id>/`, with project search filenames tied to the Pebble graph storage epoch.
 - Boundary: localhost-only by default; no approved production deployment, public API exposure, auth model, live provider, external crawling, embedding provider, vector dimension, arbitrary shell endpoint, raw patch upload, git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool, or PII processing.
@@ -47,6 +49,11 @@ flowchart TB
   ProjectWorkspace["governed workspace status/diff/read/edit"]
   ProjectEvidence["project Evidence Graph metadata"]
   ProjectConfidence["project confidence metadata"]
+  WorkPlans["project Work Plans"]
+  WorkTasks["project Work Tasks"]
+  ReviewGate["independent review gate"]
+  VerifierGate["orchestrator verifier gate"]
+  ProjectAutomation["project automation and Codex runner metadata"]
   ProjectKnowledge["project and org knowledge metadata"]
   Scheduler["fair ingestion scheduler"]
   Watcher["live watcher orchestrator"]
@@ -114,6 +121,24 @@ flowchart TB
   ProjectConfidence --> Reliability
   ProjectConfidence --> ContextPacks
   ProjectConfidence --> GraphRouter
+  REST --> WorkPlans
+  MCP --> WorkPlans
+  WorkPlans --> WorkTasks
+  WorkTasks --> ContextPacks
+  WorkTasks --> ProjectEvidence
+  WorkTasks --> ProjectConfidence
+  WorkTasks --> ReviewGate
+  WorkTasks --> VerifierGate
+  ReviewGate --> WorkTasks
+  VerifierGate --> WorkTasks
+  WorkTasks --> ProjectKnowledge
+  WorkTasks --> AgentRuns
+  REST --> ProjectAutomation
+  MCP --> ProjectAutomation
+  ProjectAutomation --> WorkPlans
+  ProjectAutomation --> WorkTasks
+  ProjectAutomation --> ReviewGate
+  ProjectAutomation --> VerifierGate
   REST --> ProjectKnowledge
   MCP --> ProjectKnowledge
   ProjectKnowledge --> ProjectEvidence
@@ -124,6 +149,9 @@ flowchart TB
   MCP --> ResearchService
   ResearchService --> Redaction
   AgentService --> Ladybug
+  WorkPlans --> Ladybug
+  WorkTasks --> Ladybug
+  ProjectAutomation --> Ladybug
   ResearchService --> Ladybug
   AgentRuns --> Ladybug
   AgentService --> SQLite
@@ -328,6 +356,50 @@ Exact agent sequence: query project knowledge; query org knowledge if making a c
 
 Reuse events are mandatory when an agent uses, skips, finds stale, or finds contradicted knowledge. Stale or contradicted knowledge is superseded, not deleted.
 
+## Governed Work Plan Lifecycle
+
+Work Plans and Work Tasks are the persistent execution structure between a user request and knowledge reuse. They are mandatory for governed multi-step work when exposed by the running MCP server.
+
+```mermaid
+sequenceDiagram
+  participant User as User request
+  participant Orchestrator as Orchestrator agent
+  participant MCP as Work Plan MCP or REST
+  participant Worker as Worker agent
+  participant Reviewer as Independent reviewer
+  participant Verifier as Orchestrator verifier
+  participant Evidence as Evidence Graph
+  participant Confidence as Confidence Engine
+  participant Knowledge as Knowledge Promotion
+  participant Automation as Codex automation runner
+
+  User->>Orchestrator: Request task xyz
+  Orchestrator->>MCP: Resume or create Work Plan
+  Orchestrator->>MCP: Create low-intelligence-ready Work Tasks
+  Orchestrator->>MCP: Attach context pack, evidence, or claim refs
+  Orchestrator->>Automation: Optional Codex worker over ready Work Task
+  Orchestrator->>Worker: Assign one bounded task
+  Worker->>MCP: Claim and start task
+  Worker->>MCP: Attach safe evidence and claim refs
+  Worker-->>Orchestrator: Return bounded outcome metadata
+  Orchestrator->>Reviewer: Assign independent review
+  Reviewer->>MCP: Attach review_result_ref
+  Orchestrator->>Verifier: Run verifier commands
+  Verifier->>MCP: Attach verifier_result_ref
+  Orchestrator->>Evidence: Record decisions, actions, outcomes
+  Orchestrator->>Confidence: Score reusable claims
+  Orchestrator->>Knowledge: Create candidate and promote only after gates
+  Orchestrator->>MCP: Complete task after review and verifier refs
+```
+
+Completion rules:
+
+- `projects.work_tasks.complete` requires verifier result refs plus either independent review result refs or a bounded `review_exempt_reason`.
+- `projects.work_tasks.attach_review_result` rejects self-review when `attached_by_run_id` matches the task `claimed_by_run_id`.
+- `review_exempt_reason` is only for tiny mechanical tasks with no code, config, data, auth, tenancy, privacy, API, migration, automation, or promotion risk.
+- Automation output is untrusted until independent review refs, verifier refs, Evidence Graph outcomes, confidence scoring where reusable, and Knowledge Promotion gates are complete.
+- Worker prompts and task metadata remain refs and bounded summaries only; no raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
+
 ## Documentation Update Sequence
 
 ```mermaid
@@ -361,6 +433,7 @@ sequenceDiagram
 - Promotion gates store metadata-only decisions for existing agent-run artifact refs. They do not copy runtime payloads into the knowledge graph, and validated/promoted/rejected decisions require verifier refs and bounded decision text.
 - Evidence Graph records project-scoped metadata only: claim refs, evidence refs, decisions, action refs, outcome refs, artifact refs, promotion refs, safe changed-file refs, run IDs, trace IDs, timestamps, and bounded summaries/rationales. It must not store raw prompts, raw source dumps, provider payloads, secrets, roots, raw stderr, skipped sensitive content, or PII.
 - Confidence assessments record project-scoped metadata only: Evidence Graph claim refs, score, band, recommendation, bounded factors, safe source refs, safe input counters, run IDs, trace IDs, and timestamps. They must not store or return raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, PII, raw graph traversal, raw request payloads, raw scoring internals, AI/provider scoring, embedding scoring, or vector scoring.
+- Work Plans, Work Tasks, review results, verifier results, and automation records store metadata only: plan/task refs, status, owner/run refs, trace refs, dependency refs, context pack refs, evidence refs, claim refs, review refs, verifier refs, confidence refs, knowledge candidate refs, safe likely affected files, expected output, failure/block criteria, resume instructions, and bounded outcomes. They must not store or return raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII. Work Task completion requires verifier refs plus independent review refs or a bounded tiny-task review exemption.
 - Knowledge Promotion records metadata only: knowledge refs, claim refs, confidence refs, evidence refs, verifier refs, outcome refs, promotion refs, reuse refs, decisions, summaries, and reuse guidance. They must not store or return raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
 - Named AST search runs against eligible indexed chunks using the server-owned query catalog for Go, Python, JavaScript, JSX, TypeScript, TSX, C#, and Dart. Raw Tree-sitter query syntax is not exposed. Coverage gaps such as oversized files are represented only as safe metadata counts.
 - Full scans run through a fair scheduler, dispatch configurable file workers under a shared global cap, flush prepared graph/search writes by file-count cap and internal write weight, persist running progress counters, and tombstone stale files only after enumeration and workers drain. REST and MCP manual ingestion and search-index repair calls enqueue work and return run metadata without waiting for scan completion. Live path events have priority over full-scan continuation, and operators can cap per-project worker use below the global worker count when fairness across projects matters.

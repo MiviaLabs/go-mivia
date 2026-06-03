@@ -69,12 +69,13 @@ func TestCallToolTaskLifecycleAttachmentsResumeAndNext(t *testing.T) {
 	contextPack := call(t, api, "projects.work_tasks.attach_context_pack", `{"id":"example-service","task_id":"`+taskID+`","context_pack_ref":"context-pack-2"}`)
 	claimRef := call(t, api, "projects.work_tasks.attach_claim", `{"id":"example-service","task_id":"`+taskID+`","claim_ref":"claim-1"}`)
 	verifier := call(t, api, "projects.work_tasks.attach_verifier_result", `{"id":"example-service","task_id":"`+taskID+`","verifier_result_ref":"go-test-focused","status":"passed"}`)
+	review := call(t, api, "projects.work_tasks.attach_review_result", `{"id":"example-service","task_id":"`+taskID+`","review_result_ref":"review-focused","status":"passed","attached_by_run_id":"agent_run_review"}`)
 	candidate := call(t, api, "projects.work_tasks.promote_knowledge_candidate", `{"id":"example-service","task_id":"`+taskID+`","knowledge_candidate_ref":"knowledge-candidate-1","claim_refs":["claim-1"],"evidence_refs":["evidence-1"],"confidence_ref":"confidence-1","verifier_result_refs":["go-test-focused"]}`)
-	complete := call(t, api, "projects.work_tasks.complete", `{"id":"example-service","task_id":"`+taskID+`","outcome":"MCP tools wired","safe_next_action":"get next task","verifier_result_refs":["go-test-focused"],"claim_refs":["claim-1"],"evidence_refs":["evidence-1"],"knowledge_candidate_refs":["knowledge-candidate-1"]}`)
+	complete := call(t, api, "projects.work_tasks.complete", `{"id":"example-service","task_id":"`+taskID+`","outcome":"MCP tools wired","safe_next_action":"get next task","verifier_result_refs":["go-test-focused"],"review_result_refs":["review-focused"],"claim_refs":["claim-1"],"evidence_refs":["evidence-1"],"knowledge_candidate_refs":["knowledge-candidate-1"]}`)
 	next := call(t, api, "projects.work_tasks.get_next", `{"id":"example-service","plan_id":"`+planID+`"}`)
 	resume := call(t, api, "projects.work_plans.resume", `{"id":"example-service","plan_id":"`+planID+`","owner_agent":"worker-4"}`)
 
-	for _, result := range []map[string]any{task, stale, cancelled, claim, start, evidence, contextPack, claimRef, verifier, candidate, complete, next, resume} {
+	for _, result := range []map[string]any{task, stale, cancelled, claim, start, evidence, contextPack, claimRef, verifier, review, candidate, complete, next, resume} {
 		requireCommonOutput(t, result)
 	}
 	if structuredString(t, cancelled, "status") != "cancelled" {
@@ -157,7 +158,7 @@ func requireCommonOutput(t *testing.T, result map[string]any) {
 func requireTaskOutput(t *testing.T, result map[string]any) {
 	t.Helper()
 	encoded := jsonText(t, result)
-	for _, field := range []string{"evidence_needed", "context_pack_refs", "likely_files_affected", "dependency_task_ids", "verification_requirement", "resume_instructions", "claim_refs", "evidence_refs", "verifier_result_refs", "knowledge_candidate_refs"} {
+	for _, field := range []string{"evidence_needed", "context_pack_refs", "likely_files_affected", "dependency_task_ids", "verification_requirement", "resume_instructions", "claim_refs", "evidence_refs", "verifier_result_refs", "review_result_refs", "knowledge_candidate_refs"} {
 		if !bytes.Contains(encoded, []byte(`"`+field+`"`)) {
 			t.Fatalf("missing task field %s in %s", field, encoded)
 		}
@@ -253,6 +254,7 @@ func (api *fakeWorkPlanAPI) CallWorkPlanTool(_ context.Context, name string, arg
 		task["claim_refs"] = []string{}
 		task["evidence_refs"] = []string{}
 		task["verifier_result_refs"] = []string{}
+		task["review_result_refs"] = []string{}
 		task["knowledge_candidate_refs"] = []string{}
 		api.tasks[taskID] = task
 		if plan := api.plans[stringValue(input, "plan_id")]; plan != nil {
@@ -266,9 +268,9 @@ func (api *fakeWorkPlanAPI) CallWorkPlanTool(_ context.Context, name string, arg
 	case "projects.work_tasks.start":
 		return api.updateTask(input, "in_progress", "attach evidence or verifier refs", map[string]any{"agent_run_ids": []any{input["run_id"]}, "context_pack_refs": arrayValue(input, "context_pack_refs")})
 	case "projects.work_tasks.update_status":
-		return api.updateTask(input, stringValue(input, "status"), stringValue(input, "safe_next_action"), map[string]any{"outcome": input["outcome"], "verifier_result_refs": arrayValue(input, "verifier_result_refs"), "claim_refs": arrayValue(input, "claim_refs"), "evidence_refs": arrayValue(input, "evidence_refs"), "knowledge_candidate_refs": arrayValue(input, "knowledge_candidate_refs")})
+		return api.updateTask(input, stringValue(input, "status"), stringValue(input, "safe_next_action"), map[string]any{"outcome": input["outcome"], "verifier_result_refs": arrayValue(input, "verifier_result_refs"), "review_result_refs": arrayValue(input, "review_result_refs"), "review_exempt_reason": input["review_exempt_reason"], "claim_refs": arrayValue(input, "claim_refs"), "evidence_refs": arrayValue(input, "evidence_refs"), "knowledge_candidate_refs": arrayValue(input, "knowledge_candidate_refs")})
 	case "projects.work_tasks.complete":
-		return api.updateTask(input, "done", stringValue(input, "safe_next_action"), map[string]any{"outcome": input["outcome"], "verifier_result_refs": arrayValue(input, "verifier_result_refs"), "claim_refs": arrayValue(input, "claim_refs"), "evidence_refs": arrayValue(input, "evidence_refs"), "knowledge_candidate_refs": arrayValue(input, "knowledge_candidate_refs")})
+		return api.updateTask(input, "done", stringValue(input, "safe_next_action"), map[string]any{"outcome": input["outcome"], "verifier_result_refs": arrayValue(input, "verifier_result_refs"), "review_result_refs": arrayValue(input, "review_result_refs"), "review_exempt_reason": input["review_exempt_reason"], "claim_refs": arrayValue(input, "claim_refs"), "evidence_refs": arrayValue(input, "evidence_refs"), "knowledge_candidate_refs": arrayValue(input, "knowledge_candidate_refs")})
 	case "projects.work_tasks.fail":
 		return api.updateTask(input, "failed", stringValue(input, "safe_next_action"), map[string]any{"outcome": input["outcome"]})
 	case "projects.work_tasks.block":
@@ -290,6 +292,8 @@ func (api *fakeWorkPlanAPI) CallWorkPlanTool(_ context.Context, name string, arg
 		return api.appendTaskRef(input, "claim_refs", "claim_ref")
 	case "projects.work_tasks.attach_verifier_result":
 		return api.appendTaskRef(input, "verifier_result_refs", "verifier_result_ref")
+	case "projects.work_tasks.attach_review_result":
+		return api.appendTaskRef(input, "review_result_refs", "review_result_ref")
 	case "projects.work_tasks.promote_knowledge_candidate":
 		return api.appendTaskRef(input, "knowledge_candidate_refs", "knowledge_candidate_ref")
 	default:

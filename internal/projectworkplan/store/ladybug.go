@@ -21,6 +21,7 @@ const (
 	labelWorkTaskContextPackAttachment    = "WorkTaskContextPackAttachment"
 	labelWorkTaskClaimAttachment          = "WorkTaskClaimAttachment"
 	labelWorkTaskVerifierResultAttachment = "WorkTaskVerifierResultAttachment"
+	labelWorkTaskReviewResultAttachment   = "WorkTaskReviewResultAttachment"
 	labelWorkTaskKnowledgeAttachment      = "WorkTaskKnowledgeCandidateAttachment"
 
 	relProjectHasWorkPlan               = "PROJECT_HAS_WORK_PLAN"
@@ -30,6 +31,7 @@ const (
 	relWorkTaskHasContextPackAttachment = "WORK_TASK_HAS_CONTEXT_PACK_ATTACHMENT"
 	relWorkTaskHasClaimAttachment       = "WORK_TASK_HAS_CLAIM_ATTACHMENT"
 	relWorkTaskHasVerifierAttachment    = "WORK_TASK_HAS_VERIFIER_RESULT_ATTACHMENT"
+	relWorkTaskHasReviewAttachment      = "WORK_TASK_HAS_REVIEW_RESULT_ATTACHMENT"
 	relWorkTaskHasKnowledgeAttachment   = "WORK_TASK_HAS_KNOWLEDGE_CANDIDATE_ATTACHMENT"
 )
 
@@ -298,6 +300,10 @@ func attachmentMapping(kind string, ref string) (string, string, string, func(*m
 		return labelWorkTaskVerifierResultAttachment, relWorkTaskHasVerifierAttachment, "verifier_result_ref", func(task *model.WorkTask) {
 			task.VerifierResultRefs = appendUnique(task.VerifierResultRefs, ref)
 		}
+	case "review_result_ref":
+		return labelWorkTaskReviewResultAttachment, relWorkTaskHasReviewAttachment, "review_result_ref", func(task *model.WorkTask) {
+			task.ReviewResultRefs = appendUnique(task.ReviewResultRefs, ref)
+		}
 	case "knowledge_candidate_ref":
 		return labelWorkTaskKnowledgeAttachment, relWorkTaskHasKnowledgeAttachment, "knowledge_candidate_ref", func(task *model.WorkTask) {
 			task.KnowledgeCandidateRefs = appendUnique(task.KnowledgeCandidateRefs, ref)
@@ -385,6 +391,8 @@ func workTaskNode(task model.WorkTask) ladybug.Node {
 		"evidence_refs":            joinList(task.EvidenceRefs),
 		"claim_refs":               joinList(task.ClaimRefs),
 		"verifier_result_refs":     joinList(task.VerifierResultRefs),
+		"review_result_refs":       joinList(task.ReviewResultRefs),
+		"review_exempt_reason":     task.ReviewExemptReason,
 		"artifact_refs":            joinList(task.ArtifactRefs),
 		"agent_run_ids":            joinList(task.AgentRunIDs),
 		"decomposition_quality":    task.DecompositionQuality,
@@ -450,6 +458,8 @@ func nodeToWorkTask(node ladybug.Node) model.WorkTask {
 		EvidenceRefs:            splitList(props["evidence_refs"]),
 		ClaimRefs:               splitList(props["claim_refs"]),
 		VerifierResultRefs:      splitList(props["verifier_result_refs"]),
+		ReviewResultRefs:        splitList(props["review_result_refs"]),
+		ReviewExemptReason:      props["review_exempt_reason"],
 		ArtifactRefs:            splitList(props["artifact_refs"]),
 		AgentRunIDs:             splitList(props["agent_run_ids"]),
 		DecompositionQuality:    props["decomposition_quality"],
@@ -479,7 +489,7 @@ func nodeToAttachment(node ladybug.Node) model.Attachment {
 }
 
 func attachmentKindAndRef(props map[string]string) (string, string) {
-	for _, key := range []string{"evidence_ref", "context_pack_ref", "claim_ref", "verifier_result_ref", "knowledge_candidate_ref"} {
+	for _, key := range []string{"evidence_ref", "context_pack_ref", "claim_ref", "verifier_result_ref", "review_result_ref", "knowledge_candidate_ref"} {
 		if props[key] != "" {
 			return key, props[key]
 		}
@@ -556,6 +566,7 @@ func cloneWorkTask(task model.WorkTask) model.WorkTask {
 	task.EvidenceRefs = cloneStrings(task.EvidenceRefs)
 	task.ClaimRefs = cloneStrings(task.ClaimRefs)
 	task.VerifierResultRefs = cloneStrings(task.VerifierResultRefs)
+	task.ReviewResultRefs = cloneStrings(task.ReviewResultRefs)
 	task.ArtifactRefs = cloneStrings(task.ArtifactRefs)
 	task.AgentRunIDs = cloneStrings(task.AgentRunIDs)
 	return task

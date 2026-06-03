@@ -1012,6 +1012,32 @@ paths:
           $ref: '#/components/responses/NotFound'
         '415':
           $ref: '#/components/responses/UnsupportedMediaType'
+  /projects/{id}/work-tasks/{task_id}/review-results:
+    post:
+      operationId: attachProjectWorkTaskReviewResult
+      summary: Attach independent review result ref to Work Task
+      description: Attaches an independent review result ref to a Work Task. Raw comments, source dumps, command output, roots, secrets, and PII are prohibited. The review run must be independent from the implementing claimed run when both are known.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TaskID'
+      requestBody:
+        $ref: '#/components/requestBodies/ProjectWorkTaskAttachment'
+      responses:
+        '201':
+          description: Attached review result ref
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectWorkTaskAttachment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
   /projects/{id}/work-tasks/{task_id}/knowledge-candidates:
     post:
       operationId: promoteProjectWorkTaskKnowledgeCandidate
@@ -4851,6 +4877,11 @@ components:
         verifier_result_refs:
           type: array
           items: {type: string}
+        review_result_refs:
+          type: array
+          items: {type: string}
+        review_exempt_reason:
+          type: string
         artifact_refs:
           type: array
           items: {type: string}
@@ -4874,13 +4905,13 @@ components:
         project_id: {type: string}
         plan_id: {type: string}
         task_id: {type: string}
-        kind: {type: string, enum: [evidence, context_pack, claim, verifier_result, knowledge_candidate]}
+        kind: {type: string, enum: [evidence, context_pack, claim, verifier_result, review_result, knowledge_candidate]}
         ref: {type: string}
         attached_by_run_id: {type: string}
         trace_id: {type: string}
         note: {type: string}
         created_at: {type: string, format: date-time}
-      description: Metadata-only attachment linking a Work Task to existing evidence, context pack, claim, verifier result, or knowledge candidate refs.
+      description: Metadata-only attachment linking a Work Task to existing evidence, context pack, claim, verifier result, independent review result, or knowledge candidate refs.
     ProjectWorkPlanList:
       type: object
       additionalProperties: false
@@ -5036,7 +5067,12 @@ components:
           type: array
           maxItems: 100
           items: {type: string, maxLength: 200}
-      description: Metadata-only action request for Work Task state changes. Raw command output, prompts, completions, provider payloads, roots, secrets, external URLs, and PII are prohibited.
+        review_result_refs:
+          type: array
+          maxItems: 100
+          items: {type: string, maxLength: 200}
+        review_exempt_reason: {type: string, maxLength: 300}
+      description: Metadata-only action request for Work Task state changes. Completing a task requires verifier result refs plus either independent review result refs or a bounded review_exempt_reason for trivial mechanical work. Raw command output, prompts, completions, provider payloads, roots, secrets, external URLs, and PII are prohibited.
     UpdateProjectWorkTaskStatusRequest:
       allOf:
         - $ref: '#/components/schemas/ProjectWorkTaskActionRequest'
@@ -5059,7 +5095,7 @@ components:
         attached_by_run_id: {type: string, maxLength: 200}
         trace_id: {type: string, maxLength: 200}
         note: {type: string, maxLength: 500}
-      description: Metadata-only attachment request. The ref must point to an existing context pack, Evidence Graph claim/evidence, verifier result, or Knowledge Promotion candidate.
+      description: Metadata-only attachment request. The ref must point to an existing context pack, Evidence Graph claim/evidence, verifier result, independent review result, or Knowledge Promotion candidate.
     ProjectEvidenceClaimStatus:
       type: string
       enum: [candidate, validated, promoted, rejected]

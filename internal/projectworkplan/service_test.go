@@ -237,12 +237,73 @@ func TestServiceMCPAdapterAcceptsDocumentedActionFields(t *testing.T) {
 	callWorkPlanTool(t, svc, "projects.work_tasks.claim", map[string]any{"id": "project-1", "task_id": task.ID, "owner_agent": "worker-1", "run_id": "run-1"})
 	callWorkPlanTool(t, svc, "projects.work_tasks.start", map[string]any{"id": "project-1", "task_id": task.ID, "run_id": "run-1", "context_pack_refs": []string{"context-pack:manifest:68c3ee2ad1556459"}})
 	callWorkPlanTool(t, svc, "projects.work_tasks.attach_verifier_result", map[string]any{"id": "project-1", "task_id": task.ID, "verifier_result_ref": "verifier:focused-test", "status": "passed", "attached_by_run_id": "run-1"})
-	completed := callWorkPlanTool(t, svc, "projects.work_tasks.complete", map[string]any{"id": "project-1", "task_id": task.ID, "outcome": "focused verifier passed", "safe_next_action": "get next task", "run_id": "run-1", "evidence_refs": []string{"evidence:focused-test"}, "claim_refs": []string{"claim:focused-test"}, "knowledge_candidate_refs": []string{"knowledge:focused-test"}, "verifier_result_refs": []string{"verifier:focused-test"}}).(projectworkplan.WorkTask)
+	callWorkPlanTool(t, svc, "projects.work_tasks.attach_review_result", map[string]any{"id": "project-1", "task_id": task.ID, "review_result_ref": "review:focused-test", "status": "passed", "attached_by_run_id": "run-review-1"})
+	completed := callWorkPlanTool(t, svc, "projects.work_tasks.complete", map[string]any{"id": "project-1", "task_id": task.ID, "outcome": "focused verifier passed", "safe_next_action": "get next task", "run_id": "run-1", "evidence_refs": []string{"evidence:focused-test"}, "claim_refs": []string{"claim:focused-test"}, "knowledge_candidate_refs": []string{"knowledge:focused-test"}, "verifier_result_refs": []string{"verifier:focused-test"}, "review_result_refs": []string{"review:focused-test"}}).(projectworkplan.WorkTask)
 	if completed.Status != projectworkplan.WorkTaskStatusDone {
 		t.Fatalf("expected done task, got %#v", completed)
 	}
-	if !contains(completed.EvidenceRefs, "evidence:focused-test") || !contains(completed.ClaimRefs, "claim:focused-test") || !contains(completed.KnowledgeCandidateRefs, "knowledge:focused-test") {
-		t.Fatalf("expected documented action refs to be preserved, got evidence=%#v claims=%#v knowledge=%#v", completed.EvidenceRefs, completed.ClaimRefs, completed.KnowledgeCandidateRefs)
+	if !contains(completed.EvidenceRefs, "evidence:focused-test") || !contains(completed.ClaimRefs, "claim:focused-test") || !contains(completed.KnowledgeCandidateRefs, "knowledge:focused-test") || !contains(completed.ReviewResultRefs, "review:focused-test") {
+		t.Fatalf("expected documented action refs to be preserved, got evidence=%#v claims=%#v knowledge=%#v reviews=%#v", completed.EvidenceRefs, completed.ClaimRefs, completed.KnowledgeCandidateRefs, completed.ReviewResultRefs)
+	}
+}
+
+func TestServiceCompletionRequiresIndependentReviewOrExemption(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-review")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-review"))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-impl"}); err != nil {
+		t.Fatalf("claim task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-impl"}); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	if _, err := svc.AttachVerifierResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "verifier:review-gate", AttachedByRunID: "run-impl"}); err != nil {
+		t.Fatalf("attach verifier: %v", err)
+	}
+	if _, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, Outcome: "verified but not reviewed", VerifierResultRefs: []string{"verifier:review-gate"}}); err == nil {
+		t.Fatal("expected completion without review to fail")
+	}
+	if _, err := svc.AttachReviewResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "review:self", AttachedByRunID: "run-impl"}); err == nil {
+		t.Fatal("expected self-review to fail")
+	}
+	if _, err := svc.AttachReviewResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "review:independent", AttachedByRunID: "run-review"}); err != nil {
+		t.Fatalf("attach independent review: %v", err)
+	}
+	completed, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, Outcome: "verified and independently reviewed", SafeNextAction: "get next task", VerifierResultRefs: []string{"verifier:review-gate"}, ReviewResultRefs: []string{"review:independent"}})
+	if err != nil {
+		t.Fatalf("complete with review: %v", err)
+	}
+	if completed.Status != projectworkplan.WorkTaskStatusDone || !contains(completed.ReviewResultRefs, "review:independent") {
+		t.Fatalf("expected reviewed done task, got %+v", completed)
+	}
+
+	exemptTask, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-review-exempt"))
+	if err != nil {
+		t.Fatalf("create exempt task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: exemptTask.ID, RunID: "run-exempt"}); err != nil {
+		t.Fatalf("claim exempt task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: exemptTask.ID, RunID: "run-exempt"}); err != nil {
+		t.Fatalf("start exempt task: %v", err)
+	}
+	if _, err := svc.AttachVerifierResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: exemptTask.ID, Ref: "verifier:exempt", AttachedByRunID: "run-exempt"}); err != nil {
+		t.Fatalf("attach exempt verifier: %v", err)
+	}
+	exempt, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: exemptTask.ID, Outcome: "no reusable project knowledge; mechanical metadata-only change", SafeNextAction: "get next task", VerifierResultRefs: []string{"verifier:exempt"}, ReviewExemptReason: "mechanical metadata-only docs typo"})
+	if err != nil {
+		t.Fatalf("complete exempt task: %v", err)
+	}
+	if exempt.ReviewExemptReason == "" {
+		t.Fatalf("expected review exemption reason, got %+v", exempt)
 	}
 }
 

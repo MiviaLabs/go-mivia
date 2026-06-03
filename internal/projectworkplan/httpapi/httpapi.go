@@ -60,6 +60,7 @@ func RegisterRoutes(mux *http.ServeMux, svc *projectworkplan.Service) {
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/context-packs", attachContextPackHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/claims", attachClaimHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/verifier-results", attachVerifierResultHandler(svc))
+	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/review-results", attachReviewResultHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/knowledge-candidates", promoteKnowledgeCandidateHandler(svc))
 }
 
@@ -353,6 +354,18 @@ func attachVerifierResultHandler(svc *projectworkplan.Service) http.Handler {
 		input.ProjectID = ctxInput.projectID
 		input.TaskID = ctxInput.taskID
 		return svc.AttachVerifierResult(r.Context(), input)
+	})
+}
+
+func attachReviewResultHandler(svc *projectworkplan.Service) http.Handler {
+	return attachHandler(func(ctxInput actionContext, r *http.Request) (any, error) {
+		var input projectworkplan.AttachInput
+		if err := decodeJSON(r, &input); err != nil {
+			return nil, err
+		}
+		input.ProjectID = ctxInput.projectID
+		input.TaskID = ctxInput.taskID
+		return svc.AttachReviewResult(r.Context(), input)
 	})
 }
 

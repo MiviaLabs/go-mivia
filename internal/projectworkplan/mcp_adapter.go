@@ -145,6 +145,13 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 		}
 		input.Ref = input.VerifierResultRef
 		return svc.AttachVerifierResult(ctx, input.attach())
+	case "projects.work_tasks.attach_review_result":
+		var input attachMCPInput
+		if err := decodeMCP(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+		}
+		input.Ref = input.ReviewResultRef
+		return svc.AttachReviewResult(ctx, input.attach())
 	case "projects.work_tasks.promote_knowledge_candidate":
 		var input attachMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -242,10 +249,12 @@ type taskActionMCPInput struct {
 	KnowledgeRefs      []string `json:"knowledge_candidate_refs,omitempty"`
 	ResumeInstructions string   `json:"resume_instructions,omitempty"`
 	VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
+	ReviewResultRefs   []string `json:"review_result_refs,omitempty"`
+	ReviewExemptReason string   `json:"review_exempt_reason,omitempty"`
 }
 
 func (input taskActionMCPInput) action() WorkTaskActionInput {
-	return WorkTaskActionInput{ProjectID: input.ID, TaskID: input.TaskID, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, ContextPackRefs: input.ContextPackRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, KnowledgeRefs: input.KnowledgeRefs, Outcome: input.Outcome, BlockedReason: input.BlockedReason, BlockedByTaskIDs: input.BlockedByTaskIDs, ResumeInstructions: input.ResumeInstructions, VerifierResultRefs: input.VerifierResultRefs}
+	return WorkTaskActionInput{ProjectID: input.ID, TaskID: input.TaskID, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, ContextPackRefs: input.ContextPackRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, KnowledgeRefs: input.KnowledgeRefs, Outcome: input.Outcome, BlockedReason: input.BlockedReason, BlockedByTaskIDs: input.BlockedByTaskIDs, ResumeInstructions: input.ResumeInstructions, VerifierResultRefs: input.VerifierResultRefs, ReviewResultRefs: input.ReviewResultRefs, ReviewExemptReason: input.ReviewExemptReason}
 }
 
 type taskStatusMCPInput struct {
@@ -287,6 +296,7 @@ type attachMCPInput struct {
 	ContextPackRef        string   `json:"context_pack_ref,omitempty"`
 	ClaimRef              string   `json:"claim_ref,omitempty"`
 	VerifierResultRef     string   `json:"verifier_result_ref,omitempty"`
+	ReviewResultRef       string   `json:"review_result_ref,omitempty"`
 	KnowledgeCandidateRef string   `json:"knowledge_candidate_ref,omitempty"`
 	Status                string   `json:"status,omitempty"`
 	ConfidenceRef         string   `json:"confidence_ref,omitempty"`

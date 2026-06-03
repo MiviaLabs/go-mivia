@@ -92,6 +92,8 @@ type WorkTask struct {
 	EvidenceRefs            []string  `json:"evidence_refs,omitempty"`
 	ClaimRefs               []string  `json:"claim_refs,omitempty"`
 	VerifierResultRefs      []string  `json:"verifier_result_refs,omitempty"`
+	ReviewResultRefs        []string  `json:"review_result_refs,omitempty"`
+	ReviewExemptReason      string    `json:"review_exempt_reason,omitempty"`
 	ArtifactRefs            []string  `json:"artifact_refs,omitempty"`
 	AgentRunIDs             []string  `json:"agent_run_ids,omitempty"`
 	DecompositionQuality    string    `json:"decomposition_quality"`
@@ -201,6 +203,8 @@ type WorkTaskActionInput struct {
 	KnowledgeRefs      []string `json:"knowledge_candidate_refs,omitempty"`
 	ResumeInstructions string   `json:"resume_instructions,omitempty"`
 	VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
+	ReviewResultRefs   []string `json:"review_result_refs,omitempty"`
+	ReviewExemptReason string   `json:"review_exempt_reason,omitempty"`
 }
 
 type UpdateWorkTaskStatusInput struct {

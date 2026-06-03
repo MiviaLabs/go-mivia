@@ -39,12 +39,13 @@ When exposed, agents MUST use Work Plans and Work Tasks for governed multi-step 
 3. `projects.work_tasks.claim` and `projects.work_tasks.start` are required before execution.
 4. Context-dependent tasks must attach context pack refs with `projects.work_tasks.attach_context_pack`.
 5. Evidence-backed tasks must attach Evidence Graph or claim refs with `projects.work_tasks.attach_evidence` and `projects.work_tasks.attach_claim`.
-6. Tasks with verification requirements must attach verifier result refs with `projects.work_tasks.attach_verifier_result` before completion.
-7. Lifecycle order is mandatory. Work Plans normally move `planned -> active -> done`; do not jump `planned -> done`. Work Tasks normally move `planned -> ready -> claimed -> in_progress -> verifying/needs_review -> done`; use `blocked`, `failed`, `cancelled`, or `superseded` only when that state is true.
-8. `projects.work_tasks.complete`, `projects.work_tasks.block`, `projects.work_tasks.fail`, or `projects.work_tasks.update_status` must keep status current; blocked tasks require a blocked reason and resume instructions.
-9. Before completing implementation, review, research, or automation tasks, agents must make a reusable-knowledge decision. If a durable conclusion exists, attach Evidence Graph claim/evidence refs, score confidence when reusable, and create/link a Knowledge Promotion candidate. If no reusable knowledge exists, record a short no-reusable-knowledge reason in the task outcome or attachment note.
-10. `projects.work_tasks.get_next` is required after resume, completion, block, or uncertainty.
-11. `projects.work_tasks.promote_knowledge_candidate` may create or link only a Knowledge Promotion candidate. It must not bypass Evidence Graph, Confidence Engine, verifier, project, or org promotion gates.
+6. Tasks must attach verifier result refs with `projects.work_tasks.attach_verifier_result` before completion. The orchestrator runs verifier commands unless the task explicitly allows a worker to run one narrow verifier.
+7. Non-trivial or write-capable tasks must attach independent review result refs with `projects.work_tasks.attach_review_result` before completion. The reviewer must be a different agent/run from the implementing `claimed_by_run_id` when known. Use `review_exempt_reason` only for tiny mechanical tasks with no code, config, data, auth, tenancy, privacy, API, migration, automation, or promotion risk.
+8. Lifecycle order is mandatory. Work Plans normally move `planned -> active -> done`; do not jump `planned -> done`. Work Tasks normally move `planned -> ready -> claimed -> in_progress -> verifying/needs_review -> done`; use `blocked`, `failed`, `cancelled`, or `superseded` only when that state is true.
+9. `projects.work_tasks.complete`, `projects.work_tasks.block`, `projects.work_tasks.fail`, or `projects.work_tasks.update_status` must keep status current; blocked tasks require a blocked reason and resume instructions.
+10. Before completing implementation, review, research, or automation tasks, agents must make a reusable-knowledge decision. If a durable conclusion exists, attach Evidence Graph claim/evidence refs, score confidence when reusable, and create/link a Knowledge Promotion candidate. If no reusable knowledge exists, record a short no-reusable-knowledge reason in the task outcome or attachment note.
+11. `projects.work_tasks.get_next` is required after resume, completion, block, or uncertainty.
+12. `projects.work_tasks.promote_knowledge_candidate` may create or link only a Knowledge Promotion candidate. It must not bypass Evidence Graph, Confidence Engine, verifier, project, or org promotion gates.
 
 Dotted tools and underscore aliases:
 
@@ -70,12 +71,13 @@ projects.work_tasks.attach_evidence
 projects.work_tasks.attach_context_pack
 projects.work_tasks.attach_claim
 projects.work_tasks.attach_verifier_result
+projects.work_tasks.attach_review_result
 projects.work_tasks.promote_knowledge_candidate
 ```
 
 All Work Plan and Work Task metadata must remain metadata-only. Raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, and PII are prohibited.
 
-Subagents are not exempt from Evidence Graph or Knowledge Promotion. Worker/subagents must return safe candidate claim refs, evidence refs, verifier refs, confidence refs when available, and knowledge candidate refs, or explicitly state `no_reusable_knowledge` with a bounded reason. The orchestrator is responsible for verifier execution, confidence scoring, and project/org promotion gates.
+Subagents are not exempt from Evidence Graph, independent review, or Knowledge Promotion. Worker/subagents must return safe candidate claim refs, evidence refs, confidence refs when available, and knowledge candidate refs, or explicitly state `no_reusable_knowledge` with a bounded reason. The orchestrator is responsible for independent reviewer assignment, verifier execution, confidence scoring, and project/org promotion gates.
 
 ### Parallel Work Plan Isolation
 
@@ -103,8 +105,9 @@ When exposed, automation tools MUST follow these rules:
 6. Parallel work MUST be orchestrator-owned through a safe parallel batch.
 7. Parallel batches may include only independent ready Work Tasks with satisfied dependencies and disjoint write/verifier/artifact scope.
 8. Worker/subagent prompts must be generated from Work Task metadata and safe refs only.
-9. Automation output is untrusted until verifier refs and Evidence Graph outcomes exist.
-10. Any reusable conclusion from automation MUST be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
+9. Automation output is untrusted until independent review refs, verifier refs, and Evidence Graph outcomes exist.
+10. Every automation-produced write-capable task needs an independent review result attached with `projects.work_tasks.attach_review_result` before completion. Do not let an implementation worker review its own task.
+11. Any reusable conclusion from automation MUST be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
 
 Dotted tools and underscore aliases:
 
@@ -147,13 +150,14 @@ projects.work_plans.resume/list/create
 -> projects.automations.create over the existing plan/tasks
 -> projects.automations.run or run_parallel_batch
 -> external runner claim/complete when runner_execution=external
+-> independent review result attached to task
 -> orchestrator verifier runs outside workers
 -> projects.work_tasks.attach_verifier_result
 -> Evidence Graph decisions/actions/outcomes for reusable conclusions
 -> projects.confidence.claims.score when knowledge may be reused
 -> projects.work_tasks.promote_knowledge_candidate
 -> projects.knowledge.validate / promote_project / optional org review/promote
--> projects.work_tasks.complete only after verification requirements are satisfied
+-> projects.work_tasks.complete only after independent review and verification requirements are satisfied
 ```
 
 ### `tasks.create`

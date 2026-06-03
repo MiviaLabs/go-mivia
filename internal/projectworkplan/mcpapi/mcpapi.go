@@ -41,6 +41,7 @@ var workPlanTools = []string{
 	"projects.work_tasks.attach_context_pack",
 	"projects.work_tasks.attach_claim",
 	"projects.work_tasks.attach_verifier_result",
+	"projects.work_tasks.attach_review_result",
 	"projects.work_tasks.promote_knowledge_candidate",
 }
 
@@ -49,6 +50,7 @@ func ToolDefinitions() []map[string]any {
 	text := map[string]any{"type": "string", "minLength": 1, "maxLength": 500}
 	longText := map[string]any{"type": "string", "minLength": 1, "maxLength": 1200}
 	optionalText := map[string]any{"type": "string", "maxLength": 1200}
+	reviewExemptReason := map[string]any{"type": "string", "maxLength": 300}
 	refArray := map[string]any{"type": "array", "items": ref, "maxItems": 100}
 	fileArray := map[string]any{"type": "array", "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 300}, "maxItems": 100}
 	pageFields := map[string]any{
@@ -68,16 +70,16 @@ func ToolDefinitions() []map[string]any {
 			schema(map[string]any{"id": ref, "plan_id": ref, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id"})),
 		tool("projects.work_tasks.create", "Create Work Task", "MUST create small dependency-aware tasks suitable for an isolated low-intelligence worker. Prior state: a Work Plan exists. Required fields: id, plan_id, task_ref, title, evidence_needed, likely_files_affected or discovery scope in description, verification_requirement, and resume_instructions. The task must be executable from its metadata and attached refs alone, without prior chat memory or hidden orchestrator context; verification must be written so the orchestrator can run it independently. Safety: refs and bounded metadata only; reject broad or vague work. Next tool: projects.work_tasks.claim after dependencies are ready. Must not store raw context pack contents or source dumps.",
 			schema(map[string]any{"id": ref, "plan_id": ref, "task_ref": ref, "title": text, "description": optionalText, "owner_agent": ref, "evidence_needed": refArray, "context_pack_refs": refArray, "likely_files_affected": fileArray, "dependency_task_ids": refArray, "verification_requirement": longText, "resume_instructions": longText, "expected_output": optionalText, "failure_block_criteria": optionalText, "knowledge_candidate_expectation": optionalText, "run_id": ref, "trace_id": ref}, []string{"id", "plan_id", "task_ref", "title", "evidence_needed", "verification_requirement", "resume_instructions"})),
-		tool("projects.work_tasks.update_status", "Update Work Task Status", "MUST be used when a Work Task lifecycle state changes outside claim/start/complete/fail/block helpers, especially to cancel or supersede stale planned metadata. Prior state: projects.work_tasks.get or list_open identified the task. Required fields: id, task_id, status, and safe_next_action. Normal lifecycle is planned -> ready -> claimed -> in_progress -> verifying or needs_review -> done; do not jump planned -> done. Safety: bounded metadata only; do not bypass verifier, Evidence Graph, confidence, or knowledge-decision requirements for done tasks. Next tool: projects.work_tasks.get_next or list_open.",
-			schema(map[string]any{"id": ref, "task_id": ref, "status": statusSchema(taskStatuses()), "safe_next_action": text, "outcome": longText, "blocked_reason": longText, "resume_instructions": longText, "blocked_by_task_ids": refArray, "verifier_result_refs": refArray, "claim_refs": refArray, "evidence_refs": refArray, "knowledge_candidate_refs": refArray, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "status", "safe_next_action"})),
+		tool("projects.work_tasks.update_status", "Update Work Task Status", "MUST be used when a Work Task lifecycle state changes outside claim/start/complete/fail/block helpers, especially to cancel or supersede stale planned metadata. Prior state: projects.work_tasks.get or list_open identified the task. Required fields: id, task_id, status, and safe_next_action. Normal lifecycle is planned -> ready -> claimed -> in_progress -> needs_review -> verifying -> done; do not jump planned -> done. Safety: bounded metadata only; do not bypass verifier, independent review, Evidence Graph, confidence, or knowledge-decision requirements for done tasks. Next tool: projects.work_tasks.get_next or list_open.",
+			schema(map[string]any{"id": ref, "task_id": ref, "status": statusSchema(taskStatuses()), "safe_next_action": text, "outcome": longText, "blocked_reason": longText, "resume_instructions": longText, "blocked_by_task_ids": refArray, "verifier_result_refs": refArray, "review_result_refs": refArray, "review_exempt_reason": reviewExemptReason, "claim_refs": refArray, "evidence_refs": refArray, "knowledge_candidate_refs": refArray, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "status", "safe_next_action"})),
 		tool("projects.work_tasks.claim", "Claim Work Task", "MUST be called before an agent edits files or executes a task. Prior state: task is ready and dependencies are satisfied. Required fields: id, task_id, owner_agent, and normally run_id. Safety: prevents duplicate agent work; metadata-only owner/run refs. Next tool: projects.work_tasks.start. Must not override another claim unless the service explicitly allows it.",
 			schema(map[string]any{"id": ref, "task_id": ref, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "owner_agent"})),
 		tool("projects.work_tasks.release", "Release Work Task", "MUST be used when a claimed task is intentionally returned to the ready queue. Prior state: task is claimed by the caller or service permits release. Required fields: id, task_id, and owner_agent. Safety: bounded reason metadata only. Next tool: projects.work_tasks.get_next. Must not hide blocked or failed work.",
 			schema(map[string]any{"id": ref, "task_id": ref, "owner_agent": ref, "reason": optionalText, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "owner_agent"})),
 		tool("projects.work_tasks.start", "Start Work Task", "MUST be called when execution starts after claim. Prior state: projects.work_tasks.claim succeeded. Required fields: id and task_id; include run_id, trace_id, and context_pack_refs when indexed context is used. Safety: context packs are refs only. Next tool: attach evidence/context/claim as needed, then complete, block, or fail. Must not begin unclaimed execution.",
 			schema(map[string]any{"id": ref, "task_id": ref, "run_id": ref, "trace_id": ref, "context_pack_refs": refArray}, []string{"id", "task_id"})),
-		tool("projects.work_tasks.complete", "Complete Work Task", "MUST be used only after required verification and attachments are recorded. Prior state: task is in progress, needs review, or verifying. Required fields: id, task_id, outcome, safe_next_action, and verifier_result_refs when verification is required. Before completion, make a reusable-knowledge decision: attach Evidence Graph claim/evidence refs plus confidence and knowledge candidate refs when the task produced durable knowledge, or state a short no-reusable-knowledge reason in outcome. Safety: metadata-only refs; task completion never implies AgentRun completion or knowledge promotion. Next tool: projects.work_tasks.get_next. Must not mark work done with unmet verification, Evidence Graph, confidence, or knowledge-decision requirements.",
-			schema(map[string]any{"id": ref, "task_id": ref, "outcome": longText, "safe_next_action": text, "verifier_result_refs": refArray, "claim_refs": refArray, "evidence_refs": refArray, "knowledge_candidate_refs": refArray, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "outcome", "safe_next_action"})),
+		tool("projects.work_tasks.complete", "Complete Work Task", "MUST be used only after required verification, independent review, and attachments are recorded. Prior state: task is needs_review or verifying. Required fields: id, task_id, outcome, safe_next_action, verifier_result_refs, and either review_result_refs or review_exempt_reason. Review refs must come from a different run than the implementing claimed run; use review_exempt_reason only for tiny mechanical no-risk tasks. Before completion, make a reusable-knowledge decision: attach Evidence Graph claim/evidence refs plus confidence and knowledge candidate refs when the task produced durable knowledge, or state a short no-reusable-knowledge reason in outcome. Safety: metadata-only refs; task completion never implies AgentRun completion or knowledge promotion. Next tool: projects.work_tasks.get_next. Must not mark work done with unmet verification, review, Evidence Graph, confidence, or knowledge-decision requirements.",
+			schema(map[string]any{"id": ref, "task_id": ref, "outcome": longText, "safe_next_action": text, "verifier_result_refs": refArray, "review_result_refs": refArray, "review_exempt_reason": reviewExemptReason, "claim_refs": refArray, "evidence_refs": refArray, "knowledge_candidate_refs": refArray, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "outcome", "safe_next_action"})),
 		tool("projects.work_tasks.fail", "Fail Work Task", "MUST be used when execution reached a terminal failure. Prior state: task execution was started or verification failed. Required fields: id, task_id, outcome, and safe_next_action. Safety: bounded failure summary only; no raw stderr, provider payloads, source dumps, secrets, roots, or PII. Next tool: projects.work_tasks.get_next or projects.work_tasks.block for dependent work. Must not silently abandon failed work.",
 			schema(map[string]any{"id": ref, "task_id": ref, "outcome": longText, "safe_next_action": text, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "outcome", "safe_next_action"})),
 		tool("projects.work_tasks.block", "Block Work Task", "MUST be used instead of silently stopping when a task cannot proceed. Prior state: task exists and a blocker is known. Required fields: id, task_id, blocked_reason, resume_instructions, and safe_next_action. Safety: redacted blocker metadata only. Next tool: projects.work_tasks.get_next or projects.work_tasks.list_blocked. Must not use raw logs, raw source, secrets, roots, or PII as blocker text.",
@@ -98,6 +100,8 @@ func ToolDefinitions() []map[string]any {
 			schema(map[string]any{"id": ref, "task_id": ref, "claim_ref": ref, "attached_by_run_id": ref, "trace_id": ref, "note": optionalText}, []string{"id", "task_id", "claim_ref"})),
 		tool("projects.work_tasks.attach_verifier_result", "Attach Work Task Verifier Result", "MUST be used before completing tasks with verification requirements. Prior state: verifier ran and has a safe verifier/result ref. Required fields: id, task_id, verifier_result_ref, and status. Safety: link refs/results only; no raw stderr or logs. Next tool: projects.work_tasks.complete if verification passed. Must not mark verification passed without a safe ref.",
 			schema(map[string]any{"id": ref, "task_id": ref, "verifier_result_ref": ref, "status": map[string]any{"type": "string", "enum": []string{"passed", "failed", "blocked", "unknown"}}, "attached_by_run_id": ref, "trace_id": ref, "note": optionalText}, []string{"id", "task_id", "verifier_result_ref", "status"})),
+		tool("projects.work_tasks.attach_review_result", "Attach Work Task Review Result", "MUST be used before completing write-capable or non-trivial Work Tasks unless a bounded review_exempt_reason is recorded. Prior state: an independent reviewer run has reviewed the task diff/evidence and produced a safe review_result_ref. Required fields: id, task_id, review_result_ref, and status. Safety: link refs/results only; no raw comments, source dumps, or logs. The attached_by_run_id must differ from the task claimed run when both are known. Next tool: projects.work_tasks.attach_verifier_result or projects.work_tasks.complete. Must not review your own implementation run.",
+			schema(map[string]any{"id": ref, "task_id": ref, "review_result_ref": ref, "status": map[string]any{"type": "string", "enum": []string{"passed", "failed", "blocked", "unknown"}}, "attached_by_run_id": ref, "trace_id": ref, "note": optionalText}, []string{"id", "task_id", "review_result_ref", "status"})),
 		tool("projects.work_tasks.promote_knowledge_candidate", "Create Work Task Knowledge Candidate Link", "MUST only create or link a Knowledge Promotion candidate for a Work Task. Prior state: evidence, claim, confidence, and verifier refs needed for the candidate are attached or supplied. Required fields: id, task_id, knowledge_candidate_ref, claim_refs, evidence_refs, confidence_ref, and verifier_result_refs. Safety: metadata-only candidate refs; never bypass projectknowledge validation, project promotion, or org promotion gates. Next tool: projectknowledge validation/promotion tools. Must not imply knowledge promotion or Work Task completion.",
 			schema(map[string]any{"id": ref, "task_id": ref, "knowledge_candidate_ref": ref, "claim_refs": refArray, "evidence_refs": refArray, "confidence_ref": ref, "verifier_result_refs": refArray, "attached_by_run_id": ref, "trace_id": ref, "note": optionalText}, []string{"id", "task_id", "knowledge_candidate_ref", "claim_refs", "evidence_refs", "confidence_ref", "verifier_result_refs"})),
 	}
@@ -174,6 +178,8 @@ func validateArguments(name string, arguments json.RawMessage) error {
 		value = &attachClaimInput{}
 	case "projects.work_tasks.attach_verifier_result":
 		value = &attachVerifierInput{}
+	case "projects.work_tasks.attach_review_result":
+		value = &attachReviewInput{}
 	case "projects.work_tasks.promote_knowledge_candidate":
 		value = &promoteKnowledgeCandidateInput{}
 	default:
@@ -303,6 +309,8 @@ type completeTaskInput struct {
 	Outcome                string          `json:"outcome"`
 	SafeNextAction         string          `json:"safe_next_action"`
 	VerifierResultRefs     []string        `json:"verifier_result_refs,omitempty"`
+	ReviewResultRefs       []string        `json:"review_result_refs,omitempty"`
+	ReviewExemptReason     string          `json:"review_exempt_reason,omitempty"`
 	ClaimRefs              []string        `json:"claim_refs,omitempty"`
 	EvidenceRefs           []string        `json:"evidence_refs,omitempty"`
 	KnowledgeCandidateRefs []string        `json:"knowledge_candidate_refs,omitempty"`
@@ -418,6 +426,17 @@ type attachVerifierInput struct {
 	TraceID           string          `json:"trace_id,omitempty"`
 	Note              string          `json:"note,omitempty"`
 	Meta              json.RawMessage `json:"_meta,omitempty"`
+}
+
+type attachReviewInput struct {
+	ID              string          `json:"id"`
+	TaskID          string          `json:"task_id"`
+	ReviewResultRef string          `json:"review_result_ref"`
+	Status          string          `json:"status"`
+	AttachedByRunID string          `json:"attached_by_run_id,omitempty"`
+	TraceID         string          `json:"trace_id,omitempty"`
+	Note            string          `json:"note,omitempty"`
+	Meta            json.RawMessage `json:"_meta,omitempty"`
 }
 
 type promoteKnowledgeCandidateInput struct {

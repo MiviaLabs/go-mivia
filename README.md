@@ -27,13 +27,20 @@ flowchart TB
   REST["REST /api/v1"]
   MCP["MCP /mcp"]
   Tasks["Tasks and research metadata"]
+  WorkPlans["Work Plans: persistent execution structure"]
+  WorkTasks["Work Tasks: isolated-worker-ready units"]
+  ReviewGate["Independent review gate"]
+  VerifierGate["Orchestrator verifier gate"]
   AgentRuns["Redacted agent-run metadata"]
   Activity["Agent Activity: trace_id/run_id SSE, reconnect replay, policy events"]
   Registry["Local project registry"]
   Reliability["Reliability checks: context health, impact analysis, stale claims"]
   ContextPack["Context packs: search hits, files, symbols, impact, manifests"]
+  Evidence["Evidence Graph: claims, evidence, decisions, actions, outcomes"]
+  Confidence["Confidence Engine: claim scores and recommendations"]
   Promotion["Promotion gates: candidate, validated, promoted, rejected"]
   Knowledge["Knowledge Promotion: project default, optional org, reuse events"]
+  Automation["Project automation: Codex CLI over ready Work Tasks"]
   Digest["Metadata-only digest"]
   Scheduler["Fair ingestion scheduler"]
   Live["Live watcher and rescan queue"]
@@ -56,6 +63,23 @@ flowchart TB
   Server --> MCP
   REST --> Tasks
   MCP --> Tasks
+  REST --> WorkPlans
+  MCP --> WorkPlans
+  WorkPlans --> WorkTasks
+  WorkTasks --> ContextPack
+  WorkTasks --> Evidence
+  WorkTasks --> ReviewGate
+  WorkTasks --> VerifierGate
+  ReviewGate --> WorkTasks
+  VerifierGate --> WorkTasks
+  WorkTasks --> Confidence
+  WorkTasks --> Promotion
+  WorkTasks --> Knowledge
+  REST --> Automation
+  MCP --> Automation
+  Automation --> WorkTasks
+  Automation --> ReviewGate
+  Automation --> VerifierGate
   REST --> AgentRuns
   MCP --> AgentRuns
   REST --> Activity
@@ -93,6 +117,9 @@ flowchart TB
   Queries --> MCP
   Queries --> ContextPack
   Reliability --> ContextPack
+  Evidence --> Confidence
+  Confidence --> Knowledge
+  Promotion --> Knowledge
   ContextPack --> REST
   ContextPack --> MCP
   Workspace --> REST
@@ -113,7 +140,7 @@ flowchart TB
 | Local control surface | Health checks, REST `/api/v1`, MCP Streamable HTTP `/mcp` | Localhost-only default; no public/auth production posture |
 | Config validation | `mivia-server config check --config <path> --redacted-json` writes a machine-readable support report for config, project, ingestion, and workspace validation | Redacts local roots, bind/URL values, config paths, Cloud IDs, and credential references; reports classes/counts/categories only |
 | Tasks, research, and agent-run metadata | Local task records, research-run/source metadata, redacted agent-run execution metadata | No raw prompts, completions, source dumps, raw stderr, provider payloads, raw fetched content, secrets, roots, or PII |
-| Work Plans and Work Tasks | Governed workflow contract for multi-step work that links context health, context pack refs, Evidence Graph refs, Confidence Engine assessments, verifier result refs, Agent Activity, AgentRun refs, and Knowledge Promotion candidate refs | Verify the running REST/MCP surface before calling routes/tools; metadata-only and no raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII |
+| Work Plans and Work Tasks | Governed workflow contract for multi-step work that links context health, context pack refs, Evidence Graph refs, Confidence Engine assessments, independent review refs, verifier result refs, Agent Activity, AgentRun refs, and Knowledge Promotion candidate refs | Completion requires verifier refs plus independent review refs or a bounded tiny-task review exemption; verify the running REST/MCP surface before calling routes/tools; metadata-only and no raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII |
 | Project automation | Metadata-only automation definitions and runs over Work Plans and ready Work Tasks, with Codex CLI required when available. In-process mode runs inside `mivia-server`; external mode queues work for `mivia-automation-runner` in the user's logged-in local Codex environment. | Disabled for execution by default; no arbitrary shell, no silent manual fallback, no raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII |
 | Promotion gates | Metadata-only artifact promotion decisions with `candidate`, `validated`, `promoted`, and `rejected` states | Existing artifact refs only; refs and decisions stay bounded and redacted |
 | Knowledge Promotion | Project-level reusable knowledge by default, optional stricter org-level knowledge, supersession, and reuse events | Promoted knowledge is guidance, not proof; agents revalidate before acting and never store raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII |
@@ -222,7 +249,7 @@ What this enables:
 - Agents can ask for bounded project files, chunks, outlines, search results, symbols, symbol source, references, direct call edges, call graphs, the supported AST query catalog, named AST structural matches, and ingestion status through MCP instead of guessing from stale chat context.
 - Agents can ask for a context pack that combines bounded search snippets, indexed file metadata, symbol metadata, optional impact analysis, and a manifest-only reproducibility record in one response.
 - Agents can ask for context health, changed-path impact analysis, and deterministic stale-claim checks against selected stable docs/contracts before relying on local context.
-- Governed multi-step agents must use Work Plans and Work Tasks when the running server exposes them. The required workflow is: verify context health, build/attach context pack refs, decompose into isolated-worker-ready tasks, claim/start one task, attach Evidence Graph or claim refs, attach verifier result refs before completion, record Agent Activity/AgentRun metadata, use Confidence Engine where claims may become knowledge, and create/link Knowledge Promotion candidates only through the gated flow. Each task must be executable by a low-intelligence worker from task metadata and attached refs alone, without prior chat memory or hidden orchestrator context. Verification must be written for orchestrator-run verification; scoped workers may write tests or artifacts but must not run verifier commands unless explicitly allowed. Verify route/tool availability against the running server before calling them.
+- Governed multi-step agents must use Work Plans and Work Tasks when the running server exposes them. The required workflow is: verify context health, build/attach context pack refs, decompose into isolated-worker-ready tasks, claim/start one task, attach Evidence Graph or claim refs, attach independent review result refs for non-trivial or write-capable tasks, attach orchestrator verifier result refs, record Agent Activity/AgentRun metadata, use Confidence Engine where claims may become knowledge, and create/link Knowledge Promotion candidates only through the gated flow. Each task must be executable by a low-intelligence worker from task metadata and attached refs alone, without prior chat memory or hidden orchestrator context. Verification must be written for orchestrator-run verification; scoped workers may write tests or artifacts but must not run verifier commands unless explicitly allowed. The implementing run cannot attach its own review result when run IDs are known, and task completion requires verifier refs plus independent review refs or a bounded tiny-task `review_exempt_reason`. Verify route/tool availability against the running server before calling them.
 - Automation tools, when exposed, execute over Work Plans and ready Work Tasks only. They are not a replacement for Work Plan/Work Task creation, Evidence Graph metadata, Confidence Engine scoring, verifier refs, or Knowledge Promotion gates. In-process automation uses Codex CLI from the server runtime; external automation queues Codex work for a local `mivia-automation-runner` process that has access to the user's logged-in Codex license. Executable automation must not silently fall back to manual mode. Parallel subagent work must be orchestrator-owned and limited to tasks with proven independent dependencies and disjoint file/verifier/artifact scope.
 - Agents can record redacted run metadata, steps, verifier outcomes, changed file paths, and artifact refs without storing raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or PII.
 - Agents can record Evidence Graph metadata, score confidence, and promote only verified conclusions into reusable knowledge.
@@ -473,7 +500,7 @@ wsl -d Ubuntu --cd <repo-root> env PATH=<go-bin-path>:$PATH go build -o <ignored
 wsl -d Ubuntu --cd <repo-root> env MIVIA_HTTP_ADDR=127.0.0.1:8080 MIVIA_SQLITE_PATH=:memory: <ignored-runtime-dir>/mivia-server
 ```
 
-The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `agent_runs.create`, `agent_runs.step_append`, `agent_runs.promote_artifact`, `agent_runs.complete`, `agent_runs.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.context_health`, `projects.impact.analyze`, `projects.context_pack.build`, `projects.claims.check`, `projects.evidence_graph.claims.create`, `projects.evidence_graph.claims.get`, `projects.evidence_graph.claims.list`, `projects.evidence_graph.evidence.append`, `projects.evidence_graph.decisions.create`, `projects.evidence_graph.actions.create`, `projects.evidence_graph.outcomes.create`, `projects.evidence_graph.artifacts.link`, `projects.evidence_graph.promotions.link`, `projects.confidence.claims.score`, `projects.confidence.claims.get`, `projects.confidence.claims.list`, `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, `orgs.knowledge.list`, `projects.automations.create`, `projects.automations.get`, `projects.automations.list`, `projects.automations.run`, `projects.automations.run_parallel_batch`, `projects.automation_runs.get`, `projects.automation_runs.list`, `projects.automation_runs.claim_next`, `projects.automation_runs.complete_attempt`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.workspace.file_create`, `projects.workspace.file_delete`, `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.counts`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get`. Codex Desktop may show underscore-normalized callable names such as `tasks_create`, `projects_search_text`, `projects_workspace_file_read`, `projects_workspace_file_edit`, `projects_workspace_file_create`, `projects_workspace_file_delete`, `projects_knowledge_list`, `orgs_knowledge_list`, `projects_automation_runs_claim_next`, or `projects_automations_create`; the server accepts both forms.
+The currently exposed MCP tools are `tasks.create`, `tasks.get`, `research_runs.create`, `research_runs.get`, `research_sources.create`, `research_sources.get`, `agent_runs.create`, `agent_runs.step_append`, `agent_runs.promote_artifact`, `agent_runs.complete`, `agent_runs.get`, `projects.list`, `projects.get`, `projects.digest`, `projects.context_health`, `projects.impact.analyze`, `projects.context_pack.build`, `projects.claims.check`, `projects.evidence_graph.claims.create`, `projects.evidence_graph.claims.get`, `projects.evidence_graph.claims.list`, `projects.evidence_graph.evidence.append`, `projects.evidence_graph.decisions.create`, `projects.evidence_graph.actions.create`, `projects.evidence_graph.outcomes.create`, `projects.evidence_graph.artifacts.link`, `projects.evidence_graph.promotions.link`, `projects.confidence.claims.score`, `projects.confidence.claims.get`, `projects.confidence.claims.list`, `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, `orgs.knowledge.list`, `projects.work_plans.create`, `projects.work_plans.get`, `projects.work_plans.list`, `projects.work_plans.update_status`, `projects.work_plans.resume`, `projects.work_tasks.create`, `projects.work_tasks.update_status`, `projects.work_tasks.claim`, `projects.work_tasks.release`, `projects.work_tasks.start`, `projects.work_tasks.complete`, `projects.work_tasks.fail`, `projects.work_tasks.block`, `projects.work_tasks.list_open`, `projects.work_tasks.list_mine`, `projects.work_tasks.list_blocked`, `projects.work_tasks.get_next`, `projects.work_tasks.attach_evidence`, `projects.work_tasks.attach_context_pack`, `projects.work_tasks.attach_claim`, `projects.work_tasks.attach_verifier_result`, `projects.work_tasks.attach_review_result`, `projects.work_tasks.promote_knowledge_candidate`, `projects.automations.create`, `projects.automations.get`, `projects.automations.list`, `projects.automations.run`, `projects.automations.run_parallel_batch`, `projects.automation_runs.get`, `projects.automation_runs.list`, `projects.automation_runs.claim_next`, `projects.automation_runs.complete_attempt`, `projects.ingest`, `projects.search_index.rebuild`, `projects.ingestion_status`, `projects.ingestion_status_latest`, `projects.files.list`, `projects.files.get`, `projects.file.chunks`, `projects.symbols.list`, `projects.search.text`, `projects.search.files`, `projects.search.symbols`, `projects.search.references`, `projects.search.calls`, `projects.search.ast.queries`, `projects.search.ast`, `projects.symbol.source`, `projects.symbol.references`, `projects.symbol.callers`, `projects.symbol.callees`, `projects.symbol.call_graph`, `projects.headings.list`, `projects.file.outline`, `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.workspace.file_create`, `projects.workspace.file_delete`, `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.counts`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, and `projects.confluence.page.get`. Codex Desktop may show underscore-normalized callable names such as `tasks_create`, `projects_search_text`, `projects_workspace_file_read`, `projects_workspace_file_edit`, `projects_workspace_file_create`, `projects_workspace_file_delete`, `projects_work_tasks_attach_review_result`, `projects_knowledge_list`, `orgs_knowledge_list`, `projects_automation_runs_claim_next`, or `projects_automations_create`; the server accepts both forms.
 
 ## Local Project APIs
 

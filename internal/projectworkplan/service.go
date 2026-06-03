@@ -601,6 +601,18 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 			return WorkTask{}, err
 		}
 	}
+	if len(input.ReviewResultRefs) > 0 {
+		task.ReviewResultRefs, err = safeRefList(input.ReviewResultRefs, "review_result_refs")
+		if err != nil {
+			return WorkTask{}, err
+		}
+	}
+	if input.ReviewExemptReason != "" {
+		task.ReviewExemptReason, err = safeOptionalText(input.ReviewExemptReason, "review_exempt_reason", 300)
+		if err != nil {
+			return WorkTask{}, err
+		}
+	}
 	now := svc.now()
 	task.Status = next
 	task.UpdatedAt = now
@@ -624,6 +636,9 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 	if next == WorkTaskStatusDone && len(task.VerifierResultRefs) == 0 {
 		return WorkTask{}, fmt.Errorf("%w: verifier_result_refs are required before done", ErrInvalidInput)
 	}
+	if next == WorkTaskStatusDone && len(task.ReviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" {
+		return WorkTask{}, fmt.Errorf("%w: review_result_refs or review_exempt_reason is required before done", ErrInvalidInput)
+	}
 	return svc.store.UpdateWorkTask(ctx, task)
 }
 
@@ -641,6 +656,10 @@ func (svc *Service) AttachClaim(ctx context.Context, input AttachInput) (Attachm
 
 func (svc *Service) AttachVerifierResult(ctx context.Context, input AttachInput) (Attachment, error) {
 	return svc.attach(ctx, "verifier_result_ref", input)
+}
+
+func (svc *Service) AttachReviewResult(ctx context.Context, input AttachInput) (Attachment, error) {
+	return svc.attach(ctx, "review_result_ref", input)
 }
 
 func (svc *Service) AttachKnowledgeCandidate(ctx context.Context, input AttachInput) (Attachment, error) {
@@ -663,6 +682,9 @@ func (svc *Service) attach(ctx context.Context, kind string, input AttachInput) 
 	runID, err := safeOptionalRef(input.AttachedByRunID, "attached_by_run_id")
 	if err != nil {
 		return Attachment{}, err
+	}
+	if kind == "review_result_ref" && runID != "" && task.ClaimedByRunID != "" && runID == task.ClaimedByRunID {
+		return Attachment{}, fmt.Errorf("%w: review_result_ref must be attached by an independent run", ErrInvalidInput)
 	}
 	traceID, err := safeOptionalRef(input.TraceID, "trace_id")
 	if err != nil {
@@ -695,6 +717,14 @@ func (svc *Service) addAttachmentRef(ctx context.Context, task WorkTask, kind st
 				return err
 			}
 			task.Status = WorkTaskStatusVerifying
+		}
+	case "review_result_ref":
+		task.ReviewResultRefs = appendUnique(task.ReviewResultRefs, ref)
+		if task.Status == WorkTaskStatusInProgress {
+			if err := validateTaskTransition(task.Status, WorkTaskStatusNeedsReview); err != nil {
+				return err
+			}
+			task.Status = WorkTaskStatusNeedsReview
 		}
 	case "knowledge_candidate_ref":
 		task.KnowledgeCandidateRefs = appendUnique(task.KnowledgeCandidateRefs, ref)

@@ -371,7 +371,7 @@ func defaultKnownTools() []string {
 		"projects.work_tasks.complete", "projects.work_tasks.fail", "projects.work_tasks.block", "projects.work_tasks.list_open",
 		"projects.work_tasks.list_mine", "projects.work_tasks.list_blocked", "projects.work_tasks.get_next",
 		"projects.work_tasks.attach_evidence", "projects.work_tasks.attach_context_pack", "projects.work_tasks.attach_claim",
-		"projects.work_tasks.attach_verifier_result", "projects.work_tasks.promote_knowledge_candidate",
+		"projects.work_tasks.attach_verifier_result", "projects.work_tasks.attach_review_result", "projects.work_tasks.promote_knowledge_candidate",
 		"projects.automations.create", "projects.automations.get", "projects.automations.list", "projects.automations.run",
 		"projects.automations.run_parallel_batch", "projects.automation_runs.get", "projects.automation_runs.list",
 		"projects.automation_runs.claim_next", "projects.automation_runs.complete_attempt",

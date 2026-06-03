@@ -190,6 +190,7 @@ func cloneTask(task projectworkplan.WorkTask) projectworkplan.WorkTask {
 	task.EvidenceRefs = append([]string(nil), task.EvidenceRefs...)
 	task.ClaimRefs = append([]string(nil), task.ClaimRefs...)
 	task.VerifierResultRefs = append([]string(nil), task.VerifierResultRefs...)
+	task.ReviewResultRefs = append([]string(nil), task.ReviewResultRefs...)
 	task.ArtifactRefs = append([]string(nil), task.ArtifactRefs...)
 	task.AgentRunIDs = append([]string(nil), task.AgentRunIDs...)
 	return task

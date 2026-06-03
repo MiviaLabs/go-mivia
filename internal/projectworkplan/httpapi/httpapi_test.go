@@ -81,9 +81,10 @@ func TestWorkTaskRoutesLifecycleAndLists(t *testing.T) {
 	postJSON[projectworkplan.Attachment](t, mux, workTaskPath(projectID, task.ID, "context-packs"), `{"ref":"context-pack/ref","attached_by_run_id":"agent_run_1","trace_id":"trace_1","note":"bounded context pack ref"}`, http.StatusCreated)
 	postJSON[projectworkplan.Attachment](t, mux, workTaskPath(projectID, task.ID, "claims"), `{"ref":"claim/ref","attached_by_run_id":"agent_run_1","trace_id":"trace_1","note":"claim metadata ref"}`, http.StatusCreated)
 	postJSON[projectworkplan.Attachment](t, mux, workTaskPath(projectID, task.ID, "verifier-results"), `{"ref":"verifier/ref","attached_by_run_id":"agent_run_1","trace_id":"trace_1","note":"verifier metadata ref"}`, http.StatusCreated)
+	postJSON[projectworkplan.Attachment](t, mux, workTaskPath(projectID, task.ID, "review-results"), `{"ref":"review/ref","attached_by_run_id":"agent_run_review","trace_id":"trace_1","note":"independent review ref"}`, http.StatusCreated)
 	postJSON[projectworkplan.Attachment](t, mux, workTaskPath(projectID, task.ID, "knowledge-candidates"), `{"ref":"knowledge/ref","attached_by_run_id":"agent_run_1","trace_id":"trace_1","note":"candidate link only"}`, http.StatusCreated)
 
-	completed := postJSON[projectworkplan.WorkTask](t, mux, workTaskPath(projectID, task.ID, "complete"), `{"run_id":"agent_run_1","trace_id":"trace_1","outcome":"routes wired","verifier_result_refs":["verifier/ref"]}`, http.StatusOK)
+	completed := postJSON[projectworkplan.WorkTask](t, mux, workTaskPath(projectID, task.ID, "complete"), `{"run_id":"agent_run_1","trace_id":"trace_1","outcome":"routes wired; no reusable project knowledge because this is route smoke coverage","verifier_result_refs":["verifier/ref"],"review_result_refs":["review/ref"]}`, http.StatusOK)
 	if completed.Status != "done" {
 		t.Fatalf("expected done task, got %#v", completed)
 	}
@@ -173,7 +174,8 @@ func TestWorkTaskRoutesRejectInvalidTransition(t *testing.T) {
 	postJSON[projectworkplan.WorkTask](t, mux, workTaskPath(projectID, task.ID, "claim"), `{"owner_agent":"worker-3","run_id":"agent_run_1"}`, http.StatusOK)
 	postJSON[projectworkplan.WorkTask](t, mux, workTaskPath(projectID, task.ID, "start"), `{"run_id":"agent_run_1"}`, http.StatusOK)
 	postJSON[projectworkplan.Attachment](t, mux, workTaskPath(projectID, task.ID, "verifier-results"), `{"ref":"verifier/ref","attached_by_run_id":"agent_run_1"}`, http.StatusCreated)
-	postJSON[projectworkplan.WorkTask](t, mux, workTaskPath(projectID, task.ID, "complete"), `{"run_id":"agent_run_1","outcome":"done","verifier_result_refs":["verifier/ref"]}`, http.StatusOK)
+	postJSON[projectworkplan.Attachment](t, mux, workTaskPath(projectID, task.ID, "review-results"), `{"ref":"review/ref","attached_by_run_id":"agent_run_review"}`, http.StatusCreated)
+	postJSON[projectworkplan.WorkTask](t, mux, workTaskPath(projectID, task.ID, "complete"), `{"run_id":"agent_run_1","outcome":"done; no reusable project knowledge because this is transition coverage","verifier_result_refs":["verifier/ref"],"review_result_refs":["review/ref"]}`, http.StatusOK)
 
 	res := postRaw(t, mux, workTaskPath(projectID, task.ID, "start"), `{"run_id":"agent_run_1"}`)
 	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "invalid_project_workplan_request") {

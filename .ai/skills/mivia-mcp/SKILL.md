@@ -47,13 +47,14 @@ When exposed, agents MUST use this workflow for governed multi-step work:
 6. Attach Evidence Graph refs and claim refs before evidence-backed decisions. Use `projects.work_tasks.attach_evidence` and `projects.work_tasks.attach_claim` for refs only.
 7. Keep Work Task status current. Use `projects.work_tasks.update_status` to cancel or supersede stale planned metadata, and use `projects.work_tasks.block` with a clear blocked reason and resume instructions instead of silently stopping.
 8. Follow lifecycle order. Do not jump a Work Plan directly from `planned` to `done`; move `planned -> active -> done` after all required tasks are complete. Do not jump a Work Task directly from `planned` to `done`; normal execution is `planned -> ready -> claimed -> in_progress -> verifying/needs_review -> done`, with `blocked`, `failed`, `cancelled`, or `superseded` used only when true.
-9. Attach verifier result refs with `projects.work_tasks.attach_verifier_result` before completing tasks that require verification. Do not mark a task complete when verification requirements are unmet.
-10. Before completing any implementation, review, research, or automation task, make an explicit reusable-knowledge decision:
+9. Attach verifier result refs with `projects.work_tasks.attach_verifier_result` before completing tasks. The orchestrator runs verifier commands unless the task explicitly allows a worker to run one narrow verifier. Do not mark a task complete when verification requirements are unmet.
+10. Attach independent review result refs with `projects.work_tasks.attach_review_result` before completing any non-trivial or write-capable task. The reviewer must be a different agent/run from the implementing `claimed_by_run_id` when known. Use `review_exempt_reason` only for tiny mechanical tasks with no code, config, data, auth, tenancy, privacy, API, migration, automation, or promotion risk.
+11. Before completing any implementation, review, research, or automation task, make an explicit reusable-knowledge decision:
     - If the task created or relied on a durable conclusion, create/link Evidence Graph claim/evidence/decision/action/outcome refs, attach the relevant claim/evidence refs to the Work Task, score confidence when the conclusion may be reused, then create/link a Knowledge Promotion candidate.
     - If there is no reusable knowledge, say so in the Work Task `outcome` or attachment note with a short reason such as "no reusable project knowledge; code-only mechanical change".
     - Worker/subagents should produce candidate claim/evidence/knowledge refs or a clear "no reusable knowledge" note. The orchestrator verifies, scores confidence, and performs promotion gates.
-11. Use `projects.work_tasks.get_next` after resume, after completion/block/failure, and whenever the next safe task is unclear.
-12. Create or link Knowledge Promotion candidates through `projects.work_tasks.promote_knowledge_candidate` only when Evidence Graph, Confidence Engine, verifier, project, and optional org gates are respected. This tool must not bypass `projects.knowledge.*` validation or promotion.
+12. Use `projects.work_tasks.get_next` after resume, after completion/block/failure, and whenever the next safe task is unclear.
+13. Create or link Knowledge Promotion candidates through `projects.work_tasks.promote_knowledge_candidate` only when Evidence Graph, Confidence Engine, verifier, project, and optional org gates are respected. This tool must not bypass `projects.knowledge.*` validation or promotion.
 
 Compact required flow:
 
@@ -64,6 +65,7 @@ resume/create plan
 -> claim task
 -> start task
 -> execute bounded scope
+-> independent review or explicit tiny-task review exemption
 -> attach verifier result
 -> record Evidence Graph outcome and confidence when reusable knowledge exists
 -> create/link knowledge candidate or record no-reusable-knowledge reason
@@ -90,7 +92,7 @@ When `projects.workspace.git_worktree_create` is exposed, the orchestrator MUST 
 
 ## Project Automation
 
-Project Automation is an executor layer over Work Plans and Work Tasks. It is not an alternate planning system. When `projects.automations.*` and `projects.automation_runs.*` are exposed by `tools/list`, agents MUST use them only after a Work Plan exists and tasks are isolated-worker-ready. `projects.automations.run` executes the selected run in in-process mode and queues the selected run in external mode. External mode requires `mivia-automation-runner` from the user's logged-in local Codex environment. A successful Codex CLI exit still requires orchestrator verifier refs before task completion or knowledge promotion.
+Project Automation is an executor layer over Work Plans and Work Tasks. It is not an alternate planning system. When `projects.automations.*` and `projects.automation_runs.*` are exposed by `tools/list`, agents MUST use them only after a Work Plan exists and tasks are isolated-worker-ready. `projects.automations.run` executes the selected run in in-process mode and queues the selected run in external mode. External mode requires `mivia-automation-runner` from the user's logged-in local Codex environment. A successful Codex CLI exit still requires independent review refs and orchestrator verifier refs before task completion or knowledge promotion.
 
 Mandatory rules:
 
@@ -104,8 +106,9 @@ Mandatory rules:
 8. A parallel batch may include only independent ready tasks with done dependencies, disjoint likely affected files, explicit verification requirements, and no overlapping artifact or promotion scope.
 9. Worker/subagent prompts must be generated from Work Task metadata and safe refs only. They must not depend on hidden chat context.
 10. Only the orchestrator runs verifier commands unless the task explicitly allows a worker to run a narrow verifier.
-11. Automation output is untrusted until verifier refs and Evidence Graph outcomes exist.
-12. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
+11. Every automation-produced write-capable task needs an independent review result attached with `projects.work_tasks.attach_review_result` before completion. Do not let an implementation worker review its own task.
+12. Automation output is untrusted until independent review refs, verifier refs, and Evidence Graph outcomes exist.
+13. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
 
 Strict automation sequence:
 
@@ -116,6 +119,7 @@ work plan
 -> automation definition
 -> run or safe parallel batch
 -> external claim/complete if configured
+-> independent review result attached to task
 -> orchestrator verification
 -> verifier refs attached to task
 -> Evidence Graph outcome and Confidence score where reusable
@@ -261,6 +265,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Governed workspace | `projects.workspace.git_status`, `projects.workspace.git_diff`, `projects.workspace.file_read`, `projects.workspace.file_edit`, `projects.workspace.file_create`, `projects.workspace.file_delete` plus underscore aliases |
 | Evidence Graph metadata only | `projects.evidence_graph.claims.create`, `projects.evidence_graph.claims.get`, `projects.evidence_graph.claims.list`, `projects.evidence_graph.evidence.append`, `projects.evidence_graph.decisions.create`, `projects.evidence_graph.actions.create`, `projects.evidence_graph.outcomes.create`, `projects.evidence_graph.artifacts.link`, `projects.evidence_graph.promotions.link` plus underscore aliases |
 | Knowledge Promotion metadata only | `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, `orgs.knowledge.list` plus underscore aliases |
+| Work Plans and Work Tasks metadata only | `projects.work_plans.create`, `projects.work_plans.get`, `projects.work_plans.list`, `projects.work_plans.update_status`, `projects.work_plans.resume`, `projects.work_tasks.create`, `projects.work_tasks.update_status`, `projects.work_tasks.claim`, `projects.work_tasks.release`, `projects.work_tasks.start`, `projects.work_tasks.complete`, `projects.work_tasks.fail`, `projects.work_tasks.block`, `projects.work_tasks.list_open`, `projects.work_tasks.list_mine`, `projects.work_tasks.list_blocked`, `projects.work_tasks.get_next`, `projects.work_tasks.attach_evidence`, `projects.work_tasks.attach_context_pack`, `projects.work_tasks.attach_claim`, `projects.work_tasks.attach_verifier_result`, `projects.work_tasks.attach_review_result`, `projects.work_tasks.promote_knowledge_candidate` plus underscore aliases |
 | Project Automation metadata only | `projects.automations.create`, `projects.automations.get`, `projects.automations.list`, `projects.automations.run`, `projects.automations.run_parallel_batch`, `projects.automation_runs.get`, `projects.automation_runs.list`, `projects.automation_runs.claim_next`, `projects.automation_runs.complete_attempt` plus underscore aliases |
 | Diagnostics | `projects.diagnostics.ingestion` |
 | Project integrations | `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.counts`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get` |
