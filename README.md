@@ -1,6 +1,6 @@
 # Mivia
 
-Generic Go microservices monorepo for AI-agent work.
+Local-first context, reliability, and collective-learning platform for AI-agent work.
 
 ![Go Mivia overview](docs/go-mivia-info.png)
 
@@ -141,7 +141,7 @@ Use this repo as a local context server for engineers and AI agents:
 
 ## Business View
 
-`mivia-server` is a local control and context service for engineers and AI agents. It gives agents a safe, structured way to understand a developer's local projects, remember approved local metadata, run bounded project and integration ingestion, and expose that context through REST and MCP without sending source code to AI providers.
+`mivia-server` is a local control, context, and collective-learning service for engineers and AI agents. It gives agents a safe, structured way to understand approved local workspaces, verify claims, promote reusable knowledge, and expose that context through REST and MCP without sending source code to AI providers.
 
 ```mermaid
 flowchart LR
@@ -160,6 +160,11 @@ flowchart LR
   IntegrationTools["Integration MCP tools: status, poll, search, read"]
   ContextPack["Context pack builder"]
   Promotion["Promotion gate records"]
+  Evidence["Evidence Graph metadata"]
+  Confidence["Confidence Engine scores"]
+  Knowledge["Knowledge Promotion: project default, explicit org"]
+  Reuse["Reuse events and supersession"]
+  Dashboard["Dashboard: activity and knowledge view"]
 
   Engineer --> Agent
   Agent --> Server
@@ -168,6 +173,10 @@ flowchart LR
   APIs --> IntegrationTools
   APIs --> ContextPack
   APIs --> Scheduler
+  APIs --> Evidence
+  APIs --> Confidence
+  APIs --> Knowledge
+  APIs --> Dashboard
   Scheduler --> Projects
   Projects --> Safety
   IntegrationTools --> Poller
@@ -184,12 +193,22 @@ flowchart LR
   Workspace --> APIs
   APIs --> Agent
   Agent --> Promotion
+  Agent --> Evidence
+  Agent --> Confidence
+  Agent --> Knowledge
+  Agent --> Reuse
   Promotion --> APIs
+  Evidence --> Knowledge
+  Confidence --> Knowledge
+  Knowledge --> Reuse
+  Reuse --> APIs
+  Dashboard --> Engineer
 
   Graph --> Value["Faster, safer codebase understanding"]
   SQLite --> Value
   Workspace --> Value
   IntegrationTools --> Value
+  Knowledge --> Value
   Value --> Engineer
 ```
 
@@ -202,11 +221,11 @@ What this enables:
 - Agents can ask for a context pack that combines bounded search snippets, indexed file metadata, symbol metadata, optional impact analysis, and a manifest-only reproducibility record in one response.
 - Agents can ask for context health, changed-path impact analysis, and deterministic stale-claim checks against selected stable docs/contracts before relying on local context.
 - Agents can record redacted run metadata, steps, verifier outcomes, changed file paths, and artifact refs without storing raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or PII.
-- Agents can record promotion-gate decisions for existing run artifacts using `candidate`, `validated`, `promoted`, and `rejected` states without promoting raw runtime payloads into knowledge.
-- Agents can query project-level promoted knowledge before planning, query org-level promoted knowledge before cross-project claims, revalidate promoted knowledge before acting, and record reuse events. Project-level promotion is the default. Org-level promotion is optional, stricter, explicit, and never automatic. Stale or contradicted knowledge is superseded, not deleted.
+- Agents can record Evidence Graph metadata, score confidence, and promote only verified conclusions into reusable knowledge.
+- Agents must query project-level promoted knowledge before planning, query org-level promoted knowledge before cross-project claims, revalidate promoted knowledge before acting, and record reuse events. Project-level promotion is the default. Org-level promotion is optional, stricter, explicit, and never automatic. Stale or contradicted knowledge is superseded, not deleted.
 - Agents can ask local MCP tools for configured integration status, trigger a one-shot provider poll, search locally ingested Jira/Confluence chunks, and read bounded Jira issue or Confluence page content without calling Atlassian during search/read.
 - Agents can use MCP/REST for governed git status/diff, current eligible file reads, exact token-guarded edits, eligible single-file deletes, and new eligible text-file creates on opted-in workspaces; for `workspace_mode = "edit"`, use workspace `file_read` then `file_edit`/`file_delete` for existing files, and `file_create` for new eligible text files before shell, `apply_patch`, or manual file operations. Read maxes are caps that may truncate responses, not a fallback trigger by themselves. These workspace tools do not provide recursive delete, arbitrary patch upload, arbitrary shell, or a shell replacement. Shell remains required for tests, builds, logs, process control, arbitrary commands, generated-file verification, and non-opted-in repositories.
-- Engineers can open the project details dashboard `Agent activity` drawer to watch project-scoped MCP calls, agent-run trace events, verifier metadata, promotion decisions, and policy guard events in real time. Agent runs default `trace_id` to the generated run id unless callers provide a safe correlation id. Policy events normalize denied paths, sensitive-content skips, unsafe edits, and invalid verifier URLs into redacted categories with safe relative paths only; startup bind validation still happens before the activity recorder exists.
+- Engineers can open the dashboard to inspect agent activity and Knowledge Promotion state, including project and org scope separation, reuse events, and explicit org promotion review. Agent activity still shows project-scoped MCP calls, agent-run trace events, verifier metadata, promotion decisions, and policy guard events in real time.
 - Full scans run asynchronously through a fair scheduler, use bounded per-project file workers, and persist running progress counters during long scans.
 - Local graph/search state persists per project when `graph_storage = "persistent"` using `<ladybug_path parent>/projects/<project-id>/mivialabs.lbug` and `<ladybug_path parent>/projects/<project-id>/mivialabs-pebble-search.sqlite`, or stays process-local/shared fallback with `graph_storage = "in_memory"`.
 - v0.1.16 keeps `full_scan_batch_size` as a hard file-count cap and also flushes earlier by graph/search write weight so heavy files do not create multi-minute per-project storage writes.
@@ -216,9 +235,10 @@ What this enables:
 
 `mivia-server`, Serena, and shell solve different parts of reliable agent work:
 
-- `mivia-server` is first choice for indexed project discovery, ingestion freshness, files, chunks, symbols, references, calls, FTS search, symbol source, call graph, named AST search, and locally ingested Jira/Confluence context.
+- `mivia-server` is first choice for indexed project discovery, ingestion freshness, promoted knowledge, Evidence Graph metadata, Confidence Engine scoring, files, chunks, symbols, references, calls, FTS search, symbol source, call graph, named AST search, and locally ingested Jira/Confluence context.
 - Serena remains useful when MCP is unavailable, stale, missing the project, or lacks the edit-time semantic operation needed for a precise code change.
 - MCP can handle governed git status/diff and current eligible file reads for `read_only` or `edit` workspaces, plus exact token-guarded edits, eligible single-file deletes, and new eligible text-file creates for `edit` workspaces. Prefer workspace file read/edit/delete for existing eligible files and file_create for new eligible text files before shell, `apply_patch`, or manual file operations when eligible; shell remains the source of truth for tests, builds, logs, process control, generated files, arbitrary commands, and non-opted-in repositories.
+- Agents must query `projects.knowledge.list` before planning in the current workspace and `orgs.knowledge.list` before cross-workspace claims, then revalidate before acting and record reuse with `projects.knowledge.reuse_events.record`.
 - This routing reduces blind file scanning, stale assumptions, and unsafe over-broad context collection.
 
 ```mermaid
@@ -230,6 +250,10 @@ flowchart TB
   Source["Source files"]
   Workspace["Governed workspace status/diff/read/create/delete/edit"]
   Integrations["Local Jira/Confluence status, polling, graph search/read"]
+  Knowledge["Promoted knowledge lookup"]
+  Evidence["Evidence Graph"]
+  Confidence["Confidence Engine"]
+  Reuse["Reuse event or supersession"]
   Indexed["Files, chunks, symbols, refs, calls, AST matches"]
   IntegrationContext["Issue/page artifacts and chunks"]
   Registry["Project registry and ingestion status"]
@@ -243,6 +267,9 @@ flowchart TB
   MCP --> Ingestion
   MCP --> Workspace
   MCP --> Integrations
+  MCP --> Knowledge
+  MCP --> Evidence
+  MCP --> Confidence
   Ingestion --> Guardrails
   Integrations --> Polling
   Polling --> Guardrails
@@ -250,13 +277,17 @@ flowchart TB
   Guardrails --> Store
   Store --> Indexed
   Store --> IntegrationContext
+  Store --> Knowledge
   Indexed --> MCP
   IntegrationContext --> MCP
+  Knowledge --> MCP
   Store --> MCP
   Agent --> Serena
   Serena --> Source
   Agent --> Shell
   Shell --> Source
+  Decision --> Reuse
+  Reuse --> MCP
 
   MCP --> Decision["Grounded implementation decisions"]
   Serena --> Decision
@@ -275,10 +306,15 @@ sequenceDiagram
   participant Shell
   participant Project as Local project
   participant Atlassian as Jira/Confluence Cloud
+  participant Evidence as Evidence Graph
+  participant Confidence as Confidence Engine
+  participant Knowledge as Knowledge Promotion
   participant Store as Local graph, SQLite, and FTS
 
   Engineer->>Agent: Ask for implementation or review
-  Agent->>Server: Query project metadata, ingestion state, search, symbols, refs, calls, AST, bounded chunks, integration context, and workspace status/diff/read/edit
+  Agent->>Server: Query promoted project knowledge before planning
+  Agent->>Server: Query org knowledge before cross-workspace claims
+  Agent->>Server: Query metadata, ingestion state, search, symbols, refs, calls, AST, bounded chunks, integration context, and workspace status/diff/read/edit
   Server->>Project: Read only eligible local files after safety gates
   Server->>Store: Persist approved local metadata and graph context
   Server->>Atlassian: Poll configured project/space allowlists only when manually or locally scheduled
@@ -289,6 +325,10 @@ sequenceDiagram
   Serena-->>Agent: Return precise code structure when needed
   Agent->>Shell: Verify tests, build, logs, process control, generated files, and non-opted-in repo state
   Shell-->>Agent: Return runtime evidence
+  Agent->>Evidence: Record safe claim, evidence, decision, action, and outcome refs
+  Agent->>Confidence: Score confidence from safe metadata
+  Agent->>Knowledge: Promote project knowledge only after gates pass
+  Agent->>Knowledge: Record used, skipped, stale, or contradicted reuse
   Agent-->>Engineer: Make a smaller, verified change with clearer evidence
 ```
 
