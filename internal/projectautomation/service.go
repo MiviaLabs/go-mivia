@@ -333,6 +333,9 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, event proje
 		if automation.TriggerKind != TriggerKindAutomatic || automation.PlanID != event.PlanID {
 			continue
 		}
+		if !svc.hasReadyAutomaticTask(ctx, automation) {
+			continue
+		}
 		triggerRunID := workPlanStatusTriggerRunID(event, automation)
 		existing, err := svc.store.ListRuns(ctx, RunFilter{
 			ProjectID:         event.ProjectID,
@@ -516,7 +519,7 @@ func (svc *Service) hasReadyAutomaticTask(ctx context.Context, automation Automa
 	if svc.validateRequiredAutomationReviews(ctx, automation) != nil {
 		return false
 	}
-	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: automation.ProjectID, PlanID: automation.PlanID, OwnerAgent: automation.AgentID})
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: automation.ProjectID, PlanID: automation.PlanID})
 	if err != nil {
 		return false
 	}

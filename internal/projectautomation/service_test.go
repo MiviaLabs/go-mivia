@@ -167,6 +167,38 @@ func TestWorkPlanStatusTriggerQueuesAutomaticRunsOnce(t *testing.T) {
 	}
 }
 
+func TestWorkPlanStatusTriggerSkipsWhenNoReadyTask(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newTestStore(), &fakeWorkTasks{}, Options{
+		Enabled:         true,
+		RunnerEnabled:   true,
+		RunnerExecution: RunnerExecutionExternal,
+		WorkPlanStatusTrigger: WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	svc.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID: "project-1",
+		PlanID:    "plan-1",
+		OldStatus: projectworkplan.WorkPlanStatusPlanned,
+		NewStatus: projectworkplan.WorkPlanStatusActive,
+		ChangedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("HandleWorkPlanStatusChanged returned error: %v", err)
+	}
+	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected no runs without a ready task, got %d: %#v", len(runs), runs)
+	}
+}
+
 func TestWorkPlanStatusTriggerIgnoresUnconfiguredStatus(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t, Options{
@@ -922,6 +954,9 @@ func (fake *fakeWorkTasks) ListOpenWorkTasks(_ context.Context, filter projectwo
 			continue
 		}
 		if filter.PlanID != "" && task.PlanID != filter.PlanID {
+			continue
+		}
+		if filter.OwnerAgent != "" && task.OwnerAgent != filter.OwnerAgent {
 			continue
 		}
 		out = append(out, task)
