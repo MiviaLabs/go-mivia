@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -195,10 +196,19 @@ func validateArguments(name string, arguments json.RawMessage) error {
 		return ErrNotFound
 	}
 	if err := decodeRaw(arguments, value); err != nil {
-		return fmt.Errorf("%w: invalid %s arguments", ErrInvalidInput, workPlanToolKind(name))
+		return invalidArgumentsError(name, err)
 	}
-	if hasUnsafeValue(value) {
-		return fmt.Errorf("%w: unsafe %s metadata", ErrInvalidInput, workPlanToolKind(name))
+	if err := validateRequiredFields(name, arguments); err != nil {
+		return err
+	}
+	if err := validateDecodedArguments(name, value); err != nil {
+		return err
+	}
+	if field, unsafe := unsafeMetadataField(value); unsafe {
+		if field == "" {
+			return fmt.Errorf("%w: input contains unsafe metadata", ErrInvalidInput)
+		}
+		return fmt.Errorf("%w: %s contains unsafe metadata", ErrInvalidInput, field)
 	}
 	return nil
 }
@@ -208,6 +218,157 @@ func workPlanToolKind(name string) string {
 		return "work task"
 	}
 	return "work plan"
+}
+
+func invalidArgumentsError(name string, err error) error {
+	kind := workPlanToolKind(name)
+	if field, ok := rejectedJSONFieldLabel(err); ok {
+		return fmt.Errorf("%w: %s is not accepted for %s", ErrInvalidInput, field, kind)
+	}
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		if field := safeErrorFieldName(typeErr.Field); field != "" {
+			return fmt.Errorf("%w: %s has invalid type for %s", ErrInvalidInput, field, kind)
+		}
+		return fmt.Errorf("%w: %s arguments must be a JSON object", ErrInvalidInput, kind)
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return fmt.Errorf("%w: malformed %s JSON", ErrInvalidInput, kind)
+	}
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: %s arguments are required", ErrInvalidInput, kind)
+	}
+	if strings.Contains(err.Error(), "unexpected trailing JSON") {
+		return fmt.Errorf("%w: %s arguments must contain one JSON value", ErrInvalidInput, kind)
+	}
+	return fmt.Errorf("%w: invalid %s arguments", ErrInvalidInput, kind)
+}
+
+func rejectedJSONFieldLabel(err error) (string, bool) {
+	const prefix = "json: unknown field "
+	message := err.Error()
+	if !strings.HasPrefix(message, prefix) {
+		return "", false
+	}
+	var field string
+	if decodeErr := json.Unmarshal([]byte(strings.TrimPrefix(message, prefix)), &field); decodeErr != nil {
+		return "unknown field", true
+	}
+	if field = safeErrorFieldName(field); field == "" {
+		return "unknown field", true
+	}
+	return "field " + field, true
+}
+
+func safeErrorFieldName(field string) string {
+	field = strings.TrimSpace(field)
+	if field == "" || len(field) > 80 || unsafeString(field) {
+		return ""
+	}
+	for _, char := range field {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.' {
+			continue
+		}
+		return ""
+	}
+	return field
+}
+
+func validateRequiredFields(name string, raw json.RawMessage) error {
+	payload, ok := argumentObject(raw)
+	if !ok {
+		return nil
+	}
+	for _, field := range requiredFields(name) {
+		value, present := payload[field]
+		if !present || isEmptyRequiredValue(value) {
+			return fmt.Errorf("%w: %s is required", ErrInvalidInput, field)
+		}
+	}
+	return nil
+}
+
+func argumentObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err == nil {
+		raw = json.RawMessage(encoded)
+	}
+	raw = normalizeProjectIDAlias(raw)
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, false
+	}
+	return payload, true
+}
+
+func isEmptyRequiredValue(value json.RawMessage) bool {
+	if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return true
+	}
+	var text string
+	if err := json.Unmarshal(value, &text); err == nil {
+		return strings.TrimSpace(text) == ""
+	}
+	return false
+}
+
+func validateDecodedArguments(name string, value any) error {
+	if input, ok := value.(*listMineTasksInput); ok && name == "projects.work_tasks.list_mine" {
+		if strings.TrimSpace(input.OwnerAgent) == "" && strings.TrimSpace(input.RunID) == "" {
+			return fmt.Errorf("%w: owner_agent or run_id is required", ErrInvalidInput)
+		}
+	}
+	return nil
+}
+
+func requiredFields(name string) []string {
+	switch name {
+	case "projects.work_plans.create":
+		return []string{"id", "plan_ref", "title", "goal_summary"}
+	case "projects.work_plans.get":
+		return []string{"id", "plan_id"}
+	case "projects.work_plans.list":
+		return []string{"id"}
+	case "projects.work_plans.update_status":
+		return []string{"id", "plan_id", "status", "safe_next_action"}
+	case "projects.work_plans.resume":
+		return []string{"id"}
+	case "projects.work_tasks.create":
+		return []string{"id", "plan_id", "task_ref", "title", "evidence_needed", "verification_requirement", "resume_instructions"}
+	case "projects.work_tasks.get":
+		return []string{"id", "task_id"}
+	case "projects.work_tasks.update_status":
+		return []string{"id", "task_id", "status", "safe_next_action"}
+	case "projects.work_tasks.claim":
+		return []string{"id", "task_id", "owner_agent", "run_id"}
+	case "projects.work_tasks.release":
+		return []string{"id", "task_id", "owner_agent"}
+	case "projects.work_tasks.start":
+		return []string{"id", "task_id"}
+	case "projects.work_tasks.complete":
+		return []string{"id", "task_id", "outcome", "safe_next_action"}
+	case "projects.work_tasks.fail":
+		return []string{"id", "task_id", "outcome", "safe_next_action"}
+	case "projects.work_tasks.block":
+		return []string{"id", "task_id", "blocked_reason", "resume_instructions", "safe_next_action"}
+	case "projects.work_tasks.list", "projects.work_tasks.list_open", "projects.work_tasks.list_mine", "projects.work_tasks.list_blocked", "projects.work_tasks.get_next":
+		return []string{"id"}
+	case "projects.work_tasks.attach_evidence":
+		return []string{"id", "task_id", "evidence_ref"}
+	case "projects.work_tasks.attach_context_pack":
+		return []string{"id", "task_id", "context_pack_ref"}
+	case "projects.work_tasks.attach_claim":
+		return []string{"id", "task_id", "claim_ref"}
+	case "projects.work_tasks.attach_verifier_result":
+		return []string{"id", "task_id", "verifier_result_ref", "status"}
+	case "projects.work_tasks.attach_review_result":
+		return []string{"id", "task_id", "review_result_ref", "status"}
+	case "projects.work_tasks.promote_knowledge_candidate":
+		return []string{"id", "task_id", "knowledge_candidate_ref", "claim_refs", "evidence_refs", "confidence_ref", "verifier_result_refs"}
+	default:
+		return nil
+	}
 }
 
 type createPlanInput struct {
@@ -603,8 +764,52 @@ func normalizeProjectIDAlias(raw json.RawMessage) json.RawMessage {
 }
 
 func hasUnsafeValue(value any) bool {
+	_, unsafe := unsafeMetadataField(value)
+	return unsafe
+}
+
+func unsafeMetadataField(value any) (string, bool) {
 	encoded, _ := json.Marshal(value)
-	lower := redactSafeProhibitionPhrases(strings.ToLower(string(encoded)))
+	var decoded any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return "", unsafeString(string(encoded))
+	}
+	return unsafeMetadataFieldValue(decoded, "")
+}
+
+func unsafeMetadataFieldValue(value any, field string) (string, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			nextField := key
+			if field != "" {
+				nextField = field + "." + key
+			}
+			if unsafeField, unsafe := unsafeMetadataFieldValue(typed[key], nextField); unsafe {
+				return unsafeField, true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if unsafeField, unsafe := unsafeMetadataFieldValue(item, field); unsafe {
+				return unsafeField, true
+			}
+		}
+	case string:
+		if unsafeString(typed) {
+			return field, true
+		}
+	}
+	return "", false
+}
+
+func unsafeString(value string) bool {
+	lower := redactSafeProhibitionPhrases(strings.ToLower(value))
 	for _, marker := range []string{
 		"raw prompt",
 		"raw completion",
