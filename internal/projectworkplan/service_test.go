@@ -3,6 +3,7 @@ package projectworkplan_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
@@ -50,6 +51,54 @@ func TestServiceCreateWorkPlanValidation(t *testing.T) {
 	}
 	if _, err := svc.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{ProjectID: "project-1", PlanRef: "plan-secret", Title: "OPENAI_API_KEY=bad", GoalSummary: "Goal"}); err == nil {
 		t.Fatal("expected secret marker to fail")
+	}
+}
+
+func TestServiceMCPInvalidArgumentDiagnostics(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+
+	cases := []struct {
+		name     string
+		tool     string
+		body     string
+		contains string
+	}{
+		{
+			name:     "unknown task field",
+			tool:     "projects.work_tasks.create",
+			body:     `{"id":"project-1","plan_id":"plan-1","task_ref":"task-1","title":"Task","evidence_needed":["source"],"verification_requirement":"focused tests","resume_instructions":"continue","raw_prompt":"secret"}`,
+			contains: "field raw_prompt is not accepted for work task",
+		},
+		{
+			name:     "bad task field type",
+			tool:     "projects.work_tasks.create",
+			body:     `{"id":"project-1","plan_id":"plan-1","task_ref":"task-1","title":"Task","evidence_needed":"source","verification_requirement":"focused tests","resume_instructions":"continue"}`,
+			contains: "evidence_needed has invalid type for work task",
+		},
+		{
+			name:     "unknown attach field",
+			tool:     "projects.work_tasks.attach_evidence",
+			body:     `{"id":"project-1","task_id":"task-1","evidence_ref":"evidence-1","root":"/home/mac/project"}`,
+			contains: "field root is not accepted for work task",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.CallWorkPlanTool(ctx, tc.tool, json.RawMessage(tc.body))
+			if err == nil {
+				t.Fatal("expected invalid argument error")
+			}
+			if !strings.Contains(err.Error(), tc.contains) {
+				t.Fatalf("expected %q in error, got %q", tc.contains, err.Error())
+			}
+			for _, forbidden := range []string{"secret", "/home/mac/project"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("error leaked forbidden value %q: %q", forbidden, err.Error())
+				}
+			}
+		})
 	}
 }
 

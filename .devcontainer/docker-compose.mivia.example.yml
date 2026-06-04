@@ -61,6 +61,7 @@ services:
     init: true
     entrypoint: []
     pull_policy: missing
+    user: "${MIVIA_CONTAINER_USER:-1000:1000}"
     command:
       - mivia-automation-runner
       - --server

@@ -16,37 +16,37 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 	case "projects.work_plans.create":
 		var input createPlanMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work plan", err)
 		}
 		return svc.CreateWorkPlan(ctx, CreateWorkPlanInput{ProjectID: input.projectID(), PlanRef: input.PlanRef, UserRequestRef: input.UserRequestRef, Title: input.Title, GoalSummary: input.GoalSummary, OwnerAgent: input.OwnerAgent, CreatedByRunID: input.CreatedByRunID, TraceID: input.TraceID, ResumeSummary: input.ResumeSummary, IsolationMode: input.IsolationMode, ParallelGroupRef: input.ParallelGroupRef, WorkspaceRef: input.WorkspaceRef, GitBaseRef: input.GitBaseRef, GitBranchRef: input.GitBranchRef, GitWorktreeRef: input.GitWorktreeRef})
 	case "projects.work_plans.get":
 		var input planIDInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work plan", err)
 		}
 		return svc.GetWorkPlan(ctx, input.projectID(), input.PlanID)
 	case "projects.work_plans.list":
 		var input listPlansInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work plan", err)
 		}
 		return svc.ListWorkPlans(ctx, WorkPlanFilter{ProjectID: input.projectID(), Status: input.Status, OwnerAgent: input.OwnerAgent, PageSize: input.PageSize, PageToken: input.PageToken})
 	case "projects.work_plans.update_status":
 		var input updatePlanStatusInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work plan", err)
 		}
 		return svc.UpdateWorkPlanStatus(ctx, UpdateWorkPlanStatusInput{ProjectID: input.projectID(), PlanID: input.PlanID, Status: input.Status, ResumeSummary: input.ResumeSummary, Outcome: input.Outcome})
 	case "projects.work_plans.resume":
 		var input resumePlanInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work plan", err)
 		}
 		return svc.ResumeWorkPlan(ctx, ResumeWorkPlanInput{ProjectID: input.projectID(), PlanID: input.PlanID})
 	case "projects.work_tasks.create":
 		var input createTaskMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		if input.FailureCriteria == "" {
 			input.FailureCriteria = input.FailureBlockCriteria
@@ -55,114 +55,114 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 	case "projects.work_tasks.get":
 		var input taskIDInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.GetWorkTask(ctx, input.projectID(), input.TaskID)
 	case "projects.work_tasks.update_status":
 		var input taskStatusMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.UpdateWorkTaskStatus(ctx, input.status())
 	case "projects.work_tasks.claim":
 		var input taskActionMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.ClaimWorkTask(ctx, input.action())
 	case "projects.work_tasks.release":
 		var input taskActionMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.ReleaseWorkTask(ctx, input.action())
 	case "projects.work_tasks.start":
 		var input taskActionMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.StartWorkTask(ctx, input.action())
 	case "projects.work_tasks.complete":
 		var input taskActionMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.CompleteWorkTask(ctx, input.action())
 	case "projects.work_tasks.fail":
 		var input taskActionMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.FailWorkTask(ctx, input.action())
 	case "projects.work_tasks.block":
 		var input taskActionMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.BlockWorkTask(ctx, input.action())
 	case "projects.work_tasks.list", "projects.work_tasks.list_open":
 		var input listTasksMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.ListOpenWorkTasks(ctx, input.filter())
 	case "projects.work_tasks.list_mine":
 		var input listTasksMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.ListMineWorkTasks(ctx, input.filter())
 	case "projects.work_tasks.list_blocked":
 		var input listTasksMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.ListBlockedWorkTasks(ctx, input.filter())
 	case "projects.work_tasks.get_next":
 		var input getNextMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		return svc.GetNextWorkTask(ctx, GetNextWorkTaskInput{ProjectID: input.projectID(), PlanID: input.PlanID, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, IncludeClaimedByMe: input.IncludeClaimedByMe})
 	case "projects.work_tasks.attach_evidence":
 		var input attachMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		input.Ref = input.EvidenceRef
 		return svc.AttachEvidence(ctx, input.attach())
 	case "projects.work_tasks.attach_context_pack":
 		var input attachMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		input.Ref = input.ContextPackRef
 		return svc.AttachContextPack(ctx, input.attach())
 	case "projects.work_tasks.attach_claim":
 		var input attachMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		input.Ref = input.ClaimRef
 		return svc.AttachClaim(ctx, input.attach())
 	case "projects.work_tasks.attach_verifier_result":
 		var input attachMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		input.Ref = input.VerifierResultRef
 		return svc.AttachVerifierResult(ctx, input.attach())
 	case "projects.work_tasks.attach_review_result":
 		var input attachMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		input.Ref = input.ReviewResultRef
 		return svc.AttachReviewResult(ctx, input.attach())
 	case "projects.work_tasks.promote_knowledge_candidate":
 		var input attachMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
-			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
+			return nil, mcpInvalidArgumentsError("work task", err)
 		}
 		input.Ref = input.KnowledgeCandidateRef
 		return svc.AttachKnowledgeCandidate(ctx, input.attach())
@@ -360,6 +360,86 @@ func firstNonEmpty(primary, fallback string) string {
 		return fallback
 	}
 	return primary
+}
+
+func mcpInvalidArgumentsError(kind string, err error) error {
+	if field, ok := mcpRejectedJSONFieldLabel(err); ok {
+		return fmt.Errorf("%w: %s is not accepted for %s", ErrInvalidInput, field, kind)
+	}
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		if field := mcpSafeErrorFieldName(typeErr.Field); field != "" {
+			return fmt.Errorf("%w: %s has invalid type for %s", ErrInvalidInput, field, kind)
+		}
+		return fmt.Errorf("%w: %s arguments must be a JSON object", ErrInvalidInput, kind)
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return fmt.Errorf("%w: malformed %s JSON", ErrInvalidInput, kind)
+	}
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: %s arguments are required", ErrInvalidInput, kind)
+	}
+	if strings.Contains(err.Error(), "unexpected trailing JSON") {
+		return fmt.Errorf("%w: %s arguments must contain one JSON value", ErrInvalidInput, kind)
+	}
+	return fmt.Errorf("%w: invalid %s arguments", ErrInvalidInput, kind)
+}
+
+func mcpRejectedJSONFieldLabel(err error) (string, bool) {
+	const prefix = "json: unknown field "
+	message := err.Error()
+	if !strings.HasPrefix(message, prefix) {
+		return "", false
+	}
+	var field string
+	if decodeErr := json.Unmarshal([]byte(strings.TrimPrefix(message, prefix)), &field); decodeErr != nil {
+		return "unknown field", true
+	}
+	if field = mcpSafeErrorFieldName(field); field == "" {
+		return "unknown field", true
+	}
+	return "field " + field, true
+}
+
+func mcpSafeErrorFieldName(field string) string {
+	field = strings.TrimSpace(field)
+	if field == "" || len(field) > 80 || mcpUnsafeErrorText(field) {
+		return ""
+	}
+	for _, char := range field {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.' {
+			continue
+		}
+		return ""
+	}
+	return field
+}
+
+func mcpUnsafeErrorText(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"raw prompt",
+		"raw completion",
+		"source dump",
+		"raw stderr",
+		"provider payload",
+		"token=",
+		"secret=",
+		"credential",
+		"api_key",
+		"password=",
+		"/home/",
+		"wsl.localhost",
+		"c:\\",
+		"\\\\",
+		"package main",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeMCP(raw json.RawMessage, dst any) error {
