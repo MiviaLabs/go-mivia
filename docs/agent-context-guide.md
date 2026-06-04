@@ -4,6 +4,8 @@ Status: Current local guide
 Date: 2026-06-01
 Classification: Internal; PII-prohibited
 
+Automation smoke note: The automatic automation PR smoke path was exercised.
+
 `mivia-server` is a localhost service that gives engineers and AI agents safe project context. It indexes approved local projects, exposes bounded metadata, chunks, FTS-backed search, context packs, symbol navigation, call graph views, named AST structural search, governed workspace git/read/create/delete/edit operations, redacted agent-run metadata, promotion-gate decisions, Knowledge Promotion metadata, and deterministic reliability checks, and keeps source understanding inside the developer machine.
 
 ## Who It Helps
