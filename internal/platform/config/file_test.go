@@ -81,7 +81,7 @@ definition_paths = ["configs/workflows/governed-feature.toml"]
 [automation]
 enabled = false
 runner_enabled = false
-runner_execution = "external"
+runner_execution = "managed"
 require_codex_when_available = true
 allow_manual_runner = false
 queue_depth = 32
@@ -108,7 +108,7 @@ codex_binary_path = "codex"
 	if merged.Automation.QueueDepth != 32 || merged.Automation.PollInterval.String() != "2s" || merged.Automation.MaxParallelTasks != 2 {
 		t.Fatalf("unexpected automation limits: %+v", merged.Automation)
 	}
-	if merged.Automation.RunnerExecution != "external" {
+	if merged.Automation.RunnerExecution != "managed" {
 		t.Fatalf("unexpected runner execution: %+v", merged.Automation)
 	}
 	if merged.Workflows.Enabled || len(merged.Workflows.DefinitionPaths) != 1 || merged.Workflows.DefinitionPaths[0] != "configs/workflows/governed-feature.toml" {

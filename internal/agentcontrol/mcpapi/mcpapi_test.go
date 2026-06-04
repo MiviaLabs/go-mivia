@@ -214,6 +214,49 @@ func TestToolsCall_WorkTaskUpdateStatusAcceptsReviewRefs(t *testing.T) {
 	}
 }
 
+func TestToolsCall_GeneratedWorkTaskLifecycleAcceptsReturnedIDs(t *testing.T) {
+	mem := store.NewMemoryStore()
+	svc := service.New(mem, mem)
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	handler := mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeAndWorkPlans(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, workPlans, nil, nil, nil, slog.Default())
+
+	createPlan := postMCP(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"projects.work_plans.create","arguments":{"project_id":"mivialabs-agents-monorepo","plan_ref":"managed-runner","title":"Managed runner","goal_summary":"Add managed runner lifecycle coverage."}}}`)
+	if bytes.Contains(createPlan.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected plan creation success, got %s", createPlan.Body.String())
+	}
+	var plan rpcResponse
+	if err := json.Unmarshal(createPlan.Body.Bytes(), &plan); err != nil {
+		t.Fatalf("decode create plan: %v", err)
+	}
+	planID := plan.Result.StructuredContent["id"].(string)
+
+	createTask := postMCP(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects.work_tasks.create","arguments":{"project_id":"mivialabs-agents-monorepo","plan_id":"`+planID+`","task_ref":"config-managed-runner","title":"Add managed runner config","description":"Objective add managed runner config values and validation.","evidence_needed":["config-defaults"],"likely_files_affected":["config-go"],"verification_requirement":"Orchestrator runs focused config tests","expected_output":"Managed runner config validates.","failure_block_criteria":"Block on compatibility regression.","resume_instructions":"Continue from source evidence."}}}`)
+	if bytes.Contains(createTask.Body.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("expected task creation success, got %s", createTask.Body.String())
+	}
+	var task rpcResponse
+	if err := json.Unmarshal(createTask.Body.Bytes(), &task); err != nil {
+		t.Fatalf("decode create task: %v", err)
+	}
+	taskID := task.Result.StructuredContent["id"].(string)
+
+	for _, step := range []struct {
+		name string
+		body string
+	}{
+		{"claim", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"projects.work_tasks.claim","arguments":{"project_id":"mivialabs-agents-monorepo","task_id":"` + taskID + `","owner_agent":"codex-orchestrator","run_id":"managed-runner-impl"}}}`},
+		{"start", `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"projects.work_tasks.start","arguments":{"project_id":"mivialabs-agents-monorepo","task_id":"` + taskID + `","run_id":"managed-runner-impl"}}}`},
+		{"verifier", `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"projects.work_tasks.attach_verifier_result","arguments":{"project_id":"mivialabs-agents-monorepo","task_id":"` + taskID + `","verifier_result_ref":"test-focused","status":"passed","attached_by_run_id":"managed-runner-verify"}}}`},
+		{"review", `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"projects.work_tasks.attach_review_result","arguments":{"project_id":"mivialabs-agents-monorepo","task_id":"` + taskID + `","review_result_ref":"review-managed-runner","status":"passed","attached_by_run_id":"review-run"}}}`},
+		{"complete", `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"projects.work_tasks.complete","arguments":{"project_id":"mivialabs-agents-monorepo","task_id":"` + taskID + `","outcome":"Managed runner lifecycle verified.","safe_next_action":"task complete","verifier_result_refs":["test-focused"],"review_result_refs":["review-managed-runner"]}}}`},
+	} {
+		res := postMCP(t, handler, step.body)
+		if bytes.Contains(res.Body.Bytes(), []byte(`"error"`)) {
+			t.Fatalf("expected %s success for generated task id %s, got %s", step.name, taskID, res.Body.String())
+		}
+	}
+}
+
 func TestToolsCall_WorkflowCompileErrorsMapToClientErrors(t *testing.T) {
 	mem := store.NewMemoryStore()
 	svc := service.New(mem, mem)

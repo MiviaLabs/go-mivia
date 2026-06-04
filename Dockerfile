@@ -6,7 +6,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-server ./cmd/mivia-server
+RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-server ./cmd/mivia-server \
+    && CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-automation-runner ./cmd/mivia-automation-runner
 
 FROM debian:bookworm-20260518-slim AS runtime
 
@@ -19,6 +20,7 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin mivia \
     && chown -R mivia:mivia /var/lib/mivia /app
 
 COPY --from=build /out/mivia-server /usr/local/bin/mivia-server
+COPY --from=build /out/mivia-automation-runner /usr/local/bin/mivia-automation-runner
 COPY docker/entrypoint.sh /usr/local/bin/mivia-entrypoint
 RUN chmod 0755 /usr/local/bin/mivia-entrypoint
 

@@ -52,5 +52,34 @@ services:
       retries: 6
     restart: unless-stopped
 
+  mivia-automation-runner:
+    image: ghcr.io/mivialabs/go-mivia:0.2.0
+    init: true
+    entrypoint: []
+    pull_policy: missing
+    command:
+      - mivia-automation-runner
+      - --server
+      - http://mivia-server:8080
+      - --watch
+      - --poll-interval
+      - "${MIVIA_AUTOMATION_RUNNER_POLL_INTERVAL:-5s}"
+      - --codex
+      - "${MIVIA_AUTOMATION_CODEX_BINARY:-codex}"
+      - --codex-cd
+      - "${MIVIA_AUTOMATION_CODEX_CD:-/workspaces/example-project}"
+    volumes:
+      - mivia_data:/var/lib/mivia
+      - type: bind
+        source: ..
+        target: /workspaces/example-project
+        read_only: false
+      # Mount Codex CLI auth through an ignored local override before enabling
+      # real automatic execution in a container.
+    depends_on:
+      mivia-server:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   mivia_data:

@@ -47,6 +47,57 @@ func TestRunOnceReportsCompletedAttempt(t *testing.T) {
 	}
 }
 
+func TestRunOnceDiscoversProjectsWhenProjectOmitted(t *testing.T) {
+	var completed atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects":
+			writeJSON(t, w, map[string]any{
+				"projects": []map[string]any{
+					{"id": "project-1", "enabled": true},
+					{"id": "disabled-project", "enabled": false},
+				},
+			})
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1"},
+				CodexInput: testCodexInput("run-1"),
+				TimeoutMS:  1000,
+			})
+		case "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			completed.Add(1)
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", Status: projectautomation.RunStatusVerifying})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--codex", "/bin/true"})
+	if status != 0 {
+		t.Fatalf("expected exit 0, got %d", status)
+	}
+	if completed.Load() != 1 {
+		t.Fatalf("expected one completed attempt report, got %d", completed.Load())
+	}
+}
+
+func TestRunOnceWithNoConfiguredProjectsExitsIdle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/projects" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(t, w, map[string]any{"projects": []map[string]any{}})
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--codex", "/bin/true"})
+	if status != 0 {
+		t.Fatalf("expected idle exit 0, got %d", status)
+	}
+}
+
 func TestWatchContinuesAfterReportedTaskFailure(t *testing.T) {
 	var claimCount atomic.Int32
 	var failedReports atomic.Int32

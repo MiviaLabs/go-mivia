@@ -612,9 +612,9 @@ func (automation Automation) Validate() error {
 		return errors.New("MIVIA_AUTOMATION_RUNNER_ENABLED requires MIVIA_AUTOMATION_ENABLED")
 	}
 	switch strings.TrimSpace(automation.RunnerExecution) {
-	case "in_process", "external":
+	case "in_process", "external", "managed":
 	default:
-		return errors.New("MIVIA_AUTOMATION_RUNNER_EXECUTION must be in_process or external")
+		return errors.New("MIVIA_AUTOMATION_RUNNER_EXECUTION must be in_process, external, or managed")
 	}
 	if automation.QueueDepth <= 0 {
 		return errors.New("MIVIA_AUTOMATION_QUEUE_DEPTH must be positive")

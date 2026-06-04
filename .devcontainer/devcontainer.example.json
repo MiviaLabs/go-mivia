@@ -9,7 +9,7 @@
   "workspaceFolder": "/workspaces/example-project",
   "shutdownAction": "stopCompose",
   "overrideCommand": false,
-  "runServices": ["dev", "mivia-server"],
+  "runServices": ["dev", "mivia-server", "mivia-automation-runner"],
   "forwardPorts": [8080],
   "portsAttributes": {
     "8080": {

@@ -60,3 +60,18 @@ sensitive_marker_policy = "skip_file"
 
 [workspace]
 enabled = true
+
+[automation]
+enabled = true
+runner_enabled = true
+runner_execution = "external"
+require_codex_when_available = true
+allow_manual_runner = false
+queue_depth = 16
+poll_interval = "5s"
+global_worker_count = 1
+per_project_worker_limit = 1
+per_agent_worker_limit = 1
+max_parallel_tasks = 1
+default_max_runtime = "10m"
+codex_binary_path = "codex"

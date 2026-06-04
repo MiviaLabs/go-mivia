@@ -25,7 +25,7 @@ func main() {
 func run(args []string) int {
 	flags := flag.NewFlagSet("mivia-automation-runner", flag.ContinueOnError)
 	server := flags.String("server", "http://127.0.0.1:8080", "mivia-server base URL")
-	projectID := flags.String("project", "", "project id")
+	projectID := flags.String("project", "", "project id; omit to watch all configured projects")
 	agentID := flags.String("agent", "", "optional agent id filter")
 	codexPath := flags.String("codex", "codex", "codex CLI binary path")
 	codexLauncher := flags.String("codex-launcher", "direct", "codex launcher: direct or windows-cmd")
@@ -37,8 +37,8 @@ func run(args []string) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*projectID) == "" {
-		fmt.Fprintln(os.Stderr, "usage: mivia-automation-runner --server http://127.0.0.1:8080 --project <project_id> [--agent <agent_id>] [--codex codex] [--once=false|--watch]")
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: mivia-automation-runner --server http://127.0.0.1:8080 [--project <project_id>] [--agent <agent_id>] [--codex codex] [--once=false|--watch]")
 		return 2
 	}
 	if *watch {
@@ -47,7 +47,12 @@ func run(args []string) int {
 	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: http.DefaultClient}
 	var idleSince time.Time
 	for {
-		status, keepWatching, claimed := claimRunExecuteAndReport(context.Background(), client, strings.TrimSpace(*projectID), strings.TrimSpace(*agentID), codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD)})
+		projectIDs, err := runnerProjectIDs(context.Background(), client, strings.TrimSpace(*projectID))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "project discovery failed: %v\n", err)
+			return 1
+		}
+		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, projectIDs, strings.TrimSpace(*agentID), codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD)})
 		if *once || !keepWatching {
 			return status
 		}
@@ -65,6 +70,13 @@ func run(args []string) int {
 		}
 		time.Sleep(*pollInterval)
 	}
+}
+
+func runnerProjectIDs(ctx context.Context, client *runnerClient, configuredProjectID string) ([]string, error) {
+	if configuredProjectID != "" {
+		return []string{configuredProjectID}, nil
+	}
+	return client.listProjectIDs(ctx)
 }
 
 type codexLaunchOptions struct {
@@ -98,6 +110,20 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, project
 		return 0, true, true
 	}
 	return 1, true, true
+}
+
+func claimProjectRunsExecuteAndReport(ctx context.Context, client *runnerClient, projectIDs []string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
+	if len(projectIDs) == 0 {
+		fmt.Fprintln(os.Stdout, "no configured projects")
+		return 0, true, false
+	}
+	for _, projectID := range projectIDs {
+		status, keepWatching, claimed := claimRunExecuteAndReport(ctx, client, projectID, agentID, codexOptions)
+		if claimed || !keepWatching || status != 0 {
+			return status, keepWatching, claimed
+		}
+	}
+	return 0, true, false
 }
 
 func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexOptions codexLaunchOptions) (string, string, int64) {
@@ -195,6 +221,15 @@ type runnerClient struct {
 	http    *http.Client
 }
 
+type projectListResponse struct {
+	Projects []projectListItem `json:"projects"`
+}
+
+type projectListItem struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
+}
+
 var errNoQueuedRun = errors.New("no queued automation run")
 
 var windowsPathForRunner = func(path string) (string, error) {
@@ -232,6 +267,42 @@ func (client *runnerClient) completeAttempt(ctx context.Context, projectID strin
 	var run projectautomation.AutomationRun
 	_, err := client.post(ctx, fmt.Sprintf("/api/v1/projects/%s/automation-runs/%s/attempt-result", url.PathEscape(projectID), url.PathEscape(runID)), input, &run)
 	return run, err
+}
+
+func (client *runnerClient) listProjectIDs(ctx context.Context) ([]string, error) {
+	var output projectListResponse
+	if _, err := client.get(ctx, "/api/v1/projects", &output); err != nil {
+		return nil, err
+	}
+	projectIDs := make([]string, 0, len(output.Projects))
+	for _, project := range output.Projects {
+		if strings.TrimSpace(project.ID) == "" || !project.Enabled {
+			continue
+		}
+		projectIDs = append(projectIDs, project.ID)
+	}
+	return projectIDs, nil
+}
+
+func (client *runnerClient) get(ctx context.Context, path string, output any) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.baseURL+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := client.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var body bytes.Buffer
+		_, _ = body.ReadFrom(resp.Body)
+		return resp.StatusCode, fmt.Errorf("server returned %s: %s", resp.Status, strings.TrimSpace(body.String()))
+	}
+	if output == nil {
+		return resp.StatusCode, nil
+	}
+	return resp.StatusCode, json.NewDecoder(resp.Body).Decode(output)
 }
 
 func (client *runnerClient) post(ctx context.Context, path string, input any, output any) (int, error) {

@@ -48,6 +48,7 @@ const (
 const (
 	RunnerExecutionInProcess = "in_process"
 	RunnerExecutionExternal  = "external"
+	RunnerExecutionManaged   = "managed"
 )
 
 const (

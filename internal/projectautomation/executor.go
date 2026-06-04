@@ -120,7 +120,7 @@ func (executor *Executor) pollOnce(ctx context.Context) {
 			return
 		}
 		executor.submitAutomaticRuns(ctx, projectID)
-		if executor.options.RunnerExecution != RunnerExecutionInProcess {
+		if !executor.runsQueuedWork() {
 			continue
 		}
 		runs, err := executor.service.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
@@ -137,6 +137,11 @@ func (executor *Executor) pollOnce(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (executor *Executor) runsQueuedWork() bool {
+	return executor.options.RunnerExecution == RunnerExecutionInProcess ||
+		executor.options.RunnerExecution == RunnerExecutionManaged
 }
 
 func (executor *Executor) submitAutomaticRuns(ctx context.Context, projectID string) {

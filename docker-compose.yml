@@ -38,6 +38,32 @@ services:
       retries: 6
     restart: unless-stopped
 
+  mivia-automation-runner:
+    image: mivia-server:local
+    pull_policy: build
+    init: true
+    entrypoint: []
+    user: "${MIVIA_CONTAINER_USER:-10001:10001}"
+    command:
+      - mivia-automation-runner
+      - --server
+      - http://mivia-server:8080
+      - --watch
+      - --poll-interval
+      - "${MIVIA_AUTOMATION_RUNNER_POLL_INTERVAL:-5s}"
+      - --codex
+      - "${MIVIA_AUTOMATION_CODEX_BINARY:-codex}"
+      - --codex-cd
+      - "${MIVIA_AUTOMATION_CODEX_CD:-/workspace}"
+    volumes:
+      - mivia-data:/var/lib/mivia
+      # Mount a project workspace and Codex auth in an ignored local override
+      # when the runner should execute real Codex CLI work from a container.
+    depends_on:
+      mivia-server:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   mivia-data:
 

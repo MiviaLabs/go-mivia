@@ -210,6 +210,42 @@ func TestExecutorExternalModeSubmitsAutomaticRunWithoutExecuting(t *testing.T) {
 	}
 }
 
+func TestExecutorManagedModeSubmitsAutomaticRunAndExecutes(t *testing.T) {
+	ctx := context.Background()
+	svc := newExecutorTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1, RunnerExecution: RunnerExecutionManaged})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/managed-review",
+		Title:           "Managed automatic review",
+		Purpose:         "Run ready review task through server managed runner",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "agent-a",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{"task-a"},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "on-ready-task",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	executor := NewExecutor(svc, ExecutorOptions{
+		Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionManaged,
+		GlobalWorkerCount: 1, PerProjectWorkerLimit: 1, PerAgentWorkerLimit: 1,
+		ProjectIDs: []string{"project-1"},
+	})
+
+	executor.pollOnce(ctx)
+	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected one managed run, got %#v", runs)
+	}
+	waitForRunStatus(t, svc, runs[0].ProjectID, runs[0].ID, RunStatusVerifying)
+}
+
 func TestExecutorRespectsGlobalWorkerLimit(t *testing.T) {
 	ctx := context.Background()
 	svc := newExecutorTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1})

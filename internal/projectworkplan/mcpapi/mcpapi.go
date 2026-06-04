@@ -75,8 +75,8 @@ func ToolDefinitions() []map[string]any {
 			schema(map[string]any{"id": ref, "task_id": ref}, []string{"id", "task_id"})),
 		tool("projects.work_tasks.update_status", "Update Work Task Status", "MUST be used when a Work Task lifecycle state changes outside claim/start/complete/fail/block helpers, especially to cancel or supersede stale planned metadata. Prior state: projects.work_tasks.get or list_open identified the task. Required fields: id, task_id, status, and safe_next_action. Normal lifecycle is planned -> ready -> claimed -> in_progress -> needs_review -> verifying -> done; do not jump planned -> done. Safety: bounded metadata only; do not bypass verifier, independent review, Evidence Graph, confidence, or knowledge-decision requirements for done tasks. Next tool: projects.work_tasks.get_next or list_open.",
 			schema(map[string]any{"id": ref, "task_id": ref, "status": statusSchema(taskStatuses()), "safe_next_action": text, "outcome": longText, "blocked_reason": longText, "resume_instructions": longText, "blocked_by_task_ids": refArray, "verifier_result_refs": refArray, "review_result_refs": refArray, "review_exempt_reason": reviewExemptReason, "claim_refs": refArray, "evidence_refs": refArray, "knowledge_candidate_refs": refArray, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "status", "safe_next_action"})),
-		tool("projects.work_tasks.claim", "Claim Work Task", "MUST be called before an agent edits files or executes a task. Prior state: task is ready and dependencies are satisfied. Required fields: id, task_id, owner_agent, and normally run_id. Safety: prevents duplicate agent work; metadata-only owner/run refs. Next tool: projects.work_tasks.start. Must not override another claim unless the service explicitly allows it.",
-			schema(map[string]any{"id": ref, "task_id": ref, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "owner_agent"})),
+		tool("projects.work_tasks.claim", "Claim Work Task", "MUST be called before an agent edits files or executes a task. Prior state: task is ready and dependencies are satisfied. Required fields: id, task_id, owner_agent, and run_id. Safety: prevents duplicate agent work; metadata-only owner/run refs. Next tool: projects.work_tasks.start. Must not override another claim unless the service explicitly allows it.",
+			schema(map[string]any{"id": ref, "task_id": ref, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "owner_agent", "run_id"})),
 		tool("projects.work_tasks.release", "Release Work Task", "MUST be used when a claimed task is intentionally returned to the ready queue. Prior state: task is claimed by the caller or service permits release. Required fields: id, task_id, and owner_agent. Safety: bounded reason metadata only. Next tool: projects.work_tasks.get_next. Must not hide blocked or failed work.",
 			schema(map[string]any{"id": ref, "task_id": ref, "owner_agent": ref, "reason": optionalText, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "owner_agent"})),
 		tool("projects.work_tasks.start", "Start Work Task", "MUST be called when execution starts after claim. Prior state: projects.work_tasks.claim succeeded. Required fields: id and task_id; include run_id, trace_id, and context_pack_refs when indexed context is used. Safety: context packs are refs only. Next tool: attach evidence/context/claim as needed, then complete, block, or fail. Must not begin unclaimed execution.",
@@ -191,12 +191,19 @@ func validateArguments(name string, arguments json.RawMessage) error {
 		return ErrNotFound
 	}
 	if err := decodeRaw(arguments, value); err != nil {
-		return fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
+		return fmt.Errorf("%w: invalid %s arguments", ErrInvalidInput, workPlanToolKind(name))
 	}
 	if hasUnsafeValue(value) {
-		return fmt.Errorf("%w: unsafe work plan metadata", ErrInvalidInput)
+		return fmt.Errorf("%w: unsafe %s metadata", ErrInvalidInput, workPlanToolKind(name))
 	}
 	return nil
+}
+
+func workPlanToolKind(name string) string {
+	if strings.HasPrefix(name, "projects.work_tasks.") {
+		return "work task"
+	}
+	return "work plan"
 }
 
 type createPlanInput struct {
@@ -469,12 +476,38 @@ func tool(name, title, description string, inputSchema map[string]any) map[strin
 }
 
 func schema(properties map[string]any, required []string) map[string]any {
-	return map[string]any{
+	if idSchema, ok := properties["id"]; ok {
+		properties = merge(properties, map[string]any{"project_id": idSchema})
+	}
+	out := map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties":           properties,
-		"required":             required,
 	}
+	required, hasID := optionalizeIDRequired(required)
+	if len(required) > 0 {
+		out["required"] = required
+	}
+	if hasID {
+		out["anyOf"] = []map[string]any{
+			{"required": []string{"id"}},
+			{"required": []string{"project_id"}},
+		}
+	}
+	return out
+}
+
+func optionalizeIDRequired(required []string) ([]string, bool) {
+	out := make([]string, 0, len(required))
+	hasID := false
+	for _, field := range required {
+		if field == "id" {
+			hasID = true
+			continue
+		}
+		out = append(out, field)
+	}
+	return out, hasID
 }
 
 func statusSchema(statuses []string) map[string]any {
@@ -525,6 +558,7 @@ func decodeRaw(raw json.RawMessage, dst any) error {
 	if err := json.Unmarshal(raw, &encoded); err == nil {
 		raw = json.RawMessage(encoded)
 	}
+	raw = normalizeProjectIDAlias(raw)
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
@@ -534,6 +568,26 @@ func decodeRaw(raw json.RawMessage, dst any) error {
 		return errors.New("unexpected trailing JSON")
 	}
 	return nil
+}
+
+func normalizeProjectIDAlias(raw json.RawMessage) json.RawMessage {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return raw
+	}
+	projectID, hasProjectID := payload["project_id"]
+	if !hasProjectID {
+		return raw
+	}
+	if _, hasID := payload["id"]; !hasID {
+		payload["id"] = projectID
+	}
+	delete(payload, "project_id")
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return raw
+	}
+	return normalized
 }
 
 func hasUnsafeValue(value any) bool {

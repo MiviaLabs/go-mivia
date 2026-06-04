@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // CallWorkPlanTool adapts MCP tool calls onto the service-owned validation and state machine.
@@ -17,31 +18,31 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
 		}
-		return svc.CreateWorkPlan(ctx, CreateWorkPlanInput{ProjectID: input.ID, PlanRef: input.PlanRef, UserRequestRef: input.UserRequestRef, Title: input.Title, GoalSummary: input.GoalSummary, OwnerAgent: input.OwnerAgent, CreatedByRunID: input.CreatedByRunID, TraceID: input.TraceID, ResumeSummary: input.ResumeSummary, IsolationMode: input.IsolationMode, ParallelGroupRef: input.ParallelGroupRef, WorkspaceRef: input.WorkspaceRef, GitBaseRef: input.GitBaseRef, GitBranchRef: input.GitBranchRef, GitWorktreeRef: input.GitWorktreeRef})
+		return svc.CreateWorkPlan(ctx, CreateWorkPlanInput{ProjectID: input.projectID(), PlanRef: input.PlanRef, UserRequestRef: input.UserRequestRef, Title: input.Title, GoalSummary: input.GoalSummary, OwnerAgent: input.OwnerAgent, CreatedByRunID: input.CreatedByRunID, TraceID: input.TraceID, ResumeSummary: input.ResumeSummary, IsolationMode: input.IsolationMode, ParallelGroupRef: input.ParallelGroupRef, WorkspaceRef: input.WorkspaceRef, GitBaseRef: input.GitBaseRef, GitBranchRef: input.GitBranchRef, GitWorktreeRef: input.GitWorktreeRef})
 	case "projects.work_plans.get":
 		var input planIDInput
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
 		}
-		return svc.GetWorkPlan(ctx, input.ID, input.PlanID)
+		return svc.GetWorkPlan(ctx, input.projectID(), input.PlanID)
 	case "projects.work_plans.list":
 		var input listPlansInput
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
 		}
-		return svc.ListWorkPlans(ctx, WorkPlanFilter{ProjectID: input.ID, Status: input.Status, OwnerAgent: input.OwnerAgent, PageSize: input.PageSize, PageToken: input.PageToken})
+		return svc.ListWorkPlans(ctx, WorkPlanFilter{ProjectID: input.projectID(), Status: input.Status, OwnerAgent: input.OwnerAgent, PageSize: input.PageSize, PageToken: input.PageToken})
 	case "projects.work_plans.update_status":
 		var input updatePlanStatusInput
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
 		}
-		return svc.UpdateWorkPlanStatus(ctx, UpdateWorkPlanStatusInput{ProjectID: input.ID, PlanID: input.PlanID, Status: input.Status, ResumeSummary: input.ResumeSummary})
+		return svc.UpdateWorkPlanStatus(ctx, UpdateWorkPlanStatusInput{ProjectID: input.projectID(), PlanID: input.PlanID, Status: input.Status, ResumeSummary: input.ResumeSummary})
 	case "projects.work_plans.resume":
 		var input resumePlanInput
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
 		}
-		return svc.ResumeWorkPlan(ctx, ResumeWorkPlanInput{ProjectID: input.ID, PlanID: input.PlanID})
+		return svc.ResumeWorkPlan(ctx, ResumeWorkPlanInput{ProjectID: input.projectID(), PlanID: input.PlanID})
 	case "projects.work_tasks.create":
 		var input createTaskMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -50,13 +51,13 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 		if input.FailureCriteria == "" {
 			input.FailureCriteria = input.FailureBlockCriteria
 		}
-		return svc.CreateWorkTask(ctx, CreateWorkTaskInput{ProjectID: input.ID, PlanID: input.PlanID, TaskRef: input.TaskRef, Title: input.Title, Description: input.Description, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, EvidenceNeeded: input.EvidenceNeeded, ContextPackRefs: input.ContextPackRefs, LikelyFilesAffected: input.LikelyFilesAffected, DependencyTaskIDs: input.DependencyTaskIDs, VerificationRequirement: input.VerificationRequirement, ExpectedOutput: input.ExpectedOutput, FailureCriteria: input.FailureCriteria, ResumeInstructions: input.ResumeInstructions, KnowledgeCandidateRefs: input.KnowledgeCandidateRefs})
+		return svc.CreateWorkTask(ctx, CreateWorkTaskInput{ProjectID: input.projectID(), PlanID: input.PlanID, TaskRef: input.TaskRef, Title: input.Title, Description: input.Description, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, EvidenceNeeded: input.EvidenceNeeded, ContextPackRefs: input.ContextPackRefs, LikelyFilesAffected: input.LikelyFilesAffected, DependencyTaskIDs: input.DependencyTaskIDs, VerificationRequirement: input.VerificationRequirement, ExpectedOutput: input.ExpectedOutput, FailureCriteria: input.FailureCriteria, ResumeInstructions: input.ResumeInstructions, KnowledgeCandidateRefs: input.KnowledgeCandidateRefs})
 	case "projects.work_tasks.get":
 		var input taskIDInput
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
 		}
-		return svc.GetWorkTask(ctx, input.ID, input.TaskID)
+		return svc.GetWorkTask(ctx, input.projectID(), input.TaskID)
 	case "projects.work_tasks.update_status":
 		var input taskStatusMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -171,17 +172,20 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 }
 
 type planIDInput struct {
-	ID     string `json:"id"`
-	PlanID string `json:"plan_id"`
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id,omitempty"`
+	PlanID    string `json:"plan_id"`
 }
 
 type taskIDInput struct {
-	ID     string `json:"id"`
-	TaskID string `json:"task_id"`
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id,omitempty"`
+	TaskID    string `json:"task_id"`
 }
 
 type createPlanMCPInput struct {
 	ID               string `json:"id"`
+	ProjectID        string `json:"project_id,omitempty"`
 	PlanRef          string `json:"plan_ref"`
 	UserRequestRef   string `json:"user_request_ref,omitempty"`
 	Title            string `json:"title"`
@@ -200,6 +204,7 @@ type createPlanMCPInput struct {
 
 type listPlansInput struct {
 	ID         string `json:"id"`
+	ProjectID  string `json:"project_id,omitempty"`
 	Status     string `json:"status,omitempty"`
 	OwnerAgent string `json:"owner_agent,omitempty"`
 	PageSize   int    `json:"page_size,omitempty"`
@@ -208,6 +213,7 @@ type listPlansInput struct {
 
 type updatePlanStatusInput struct {
 	ID             string `json:"id"`
+	ProjectID      string `json:"project_id,omitempty"`
 	PlanID         string `json:"plan_id"`
 	Status         string `json:"status"`
 	SafeNextAction string `json:"safe_next_action"`
@@ -217,12 +223,14 @@ type updatePlanStatusInput struct {
 }
 
 type resumePlanInput struct {
-	ID     string `json:"id"`
-	PlanID string `json:"plan_id,omitempty"`
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id,omitempty"`
+	PlanID    string `json:"plan_id,omitempty"`
 }
 
 type createTaskMCPInput struct {
 	ID                      string   `json:"id"`
+	ProjectID               string   `json:"project_id,omitempty"`
 	PlanID                  string   `json:"plan_id"`
 	TaskRef                 string   `json:"task_ref"`
 	Title                   string   `json:"title"`
@@ -245,6 +253,7 @@ type createTaskMCPInput struct {
 
 type taskActionMCPInput struct {
 	ID                 string   `json:"id"`
+	ProjectID          string   `json:"project_id,omitempty"`
 	TaskID             string   `json:"task_id"`
 	OwnerAgent         string   `json:"owner_agent,omitempty"`
 	RunID              string   `json:"run_id,omitempty"`
@@ -265,7 +274,7 @@ type taskActionMCPInput struct {
 }
 
 func (input taskActionMCPInput) action() WorkTaskActionInput {
-	return WorkTaskActionInput{ProjectID: input.ID, TaskID: input.TaskID, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, ContextPackRefs: input.ContextPackRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, KnowledgeRefs: input.KnowledgeRefs, Outcome: input.Outcome, BlockedReason: input.BlockedReason, BlockedByTaskIDs: input.BlockedByTaskIDs, ResumeInstructions: input.ResumeInstructions, VerifierResultRefs: input.VerifierResultRefs, ReviewResultRefs: input.ReviewResultRefs, ReviewExemptReason: input.ReviewExemptReason}
+	return WorkTaskActionInput{ProjectID: input.projectID(), TaskID: input.TaskID, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, ContextPackRefs: input.ContextPackRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, KnowledgeRefs: input.KnowledgeRefs, Outcome: input.Outcome, BlockedReason: input.BlockedReason, BlockedByTaskIDs: input.BlockedByTaskIDs, ResumeInstructions: input.ResumeInstructions, VerifierResultRefs: input.VerifierResultRefs, ReviewResultRefs: input.ReviewResultRefs, ReviewExemptReason: input.ReviewExemptReason}
 }
 
 type taskStatusMCPInput struct {
@@ -279,6 +288,7 @@ func (input taskStatusMCPInput) status() UpdateWorkTaskStatusInput {
 
 type listTasksMCPInput struct {
 	ID         string `json:"id"`
+	ProjectID  string `json:"project_id,omitempty"`
 	PlanID     string `json:"plan_id,omitempty"`
 	OwnerAgent string `json:"owner_agent,omitempty"`
 	RunID      string `json:"run_id,omitempty"`
@@ -287,11 +297,12 @@ type listTasksMCPInput struct {
 }
 
 func (input listTasksMCPInput) filter() WorkTaskFilter {
-	return WorkTaskFilter{ProjectID: input.ID, PlanID: input.PlanID, OwnerAgent: input.OwnerAgent, ClaimedByRunID: input.RunID, PageSize: input.PageSize, PageToken: input.PageToken}
+	return WorkTaskFilter{ProjectID: input.projectID(), PlanID: input.PlanID, OwnerAgent: input.OwnerAgent, ClaimedByRunID: input.RunID, PageSize: input.PageSize, PageToken: input.PageToken}
 }
 
 type getNextMCPInput struct {
 	ID                 string `json:"id"`
+	ProjectID          string `json:"project_id,omitempty"`
 	PlanID             string `json:"plan_id,omitempty"`
 	OwnerAgent         string `json:"owner_agent,omitempty"`
 	RunID              string `json:"run_id,omitempty"`
@@ -301,6 +312,7 @@ type getNextMCPInput struct {
 
 type attachMCPInput struct {
 	ID                    string   `json:"id"`
+	ProjectID             string   `json:"project_id,omitempty"`
 	TaskID                string   `json:"task_id"`
 	Ref                   string   `json:"ref,omitempty"`
 	EvidenceRef           string   `json:"evidence_ref,omitempty"`
@@ -320,7 +332,28 @@ type attachMCPInput struct {
 }
 
 func (input attachMCPInput) attach() AttachInput {
-	return AttachInput{ProjectID: input.ID, TaskID: input.TaskID, Ref: input.Ref, AttachedByRunID: input.AttachedByRunID, TraceID: input.TraceID, Note: input.Note}
+	return AttachInput{ProjectID: input.projectID(), TaskID: input.TaskID, Ref: input.Ref, AttachedByRunID: input.AttachedByRunID, TraceID: input.TraceID, Note: input.Note}
+}
+
+func (input planIDInput) projectID() string        { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input taskIDInput) projectID() string        { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input createPlanMCPInput) projectID() string { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input listPlansInput) projectID() string     { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input updatePlanStatusInput) projectID() string {
+	return firstNonEmpty(input.ID, input.ProjectID)
+}
+func (input resumePlanInput) projectID() string    { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input createTaskMCPInput) projectID() string { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input taskActionMCPInput) projectID() string { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input listTasksMCPInput) projectID() string  { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input getNextMCPInput) projectID() string    { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input attachMCPInput) projectID() string     { return firstNonEmpty(input.ID, input.ProjectID) }
+
+func firstNonEmpty(primary, fallback string) string {
+	if strings.TrimSpace(primary) != "" {
+		return primary
+	}
+	return fallback
 }
 
 func decodeMCP(raw json.RawMessage, dst any) error {
