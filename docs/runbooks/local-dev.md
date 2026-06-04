@@ -72,7 +72,7 @@ Defaults:
 - Content graph ingestion: `MIVIA_INGESTION_CONTENT_GRAPH_ENABLED=true`
 - Live updates: `MIVIA_INGESTION_LIVE_UPDATES_ENABLED=true`
 - Global workspace gate: `MIVIA_WORKSPACE_ENABLED=true`
-- Container user: `MIVIA_CONTAINER_USER=10001:10001` by default. For local edit-capable bind mounts across mixed WSL/Windows ownership boundaries, use the ignored local override with `MIVIA_CONTAINER_USER=0:0`; the workspace atomic write path preserves original Unix ownership when supported and tolerates chmod-unsupported Windows mounts.
+- Container user: `MIVIA_CONTAINER_USER=10001:10001` by default. For local automation over bind-mounted checkouts, prefer `scripts/mivia-compose-up -d`; it infers `MIVIA_AUTOMATION_CONTAINER_USER` from `id -u:id -g` so automation commits, refs, and worktree metadata stay owned by the checkout user. Configure `MIVIA_CONTAINER_USER` separately for the server data volume and workspace mounts. Avoid root-run automation except for one-time ownership repair.
 - Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`; persistent project graph/search stores live under `/var/lib/mivia/projects/<project-id>/`, with search SQLite filenames tied to the Pebble graph storage epoch.
 - Container storage: named Compose volume `mivia-data`
 - Config file: `configs/mivia-server.compose.toml`

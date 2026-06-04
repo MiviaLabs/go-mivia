@@ -16,7 +16,7 @@ func (svc *Service) CallAutomationTool(ctx context.Context, name string, argumen
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
 		}
-		return svc.CreateAutomation(ctx, CreateAutomationInput{ProjectID: input.projectID(), AutomationRef: input.AutomationRef, Title: input.Title, Purpose: input.Purpose, Status: input.Status, AgentID: input.AgentID, PlanID: input.PlanID, AllowedTaskRefs: input.AllowedTaskRefs, RequiredReviewTaskIDs: input.RequiredReviewTaskIDs, TriggerKind: input.TriggerKind, SchedulePolicy: input.SchedulePolicy, PermissionRef: input.PermissionRef, CreatedByRunID: input.CreatedByRunID, TraceID: input.TraceID})
+		return svc.CreateAutomation(ctx, CreateAutomationInput{ProjectID: input.projectID(), AutomationRef: input.AutomationRef, Title: input.Title, Purpose: input.purpose(), Status: input.Status, AgentID: input.agentID(), PlanID: input.planID(), AllowedTaskRefs: input.allowedTaskRefs(), RequiredReviewTaskIDs: input.RequiredReviewTaskIDs, TriggerKind: input.triggerKind(), SchedulePolicy: input.SchedulePolicy, PermissionRef: input.permissionRef(), CreatedByRunID: input.CreatedByRunID, TraceID: input.TraceID})
 	case "projects.automations.get":
 		var input automationIDInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -82,20 +82,69 @@ type createAutomationMCPInput struct {
 	AutomationRef         string   `json:"automation_ref"`
 	Title                 string   `json:"title"`
 	Purpose               string   `json:"purpose"`
+	ExpectedOutput        string   `json:"expected_output,omitempty"`
 	Status                string   `json:"status,omitempty"`
 	AgentID               string   `json:"agent_id"`
+	Executor              string   `json:"executor,omitempty"`
+	RunnerMode            string   `json:"runner_mode,omitempty"`
 	PlanID                string   `json:"plan_id,omitempty"`
+	WorkPlanID            string   `json:"work_plan_id,omitempty"`
+	WorkTaskID            string   `json:"work_task_id,omitempty"`
 	AllowedTaskRefs       []string `json:"allowed_task_refs,omitempty"`
+	AllowedWorkTaskIDs    []string `json:"allowed_work_task_ids,omitempty"`
 	RequiredReviewTaskIDs []string `json:"required_review_task_ids,omitempty"`
 	TriggerKind           string   `json:"trigger_kind,omitempty"`
+	TriggerMode           string   `json:"trigger_mode,omitempty"`
 	SchedulePolicy        string   `json:"schedule_policy,omitempty"`
 	PermissionRef         string   `json:"permission_ref"`
+	PermissionSnapshotRef string   `json:"permission_snapshot_ref,omitempty"`
 	CreatedByRunID        string   `json:"created_by_run_id,omitempty"`
 	TraceID               string   `json:"trace_id,omitempty"`
 }
 
 func (input createAutomationMCPInput) projectID() string {
 	return projectIDAlias(input.ID, input.ProjectID)
+}
+
+func (input createAutomationMCPInput) purpose() string {
+	if strings.TrimSpace(input.Purpose) != "" {
+		return input.Purpose
+	}
+	if strings.TrimSpace(input.ExpectedOutput) != "" {
+		return input.ExpectedOutput
+	}
+	return input.Title
+}
+
+func (input createAutomationMCPInput) agentID() string {
+	if strings.TrimSpace(input.AgentID) != "" {
+		return input.AgentID
+	}
+	if strings.TrimSpace(input.Executor) != "" {
+		return input.Executor
+	}
+	return "codex_cli"
+}
+
+func (input createAutomationMCPInput) planID() string {
+	return mcpFirstNonEmpty(input.PlanID, input.WorkPlanID)
+}
+
+func (input createAutomationMCPInput) allowedTaskRefs() []string {
+	out := append([]string{}, input.AllowedTaskRefs...)
+	out = append(out, input.AllowedWorkTaskIDs...)
+	if strings.TrimSpace(input.WorkTaskID) != "" {
+		out = append(out, input.WorkTaskID)
+	}
+	return uniqueRefs(out)
+}
+
+func (input createAutomationMCPInput) triggerKind() string {
+	return mcpFirstNonEmpty(input.TriggerKind, input.TriggerMode)
+}
+
+func (input createAutomationMCPInput) permissionRef() string {
+	return mcpFirstNonEmpty(input.PermissionRef, input.PermissionSnapshotRef)
 }
 
 type automationIDInput struct {
@@ -224,6 +273,30 @@ func projectIDAlias(id, projectID string) string {
 		return projectID
 	}
 	return id
+}
+
+func mcpFirstNonEmpty(primary, fallback string) string {
+	if strings.TrimSpace(primary) != "" {
+		return primary
+	}
+	return fallback
+}
+
+func uniqueRefs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func decodeMCP(arguments json.RawMessage, target any) error {

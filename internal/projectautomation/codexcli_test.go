@@ -1,6 +1,7 @@
 package projectautomation
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -43,5 +44,29 @@ func TestBuildCodexCommandRejectsUnsafeEnv(t *testing.T) {
 	inputPath := filepath.Join(t.TempDir(), "task.json")
 	if _, err := BuildCodexCommand(CodexCommandInput{BinaryPath: "/usr/local/bin/codex", InputPath: inputPath, Timeout: time.Minute, EnvAllow: map[string]string{"BAD=KEY": "value"}}); err == nil {
 		t.Fatal("expected unsafe env key rejection")
+	}
+}
+
+func TestRunCodexCommandClassifiesConfigPermissionFailure(t *testing.T) {
+	inputPath := filepath.Join(t.TempDir(), "task.txt")
+	if err := os.WriteFile(inputPath, []byte("safe prompt"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	binary := filepath.Join(t.TempDir(), "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' 'Error loading config.toml: Failed to read config file /home/example/.codex/config.toml: Permission denied (os error 13)' >&2\nexit 1\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	command, err := BuildCodexCommand(CodexCommandInput{BinaryPath: binary, InputPath: inputPath, Timeout: time.Minute})
+	if err != nil {
+		t.Fatalf("BuildCodexCommand returned error: %v", err)
+	}
+
+	result, err := RunCodexCommand(t.Context(), command, 1024)
+	if err == nil {
+		t.Fatal("expected fake codex failure")
+	}
+	if result.SafeFailureCategory != "codex_config_unreadable" {
+		t.Fatalf("expected codex_config_unreadable, got %q", result.SafeFailureCategory)
 	}
 }

@@ -207,6 +207,19 @@ func TestCallToolCreateTaskAllowsHiddenDirectoryPathMetadata(t *testing.T) {
 	}
 }
 
+func TestCallToolCreateTaskAcceptsCommonPlanAndRunAliases(t *testing.T) {
+	svc := projectworkplan.New(workplanstore.NewMemoryStore())
+	plan := call(t, svc, "projects.work_plans.create", `{"id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"Expose metadata-only work plan tools"}`)
+	planID := structuredString(t, plan, "id")
+	task := call(t, svc, "projects.work_tasks.create", `{"id":"example-service","work_plan_id":"`+planID+`","task_ref":"task/alias","title":"Alias task","status":"ready","evidence_needed":["source patterns"],"verification_requirement":"focused MCP tests","resume_instructions":"continue from tool routing","created_by_run_id":"agent_run_alias"}`)
+	if structuredString(t, task, "id") == "" {
+		t.Fatalf("expected task id in alias create response: %s", jsonText(t, task))
+	}
+	if structuredString(t, task, "plan_id") != planID || !bytes.Contains(jsonText(t, task), []byte("agent_run_alias")) {
+		t.Fatalf("expected aliases to populate plan and run metadata: %s", jsonText(t, task))
+	}
+}
+
 func TestCallToolRejectsUnknownFieldsAndUnsafePayloads(t *testing.T) {
 	api := newFakeWorkPlanAPI()
 	if _, err := CallTool(context.Background(), api, "projects.work_plans.create", json.RawMessage(`{"id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"bounded metadata","query":"MATCH (n)"}`)); err == nil {

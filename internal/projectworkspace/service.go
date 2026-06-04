@@ -292,17 +292,10 @@ func makeWorktreeGitdirPortable(root string, target string, metadataName string)
 	if relativeMetadataDir == "." || filepath.IsAbs(relativeMetadataDir) {
 		return ErrInvalidInput
 	}
-	relativeWorktreeGitFile, err := filepath.Rel(metadataDir, worktreeGitFile)
-	if err != nil {
-		return err
-	}
-	if relativeWorktreeGitFile == "." || filepath.IsAbs(relativeWorktreeGitFile) {
-		return ErrInvalidInput
-	}
 	if err := os.WriteFile(worktreeGitFile, []byte("gitdir: "+filepath.ToSlash(relativeMetadataDir)+"\n"), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(metadataGitdirFile, []byte(filepath.ToSlash(relativeWorktreeGitFile)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(metadataGitdirFile, []byte(filepath.ToSlash(worktreeGitFile)+"\n"), 0o644); err != nil {
 		return err
 	}
 	return nil

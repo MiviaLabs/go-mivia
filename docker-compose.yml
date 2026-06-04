@@ -43,11 +43,12 @@ services:
     pull_policy: build
     init: true
     entrypoint: []
-    # For writable bind-mounted repositories, set this to the host checkout
-    # owner, for example: MIVIA_CONTAINER_USER="$(id -u):$(id -g)".
+    # For writable bind-mounted repositories, run scripts/mivia-compose-up or
+    # set this to the host checkout owner, for example:
+    # MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)".
     # Do not run the automation runner as root unless you intentionally want
     # root-owned commits, refs, and worktree metadata on the host.
-    user: "${MIVIA_CONTAINER_USER:-10001:10001}"
+    user: "${MIVIA_AUTOMATION_CONTAINER_USER:-10001:10001}"
     healthcheck:
       disable: true
     command:
@@ -96,7 +97,6 @@ volumes:
 #       - /home/example/projects/service-a:/home/example/projects/service-a
 #       - /home/example/projects/service-b:/home/example/projects/service-b
 #   mivia-automation-runner:
-#     # Match the host user that owns the writable checkout:
-#     # MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)" docker compose ...
-#     # Or use scripts/mivia-compose-up to infer the runner UID:GID.
+#     # Match the host user that owns the writable checkout. The helper
+#     # scripts/mivia-compose-up infers this automatically.
 #     user: "${MIVIA_AUTOMATION_CONTAINER_USER:-1000:1000}"

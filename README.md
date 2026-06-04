@@ -492,7 +492,7 @@ Persistent project graph/search files live under `/var/lib/mivia/projects/<proje
 
 Override `MIVIA_HOST_BIND`, `MIVIA_HOST_PORT`, and feature flags from the host environment when needed. Compose loads `configs/mivia-server.compose.toml`, which mirrors the local global runtime defaults without project roots, project names, Jira/Confluence URLs, or credential refs. It enables content graph ingestion, live updates, diagnostics, runtime metrics, and the global workspace gate by default. Per-project `workspace_mode` still controls whether a configured project exposes workspace tools. Mount ignored local configs or secrets only in an ignored `.docker-compose.local.yml` override when needed.
 
-The image defaults to `MIVIA_CONTAINER_USER=10001:10001`. For local edit-capable bind mounts across mixed WSL/Windows ownership boundaries, run the ignored local override with `MIVIA_CONTAINER_USER=0:0`; workspace atomic edits preserve original Unix ownership where supported and tolerate chmod-unsupported Windows mounts.
+The image defaults to `MIVIA_CONTAINER_USER=10001:10001`. For local automation over bind-mounted checkouts, prefer `scripts/mivia-compose-up -d`; it infers `MIVIA_AUTOMATION_CONTAINER_USER` from `id -u:id -g` so automation commits, refs, and worktree metadata stay owned by the checkout user. Configure `MIVIA_CONTAINER_USER` separately for the server data volume and workspace mounts. Avoid root-run automation except for one-time ownership repair.
 
 To run with an ignored local config and local credential file:
 

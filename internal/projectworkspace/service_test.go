@@ -84,8 +84,12 @@ func TestMakeWorktreeGitdirPortableWritesRelativePointers(t *testing.T) {
 		t.Fatalf("expected relative worktree gitdir pointer, got %q", worktreeGit)
 	}
 	metadataGitdir := readFixture(t, metadataDir, "gitdir")
-	if filepath.IsAbs(strings.TrimSpace(metadataGitdir)) || strings.Contains(metadataGitdir, root) {
-		t.Fatalf("expected relative metadata gitdir pointer, got %q", metadataGitdir)
+	if !filepath.IsAbs(strings.TrimSpace(metadataGitdir)) {
+		t.Fatalf("expected absolute metadata gitdir pointer for git worktree list compatibility, got %q", metadataGitdir)
+	}
+	resolvedMetadataGitdir := filepath.Clean(strings.TrimSpace(metadataGitdir))
+	if resolvedMetadataGitdir != filepath.Join(target, ".git") {
+		t.Fatalf("metadata gitdir resolves to %q, want %q", resolvedMetadataGitdir, filepath.Join(target, ".git"))
 	}
 }
 

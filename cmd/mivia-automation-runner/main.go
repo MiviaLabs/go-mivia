@@ -63,6 +63,10 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "codex launcher unavailable: %v\n", err)
 		return 1
 	}
+	if err := checkCodexConfigReadable(); err != nil {
+		fmt.Fprintf(os.Stderr, "codex runtime config unavailable: %v\n", err)
+		return 1
+	}
 	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: http.DefaultClient}
 	var idleSince time.Time
 	for {
@@ -120,6 +124,44 @@ func checkCodexLauncher(ctx context.Context, codexOptions codexLaunchOptions) er
 	default:
 		return fmt.Errorf("%w: unknown codex launcher", projectautomation.ErrInvalidInput)
 	}
+}
+
+func checkCodexConfigReadable() error {
+	configPath := codexConfigPath()
+	if strings.TrimSpace(configPath) == "" {
+		return nil
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if errors.Is(err, os.ErrPermission) {
+			return fmt.Errorf("%w: codex_config_unreadable", projectautomation.ErrInvalidInput)
+		}
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%w: codex_config_unreadable", projectautomation.ErrInvalidInput)
+	}
+	file, err := os.Open(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return fmt.Errorf("%w: codex_config_unreadable", projectautomation.ErrInvalidInput)
+		}
+		return err
+	}
+	return file.Close()
+}
+
+func codexConfigPath() string {
+	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
+		return filepath.Join(codexHome, "config.toml")
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		return filepath.Join(home, ".codex", "config.toml")
+	}
+	return ""
 }
 
 func runnerProjectIDs(ctx context.Context, client *runnerClient, configuredProjectID string) ([]string, error) {
@@ -274,6 +316,9 @@ func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexOp
 	}
 	if result.TimedOut {
 		return projectautomation.RunStatusTimeout, "codex_cli_timeout", durationMS
+	}
+	if result.SafeFailureCategory != "" {
+		return projectautomation.RunStatusFailed, result.SafeFailureCategory, durationMS
 	}
 	return projectautomation.RunStatusFailed, "codex_cli_failed", durationMS
 }

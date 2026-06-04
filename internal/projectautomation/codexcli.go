@@ -28,10 +28,11 @@ type CodexCommandInput struct {
 }
 
 type CodexRunResult struct {
-	ExitCode        int
-	Duration        time.Duration
-	TimedOut        bool
-	OutputTruncated bool
+	ExitCode            int
+	Duration            time.Duration
+	TimedOut            bool
+	OutputTruncated     bool
+	SafeFailureCategory string
 }
 
 func DetectCodex(binaryPath string) (string, bool) {
@@ -113,11 +114,13 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	err := cmd.Run()
+	safeFailureCategory := safeCodexFailureCategory(output.String())
 	result := CodexRunResult{
-		ExitCode:        0,
-		Duration:        time.Since(started),
-		TimedOut:        runCtx.Err() == context.DeadlineExceeded,
-		OutputTruncated: output.truncated,
+		ExitCode:            0,
+		Duration:            time.Since(started),
+		TimedOut:            runCtx.Err() == context.DeadlineExceeded,
+		OutputTruncated:     output.truncated,
+		SafeFailureCategory: safeFailureCategory,
 	}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
@@ -129,6 +132,20 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 		return result, err
 	}
 	return result, nil
+}
+
+func safeCodexFailureCategory(output string) string {
+	normalized := strings.ToLower(output)
+	switch {
+	case strings.Contains(normalized, "failed to read config file") && strings.Contains(normalized, "permission denied"):
+		return "codex_config_unreadable"
+	case strings.Contains(normalized, "not logged in") || strings.Contains(normalized, "login") && strings.Contains(normalized, "codex"):
+		return "codex_auth_unavailable"
+	case strings.Contains(normalized, "api key") || strings.Contains(normalized, "authentication"):
+		return "codex_auth_unavailable"
+	default:
+		return ""
+	}
 }
 
 type cappedBuffer struct {
@@ -155,4 +172,8 @@ func (buffer *cappedBuffer) Write(p []byte) (int, error) {
 		return n, err
 	}
 	return len(p), nil
+}
+
+func (buffer *cappedBuffer) String() string {
+	return buffer.buffer.String()
 }

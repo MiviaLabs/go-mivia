@@ -13,6 +13,13 @@ if [[ -z "${MIVIA_AUTOMATION_CONTAINER_USER:-}" ]]; then
   fi
 fi
 
+codex_home="${CODEX_HOME:-${HOME:-}/.codex}"
+codex_config="${codex_home%/}/config.toml"
+if [[ -e "$codex_config" && ! -r "$codex_config" ]]; then
+  echo "warning: Codex config is not readable by $(id -u):$(id -g): $codex_config" >&2
+  echo "warning: fix host ownership/permissions before running container automation that mounts CODEX_HOME" >&2
+fi
+
 compose_files=(-f docker-compose.yml)
 if [[ -f .docker-compose.local.yml ]]; then
   compose_files+=(-f .docker-compose.local.yml)

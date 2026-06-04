@@ -31,6 +31,51 @@ func TestSubmitRunRequiresCodexWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestCallAutomationToolCreateAcceptsCommonCompatibilityAliases(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, Options{Enabled: true})
+
+	value, err := svc.CallAutomationTool(ctx, "projects.automations.create", json.RawMessage(`{
+		"id":"project-1",
+		"automation_ref":"automation/alias",
+		"title":"Alias automation",
+		"expected_output":"Run a bounded implementation task.",
+		"executor":"codex_cli",
+		"runner_mode":"external",
+		"work_plan_id":"plan-1",
+		"work_task_id":"task-1",
+		"allowed_work_task_ids":["task-2"],
+		"required_review_task_ids":["review-1"],
+		"trigger_mode":"automatic",
+		"permission_snapshot_ref":"permission-1",
+		"created_by_run_id":"run-1"
+	}`))
+	if err != nil {
+		t.Fatalf("CallAutomationTool returned error: %v", err)
+	}
+	automation, ok := value.(Automation)
+	if !ok {
+		t.Fatalf("expected Automation result, got %T", value)
+	}
+	if automation.Purpose != "Run a bounded implementation task." || automation.AgentID != "codex_cli" || automation.PlanID != "plan-1" || automation.PermissionRef != "permission-1" || automation.TriggerKind != TriggerKindAutomatic {
+		t.Fatalf("aliases were not normalized correctly: %+v", automation)
+	}
+	for _, want := range []string{"task-1", "task-2"} {
+		if !containsString(automation.AllowedTaskRefs, want) {
+			t.Fatalf("allowed task refs missing %q: %+v", want, automation.AllowedTaskRefs)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
 	prompt := RenderCodexTaskPrompt(CodexTaskInput{
 		ProjectID:               "project-1",
@@ -580,8 +625,8 @@ func TestSubmitRunQueuesRequiredAutomationReviewBeforeImplementation(t *testing.
 	if err != nil {
 		t.Fatalf("SubmitRun returned error: %v", err)
 	}
-	if implRun.Status != RunStatusQueued {
-		t.Fatalf("expected implementation run queued, got %#v", implRun)
+	if implRun.Status != RunStatusBlocked || implRun.FailureCategory != "automation_review_gate_open" {
+		t.Fatalf("expected implementation run blocked behind review gate, got %#v", implRun)
 	}
 	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID})
 	if err != nil {
@@ -599,7 +644,7 @@ func TestSubmitRunQueuesRequiredAutomationReviewBeforeImplementation(t *testing.
 	}
 
 	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); err == nil {
-		t.Fatal("expected implementation claim to block until review completes")
+		t.Fatal("expected no implementation run to be claimable until review completes")
 	}
 	blockedImpl, err := svc.GetRun(ctx, "project-1", implRun.ID)
 	if err != nil {

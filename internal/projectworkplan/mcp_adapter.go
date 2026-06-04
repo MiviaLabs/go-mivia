@@ -51,7 +51,7 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 		if input.FailureCriteria == "" {
 			input.FailureCriteria = input.FailureBlockCriteria
 		}
-		return svc.CreateWorkTask(ctx, CreateWorkTaskInput{ProjectID: input.projectID(), PlanID: input.PlanID, TaskRef: input.TaskRef, Title: input.Title, Description: input.Description, Status: input.Status, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, EvidenceNeeded: input.EvidenceNeeded, ContextPackRefs: input.ContextPackRefs, FilesToRead: input.FilesToRead, FilesToEdit: input.FilesToEdit, LikelyFilesAffected: input.LikelyFilesAffected, DependencyTaskIDs: input.DependencyTaskIDs, VerificationRequirement: input.VerificationRequirement, ExpectedOutput: input.ExpectedOutput, FailureCriteria: input.FailureCriteria, ReviewGate: input.ReviewGate, ResumeInstructions: input.ResumeInstructions, KnowledgeCandidateRefs: input.KnowledgeCandidateRefs, DecompositionQuality: input.DecompositionQuality})
+		return svc.CreateWorkTask(ctx, CreateWorkTaskInput{ProjectID: input.projectID(), PlanID: input.planID(), TaskRef: input.TaskRef, Title: input.Title, Description: input.description(), Status: input.Status, OwnerAgent: input.OwnerAgent, RunID: input.runID(), TraceID: input.TraceID, EvidenceNeeded: input.EvidenceNeeded, ContextPackRefs: input.ContextPackRefs, FilesToRead: input.FilesToRead, FilesToEdit: input.FilesToEdit, LikelyFilesAffected: input.LikelyFilesAffected, DependencyTaskIDs: input.DependencyTaskIDs, VerificationRequirement: input.VerificationRequirement, ExpectedOutput: input.ExpectedOutput, FailureCriteria: input.FailureCriteria, ReviewGate: input.ReviewGate, ResumeInstructions: input.ResumeInstructions, KnowledgeCandidateRefs: input.KnowledgeCandidateRefs, DecompositionQuality: input.DecompositionQuality})
 	case "projects.work_tasks.get":
 		var input taskIDInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -233,8 +233,10 @@ type createTaskMCPInput struct {
 	ID                      string   `json:"id"`
 	ProjectID               string   `json:"project_id,omitempty"`
 	PlanID                  string   `json:"plan_id"`
+	WorkPlanID              string   `json:"work_plan_id,omitempty"`
 	TaskRef                 string   `json:"task_ref"`
 	Title                   string   `json:"title"`
+	Objective               string   `json:"objective,omitempty"`
 	Description             string   `json:"description,omitempty"`
 	Status                  string   `json:"status,omitempty"`
 	OwnerAgent              string   `json:"owner_agent,omitempty"`
@@ -255,6 +257,7 @@ type createTaskMCPInput struct {
 	KnowledgeExpectation    string   `json:"knowledge_candidate_expectation,omitempty"`
 	DecompositionQuality    string   `json:"decomposition_quality,omitempty"`
 	RunID                   string   `json:"run_id,omitempty"`
+	CreatedByRunID          string   `json:"created_by_run_id,omitempty"`
 }
 
 type taskActionMCPInput struct {
@@ -350,6 +353,14 @@ func (input updatePlanStatusInput) projectID() string {
 }
 func (input resumePlanInput) projectID() string    { return firstNonEmpty(input.ID, input.ProjectID) }
 func (input createTaskMCPInput) projectID() string { return firstNonEmpty(input.ID, input.ProjectID) }
+func (input createTaskMCPInput) planID() string    { return firstNonEmpty(input.PlanID, input.WorkPlanID) }
+func (input createTaskMCPInput) runID() string     { return firstNonEmpty(input.RunID, input.CreatedByRunID) }
+func (input createTaskMCPInput) description() string {
+	if strings.TrimSpace(input.Description) != "" {
+		return input.Description
+	}
+	return input.Objective
+}
 func (input taskActionMCPInput) projectID() string { return firstNonEmpty(input.ID, input.ProjectID) }
 func (input listTasksMCPInput) projectID() string  { return firstNonEmpty(input.ID, input.ProjectID) }
 func (input getNextMCPInput) projectID() string    { return firstNonEmpty(input.ID, input.ProjectID) }

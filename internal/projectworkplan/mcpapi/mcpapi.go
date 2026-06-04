@@ -72,7 +72,7 @@ func ToolDefinitions() []map[string]any {
 		tool("projects.work_plans.resume", "Resume Work Plan", "MUST be used when an agent resumes a session, enters an existing project, or asks what was happening. Prior state: project id is known; plan_id is optional if service can select the active plan. Required fields: id. Safety: return current plan, current task, open mine, blocked summary, and next safe task hint as metadata only. Next tool: projects.work_tasks.get_next or projects.work_tasks.list_mine. Must not rely on prior chat memory.",
 			schema(map[string]any{"id": ref, "plan_id": ref, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id"})),
 		tool("projects.work_tasks.create", "Create Work Task", "MUST create small dependency-aware tasks suitable for an isolated low-intelligence worker. Prior state: a Work Plan exists. Required fields: id, plan_id, task_ref, title, evidence_needed, likely_files_affected or discovery scope in description, verification_requirement, and resume_instructions. The task must be executable from its metadata and attached refs alone, without prior chat memory or hidden orchestrator context; verification must be written so the orchestrator can run it independently. Safety: refs and bounded metadata only; reject broad or vague work. Next tool: projects.work_tasks.claim after dependencies are ready. Must not store raw context pack contents or source dumps.",
-			schema(map[string]any{"id": ref, "plan_id": ref, "task_ref": ref, "title": text, "description": optionalText, "status": statusSchema(nonTerminalTaskStatuses()), "owner_agent": ref, "evidence_needed": refArray, "context_pack_refs": refArray, "files_to_read": fileArray, "files_to_edit": fileArray, "likely_files_affected": fileArray, "dependency_task_ids": refArray, "verification_requirement": longText, "resume_instructions": longText, "expected_output": optionalText, "failure_criteria": optionalText, "failure_block_criteria": optionalText, "review_gate": optionalText, "knowledge_candidate_expectation": optionalText, "decomposition_quality": statusSchema(decompositionQualities()), "run_id": ref, "trace_id": ref}, []string{"id", "plan_id", "task_ref", "title", "evidence_needed", "verification_requirement", "resume_instructions"})),
+			schema(map[string]any{"id": ref, "plan_id": ref, "work_plan_id": ref, "task_ref": ref, "title": text, "objective": optionalText, "description": optionalText, "status": statusSchema(nonTerminalTaskStatuses()), "owner_agent": ref, "evidence_needed": refArray, "context_pack_refs": refArray, "files_to_read": fileArray, "files_to_edit": fileArray, "likely_files_affected": fileArray, "dependency_task_ids": refArray, "verification_requirement": longText, "resume_instructions": longText, "expected_output": optionalText, "failure_criteria": optionalText, "failure_block_criteria": optionalText, "review_gate": optionalText, "knowledge_candidate_expectation": optionalText, "decomposition_quality": statusSchema(decompositionQualities()), "run_id": ref, "created_by_run_id": ref, "trace_id": ref}, []string{"id", "task_ref", "title", "evidence_needed", "verification_requirement", "resume_instructions"})),
 		tool("projects.work_tasks.get", "Get Work Task", "MUST be used to inspect one existing Work Task before changing task state, attaching refs, or resuming task execution. Prior state: project id and task_id are known. Required fields: id and task_id. Safety: return bounded task metadata only; no raw prompt/source/log/provider material. Next tool: projects.work_tasks.claim, start, update_status, or complete according to lifecycle.",
 			schema(map[string]any{"id": ref, "task_id": ref}, []string{"id", "task_id"})),
 		tool("projects.work_tasks.update_status", "Update Work Task Status", "MUST be used when a Work Task lifecycle state changes outside claim/start/complete/fail/block helpers, especially to cancel or supersede stale planned metadata. Prior state: projects.work_tasks.get or list_open identified the task. Required fields: id, task_id, status, and safe_next_action. Normal lifecycle is planned -> ready -> claimed -> in_progress -> needs_review -> verifying -> done; do not jump planned -> done. Safety: bounded metadata only; do not bypass verifier, independent review, Evidence Graph, confidence, or knowledge-decision requirements for done tasks. Next tool: projects.work_tasks.get_next or list_open.",
@@ -314,6 +314,11 @@ func isEmptyRequiredValue(value json.RawMessage) bool {
 }
 
 func validateDecodedArguments(name string, value any) error {
+	if input, ok := value.(*createTaskInput); ok && name == "projects.work_tasks.create" {
+		if strings.TrimSpace(input.PlanID) == "" && strings.TrimSpace(input.WorkPlanID) == "" {
+			return fmt.Errorf("%w: plan_id or work_plan_id is required", ErrInvalidInput)
+		}
+	}
 	if input, ok := value.(*listMineTasksInput); ok && name == "projects.work_tasks.list_mine" {
 		if strings.TrimSpace(input.OwnerAgent) == "" && strings.TrimSpace(input.RunID) == "" {
 			return fmt.Errorf("%w: owner_agent or run_id is required", ErrInvalidInput)
@@ -335,7 +340,7 @@ func requiredFields(name string) []string {
 	case "projects.work_plans.resume":
 		return []string{"id"}
 	case "projects.work_tasks.create":
-		return []string{"id", "plan_id", "task_ref", "title", "evidence_needed", "verification_requirement", "resume_instructions"}
+		return []string{"id", "task_ref", "title", "evidence_needed", "verification_requirement", "resume_instructions"}
 	case "projects.work_tasks.get":
 		return []string{"id", "task_id"}
 	case "projects.work_tasks.update_status":
@@ -429,8 +434,10 @@ type resumePlanInput struct {
 type createTaskInput struct {
 	ID                            string          `json:"id"`
 	PlanID                        string          `json:"plan_id"`
+	WorkPlanID                    string          `json:"work_plan_id,omitempty"`
 	TaskRef                       string          `json:"task_ref"`
 	Title                         string          `json:"title"`
+	Objective                     string          `json:"objective,omitempty"`
 	Description                   string          `json:"description,omitempty"`
 	Status                        string          `json:"status,omitempty"`
 	OwnerAgent                    string          `json:"owner_agent,omitempty"`
@@ -449,6 +456,7 @@ type createTaskInput struct {
 	KnowledgeCandidateExpectation string          `json:"knowledge_candidate_expectation,omitempty"`
 	DecompositionQuality          string          `json:"decomposition_quality,omitempty"`
 	RunID                         string          `json:"run_id,omitempty"`
+	CreatedByRunID                string          `json:"created_by_run_id,omitempty"`
 	TraceID                       string          `json:"trace_id,omitempty"`
 	Meta                          json.RawMessage `json:"_meta,omitempty"`
 }

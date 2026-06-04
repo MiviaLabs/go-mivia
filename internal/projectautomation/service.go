@@ -260,6 +260,12 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	if err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
 	}
+	if err := svc.ensureRequiredAutomationReviewRuns(ctx, automation, runnerKind, input); err != nil {
+		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, err.Error())
+	}
+	if !svc.requiredAutomationReviewsDone(ctx, automation) {
+		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "automation_review_gate_open")
+	}
 	if taskID == "" && automation.TriggerKind == TriggerKindAutomatic && svc.workTasks != nil {
 		task, err := svc.resolveTask(ctx, AutomationRun{ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID, RunnerKind: runnerKind}, automation)
 		if err != nil {
@@ -269,9 +275,6 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	}
 	if err := svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID, owner); err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
-	}
-	if err := svc.ensureRequiredAutomationReviewRuns(ctx, automation, runnerKind, input); err != nil {
-		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, err.Error())
 	}
 	orchestratorRunID, err := safeOptionalRef(input.OrchestratorRunID, "orchestrator_run_id")
 	if err != nil {
@@ -925,6 +928,9 @@ func (svc *Service) runCodexTask(ctx context.Context, run AutomationRun, task pr
 		if result.TimedOut {
 			attemptStatus = RunStatusTimeout
 			failureCategory = "codex_cli_timeout"
+		} else if result.SafeFailureCategory != "" {
+			attemptStatus = RunStatusFailed
+			failureCategory = result.SafeFailureCategory
 		} else {
 			attemptStatus = RunStatusFailed
 			failureCategory = "codex_cli_failed"
@@ -1249,6 +1255,22 @@ func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, auto
 		}
 	}
 	return nil
+}
+
+func (svc *Service) requiredAutomationReviewsDone(ctx context.Context, automation Automation) bool {
+	if len(automation.RequiredReviewTaskIDs) == 0 {
+		return true
+	}
+	if svc.workTasks == nil {
+		return false
+	}
+	for _, taskID := range automation.RequiredReviewTaskIDs {
+		task, err := svc.workTasks.GetWorkTask(ctx, automation.ProjectID, taskID)
+		if err != nil || task.Status != projectworkplan.WorkTaskStatusDone {
+			return false
+		}
+	}
+	return true
 }
 
 func (svc *Service) isAutomationReviewTask(automation Automation, taskIDOrRef string) bool {

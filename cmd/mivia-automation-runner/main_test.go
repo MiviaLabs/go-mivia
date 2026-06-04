@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -94,6 +96,7 @@ func TestDedicatedWorktreePathMatchesWorkspaceWorktreeNaming(t *testing.T) {
 }
 
 func TestRunOnceReportsCompletedAttempt(t *testing.T) {
+	setReadableCodexHome(t)
 	var completed atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -129,6 +132,7 @@ func TestRunOnceReportsCompletedAttempt(t *testing.T) {
 }
 
 func TestRunOnceDiscoversProjectsWhenProjectOmitted(t *testing.T) {
+	setReadableCodexHome(t)
 	var completed atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -190,6 +194,7 @@ func TestWriteCodexInputWritesRenderedPrompt(t *testing.T) {
 }
 
 func TestRunOnceWithNoConfiguredProjectsExitsIdle(t *testing.T) {
+	setReadableCodexHome(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/projects" {
 			http.NotFound(w, r)
@@ -206,6 +211,7 @@ func TestRunOnceWithNoConfiguredProjectsExitsIdle(t *testing.T) {
 }
 
 func TestWatchContinuesAfterReportedTaskFailure(t *testing.T) {
+	setReadableCodexHome(t)
 	codexPath := fakeCodex(t, 1)
 	var claimCount atomic.Int32
 	var failedReports atomic.Int32
@@ -263,6 +269,7 @@ func TestClaimNextTreatsPolicyBadRequestAsError(t *testing.T) {
 }
 
 func TestRunPreflightFailsBeforeClaim(t *testing.T) {
+	setReadableCodexHome(t)
 	var claims atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next" {
@@ -282,6 +289,7 @@ func TestRunPreflightFailsBeforeClaim(t *testing.T) {
 }
 
 func TestRunGitOpsRequiresAbsoluteCodexCDBeforeClaim(t *testing.T) {
+	setReadableCodexHome(t)
 	var claims atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next" {
@@ -315,6 +323,65 @@ func TestCheckCodexLauncherDirect(t *testing.T) {
 	if err := checkCodexLauncher(t.Context(), codexLaunchOptions{Path: binary}); err != nil {
 		t.Fatalf("expected fake codex launcher to pass: %v", err)
 	}
+}
+
+func TestCheckCodexConfigReadableUsesCodexHome(t *testing.T) {
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatalf("mkdir codex home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("model = \"test\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+
+	if err := checkCodexConfigReadable(); err != nil {
+		t.Fatalf("expected readable CODEX_HOME config to pass: %v", err)
+	}
+}
+
+func TestCheckCodexConfigReadableAllowsMissingConfig(t *testing.T) {
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "missing-codex-home"))
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+
+	if err := checkCodexConfigReadable(); err != nil {
+		t.Fatalf("expected missing Codex config to pass: %v", err)
+	}
+}
+
+func TestCheckCodexConfigReadableClassifiesPermissionDenied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permission semantics differ on Windows")
+	}
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatalf("mkdir codex home: %v", err)
+	}
+	configPath := filepath.Join(codexHome, "config.toml")
+	if err := os.WriteFile(configPath, []byte("model = \"test\"\n"), 0o000); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configPath, 0o600) })
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+
+	if err := checkCodexConfigReadable(); !errors.Is(err, projectautomation.ErrInvalidInput) || !strings.Contains(err.Error(), "codex_config_unreadable") {
+		t.Fatalf("expected codex_config_unreadable invalid input, got %v", err)
+	}
+}
+
+func setReadableCodexHome(t *testing.T) {
+	t.Helper()
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatalf("mkdir codex home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("model = \"test\"\n"), 0o600); err != nil {
+		t.Fatalf("write codex config: %v", err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
 }
 
 func fakeCodex(t *testing.T, execStatus int) string {

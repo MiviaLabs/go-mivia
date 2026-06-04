@@ -133,6 +133,23 @@ func TestCompleteAttemptSchemaExposesReviewRefs(t *testing.T) {
 	t.Fatal("missing projects.automation_runs.complete_attempt definition")
 }
 
+func TestCreateAutomationSchemaExposesCompatibilityAliases(t *testing.T) {
+	for _, definition := range ToolDefinitions() {
+		if definition["name"] != "projects.automations.create" {
+			continue
+		}
+		schema := definition["inputSchema"].(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		for _, name := range []string{"work_plan_id", "work_task_id", "allowed_work_task_ids", "trigger_mode", "permission_snapshot_ref", "expected_output", "executor", "runner_mode"} {
+			if _, ok := properties[name]; !ok {
+				t.Fatalf("create schema does not expose alias %s: %#v", name, properties)
+			}
+		}
+		return
+	}
+	t.Fatal("missing projects.automations.create definition")
+}
+
 type captureAutomationAPI struct {
 	name      string
 	arguments json.RawMessage
