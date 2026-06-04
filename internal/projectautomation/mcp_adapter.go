@@ -52,21 +52,13 @@ func (svc *Service) CallAutomationTool(ctx context.Context, name string, argumen
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
 		}
-		projectID, runID, err := safeProjectObject(input.projectID(), input.RunID, "run_id")
-		if err != nil {
-			return nil, err
-		}
-		return svc.store.GetRun(ctx, projectID, runID)
+		return svc.GetRun(ctx, input.projectID(), input.RunID)
 	case "projects.automation_runs.list":
 		var input listRunsMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
 		}
-		projectID, err := safeRef(input.projectID(), "project_id")
-		if err != nil {
-			return nil, err
-		}
-		return svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, AutomationID: input.AutomationID, Status: input.Status})
+		return svc.ListRuns(ctx, RunFilter{ProjectID: input.projectID(), AutomationID: input.AutomationID, Status: input.Status})
 	case "projects.automation_runs.claim_next":
 		var input claimNextMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -78,7 +70,7 @@ func (svc *Service) CallAutomationTool(ctx context.Context, name string, argumen
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
 		}
-		return svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: input.projectID(), RunID: input.RunID, Status: input.Status, FailureCategory: input.FailureCategory, DurationMS: input.DurationMS, VerifierResultRefs: input.VerifierRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, KnowledgeRefs: input.KnowledgeRefs})
+		return svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: input.projectID(), RunID: input.RunID, Status: input.Status, FailureCategory: input.FailureCategory, DurationMS: input.DurationMS, VerifierResultRefs: input.VerifierRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, ReviewRefs: input.ReviewRefs, KnowledgeRefs: input.KnowledgeRefs})
 	default:
 		return nil, fmt.Errorf("%w: unknown automation tool", ErrInvalidInput)
 	}
@@ -219,6 +211,7 @@ type completeAttemptMCPInput struct {
 	VerifierRefs    []string `json:"verifier_result_refs,omitempty"`
 	EvidenceRefs    []string `json:"evidence_refs,omitempty"`
 	ClaimRefs       []string `json:"claim_refs,omitempty"`
+	ReviewRefs      []string `json:"review_result_refs,omitempty"`
 	KnowledgeRefs   []string `json:"knowledge_candidate_refs,omitempty"`
 }
 

@@ -118,6 +118,21 @@ func TestToolDefinitionsExposeAutomationStatusUpdate(t *testing.T) {
 	t.Fatal("missing projects.automations.update_status definition")
 }
 
+func TestCompleteAttemptSchemaExposesReviewRefs(t *testing.T) {
+	for _, definition := range ToolDefinitions() {
+		if definition["name"] != "projects.automation_runs.complete_attempt" {
+			continue
+		}
+		schema := definition["inputSchema"].(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		if _, ok := properties["review_result_refs"]; !ok {
+			t.Fatalf("complete_attempt schema does not expose review_result_refs: %#v", properties)
+		}
+		return
+	}
+	t.Fatal("missing projects.automation_runs.complete_attempt definition")
+}
+
 type captureAutomationAPI struct {
 	name      string
 	arguments json.RawMessage

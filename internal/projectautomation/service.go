@@ -291,7 +291,11 @@ func (svc *Service) GetRun(ctx context.Context, projectID, runID string) (Automa
 	if err != nil {
 		return AutomationRun{}, err
 	}
-	return svc.store.GetRun(ctx, projectID, runID)
+	run, err := svc.store.GetRun(ctx, projectID, runID)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	return svc.projectRunWorkTaskStatus(ctx, run)
 }
 
 func (svc *Service) ListRuns(ctx context.Context, filter RunFilter) ([]AutomationRun, error) {
@@ -315,7 +319,24 @@ func (svc *Service) ListRuns(ctx context.Context, filter RunFilter) ([]Automatio
 			return nil, err
 		}
 	}
-	return svc.store.ListRuns(ctx, filter)
+	statusFilter := strings.TrimSpace(filter.Status)
+	filter.Status = ""
+	runs, err := svc.store.ListRuns(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	out := runs[:0]
+	for _, run := range runs {
+		projected, err := svc.projectRunWorkTaskStatus(ctx, run)
+		if err != nil {
+			return nil, err
+		}
+		if statusFilter != "" && projected.Status != statusFilter {
+			continue
+		}
+		out = append(out, projected)
+	}
+	return out, nil
 }
 
 func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, event projectworkplan.WorkPlanStatusChange) error {
@@ -636,6 +657,34 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	default:
 		run.Status = status
 	}
+	return svc.store.UpdateRun(ctx, run)
+}
+
+func (svc *Service) projectRunWorkTaskStatus(ctx context.Context, run AutomationRun) (AutomationRun, error) {
+	if svc.workTasks == nil || run.TaskID == "" {
+		return run, nil
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return run, nil
+	}
+	changed := false
+	if run.WorkTaskStatus != task.Status {
+		run.WorkTaskStatus = task.Status
+		changed = true
+	}
+	if run.Status == RunStatusVerifying && task.Status == projectworkplan.WorkTaskStatusDone {
+		run.Status = RunStatusCompleted
+		run.SafeSummary = "work_task_verified_completed"
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = svc.now()
+		}
+		changed = true
+	}
+	if !changed {
+		return run, nil
+	}
+	run.UpdatedAt = svc.now()
 	return svc.store.UpdateRun(ctx, run)
 }
 

@@ -2,6 +2,7 @@ package projectautomation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -409,6 +410,83 @@ func TestExternalClaimAndCompleteAttempt(t *testing.T) {
 	}
 }
 
+func TestGetRunProjectsCompletedWorkTaskStatus(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	svc.codexAvailable = func() bool { return false }
+	automation := createTestAutomation(t, ctx, svc)
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a"})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: queued.ID, Status: RunStatusCompleted})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if run.Status != RunStatusVerifying || run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected pre-verifier run to retain ready/verifying, got %#v", run)
+	}
+
+	task.Status = projectworkplan.WorkTaskStatusDone
+	fake.tasks["task-a"] = task
+	projected, err := svc.GetRun(ctx, automation.ProjectID, queued.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if projected.Status != RunStatusCompleted {
+		t.Fatalf("expected completed run after linked task done, got %q", projected.Status)
+	}
+	if projected.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected current work task status, got %q", projected.WorkTaskStatus)
+	}
+	if projected.SafeSummary != "work_task_verified_completed" {
+		t.Fatalf("unexpected summary: %q", projected.SafeSummary)
+	}
+}
+
+func TestListRunsProjectsCompletedWorkTaskStatusBeforeStatusFilter(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusDone
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	automation := createTestAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:             "run-a",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         automation.PlanID,
+		TaskID:         "task-a",
+		WorkTaskStatus: projectworkplan.WorkTaskStatusReady,
+		Status:         RunStatusVerifying,
+		RunnerKind:     RunnerKindCodexCLI,
+		CreatedAt:      time.Unix(100, 0).UTC(),
+		UpdatedAt:      time.Unix(100, 0).UTC(),
+	}
+	if _, err := svc.store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, Status: RunStatusCompleted})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected projected completed run in filtered list, got %d", len(runs))
+	}
+	if runs[0].Status != RunStatusCompleted || runs[0].WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected projected completed/done run, got %#v", runs[0])
+	}
+}
+
 func TestExternalClaimBlocksUntilRequiredAutomationReviewDone(t *testing.T) {
 	ctx := context.Background()
 	reviewTask := readyTask("automation-review", "automation-review", []string{"internal/foo.go"})
@@ -526,6 +604,39 @@ func TestCompleteAttemptAttachesGovernanceOutcomeAndRefs(t *testing.T) {
 	}
 	if !contains(fakeTasks.reviewRefs, "review/approved") {
 		t.Fatalf("expected review ref attachment, got %#v", fakeTasks.reviewRefs)
+	}
+}
+
+func TestMCPCompleteAttemptCarriesReviewRefs(t *testing.T) {
+	ctx := context.Background()
+	fakeTasks := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "a", []string{"internal/foo.go"}),
+	}}
+	svc := New(newTestStore(), fakeTasks, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createTestAutomation(t, ctx, svc)
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a"})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	arguments, err := json.Marshal(map[string]any{
+		"id":                 automation.ProjectID,
+		"run_id":             queued.ID,
+		"status":             RunStatusCompleted,
+		"review_result_refs": []string{"review/approved"},
+	})
+	if err != nil {
+		t.Fatalf("marshal arguments: %v", err)
+	}
+
+	if _, err := svc.CallAutomationTool(ctx, "projects.automation_runs.complete_attempt", arguments); err != nil {
+		t.Fatalf("CallAutomationTool returned error: %v", err)
+	}
+	if !contains(fakeTasks.reviewRefs, "review/approved") {
+		t.Fatalf("expected MCP review ref attachment, got %#v", fakeTasks.reviewRefs)
 	}
 }
 
