@@ -131,6 +131,96 @@ func TestPostTaskPushRequiresSSHConfig(t *testing.T) {
 	}
 }
 
+func TestPostTaskRejectsPushFromBranchOutsidePolicy(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M README.md\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+		{Stdout: "feature/MASS-123-docs\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		RemoteName:           "origin",
+		BranchPrefix:         "",
+		BranchNamePattern:    `^(feat|fix|docs)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		SSHPrivateKeyPath:    "/tmp/id_ed25519",
+		SSHKnownHostsPath:    "/tmp/known_hosts",
+		GitHubCLIPath:        "gh",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"README.md"},
+	})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "required pattern") {
+		t.Fatalf("expected branch policy error, got %v", err)
+	}
+	if len(runner.commands) != 7 {
+		t.Fatalf("expected no push after branch policy failure, got %d commands", len(runner.commands))
+	}
+}
+
+func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M README.md\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+		{Stdout: "docs-MASS-123-docs\n"},
+		{},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		RemoteName:           "origin",
+		BranchPrefix:         "",
+		BranchNamePattern:    `^(feat|fix|docs)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		SSHPrivateKeyPath:    "/tmp/id_ed25519",
+		SSHKnownHostsPath:    "/tmp/known_hosts",
+		GitHubCLIPath:        "gh",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"README.md"},
+	})
+	if err != nil {
+		t.Fatalf("expected matching branch to push: %v", err)
+	}
+	if result.PushRef == "" {
+		t.Fatalf("expected push ref, got %+v", result)
+	}
+	if got := strings.Join(runner.commands[7].Args, " "); got != "push origin HEAD:docs-MASS-123-docs" {
+		t.Fatalf("expected push to matching branch, got %q", got)
+	}
+}
+
 func TestPreTaskRejectsDirtyWorktreeWhenRequired(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{{}, {Stdout: " M README.md\n"}}}
 	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RequireCleanBeforeTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)

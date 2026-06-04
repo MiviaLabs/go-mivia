@@ -215,6 +215,72 @@ tests_template = "{{test_results}}"
 	}
 }
 
+func TestProjectGitOperationsOverrideGlobalDefaults(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[git_operations]
+enabled = true
+commit_after_task = true
+push_after_task = true
+draft_pr_after_push = true
+require_clean_before_task = true
+remote_name = "origin"
+branch_prefix = "mivia/"
+commit_author_name = "Mivia Automation"
+commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
+ssh_private_key_path = "/run/secrets/mivia_git_key"
+ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
+github_token_env = "GITHUB_TOKEN"
+github_cli_path = "gh"
+
+[[projects]]
+id = "project-a"
+root_path = "/repo/project-a"
+enabled = true
+digest_mode = "content_graph"
+workspace_mode = "edit"
+
+[projects.git_operations]
+branch_prefix = ""
+branch_name_pattern = "^(feat|fix|docs)-ABC-[0-9]+(-[a-z0-9-]+)*$"
+
+[projects.git_operations.conventions]
+commit_type = "docs"
+commit_summary_template = "complete {{work_task_ref}}"
+pull_request_title_template = "{{commit_subject}}"
+what_changed_template = "Summary: {{work_task_title}}"
+how_verified_template = "Automation Run ID: {{automation_run_id}}"
+tests_template = "{{test_results}}"
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected project git operations config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected project git operations config to apply: %v", err)
+	}
+	merged.resolveAutoSettings(1)
+	if err := merged.Validate(); err != nil {
+		t.Fatalf("expected project git operations config to validate: %v", err)
+	}
+	if len(merged.Projects) != 1 || merged.Projects[0].GitOperations == nil {
+		t.Fatalf("expected project git operations override, got %+v", merged.Projects)
+	}
+	projectGitOps := merged.Projects[0].GitOperations
+	if !projectGitOps.PushAfterTask || projectGitOps.SSHPrivateKeyPath == "" || projectGitOps.GitHubTokenEnv != "GITHUB_TOKEN" {
+		t.Fatalf("expected project override to inherit global push settings, got %+v", projectGitOps)
+	}
+	if projectGitOps.BranchPrefix != "" || projectGitOps.BranchNamePattern == "" {
+		t.Fatalf("expected project branch policy override, got %+v", projectGitOps)
+	}
+	if projectGitOps.Conventions.CommitType != "docs" || !strings.Contains(projectGitOps.Conventions.WhatChangedTemplate, "Summary") {
+		t.Fatalf("expected project convention override, got %+v", projectGitOps.Conventions)
+	}
+}
+
 func TestLoadFileConfig_RejectsInvalidAutomationSettings(t *testing.T) {
 	for name, body := range map[string]string{
 		"runner_without_enabled": `

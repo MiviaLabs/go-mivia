@@ -130,6 +130,9 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		if err != nil {
 			return PostTaskResult{}, err
 		}
+		if err := svc.validateBranchPolicy(branch); err != nil {
+			return PostTaskResult{}, err
+		}
 		if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", svc.options.RemoteName, "HEAD:"+branch); err != nil {
 			return PostTaskResult{}, err
 		}
@@ -178,6 +181,25 @@ func (svc *Service) currentBranch(ctx context.Context, workDir string) (string, 
 		return "", err
 	}
 	return branch, nil
+}
+
+func (svc *Service) validateBranchPolicy(branch string) error {
+	prefix := strings.TrimSpace(svc.options.BranchPrefix)
+	if prefix != "" && !strings.HasPrefix(branch, prefix) {
+		return fmt.Errorf("%w: branch %q does not match required prefix %q", ErrInvalidInput, branch, prefix)
+	}
+	pattern := strings.TrimSpace(svc.options.BranchNamePattern)
+	if pattern == "" {
+		return nil
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return fmt.Errorf("%w: invalid branch pattern", ErrInvalidInput)
+	}
+	if !compiled.MatchString(branch) {
+		return fmt.Errorf("%w: branch %q does not match required pattern", ErrInvalidInput, branch)
+	}
+	return nil
 }
 
 func (svc *Service) ensureDraftPR(ctx context.Context, workDir string, rendered RenderedOutput) (string, error) {

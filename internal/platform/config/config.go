@@ -129,6 +129,7 @@ type GitOperations struct {
 	CleanupWorktreeAfterPlanDone bool
 	RemoteName                   string
 	BranchPrefix                 string
+	BranchNamePattern            string
 	CommitAuthorName             string
 	CommitAuthorEmailEnv         string
 	CommitAuthorEmailFile        string
@@ -218,6 +219,7 @@ type Project struct {
 	MaxChunkBytes         int
 	SensitiveMarkerPolicy string
 	Integrations          IntegrationConfig
+	GitOperations         *GitOperations
 }
 
 type IntegrationConfig struct {
@@ -560,6 +562,7 @@ func applyEnvOverrides(cfg *Config) error {
 	}
 	cfg.GitOperations.RemoteName = getenv("MIVIA_GIT_OPS_REMOTE_NAME", cfg.GitOperations.RemoteName)
 	cfg.GitOperations.BranchPrefix = getenv("MIVIA_GIT_OPS_BRANCH_PREFIX", cfg.GitOperations.BranchPrefix)
+	cfg.GitOperations.BranchNamePattern = getenv("MIVIA_GIT_OPS_BRANCH_NAME_PATTERN", cfg.GitOperations.BranchNamePattern)
 	cfg.GitOperations.CommitAuthorName = getenv("MIVIA_GIT_OPS_COMMIT_AUTHOR_NAME", cfg.GitOperations.CommitAuthorName)
 	cfg.GitOperations.CommitAuthorEmailEnv = getenv("MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_ENV", cfg.GitOperations.CommitAuthorEmailEnv)
 	cfg.GitOperations.CommitAuthorEmailFile = getenv("MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_FILE", cfg.GitOperations.CommitAuthorEmailFile)
@@ -654,6 +657,14 @@ func (cfg Config) Validate() error {
 	}
 	if err := cfg.GitOperations.Validate(); err != nil {
 		return err
+	}
+	for _, project := range cfg.Projects {
+		if project.GitOperations == nil {
+			continue
+		}
+		if err := project.GitOperations.validate("project "+project.ID+" git_operations", true); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -775,42 +786,49 @@ func (automation Automation) Validate() error {
 }
 
 func (gitops GitOperations) Validate() error {
+	return gitops.validate("MIVIA_GIT_OPS", false)
+}
+
+func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool) error {
 	if gitops.PushAfterTask && !gitops.CommitAfterTask {
-		return errors.New("MIVIA_GIT_OPS_PUSH_AFTER_TASK requires MIVIA_GIT_OPS_COMMIT_AFTER_TASK")
+		return fmt.Errorf("%s_PUSH_AFTER_TASK requires %s_COMMIT_AFTER_TASK", prefix, prefix)
 	}
 	if gitops.DraftPRAfterPush && !gitops.PushAfterTask {
-		return errors.New("MIVIA_GIT_OPS_DRAFT_PR_AFTER_PUSH requires MIVIA_GIT_OPS_PUSH_AFTER_TASK")
+		return fmt.Errorf("%s_DRAFT_PR_AFTER_PUSH requires %s_PUSH_AFTER_TASK", prefix, prefix)
 	}
-	if err := validateSafeGitToken("MIVIA_GIT_OPS_REMOTE_NAME", gitops.RemoteName); err != nil {
+	if err := validateSafeGitToken(prefix+"_REMOTE_NAME", gitops.RemoteName); err != nil {
 		return err
 	}
-	if err := validateSafeBranchPrefix("MIVIA_GIT_OPS_BRANCH_PREFIX", gitops.BranchPrefix); err != nil {
+	if err := validateSafeBranchPrefix(prefix+"_BRANCH_PREFIX", gitops.BranchPrefix, allowEmptyBranchPrefix); err != nil {
+		return err
+	}
+	if err := validateSafeBranchNamePattern(prefix+"_BRANCH_NAME_PATTERN", gitops.BranchNamePattern); err != nil {
 		return err
 	}
 	for name, value := range map[string]string{
-		"MIVIA_GIT_OPS_COMMIT_AUTHOR_NAME":       gitops.CommitAuthorName,
-		"MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_ENV":  gitops.CommitAuthorEmailEnv,
-		"MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_FILE": gitops.CommitAuthorEmailFile,
-		"MIVIA_GIT_OPS_GITHUB_TOKEN_ENV":         gitops.GitHubTokenEnv,
-		"MIVIA_GIT_OPS_GITHUB_TOKEN_FILE":        gitops.GitHubTokenFile,
-		"MIVIA_GIT_OPS_GITHUB_CLI_PATH":          gitops.GitHubCLIPath,
+		prefix + "_COMMIT_AUTHOR_NAME":       gitops.CommitAuthorName,
+		prefix + "_COMMIT_AUTHOR_EMAIL_ENV":  gitops.CommitAuthorEmailEnv,
+		prefix + "_COMMIT_AUTHOR_EMAIL_FILE": gitops.CommitAuthorEmailFile,
+		prefix + "_GITHUB_TOKEN_ENV":         gitops.GitHubTokenEnv,
+		prefix + "_GITHUB_TOKEN_FILE":        gitops.GitHubTokenFile,
+		prefix + "_GITHUB_CLI_PATH":          gitops.GitHubCLIPath,
 	} {
 		if strings.ContainsAny(value, "\r\n\x00") {
 			return fmt.Errorf("%s must not contain control characters", name)
 		}
 	}
 	if strings.TrimSpace(gitops.CommitAuthorEmailEnv) != "" && strings.TrimSpace(gitops.CommitAuthorEmailFile) != "" {
-		return errors.New("MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_ENV and MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_FILE are mutually exclusive")
+		return fmt.Errorf("%s_COMMIT_AUTHOR_EMAIL_ENV and %s_COMMIT_AUTHOR_EMAIL_FILE are mutually exclusive", prefix, prefix)
 	}
 	if strings.TrimSpace(gitops.GitHubTokenEnv) != "" && strings.TrimSpace(gitops.GitHubTokenFile) != "" {
-		return errors.New("MIVIA_GIT_OPS_GITHUB_TOKEN_ENV and MIVIA_GIT_OPS_GITHUB_TOKEN_FILE are mutually exclusive")
+		return fmt.Errorf("%s_GITHUB_TOKEN_ENV and %s_GITHUB_TOKEN_FILE are mutually exclusive", prefix, prefix)
 	}
 	for name, value := range map[string]string{
-		"MIVIA_GIT_OPS_SSH_PRIVATE_KEY_PATH":     gitops.SSHPrivateKeyPath,
-		"MIVIA_GIT_OPS_SSH_PUBLIC_KEY_PATH":      gitops.SSHPublicKeyPath,
-		"MIVIA_GIT_OPS_SSH_KNOWN_HOSTS_PATH":     gitops.SSHKnownHostsPath,
-		"MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_FILE": gitops.CommitAuthorEmailFile,
-		"MIVIA_GIT_OPS_GITHUB_TOKEN_FILE":        gitops.GitHubTokenFile,
+		prefix + "_SSH_PRIVATE_KEY_PATH":     gitops.SSHPrivateKeyPath,
+		prefix + "_SSH_PUBLIC_KEY_PATH":      gitops.SSHPublicKeyPath,
+		prefix + "_SSH_KNOWN_HOSTS_PATH":     gitops.SSHKnownHostsPath,
+		prefix + "_COMMIT_AUTHOR_EMAIL_FILE": gitops.CommitAuthorEmailFile,
+		prefix + "_GITHUB_TOKEN_FILE":        gitops.GitHubTokenFile,
 	} {
 		if err := validateOptionalAbsolutePath(name, value); err != nil {
 			return err
@@ -818,10 +836,10 @@ func (gitops GitOperations) Validate() error {
 	}
 	if gitops.PushAfterTask {
 		if strings.TrimSpace(gitops.SSHPrivateKeyPath) == "" {
-			return errors.New("MIVIA_GIT_OPS_SSH_PRIVATE_KEY_PATH is required when push after task is enabled")
+			return fmt.Errorf("%s_SSH_PRIVATE_KEY_PATH is required when push after task is enabled", prefix)
 		}
 		if strings.TrimSpace(gitops.SSHKnownHostsPath) == "" {
-			return errors.New("MIVIA_GIT_OPS_SSH_KNOWN_HOSTS_PATH is required when push after task is enabled")
+			return fmt.Errorf("%s_SSH_KNOWN_HOSTS_PATH is required when push after task is enabled", prefix)
 		}
 	}
 	if gitops.DraftPRAfterPush && strings.TrimSpace(gitops.GitHubTokenEnv) == "" && strings.TrimSpace(gitops.GitHubTokenFile) == "" {
@@ -917,13 +935,30 @@ func validateSafeGitToken(name, value string) error {
 	return nil
 }
 
-func validateSafeBranchPrefix(name, value string) error {
+func validateSafeBranchPrefix(name, value string, allowEmpty bool) error {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
+		if allowEmpty {
+			return nil
+		}
 		return fmt.Errorf("%s must not be empty", name)
 	}
 	if strings.ContainsAny(trimmed, "\r\n\x00 ~^:?*[\\") || strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "-") || strings.Contains(trimmed, "//") || strings.Contains(trimmed, "..") {
 		return fmt.Errorf("%s must be a safe branch prefix", name)
+	}
+	return nil
+}
+
+func validateSafeBranchNamePattern(name, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	if len(trimmed) > 512 || strings.ContainsAny(trimmed, "\r\n\x00") {
+		return fmt.Errorf("%s must be a safe single-line RE2 pattern", name)
+	}
+	if _, err := regexp.Compile(trimmed); err != nil {
+		return fmt.Errorf("%s must compile as a RE2 pattern: %w", name, err)
 	}
 	return nil
 }

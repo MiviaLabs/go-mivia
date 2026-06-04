@@ -40,7 +40,9 @@ Set `MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)"` for the automation sid
 
 ## GitOps Conventions
 
-Runner GitOps is controlled by `[git_operations]` and optional `[git_operations.conventions]` in the server config. The convention fields are generic and project-safe: they use fixed placeholders, not arbitrary shell or template evaluation. Commit subjects and PR titles must render as Conventional Commits.
+Runner GitOps is controlled by global `[git_operations]` defaults and optional per-project `[projects.git_operations]` overrides in the server config. Repository-specific branch, commit, PR title, and PR body rules belong under the project that owns them, not in global defaults. The convention fields are generic and project-safe: they use fixed placeholders, not arbitrary shell or template evaluation. Commit subjects and PR titles must render as Conventional Commits.
+
+`branch_prefix` is checked before push/PR when set. `branch_name_pattern` is an optional RE2 regular expression checked against the current branch before push/PR. A project override may set `branch_prefix = ""` and use `branch_name_pattern` when the repository uses a non-prefix branch convention.
 
 Supported placeholders:
 
@@ -62,7 +64,11 @@ Draft PR bodies always render exactly these sections: `What changed`, `How verif
 Example:
 
 ```toml
-[git_operations.conventions]
+[projects.git_operations]
+branch_prefix = ""
+branch_name_pattern = "^(feat|fix|docs)-ABC-[0-9]+(-[a-z0-9-]+)*$"
+
+[projects.git_operations.conventions]
 commit_type = "feat"
 commit_scope = "gitops"
 commit_summary_template = "complete {{work_task_id}}"

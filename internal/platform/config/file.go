@@ -156,6 +156,7 @@ type fileGitOpsConfig struct {
 	CleanupWorktreeAfterPlanDone *bool                        `toml:"cleanup_worktree_after_plan_done"`
 	RemoteName                   *string                      `toml:"remote_name"`
 	BranchPrefix                 *string                      `toml:"branch_prefix"`
+	BranchNamePattern            *string                      `toml:"branch_name_pattern"`
 	CommitAuthorName             *string                      `toml:"commit_author_name"`
 	CommitAuthorEmailEnv         *string                      `toml:"commit_author_email_env"`
 	CommitAuthorEmailFile        *string                      `toml:"commit_author_email_file"`
@@ -218,6 +219,7 @@ type fileProjectConfig struct {
 	MaxChunkBytes         *int                           `toml:"max_chunk_bytes"`
 	SensitiveMarkerPolicy string                         `toml:"sensitive_marker_policy"`
 	Integrations          *fileProjectIntegrationsConfig `toml:"integrations"`
+	GitOps                *fileGitOpsConfig              `toml:"git_operations"`
 }
 
 type fileProjectIntegrationsConfig struct {
@@ -748,87 +750,94 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 	}
 
 	if cfg.GitOps != nil {
-		if cfg.GitOps.Enabled != nil {
-			base.GitOperations.Enabled = *cfg.GitOps.Enabled
-		}
-		if cfg.GitOps.CommitAfterTask != nil {
-			base.GitOperations.CommitAfterTask = *cfg.GitOps.CommitAfterTask
-		}
-		if cfg.GitOps.PushAfterTask != nil {
-			base.GitOperations.PushAfterTask = *cfg.GitOps.PushAfterTask
-		}
-		if cfg.GitOps.DraftPRAfterPush != nil {
-			base.GitOperations.DraftPRAfterPush = *cfg.GitOps.DraftPRAfterPush
-		}
-		if cfg.GitOps.RequireCleanBeforeTask != nil {
-			base.GitOperations.RequireCleanBeforeTask = *cfg.GitOps.RequireCleanBeforeTask
-		}
-		if cfg.GitOps.CleanupWorktreeAfterPlanDone != nil {
-			base.GitOperations.CleanupWorktreeAfterPlanDone = *cfg.GitOps.CleanupWorktreeAfterPlanDone
-		}
-		if cfg.GitOps.RemoteName != nil {
-			base.GitOperations.RemoteName = strings.TrimSpace(*cfg.GitOps.RemoteName)
-		}
-		if cfg.GitOps.BranchPrefix != nil {
-			base.GitOperations.BranchPrefix = strings.TrimSpace(*cfg.GitOps.BranchPrefix)
-		}
-		if cfg.GitOps.CommitAuthorName != nil {
-			base.GitOperations.CommitAuthorName = strings.TrimSpace(*cfg.GitOps.CommitAuthorName)
-		}
-		if cfg.GitOps.CommitAuthorEmailEnv != nil {
-			base.GitOperations.CommitAuthorEmailEnv = strings.TrimSpace(*cfg.GitOps.CommitAuthorEmailEnv)
-		}
-		if cfg.GitOps.CommitAuthorEmailFile != nil {
-			base.GitOperations.CommitAuthorEmailFile = strings.TrimSpace(*cfg.GitOps.CommitAuthorEmailFile)
-		}
-		if cfg.GitOps.SSHPrivateKeyPath != nil {
-			base.GitOperations.SSHPrivateKeyPath = strings.TrimSpace(*cfg.GitOps.SSHPrivateKeyPath)
-		}
-		if cfg.GitOps.SSHPublicKeyPath != nil {
-			base.GitOperations.SSHPublicKeyPath = strings.TrimSpace(*cfg.GitOps.SSHPublicKeyPath)
-		}
-		if cfg.GitOps.SSHKnownHostsPath != nil {
-			base.GitOperations.SSHKnownHostsPath = strings.TrimSpace(*cfg.GitOps.SSHKnownHostsPath)
-		}
-		if cfg.GitOps.GitHubTokenEnv != nil {
-			base.GitOperations.GitHubTokenEnv = strings.TrimSpace(*cfg.GitOps.GitHubTokenEnv)
-		}
-		if cfg.GitOps.GitHubTokenFile != nil {
-			base.GitOperations.GitHubTokenFile = strings.TrimSpace(*cfg.GitOps.GitHubTokenFile)
-		}
-		if cfg.GitOps.GitHubCLIPath != nil {
-			base.GitOperations.GitHubCLIPath = strings.TrimSpace(*cfg.GitOps.GitHubCLIPath)
-		}
-		if cfg.GitOps.Conventions != nil {
-			if cfg.GitOps.Conventions.CommitType != nil {
-				base.GitOperations.Conventions.CommitType = strings.TrimSpace(*cfg.GitOps.Conventions.CommitType)
-			}
-			if cfg.GitOps.Conventions.CommitScope != nil {
-				base.GitOperations.Conventions.CommitScope = strings.TrimSpace(*cfg.GitOps.Conventions.CommitScope)
-			}
-			if cfg.GitOps.Conventions.CommitSummaryTemplate != nil {
-				base.GitOperations.Conventions.CommitSummaryTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.CommitSummaryTemplate)
-			}
-			if cfg.GitOps.Conventions.PullRequestTitleTemplate != nil {
-				base.GitOperations.Conventions.PullRequestTitleTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.PullRequestTitleTemplate)
-			}
-			if cfg.GitOps.Conventions.WhatChangedTemplate != nil {
-				base.GitOperations.Conventions.WhatChangedTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.WhatChangedTemplate)
-			}
-			if cfg.GitOps.Conventions.HowVerifiedTemplate != nil {
-				base.GitOperations.Conventions.HowVerifiedTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.HowVerifiedTemplate)
-			}
-			if cfg.GitOps.Conventions.TestsTemplate != nil {
-				base.GitOperations.Conventions.TestsTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.TestsTemplate)
-			}
-		}
+		applyFileGitOps(&base.GitOperations, cfg.GitOps)
 	}
 
 	base.Projects = make([]Project, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
-		base.Projects = append(base.Projects, project.toProject())
+		base.Projects = append(base.Projects, project.toProject(base.GitOperations))
 	}
 	return base, nil
+}
+
+func applyFileGitOps(base *GitOperations, cfg *fileGitOpsConfig) {
+	if cfg.Enabled != nil {
+		base.Enabled = *cfg.Enabled
+	}
+	if cfg.CommitAfterTask != nil {
+		base.CommitAfterTask = *cfg.CommitAfterTask
+	}
+	if cfg.PushAfterTask != nil {
+		base.PushAfterTask = *cfg.PushAfterTask
+	}
+	if cfg.DraftPRAfterPush != nil {
+		base.DraftPRAfterPush = *cfg.DraftPRAfterPush
+	}
+	if cfg.RequireCleanBeforeTask != nil {
+		base.RequireCleanBeforeTask = *cfg.RequireCleanBeforeTask
+	}
+	if cfg.CleanupWorktreeAfterPlanDone != nil {
+		base.CleanupWorktreeAfterPlanDone = *cfg.CleanupWorktreeAfterPlanDone
+	}
+	if cfg.RemoteName != nil {
+		base.RemoteName = strings.TrimSpace(*cfg.RemoteName)
+	}
+	if cfg.BranchPrefix != nil {
+		base.BranchPrefix = strings.TrimSpace(*cfg.BranchPrefix)
+	}
+	if cfg.BranchNamePattern != nil {
+		base.BranchNamePattern = strings.TrimSpace(*cfg.BranchNamePattern)
+	}
+	if cfg.CommitAuthorName != nil {
+		base.CommitAuthorName = strings.TrimSpace(*cfg.CommitAuthorName)
+	}
+	if cfg.CommitAuthorEmailEnv != nil {
+		base.CommitAuthorEmailEnv = strings.TrimSpace(*cfg.CommitAuthorEmailEnv)
+	}
+	if cfg.CommitAuthorEmailFile != nil {
+		base.CommitAuthorEmailFile = strings.TrimSpace(*cfg.CommitAuthorEmailFile)
+	}
+	if cfg.SSHPrivateKeyPath != nil {
+		base.SSHPrivateKeyPath = strings.TrimSpace(*cfg.SSHPrivateKeyPath)
+	}
+	if cfg.SSHPublicKeyPath != nil {
+		base.SSHPublicKeyPath = strings.TrimSpace(*cfg.SSHPublicKeyPath)
+	}
+	if cfg.SSHKnownHostsPath != nil {
+		base.SSHKnownHostsPath = strings.TrimSpace(*cfg.SSHKnownHostsPath)
+	}
+	if cfg.GitHubTokenEnv != nil {
+		base.GitHubTokenEnv = strings.TrimSpace(*cfg.GitHubTokenEnv)
+	}
+	if cfg.GitHubTokenFile != nil {
+		base.GitHubTokenFile = strings.TrimSpace(*cfg.GitHubTokenFile)
+	}
+	if cfg.GitHubCLIPath != nil {
+		base.GitHubCLIPath = strings.TrimSpace(*cfg.GitHubCLIPath)
+	}
+	if cfg.Conventions != nil {
+		if cfg.Conventions.CommitType != nil {
+			base.Conventions.CommitType = strings.TrimSpace(*cfg.Conventions.CommitType)
+		}
+		if cfg.Conventions.CommitScope != nil {
+			base.Conventions.CommitScope = strings.TrimSpace(*cfg.Conventions.CommitScope)
+		}
+		if cfg.Conventions.CommitSummaryTemplate != nil {
+			base.Conventions.CommitSummaryTemplate = strings.TrimSpace(*cfg.Conventions.CommitSummaryTemplate)
+		}
+		if cfg.Conventions.PullRequestTitleTemplate != nil {
+			base.Conventions.PullRequestTitleTemplate = strings.TrimSpace(*cfg.Conventions.PullRequestTitleTemplate)
+		}
+		if cfg.Conventions.WhatChangedTemplate != nil {
+			base.Conventions.WhatChangedTemplate = strings.TrimSpace(*cfg.Conventions.WhatChangedTemplate)
+		}
+		if cfg.Conventions.HowVerifiedTemplate != nil {
+			base.Conventions.HowVerifiedTemplate = strings.TrimSpace(*cfg.Conventions.HowVerifiedTemplate)
+		}
+		if cfg.Conventions.TestsTemplate != nil {
+			base.Conventions.TestsTemplate = strings.TrimSpace(*cfg.Conventions.TestsTemplate)
+		}
+	}
 }
 
 func (cfg fileAutomationAgentConfig) toAutomationAgent(defaultMaxRuntime time.Duration) (AutomationAgent, error) {
@@ -869,7 +878,7 @@ func applyDuration(name string, value *string, fallback time.Duration) (time.Dur
 	return parsed, nil
 }
 
-func (project fileProjectConfig) toProject() Project {
+func (project fileProjectConfig) toProject(globalGitOps GitOperations) Project {
 	digestMode := project.DigestMode
 	if digestMode == "" {
 		digestMode = digestModeMetadataOnly
@@ -913,6 +922,11 @@ func (project fileProjectConfig) toProject() Project {
 	cfgProject.SensitiveMarkerPolicy = project.SensitiveMarkerPolicy
 	if project.Integrations != nil {
 		cfgProject.Integrations = project.Integrations.toIntegrationConfig()
+	}
+	if project.GitOps != nil {
+		gitops := globalGitOps
+		applyFileGitOps(&gitops, project.GitOps)
+		cfgProject.GitOperations = &gitops
 	}
 	return cfgProject
 }

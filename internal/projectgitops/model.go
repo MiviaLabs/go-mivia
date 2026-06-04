@@ -11,6 +11,7 @@ type Options struct {
 	CleanupWorktreeAfterPlanDone bool
 	RemoteName                   string
 	BranchPrefix                 string
+	BranchNamePattern            string
 	CommitAuthorName             string
 	CommitAuthorEmailEnv         string
 	CommitAuthorEmailFile        string

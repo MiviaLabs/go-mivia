@@ -58,7 +58,6 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "git operations require an absolute --codex-cd worktree")
 		return 1
 	}
-	gitOps := projectgitops.New(gitOpsOptionsFromConfig(cfg.GitOperations))
 	if err := checkCodexLauncher(context.Background(), codexOptions); err != nil {
 		fmt.Fprintf(os.Stderr, "codex launcher unavailable: %v\n", err)
 		return 1
@@ -75,7 +74,7 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "project discovery failed: %v\n", err)
 			return 1
 		}
-		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, projectIDs, strings.TrimSpace(*agentID), codexOptions, gitOps)
+		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, cfg, projectIDs, strings.TrimSpace(*agentID), codexOptions)
 		if *once || !keepWatching {
 			return status
 		}
@@ -179,7 +178,7 @@ type codexLaunchOptions struct {
 	BypassApprovalsAndSandbox bool
 }
 
-func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, projectID string, agentID string, codexOptions codexLaunchOptions, gitOps *projectgitops.Service) (int, bool, bool) {
+func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg config.Config, projectID string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
 	claimed, ok, err := client.claimNext(ctx, projectID, agentID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "claim failed: %v\n", err)
@@ -204,6 +203,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, project
 	}
 	runCodexOptions := codexOptions
 	runCodexOptions.WorkDir = runWorkDir
+	gitOps := projectgitops.New(gitOpsOptionsForProject(cfg, projectID))
 	if err := gitOps.PreTask(ctx, runWorkDir); err != nil {
 		result := projectautomation.CompleteAttemptInput{
 			Status:          projectautomation.RunStatusFailed,
@@ -253,18 +253,29 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, project
 	return 1, true, true
 }
 
-func claimProjectRunsExecuteAndReport(ctx context.Context, client *runnerClient, projectIDs []string, agentID string, codexOptions codexLaunchOptions, gitOps *projectgitops.Service) (int, bool, bool) {
+func claimProjectRunsExecuteAndReport(ctx context.Context, client *runnerClient, cfg config.Config, projectIDs []string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
 	if len(projectIDs) == 0 {
 		fmt.Fprintln(os.Stdout, "no configured projects")
 		return 0, true, false
 	}
 	for _, projectID := range projectIDs {
-		status, keepWatching, claimed := claimRunExecuteAndReport(ctx, client, projectID, agentID, codexOptions, gitOps)
+		status, keepWatching, claimed := claimRunExecuteAndReport(ctx, client, cfg, projectID, agentID, codexOptions)
 		if claimed || !keepWatching || status != 0 {
 			return status, keepWatching, claimed
 		}
 	}
 	return 0, true, false
+}
+
+func gitOpsOptionsForProject(cfg config.Config, projectID string) projectgitops.Options {
+	gitops := cfg.GitOperations
+	for _, project := range cfg.Projects {
+		if project.ID == projectID && project.GitOperations != nil {
+			gitops = *project.GitOperations
+			break
+		}
+	}
+	return gitOpsOptionsFromConfig(gitops)
 }
 
 func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
@@ -277,6 +288,7 @@ func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
 		CleanupWorktreeAfterPlanDone: cfg.CleanupWorktreeAfterPlanDone,
 		RemoteName:                   cfg.RemoteName,
 		BranchPrefix:                 cfg.BranchPrefix,
+		BranchNamePattern:            cfg.BranchNamePattern,
 		CommitAuthorName:             cfg.CommitAuthorName,
 		CommitAuthorEmailEnv:         cfg.CommitAuthorEmailEnv,
 		CommitAuthorEmailFile:        cfg.CommitAuthorEmailFile,
