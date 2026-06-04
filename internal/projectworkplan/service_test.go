@@ -198,7 +198,10 @@ func TestServiceTaskTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create planned task: %v", err)
 	}
-	ready, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{ProjectID: "project-1", TaskID: planned.ID, Status: projectworkplan.WorkTaskStatusReady})
+	ready, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: planned.ID},
+		Status:              projectworkplan.WorkTaskStatusReady,
+	})
 	if err != nil {
 		t.Fatalf("planned to ready: %v", err)
 	}

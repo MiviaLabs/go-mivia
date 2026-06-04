@@ -565,7 +565,7 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 			return WorkTask{}, fmt.Errorf("%w: task is claimed by another run", ErrInvalidInput)
 		}
 	}
-	if next == WorkTaskStatusReady && task.Status != WorkTaskStatusPlanned && task.Status != WorkTaskStatusBlocked && task.Status != WorkTaskStatusNeedsReview {
+	if next == WorkTaskStatusReady && task.Status != WorkTaskStatusPlanned && task.Status != WorkTaskStatusClaimed && task.Status != WorkTaskStatusBlocked && task.Status != WorkTaskStatusNeedsReview {
 		return WorkTask{}, fmt.Errorf("%w: release requires claimed status", ErrInvalidInput)
 	}
 	if next == WorkTaskStatusInProgress && task.Status != WorkTaskStatusClaimed {

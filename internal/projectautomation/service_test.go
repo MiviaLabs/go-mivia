@@ -598,6 +598,9 @@ func TestSubmitRunQueuesRequiredAutomationReviewBeforeImplementation(t *testing.
 		t.Fatalf("expected review run to claim first, got %#v", claimedReview.Run)
 	}
 
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); err == nil {
+		t.Fatal("expected implementation claim to block until review completes")
+	}
 	blockedImpl, err := svc.GetRun(ctx, "project-1", implRun.ID)
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
