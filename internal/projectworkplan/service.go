@@ -863,12 +863,16 @@ func validateTaskTransition(from, to string) error {
 }
 
 func validateTransition(from, to string, allowed map[string][]string, label string) error {
-	for _, candidate := range allowed[from] {
+	allowedNext := allowed[from]
+	for _, candidate := range allowedNext {
 		if candidate == to {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: invalid %s transition %s -> %s", ErrInvalidInput, label, from, to)
+	if len(allowedNext) == 0 {
+		return fmt.Errorf("%w: invalid %s transition %s -> %s; no transitions are allowed from %s", ErrInvalidInput, label, from, to, from)
+	}
+	return fmt.Errorf("%w: invalid %s transition %s -> %s; allowed from %s: %s", ErrInvalidInput, label, from, to, from, strings.Join(allowedNext, ", "))
 }
 
 func assessDecomposition(evidence []string, contextRefs []string, files []string, deps []string, verify string, expected string, failure string, resume string) string {

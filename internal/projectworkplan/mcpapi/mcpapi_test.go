@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	projectworkplan "github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
 )
 
 func TestToolDefinitionsExposeAllWorkPlanTools(t *testing.T) {
@@ -211,6 +215,185 @@ func TestCallToolRejectsUnknownFieldsAndUnsafePayloads(t *testing.T) {
 	if _, err := CallTool(context.Background(), api, "projects.work_tasks.create", json.RawMessage(`{"id":"example-service","plan_id":"plan-1","task_ref":"task/ref","title":"Unsafe","evidence_needed":["raw prompt: token=secret"],"verification_requirement":"focused tests","resume_instructions":"continue"}`)); err == nil {
 		t.Fatal("expected unsafe payload rejection")
 	}
+}
+
+func TestCallToolInvalidArgumentsIncludeSpecificSafeDetails(t *testing.T) {
+	api := newFakeWorkPlanAPI()
+	cases := []struct {
+		name    string
+		tool    string
+		body    string
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "rejected field",
+			tool: "projects.work_plans.create",
+			body: `{"id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"bounded metadata","query":"MATCH (n)"}`,
+			want: []string{"field query is not accepted for work plan"},
+		},
+		{
+			name: "missing field",
+			tool: "projects.work_tasks.create",
+			body: `{"id":"example-service","plan_id":"plan-1","task_ref":"task/ref","title":"Missing verification","evidence_needed":["safe evidence"],"resume_instructions":"continue safely"}`,
+			want: []string{"verification_requirement is required"},
+		},
+		{
+			name:    "unsafe metadata",
+			tool:    "projects.work_tasks.create",
+			body:    `{"id":"example-service","plan_id":"plan-1","task_ref":"task/ref","title":"Unsafe","evidence_needed":["raw prompt: token=secret"],"verification_requirement":"focused tests","resume_instructions":"continue"}`,
+			want:    []string{"evidence_needed contains unsafe metadata"},
+			notWant: []string{"raw prompt", "token=secret"},
+		},
+		{
+			name: "missing list owner",
+			tool: "projects.work_tasks.list_mine",
+			body: `{"id":"example-service"}`,
+			want: []string{"owner_agent or run_id is required"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := CallTool(context.Background(), api, tc.tool, json.RawMessage(tc.body))
+			if err == nil {
+				t.Fatal("expected invalid argument error")
+			}
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected MCP invalid input sentinel, got %v", err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("expected %q in %q", want, err.Error())
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(err.Error(), notWant) {
+					t.Fatalf("error exposed sensitive marker %q: %q", notWant, err.Error())
+				}
+			}
+			if strings.Contains(err.Error(), "invalid work plan arguments") || strings.Contains(err.Error(), "invalid work task arguments") {
+				t.Fatalf("expected specific error detail, got generic error: %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestCallToolRealServiceValidationAndLifecycleErrorsAreSpecific(t *testing.T) {
+	ctx := context.Background()
+	svc := projectworkplan.New(workplanstore.NewMemoryStore())
+
+	if _, err := svc.CallWorkPlanTool(ctx, "projects.work_plans.create", json.RawMessage(`{"id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"bounded metadata","query":"MATCH (n)"}`)); err == nil {
+		t.Fatal("expected direct MCP adapter rejected field error")
+	} else {
+		if !errors.Is(err, projectworkplan.ErrInvalidInput) {
+			t.Fatalf("expected service invalid input sentinel, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "field query is not accepted for work plan") {
+			t.Fatalf("expected rejected field detail in %q", err.Error())
+		}
+		if strings.Contains(err.Error(), "invalid work plan arguments") {
+			t.Fatalf("expected direct adapter to avoid generic error: %q", err.Error())
+		}
+	}
+
+	if _, err := CallTool(ctx, svc, "projects.work_plans.create", json.RawMessage(`{"id":"example-service","plan_ref":"../unsafe","title":"MCP surface","goal_summary":"bounded metadata"}`)); err == nil {
+		t.Fatal("expected unsafe ref rejection")
+	} else {
+		if !errors.Is(err, projectworkplan.ErrInvalidInput) {
+			t.Fatalf("expected service invalid input sentinel, got %v", err)
+		}
+		for _, want := range []string{"plan_ref is unsafe"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("expected %q in %q", want, err.Error())
+			}
+		}
+		if strings.Contains(err.Error(), "../unsafe") {
+			t.Fatalf("unsafe ref value leaked in error: %q", err.Error())
+		}
+	}
+
+	plan := call(t, svc, "projects.work_plans.create", `{"id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"Route metadata-only work plan tools"}`)
+	planID := structuredString(t, plan, "id")
+	task := call(t, svc, "projects.work_tasks.create", `{"id":"example-service","plan_id":"`+planID+`","task_ref":"task/ref","title":"Lifecycle fixture","evidence_needed":["source-ref"],"likely_files_affected":["internal/projectworkplan/service.go"],"verification_requirement":"focused tests","resume_instructions":"resume from task metadata","expected_output":"task lifecycle error","failure_block_criteria":"transition rejected"}`)
+	taskID := structuredString(t, task, "id")
+
+	_, err := CallTool(ctx, svc, "projects.work_tasks.complete", json.RawMessage(`{"id":"example-service","task_id":"`+taskID+`","outcome":"done too early","safe_next_action":"show lifecycle reason"}`))
+	if err == nil {
+		t.Fatal("expected lifecycle rejection")
+	}
+	if !errors.Is(err, projectworkplan.ErrInvalidInput) {
+		t.Fatalf("expected service invalid input sentinel, got %v", err)
+	}
+	for _, want := range []string{
+		"invalid work task transition ready -> done",
+		"allowed from ready: claimed, blocked, cancelled, superseded",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected %q in %q", want, err.Error())
+		}
+	}
+}
+
+func TestToolDefinitionsLifecycleSchemasExposeActionableEnums(t *testing.T) {
+	createSchema := toolSchema(t, "projects.work_tasks.create")
+	updateSchema := toolSchema(t, "projects.work_tasks.update_status")
+	createStatus := propertySchema(t, createSchema, "status")
+	updateStatus := propertySchema(t, updateSchema, "status")
+
+	for _, terminal := range []string{"done", "failed", "cancelled", "superseded"} {
+		if enumContains(createStatus, terminal) {
+			t.Fatalf("create task schema must reject terminal lifecycle status %q", terminal)
+		}
+		if !enumContains(updateStatus, terminal) {
+			t.Fatalf("update task schema must expose terminal lifecycle status %q", terminal)
+		}
+	}
+	if !enumContains(createStatus, "ready") || !enumContains(updateStatus, "verifying") {
+		t.Fatalf("expected non-terminal lifecycle statuses in schemas: create=%#v update=%#v", createStatus, updateStatus)
+	}
+}
+
+func toolSchema(t *testing.T, name string) map[string]any {
+	t.Helper()
+	for _, definition := range ToolDefinitions() {
+		if definition["name"] != name {
+			continue
+		}
+		schema, ok := definition["inputSchema"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing schema for %s", name)
+		}
+		return schema
+	}
+	t.Fatalf("missing tool %s", name)
+	return nil
+}
+
+func propertySchema(t *testing.T, schema map[string]any, name string) map[string]any {
+	t.Helper()
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing schema properties in %#v", schema)
+	}
+	property, ok := properties[name].(map[string]any)
+	if !ok {
+		t.Fatalf("missing schema property %s in %#v", name, properties)
+	}
+	return property
+}
+
+func enumContains(schema map[string]any, want string) bool {
+	values, ok := schema["enum"].([]string)
+	if !ok {
+		raw, _ := schema["enum"].([]any)
+		for _, value := range raw {
+			if text, ok := value.(string); ok && text == want {
+				return true
+			}
+		}
+		return false
+	}
+	return containsString(values, want)
 }
 
 func call(t *testing.T, api API, name string, body string) map[string]any {
