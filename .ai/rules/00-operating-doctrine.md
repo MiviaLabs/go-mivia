@@ -30,6 +30,24 @@ Commit policy:
 - Use `BREAKING CHANGE:` in the commit body when compatibility is intentionally broken.
 - Preserve existing commit messages during history-rewrite or identity-only repair unless the user explicitly asks to rewrite messages.
 
+Pull request policy:
+
+- Use Conventional Commit style for PR titles too: `<type>(<optional-scope>): <imperative summary>`.
+- Keep PR titles short and aligned with the branch/task outcome.
+- Keep PR descriptions short and evidence-based.
+- Every PR description must include exactly these sections: `What changed`, `How verified`, `Tests`.
+- `What changed` must summarize the user-visible or operational change, not paste raw diffs.
+- `How verified` must name the evidence source, reviewer/verifier refs, or runtime check used.
+- `Tests` must list commands run and results, or say `Not run` with the exact reason.
+- Do not include raw prompts, source dumps, raw stderr, secrets, credentials, provider payloads, roots, or PII in PR titles or descriptions.
+
+Branch policy:
+
+- Create new repository branches with the `mivia/` prefix.
+- Use short, descriptive suffixes after the prefix, for example `mivia/workflow-runner-heartbeats` or `mivia/v0.2.3-docs-release`.
+- Do not use generic agent prefixes such as `codex/`, `claude/`, `agent/`, or personal-name prefixes for this repository unless the user explicitly asks for a one-off exception.
+- Keep automation-created task branches under the same `mivia/` prefix so GitOps, PRs, and worktree cleanup use one branch namespace.
+
 Verification:
 
 - Run the narrowest meaningful check first.

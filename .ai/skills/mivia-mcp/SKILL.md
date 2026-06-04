@@ -140,8 +140,10 @@ When `projects.workspace.git_status` or equivalent MCP workspace git support is 
 - `parallel_group_ref=<shared orchestration ref>`
 - `workspace_ref=<opaque workspace ref>`
 - `git_base_ref=<base ref>`
-- `git_branch_ref=<per-plan branch ref>`
+- `git_branch_ref=<per-plan branch ref using the mivia/ prefix>`
 - `git_worktree_ref=<opaque per-plan worktree ref>`
+
+All new repository branches, including automation-created task branches, MUST use the `mivia/` prefix with a short descriptive suffix. Do not use `codex/`, `claude/`, `agent/`, personal-name prefixes, or unprefixed feature names unless the user explicitly asks for a one-off exception.
 
 Use `isolation_mode=shared` only for read-only planning or inspection Work Plans. Do not use `shared` for implementation, generated-file writes, config changes, docs changes, test changes, automation writes, or any task that may modify the workspace. Use `isolation_mode=unavailable` only when git isolation is genuinely unavailable and report the risk before execution. These are refs, not filesystem locations. Do not run two write-capable Work Plans in the same worktree ref when likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
 
@@ -169,6 +171,14 @@ Mandatory rules:
     - Reviewer execution must be modeled as reviewer Work Tasks and automation runs. Codex Desktop subagents are optional client-side helpers only; they are not the source of truth for reviewer capacity. Runner worker limits are controlled by Mivia automation config (`global_worker_count`, `per_project_worker_limit`, and `per_agent_worker_limit`).
 12. Automation output is untrusted until independent review refs, verifier refs, and Evidence Graph outcomes exist.
 13. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
+
+GitOps output rules:
+
+- Automation-created commits MUST use Conventional Commit format: `<type>(<optional-scope>): <imperative summary>`.
+- Automation-created PR titles MUST use the same Conventional Commit format.
+- Automation-created PR descriptions MUST be short and include exactly these sections: `What changed`, `How verified`, `Tests`.
+- `What changed` summarizes the outcome, `How verified` names review/verifier/runtime evidence refs, and `Tests` lists commands and results or `Not run` with the exact reason.
+- Do not include raw prompts, source dumps, raw stderr, secrets, credentials, provider payloads, roots, or PII in commits or PR metadata.
 
 Strict automation sequence:
 
