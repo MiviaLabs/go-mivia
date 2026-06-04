@@ -46,10 +46,12 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
 		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
 		PlanID:           "work_plan_1",
 		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
 		AutomationRunID:  "automation_run_1",
-		CommitSubject:    "chore: complete work_task_1",
+		OperatorID:       "operator_1",
 		AllowedPathspecs: []string{"internal/projectgitops"},
 	})
 	if err != nil {
@@ -67,6 +69,9 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	if got := strings.Join(runner.commands[4].Args, " "); !strings.Contains(got, "commit -m") {
 		t.Fatalf("expected commit command, got %q", got)
 	}
+	if message := runner.commands[4].Args[2]; !strings.Contains(message, "Project ID: project-1") || !strings.Contains(message, "Automation ID: automation_1") {
+		t.Fatalf("expected rendered metadata in commit message, got %q", message)
+	}
 	if !containsEnv(runner.commands[4].Env, "GIT_AUTHOR_EMAIL=automation@example.test") {
 		t.Fatalf("expected author email env, got %+v", runner.commands[4].Env)
 	}
@@ -78,9 +83,12 @@ func TestPostTaskFailsClosedWithoutSafePathspecs(t *testing.T) {
 
 	_, err := svc.PostTask(context.Background(), PostTaskInput{
 		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
 		PlanID:           "work_plan_1",
 		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
 		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
 		AllowedPathspecs: []string{"../unsafe"},
 	})
 	if !errors.Is(err, ErrInvalidInput) {
@@ -182,6 +190,135 @@ func TestGitHubEnvFallsBackToGhAuthWhenConfiguredEnvIsEmpty(t *testing.T) {
 	svc := NewWithRunner(Options{GitHubTokenEnv: "GH_TOKEN"}, &recordingRunner{})
 	if env := svc.githubEnv(); env != nil {
 		t.Fatalf("expected empty token env to fall back to gh auth, got %+v", env)
+	}
+}
+
+func TestRenderUsesConfiguredConventionsAndMetadata(t *testing.T) {
+	rendered, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "task/ref",
+		TaskTitle:       "Generic GitOps conventions",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+		ReviewRefs:      []string{"review:approved", "review:secondary"},
+		VerifierRefs:    []string{"verifier:focused-tests"},
+		TestResults:     []string{"go test ./internal/projectgitops/...: passed"},
+	}, Conventions{
+		CommitType:               "feat",
+		CommitScope:              "gitops",
+		CommitSummaryTemplate:    "finish {{work_task_ref}}",
+		PullRequestTitleTemplate: "{{commit_subject}}",
+		WhatChangedTemplate:      "Implemented {{work_task_title}} for {{project_id}}.",
+		HowVerifiedTemplate:      "Review refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}",
+		TestsTemplate:            "{{test_results}}",
+	})
+	if err != nil {
+		t.Fatalf("expected render to succeed: %v", err)
+	}
+	if rendered.CommitSubject != "feat(gitops): finish task/ref" {
+		t.Fatalf("unexpected commit subject %q", rendered.CommitSubject)
+	}
+	for _, want := range []string{
+		"## What changed",
+		"Implemented Generic GitOps conventions for project-1.",
+		"## How verified",
+		"Review refs: review:approved, review:secondary",
+		"Verifier refs: verifier:focused-tests",
+		"## Tests",
+		"go test ./internal/projectgitops/...: passed",
+	} {
+		if !strings.Contains(rendered.PullRequestBody, want) {
+			t.Fatalf("PR body missing %q:\n%s", want, rendered.PullRequestBody)
+		}
+	}
+}
+
+func TestRenderRejectsUnknownConventionPlaceholder(t *testing.T) {
+	_, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+	}, Conventions{CommitSummaryTemplate: "complete {{repository_name}}"})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "unknown placeholder") {
+		t.Fatalf("expected clear convention placeholder error, got %v", err)
+	}
+}
+
+func TestPostTaskCreatesDraftPRWithRenderedMetadata(t *testing.T) {
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{Stdout: " M internal/projectgitops/service.go\n"},
+			{},
+			{},
+			{},
+			{Stdout: "abc123def456\n"},
+			{Stdout: "mivia/generic-gitops-conventions\n"},
+			{},
+			{},
+			{Stdout: "https://github.example/pull/1\n"},
+		},
+		errs: []error{
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			errors.New("no pull request"),
+		},
+	}
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		DraftPRAfterPush:  true,
+		RemoteName:        "origin",
+		SSHPrivateKeyPath: "/run/secrets/mivia_git_key",
+		SSHKnownHostsPath: "/run/secrets/mivia_known_hosts",
+		GitHubTokenEnv:    "GITHUB_TOKEN",
+		GitHubCLIPath:     "gh",
+		Conventions:       Conventions{CommitType: "feat", CommitScope: "gitops", CommitSummaryTemplate: "finish {{work_task_id}}"},
+	}, runner)
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"internal/projectgitops"},
+		ReviewRefs:       []string{"review:ready"},
+		VerifierRefs:     []string{"verifier:focused"},
+		TestResults:      []string{"go test ./internal/projectgitops/...: passed"},
+	})
+	if err != nil {
+		t.Fatalf("expected post task to create draft PR: %v", err)
+	}
+	if result.PullRequestRef == "" {
+		t.Fatalf("expected PR ref, got %+v", result)
+	}
+	create := runner.commands[len(runner.commands)-1]
+	if got := strings.Join(create.Args[:3], " "); got != "pr create --draft" {
+		t.Fatalf("expected draft PR create command, got %#v", create.Args)
+	}
+	body := create.Args[len(create.Args)-1]
+	for _, want := range []string{"--title", "feat(gitops): finish work_task_1", "Project ID: project-1", "Automation Run ID: automation_run_1", "review:ready", "go test ./internal/projectgitops/...: passed"} {
+		joined := strings.Join(create.Args, "\n")
+		if !strings.Contains(joined, want) && !strings.Contains(body, want) {
+			t.Fatalf("expected PR command/body to contain %q, args=%#v", want, create.Args)
+		}
 	}
 }
 

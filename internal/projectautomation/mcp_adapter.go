@@ -35,6 +35,30 @@ func (svc *Service) CallAutomationTool(ctx context.Context, name string, argumen
 			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
 		}
 		return svc.UpdateAutomationStatus(ctx, UpdateAutomationStatusInput{ProjectID: input.projectID(), AutomationID: input.AutomationID, Status: input.Status, RunID: input.RunID, TraceID: input.TraceID})
+	case "projects.automations.create_remediation_from_finding":
+		var input createRemediationFromFindingMCPInput
+		if err := decodeMCP(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
+		}
+		return svc.CreateRemediationFromFinding(ctx, CreateRemediationFromFindingInput{
+			ProjectID:               input.projectID(),
+			FindingRef:              input.FindingRef,
+			FindingStatus:           input.FindingStatus,
+			Title:                   input.Title,
+			Summary:                 input.Summary,
+			Severity:                input.Severity,
+			OwnerAgent:              input.OwnerAgent,
+			ImplementationAgentID:   input.ImplementationAgentID,
+			CreatedByRunID:          input.CreatedByRunID,
+			TraceID:                 input.TraceID,
+			FilesToRead:             input.FilesToRead,
+			FilesToEdit:             input.FilesToEdit,
+			LikelyFilesAffected:     input.LikelyFilesAffected,
+			EvidenceRefs:            input.EvidenceRefs,
+			VerificationRequirement: input.VerificationRequirement,
+			ReviewGate:              input.ReviewGate,
+			ActivatePlan:            input.ActivatePlan,
+		})
 	case "projects.automations.run":
 		var input submitRunMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -178,6 +202,31 @@ type updateAutomationStatusMCPInput struct {
 }
 
 func (input updateAutomationStatusMCPInput) projectID() string {
+	return projectIDAlias(input.ID, input.ProjectID)
+}
+
+type createRemediationFromFindingMCPInput struct {
+	ID                      string   `json:"id"`
+	ProjectID               string   `json:"project_id,omitempty"`
+	FindingRef              string   `json:"finding_ref"`
+	FindingStatus           string   `json:"finding_status"`
+	Title                   string   `json:"title"`
+	Summary                 string   `json:"summary"`
+	Severity                string   `json:"severity,omitempty"`
+	OwnerAgent              string   `json:"owner_agent,omitempty"`
+	ImplementationAgentID   string   `json:"implementation_agent_id,omitempty"`
+	CreatedByRunID          string   `json:"created_by_run_id,omitempty"`
+	TraceID                 string   `json:"trace_id,omitempty"`
+	FilesToRead             []string `json:"files_to_read,omitempty"`
+	FilesToEdit             []string `json:"files_to_edit,omitempty"`
+	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
+	EvidenceRefs            []string `json:"evidence_refs,omitempty"`
+	VerificationRequirement string   `json:"verification_requirement"`
+	ReviewGate              string   `json:"review_gate,omitempty"`
+	ActivatePlan            bool     `json:"activate_plan,omitempty"`
+}
+
+func (input createRemediationFromFindingMCPInput) projectID() string {
 	return projectIDAlias(input.ID, input.ProjectID)
 }
 

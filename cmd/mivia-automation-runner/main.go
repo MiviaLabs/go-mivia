@@ -222,14 +222,8 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, project
 	status, failureCategory, durationMS := runCodex(ctx, claimed, runCodexOptions)
 	var evidenceRefs []string
 	if status == projectautomation.RunStatusCompleted {
-		gitResult, err := gitOps.PostTask(ctx, projectgitops.PostTaskInput{
-			WorkDir:          runWorkDir,
-			PlanID:           claimed.Run.PlanID,
-			TaskID:           claimed.Run.TaskID,
-			AutomationRunID:  claimed.Run.ID,
-			CommitSubject:    "chore: complete " + claimed.Run.TaskID,
-			AllowedPathspecs: claimed.CodexInput.LikelyFilesAffected,
-		})
+		taskMetadata, _ := client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+		gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 		if err != nil {
 			status = projectautomation.RunStatusFailed
 			failureCategory = "gitops_post_task_failed"
@@ -292,6 +286,40 @@ func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
 		GitHubTokenEnv:               cfg.GitHubTokenEnv,
 		GitHubTokenFile:              cfg.GitHubTokenFile,
 		GitHubCLIPath:                cfg.GitHubCLIPath,
+		Conventions: projectgitops.Conventions{
+			CommitType:               cfg.Conventions.CommitType,
+			CommitScope:              cfg.Conventions.CommitScope,
+			CommitSummaryTemplate:    cfg.Conventions.CommitSummaryTemplate,
+			PullRequestTitleTemplate: cfg.Conventions.PullRequestTitleTemplate,
+			WhatChangedTemplate:      cfg.Conventions.WhatChangedTemplate,
+			HowVerifiedTemplate:      cfg.Conventions.HowVerifiedTemplate,
+			TestsTemplate:            cfg.Conventions.TestsTemplate,
+		},
+	}
+}
+
+func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID string, claimed projectautomation.ClaimedRun, taskMetadata runnerWorkTaskMetadata) projectgitops.PostTaskInput {
+	taskRef := strings.TrimSpace(taskMetadata.TaskRef)
+	if taskRef == "" {
+		taskRef = claimed.CodexInput.TaskRef
+	}
+	taskTitle := strings.TrimSpace(taskMetadata.Title)
+	if taskTitle == "" {
+		taskTitle = claimed.CodexInput.Title
+	}
+	return projectgitops.PostTaskInput{
+		WorkDir:          workDir,
+		ProjectID:        firstNonEmpty(claimed.Run.ProjectID, projectID),
+		PlanID:           firstNonEmpty(claimed.Run.PlanID, claimed.CodexInput.PlanID),
+		TaskID:           firstNonEmpty(claimed.Run.TaskID, claimed.CodexInput.TaskID),
+		TaskRef:          taskRef,
+		TaskTitle:        taskTitle,
+		AutomationID:     claimed.Run.AutomationID,
+		AutomationRunID:  firstNonEmpty(claimed.Run.ID, claimed.CodexInput.AutomationRunID),
+		OperatorID:       firstNonEmpty(claimed.Run.AgentID, fallbackOperatorID),
+		AllowedPathspecs: claimed.CodexInput.LikelyFilesAffected,
+		ReviewRefs:       append([]string(nil), taskMetadata.ReviewResultRefs...),
+		VerifierRefs:     append([]string(nil), taskMetadata.VerifierResultRefs...),
 	}
 }
 
@@ -423,6 +451,14 @@ type runnerWorkPlan struct {
 	GitWorktreeRef string `json:"git_worktree_ref"`
 }
 
+type runnerWorkTaskMetadata struct {
+	ID                 string   `json:"id"`
+	TaskRef            string   `json:"task_ref,omitempty"`
+	Title              string   `json:"title,omitempty"`
+	ReviewResultRefs   []string `json:"review_result_refs,omitempty"`
+	VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
+}
+
 var errNoQueuedRun = errors.New("no queued automation run")
 
 var windowsPathForRunner = func(path string) (string, error) {
@@ -482,6 +518,15 @@ func (client *runnerClient) getWorkPlan(ctx context.Context, projectID string, p
 	var plan runnerWorkPlan
 	_, err := client.get(ctx, fmt.Sprintf("/api/v1/projects/%s/work-plans/%s", url.PathEscape(projectID), url.PathEscape(planID)), &plan)
 	return plan, err
+}
+
+func (client *runnerClient) getWorkTaskMetadata(ctx context.Context, projectID string, taskID string) (runnerWorkTaskMetadata, error) {
+	var task runnerWorkTaskMetadata
+	if strings.TrimSpace(taskID) == "" {
+		return task, nil
+	}
+	_, err := client.get(ctx, fmt.Sprintf("/api/v1/projects/%s/work-tasks/%s", url.PathEscape(projectID), url.PathEscape(taskID)), &task)
+	return task, err
 }
 
 func (client *runnerClient) listProjectIDs(ctx context.Context) ([]string, error) {
@@ -568,6 +613,15 @@ func safeWorktreeDirName(value string) string {
 		}
 	}
 	return strings.Trim(builder.String(), ".-")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (client *runnerClient) get(ctx context.Context, path string, output any) (int, error) {

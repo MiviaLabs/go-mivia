@@ -166,6 +166,15 @@ ssh_public_key_path = "/run/secrets/mivia_git_key.pub"
 ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
 github_token_env = "GITHUB_TOKEN"
 github_cli_path = "gh"
+
+[git_operations.conventions]
+commit_type = "feat"
+commit_scope = "gitops"
+commit_summary_template = "finish {{work_task_ref}}"
+pull_request_title_template = "{{commit_subject}}"
+what_changed_template = "Completed {{work_task_title}} for {{project_id}}."
+how_verified_template = "Review refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
+tests_template = "{{test_results}}"
 `)
 
 	cfg, err := loadFileConfig(path)
@@ -186,14 +195,23 @@ github_cli_path = "gh"
 	if merged.GitOperations.RemoteName != "upstream" || merged.GitOperations.SSHKnownHostsPath == "" {
 		t.Fatalf("unexpected git operations config: %+v", merged.GitOperations)
 	}
+	if merged.GitOperations.Conventions.CommitType != "feat" || merged.GitOperations.Conventions.CommitScope != "gitops" || !strings.Contains(merged.GitOperations.Conventions.WhatChangedTemplate, "{{work_task_title}}") {
+		t.Fatalf("unexpected git operations conventions: %+v", merged.GitOperations.Conventions)
+	}
 
 	t.Setenv("MIVIA_GIT_OPS_REMOTE_NAME", "origin")
 	t.Setenv("MIVIA_GIT_OPS_DRAFT_PR_AFTER_PUSH", "false")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE", "fix")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SCOPE", "runner")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE", "complete {{work_task_id}}")
 	if err := applyEnvOverrides(&merged); err != nil {
 		t.Fatalf("expected git operations env overrides: %v", err)
 	}
 	if merged.GitOperations.RemoteName != "origin" || merged.GitOperations.DraftPRAfterPush {
 		t.Fatalf("unexpected git operations env overrides: %+v", merged.GitOperations)
+	}
+	if merged.GitOperations.Conventions.CommitType != "fix" || merged.GitOperations.Conventions.CommitScope != "runner" || merged.GitOperations.Conventions.CommitSummaryTemplate != "complete {{work_task_id}}" {
+		t.Fatalf("unexpected git operations convention env overrides: %+v", merged.GitOperations.Conventions)
 	}
 }
 
@@ -300,6 +318,12 @@ func TestGitOperationsValidateRejectsUnsafeCombinations(t *testing.T) {
 		"two_token_refs": func(cfg *Config) {
 			cfg.GitOperations.GitHubTokenEnv = "GITHUB_TOKEN"
 			cfg.GitOperations.GitHubTokenFile = "/run/secrets/github_token"
+		},
+		"bad_convention_type": func(cfg *Config) {
+			cfg.GitOperations.Conventions.CommitType = "Feature"
+		},
+		"bad_convention_placeholder": func(cfg *Config) {
+			cfg.GitOperations.Conventions.CommitSummaryTemplate = "complete {{repository_name}}"
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

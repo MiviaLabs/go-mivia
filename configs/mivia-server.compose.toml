@@ -73,7 +73,7 @@ global_worker_count = 1
 per_project_worker_limit = 1
 per_agent_worker_limit = 1
 max_parallel_tasks = 1
-default_max_runtime = "10m"
+default_max_runtime = "5h"
 codex_binary_path = "codex"
 
 [automation.work_plan_status_trigger]

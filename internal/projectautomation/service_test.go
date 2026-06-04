@@ -214,6 +214,59 @@ func TestWorkPlanStatusTriggerQueuesAutomaticRunsOnce(t *testing.T) {
 	}
 }
 
+func TestCreateRemediationFromFindingRequiresConfirmedFinding(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newTestStore(), &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{}}, Options{Enabled: true, RunnerEnabled: true})
+
+	_, err := svc.CreateRemediationFromFinding(ctx, CreateRemediationFromFindingInput{
+		ProjectID:               "project-1",
+		FindingRef:              "finding-1",
+		FindingStatus:           "suspected",
+		Title:                   "Fix finding",
+		Summary:                 "Fix confirmed issue.",
+		VerificationRequirement: "Run focused tests.",
+	})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "confirmed") {
+		t.Fatalf("expected confirmed finding error, got %v", err)
+	}
+}
+
+func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *testing.T) {
+	ctx := context.Background()
+	workTasks := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{}}
+	svc := New(newTestStore(), workTasks, Options{Enabled: true, RunnerEnabled: true})
+
+	result, err := svc.CreateRemediationFromFinding(ctx, CreateRemediationFromFindingInput{
+		ProjectID:               "project-1",
+		FindingRef:              "finding:review-1",
+		FindingStatus:           "confirmed",
+		Title:                   "Fix confirmed review finding",
+		Summary:                 "Repair the confirmed review finding.",
+		Severity:                "high",
+		ImplementationAgentID:   "worker-a",
+		FilesToRead:             []string{"internal/projectautomation/service.go"},
+		FilesToEdit:             []string{"internal/projectautomation/service.go"},
+		EvidenceRefs:            []string{"review:confirmed"},
+		VerificationRequirement: "Run focused automation tests.",
+		ActivatePlan:            true,
+	})
+	if err != nil {
+		t.Fatalf("CreateRemediationFromFinding returned error: %v", err)
+	}
+	if !result.Activated || result.WorkPlan.Status != projectworkplan.WorkPlanStatusActive {
+		t.Fatalf("expected activated active plan, got activated=%v plan=%#v", result.Activated, result.WorkPlan)
+	}
+	if result.WorkTask.Status != projectworkplan.WorkTaskStatusReady || result.WorkTask.OwnerAgent != "worker-a" {
+		t.Fatalf("unexpected remediation task: %#v", result.WorkTask)
+	}
+	if result.Automation.TriggerKind != TriggerKindAutomatic || result.Automation.Status != AutomationStatusEnabled {
+		t.Fatalf("unexpected remediation automation: %#v", result.Automation)
+	}
+	if result.WorkPlan.GitBranchRef != "mivia/remediate-finding-review-1" {
+		t.Fatalf("expected sanitized branch ref, got %q", result.WorkPlan.GitBranchRef)
+	}
+}
+
 func TestWorkPlanStatusTriggerSkipsWhenNoReadyTask(t *testing.T) {
 	ctx := context.Background()
 	svc := New(newTestStore(), &fakeWorkTasks{}, Options{
@@ -1092,11 +1145,79 @@ func TestValidateAllowedTaskRefAcceptsTaskIDOrTaskRef(t *testing.T) {
 }
 
 type fakeWorkTasks struct {
+	plans         map[string]projectworkplan.WorkPlan
 	tasks         map[string]projectworkplan.WorkTask
 	evidenceRefs  []string
 	verifierRefs  []string
 	reviewRefs    []string
 	knowledgeRefs []string
+}
+
+func (fake *fakeWorkTasks) CreateWorkPlan(_ context.Context, input projectworkplan.CreateWorkPlanInput) (projectworkplan.WorkPlan, error) {
+	if fake.plans == nil {
+		fake.plans = map[string]projectworkplan.WorkPlan{}
+	}
+	plan := projectworkplan.WorkPlan{
+		ID:               "work_plan_" + strings.ReplaceAll(input.PlanRef, ":", "_"),
+		ProjectID:        input.ProjectID,
+		PlanRef:          input.PlanRef,
+		UserRequestRef:   input.UserRequestRef,
+		Title:            input.Title,
+		GoalSummary:      input.GoalSummary,
+		Status:           projectworkplan.WorkPlanStatusPlanned,
+		OwnerAgent:       input.OwnerAgent,
+		CreatedByRunID:   input.CreatedByRunID,
+		TraceID:          input.TraceID,
+		ResumeSummary:    input.ResumeSummary,
+		IsolationMode:    input.IsolationMode,
+		ParallelGroupRef: input.ParallelGroupRef,
+		WorkspaceRef:     input.WorkspaceRef,
+		GitBaseRef:       input.GitBaseRef,
+		GitBranchRef:     input.GitBranchRef,
+		GitWorktreeRef:   input.GitWorktreeRef,
+	}
+	fake.plans[plan.ID] = plan
+	return plan, nil
+}
+
+func (fake *fakeWorkTasks) CreateWorkTask(_ context.Context, input projectworkplan.CreateWorkTaskInput) (projectworkplan.WorkTask, error) {
+	if fake.tasks == nil {
+		fake.tasks = map[string]projectworkplan.WorkTask{}
+	}
+	task := projectworkplan.WorkTask{
+		ID:                      "work_task_" + strings.ReplaceAll(input.TaskRef, ":", "_"),
+		ProjectID:               input.ProjectID,
+		PlanID:                  input.PlanID,
+		TaskRef:                 input.TaskRef,
+		Title:                   input.Title,
+		Description:             input.Description,
+		Status:                  input.Status,
+		OwnerAgent:              input.OwnerAgent,
+		TraceID:                 input.TraceID,
+		EvidenceNeeded:          append([]string(nil), input.EvidenceNeeded...),
+		FilesToRead:             append([]string(nil), input.FilesToRead...),
+		FilesToEdit:             append([]string(nil), input.FilesToEdit...),
+		LikelyFilesAffected:     append([]string(nil), input.LikelyFilesAffected...),
+		VerificationRequirement: input.VerificationRequirement,
+		ExpectedOutput:          input.ExpectedOutput,
+		FailureCriteria:         input.FailureCriteria,
+		ReviewGate:              input.ReviewGate,
+		ResumeInstructions:      input.ResumeInstructions,
+		DecompositionQuality:    input.DecompositionQuality,
+	}
+	fake.tasks[task.ID] = task
+	return task, nil
+}
+
+func (fake *fakeWorkTasks) UpdateWorkPlanStatus(_ context.Context, input projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error) {
+	plan, ok := fake.plans[input.PlanID]
+	if !ok {
+		return projectworkplan.WorkPlan{}, errors.New("not found")
+	}
+	plan.Status = input.Status
+	plan.ResumeSummary = input.ResumeSummary
+	fake.plans[plan.ID] = plan
+	return plan, nil
 }
 
 type fakePermissionResolver struct {

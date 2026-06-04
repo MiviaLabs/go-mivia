@@ -172,6 +172,7 @@ Mandatory rules:
     - Reviewer execution must be modeled as reviewer Work Tasks and automation runs. Codex Desktop subagents are optional client-side helpers only; they are not the source of truth for reviewer capacity. Runner worker limits are controlled by Mivia automation config (`global_worker_count`, `per_project_worker_limit`, and `per_agent_worker_limit`).
 13. Automation output is untrusted until independent review refs, verifier refs, and Evidence Graph outcomes exist.
 14. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
+15. Confirmed review findings may create remediation Work Plans only through `projects.automations.create_remediation_from_finding`. The finding must be independently confirmed, represented by safe refs and bounded summaries, and may activate the generated Work Plan so the status trigger queues implementation. Suspected or speculative findings must not create implementation automations.
 
 GitOps output rules:
 
@@ -206,6 +207,7 @@ projects.automations.create
 projects.automations.get
 projects.automations.list
 projects.automations.update_status
+projects.automations.create_remediation_from_finding
 projects.automations.run
 projects.automations.run_parallel_batch
 projects.automation_runs.get
@@ -340,7 +342,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Evidence Graph metadata only | `projects.evidence_graph.claims.create`, `projects.evidence_graph.claims.get`, `projects.evidence_graph.claims.list`, `projects.evidence_graph.evidence.append`, `projects.evidence_graph.decisions.create`, `projects.evidence_graph.actions.create`, `projects.evidence_graph.outcomes.create`, `projects.evidence_graph.artifacts.link`, `projects.evidence_graph.promotions.link` plus underscore aliases |
 | Knowledge Promotion metadata only | `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, `orgs.knowledge.list` plus underscore aliases |
 | Work Plans and Work Tasks metadata only | `projects.work_plans.create`, `projects.work_plans.get`, `projects.work_plans.list`, `projects.work_plans.update_status`, `projects.work_plans.resume`, `projects.work_tasks.create`, `projects.work_tasks.get`, `projects.work_tasks.update_status`, `projects.work_tasks.claim`, `projects.work_tasks.release`, `projects.work_tasks.start`, `projects.work_tasks.complete`, `projects.work_tasks.fail`, `projects.work_tasks.block`, `projects.work_tasks.list_open`, `projects.work_tasks.list_mine`, `projects.work_tasks.list_blocked`, `projects.work_tasks.get_next`, `projects.work_tasks.attach_evidence`, `projects.work_tasks.attach_context_pack`, `projects.work_tasks.attach_claim`, `projects.work_tasks.attach_verifier_result`, `projects.work_tasks.attach_review_result`, `projects.work_tasks.promote_knowledge_candidate` plus underscore aliases |
-| Project Automation metadata only | `projects.automations.create`, `projects.automations.get`, `projects.automations.list`, `projects.automations.update_status`, `projects.automations.run`, `projects.automations.run_parallel_batch`, `projects.automation_runs.get`, `projects.automation_runs.list`, `projects.automation_runs.claim_next`, `projects.automation_runs.complete_attempt` plus underscore aliases |
+| Project Automation metadata only | `projects.automations.create`, `projects.automations.get`, `projects.automations.list`, `projects.automations.update_status`, `projects.automations.create_remediation_from_finding`, `projects.automations.run`, `projects.automations.run_parallel_batch`, `projects.automation_runs.get`, `projects.automation_runs.list`, `projects.automation_runs.claim_next`, `projects.automation_runs.complete_attempt` plus underscore aliases |
 | Diagnostics | `projects.diagnostics.ingestion` |
 | Project integrations | `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.counts`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get` |
 

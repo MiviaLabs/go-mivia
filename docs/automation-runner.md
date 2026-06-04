@@ -38,6 +38,40 @@ user: "${MIVIA_AUTOMATION_CONTAINER_USER:-1000:1000}"
 
 Set `MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)"` for the automation sidecar. Avoid `0:0`; root-run sidecars create root-owned commits, refs, and worktree metadata on Linux and macOS bind mounts.
 
+## GitOps Conventions
+
+Runner GitOps is controlled by `[git_operations]` and optional `[git_operations.conventions]` in the server config. The convention fields are generic and project-safe: they use fixed placeholders, not arbitrary shell or template evaluation. Commit subjects and PR titles must render as Conventional Commits.
+
+Supported placeholders:
+
+- `{{project_id}}`
+- `{{work_plan_id}}`
+- `{{work_task_id}}`
+- `{{work_task_ref}}`
+- `{{work_task_title}}`
+- `{{automation_id}}`
+- `{{automation_run_id}}`
+- `{{operator_id}}`
+- `{{review_refs}}`
+- `{{verifier_refs}}`
+- `{{test_results}}`
+- `{{commit_subject}}`
+
+Draft PR bodies always render exactly these sections: `What changed`, `How verified`, and `Tests`. The default `How verified` text includes project ID, Work Plan ID, Work Task ID, automation ID, automation run ID, operator ID, review refs, and verifier refs. Test results are included when a caller supplies safe summaries; otherwise the runner states that tests were not reported and orchestrator verification is pending.
+
+Example:
+
+```toml
+[git_operations.conventions]
+commit_type = "feat"
+commit_scope = "gitops"
+commit_summary_template = "complete {{work_task_id}}"
+pull_request_title_template = "{{commit_subject}}"
+what_changed_template = "Completed {{work_task_title}} for {{project_id}}."
+how_verified_template = "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
+tests_template = "{{test_results}}"
+```
+
 ## Ownership Cleanup
 
 If an older root-run container already wrote Git metadata, repair only the affected repository metadata before creating more worktrees or commits:

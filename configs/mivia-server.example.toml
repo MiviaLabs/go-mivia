@@ -106,7 +106,7 @@ global_worker_count = 1
 per_project_worker_limit = 1
 per_agent_worker_limit = 1
 max_parallel_tasks = 1
-default_max_runtime = "10m"
+default_max_runtime = "30m"
 # codex_binary_path = "codex"
 
 [automation.work_plan_status_trigger]
@@ -135,6 +135,18 @@ commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
 # ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
 # github_token_env = "GITHUB_TOKEN"
 github_cli_path = "gh"
+
+[git_operations.conventions]
+# All templates use fixed safe placeholders only. Commit subjects and PR titles
+# must render as Conventional Commits. PR bodies always use the required
+# sections: What changed, How verified, Tests.
+commit_type = "chore"
+commit_scope = ""
+commit_summary_template = "complete {{work_task_id}}"
+pull_request_title_template = "{{commit_subject}}"
+what_changed_template = "Completed automation work task {{work_task_id}} for project {{project_id}}."
+how_verified_template = "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
+tests_template = "{{test_results}}"
 
 [[projects]]
 id = "example-service"

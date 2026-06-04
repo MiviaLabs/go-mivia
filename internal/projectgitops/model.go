@@ -20,6 +20,17 @@ type Options struct {
 	GitHubTokenEnv               string
 	GitHubTokenFile              string
 	GitHubCLIPath                string
+	Conventions                  Conventions
+}
+
+type Conventions struct {
+	CommitType               string
+	CommitScope              string
+	CommitSummaryTemplate    string
+	PullRequestTitleTemplate string
+	WhatChangedTemplate      string
+	HowVerifiedTemplate      string
+	TestsTemplate            string
 }
 
 type Command struct {
@@ -40,12 +51,19 @@ type CommandResult struct {
 
 type PostTaskInput struct {
 	WorkDir          string
+	ProjectID        string
 	PlanID           string
 	TaskID           string
+	TaskRef          string
+	TaskTitle        string
+	AutomationID     string
 	AutomationRunID  string
-	CommitSubject    string
+	OperatorID       string
 	CommitBody       string
 	AllowedPathspecs []string
+	ReviewRefs       []string
+	VerifierRefs     []string
+	TestResults      []string
 }
 
 type PostTaskResult struct {
@@ -55,4 +73,11 @@ type PostTaskResult struct {
 	PushRef        string
 	PullRequestRef string
 	EvidenceRefs   []string
+}
+
+type RenderedOutput struct {
+	CommitSubject    string
+	CommitBody       string
+	PullRequestTitle string
+	PullRequestBody  string
 }

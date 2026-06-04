@@ -40,6 +40,7 @@ func NewWithRunner(options Options, runner CommandRunner) *Service {
 	if strings.TrimSpace(options.CommitAuthorName) == "" {
 		options.CommitAuthorName = "Mivia Automation"
 	}
+	options.Conventions = normalizeConventions(options.Conventions)
 	return &Service{options: options, runner: runner}
 }
 
@@ -72,15 +73,6 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if workDir == "" || !filepath.IsAbs(workDir) {
 		return PostTaskResult{}, fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
 	}
-	if err := validateSafeRef("plan id", input.PlanID); err != nil {
-		return PostTaskResult{}, err
-	}
-	if err := validateSafeRef("task id", input.TaskID); err != nil {
-		return PostTaskResult{}, err
-	}
-	if err := validateSafeRef("automation run id", input.AutomationRunID); err != nil {
-		return PostTaskResult{}, err
-	}
 	if err := svc.validatePushConfig(); err != nil {
 		return PostTaskResult{}, err
 	}
@@ -100,6 +92,10 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if len(pathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
 	}
+	rendered, err := Render(input, svc.options.Conventions)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
 	addArgs := append([]string{"add", "--"}, pathspecs...)
 	if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
 		return PostTaskResult{}, err
@@ -107,7 +103,6 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if _, err := svc.git(ctx, workDir, nil, "diff", "--cached", "--check"); err != nil {
 		return PostTaskResult{}, err
 	}
-	message := commitMessage(input)
 	email, err := svc.authorEmail()
 	if err != nil {
 		return PostTaskResult{}, err
@@ -119,7 +114,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if email != "" {
 		env = append(env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
 	}
-	if _, err := svc.git(ctx, workDir, env, "commit", "-m", message); err != nil {
+	if _, err := svc.git(ctx, workDir, env, "commit", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
 		return PostTaskResult{}, err
 	}
 	sha, err := svc.git(ctx, workDir, nil, "rev-parse", "--short=12", "HEAD")
@@ -141,7 +136,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		result.PushRef = "git-push-" + safeHash(branch)
 		result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed")
 		if svc.options.DraftPRAfterPush {
-			prRef, err := svc.ensureDraftPR(ctx, workDir)
+			prRef, err := svc.ensureDraftPR(ctx, workDir, rendered)
 			if err != nil {
 				return PostTaskResult{}, err
 			}
@@ -185,13 +180,16 @@ func (svc *Service) currentBranch(ctx context.Context, workDir string) (string, 
 	return branch, nil
 }
 
-func (svc *Service) ensureDraftPR(ctx context.Context, workDir string) (string, error) {
+func (svc *Service) ensureDraftPR(ctx context.Context, workDir string, rendered RenderedOutput) (string, error) {
 	env := svc.githubEnv()
 	view, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"pr", "view", "--json", "number", "--jq", ".number"}, Dir: workDir, Env: env})
 	if err == nil && strings.TrimSpace(view.Stdout) != "" {
+		if _, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"pr", "edit", "--title", rendered.PullRequestTitle, "--body", rendered.PullRequestBody}, Dir: workDir, Env: env}); err != nil {
+			return "", err
+		}
 		return "github-pr-" + strings.TrimSpace(view.Stdout), nil
 	}
-	create, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"pr", "create", "--draft", "--fill"}, Dir: workDir, Env: env})
+	create, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"pr", "create", "--draft", "--title", rendered.PullRequestTitle, "--body", rendered.PullRequestBody}, Dir: workDir, Env: env})
 	if err != nil {
 		return "", err
 	}
@@ -260,19 +258,6 @@ func (svc *Service) githubEnv() []string {
 		}
 	}
 	return nil
-}
-
-func commitMessage(input PostTaskInput) string {
-	subject := strings.TrimSpace(input.CommitSubject)
-	if subject == "" {
-		subject = "chore: complete " + input.TaskID
-	}
-	body := strings.TrimSpace(input.CommitBody)
-	if body != "" {
-		body += "\n\n"
-	}
-	body += "Work Plan: " + input.PlanID + "\nWork Task: " + input.TaskID + "\nAutomation Run: " + input.AutomationRunID
-	return subject + "\n\n" + body
 }
 
 func sanitizePathspecs(values []string) []string {

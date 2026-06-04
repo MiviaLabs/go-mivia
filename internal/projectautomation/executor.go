@@ -119,7 +119,6 @@ func (executor *Executor) pollOnce(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		executor.submitAutomaticRuns(ctx, projectID)
 		if !executor.runsQueuedWork() {
 			continue
 		}

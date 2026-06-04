@@ -148,23 +148,34 @@ type fileAutomationCommandConfig struct {
 }
 
 type fileGitOpsConfig struct {
-	Enabled                      *bool   `toml:"enabled"`
-	CommitAfterTask              *bool   `toml:"commit_after_task"`
-	PushAfterTask                *bool   `toml:"push_after_task"`
-	DraftPRAfterPush             *bool   `toml:"draft_pr_after_push"`
-	RequireCleanBeforeTask       *bool   `toml:"require_clean_before_task"`
-	CleanupWorktreeAfterPlanDone *bool   `toml:"cleanup_worktree_after_plan_done"`
-	RemoteName                   *string `toml:"remote_name"`
-	BranchPrefix                 *string `toml:"branch_prefix"`
-	CommitAuthorName             *string `toml:"commit_author_name"`
-	CommitAuthorEmailEnv         *string `toml:"commit_author_email_env"`
-	CommitAuthorEmailFile        *string `toml:"commit_author_email_file"`
-	SSHPrivateKeyPath            *string `toml:"ssh_private_key_path"`
-	SSHPublicKeyPath             *string `toml:"ssh_public_key_path"`
-	SSHKnownHostsPath            *string `toml:"ssh_known_hosts_path"`
-	GitHubTokenEnv               *string `toml:"github_token_env"`
-	GitHubTokenFile              *string `toml:"github_token_file"`
-	GitHubCLIPath                *string `toml:"github_cli_path"`
+	Enabled                      *bool                        `toml:"enabled"`
+	CommitAfterTask              *bool                        `toml:"commit_after_task"`
+	PushAfterTask                *bool                        `toml:"push_after_task"`
+	DraftPRAfterPush             *bool                        `toml:"draft_pr_after_push"`
+	RequireCleanBeforeTask       *bool                        `toml:"require_clean_before_task"`
+	CleanupWorktreeAfterPlanDone *bool                        `toml:"cleanup_worktree_after_plan_done"`
+	RemoteName                   *string                      `toml:"remote_name"`
+	BranchPrefix                 *string                      `toml:"branch_prefix"`
+	CommitAuthorName             *string                      `toml:"commit_author_name"`
+	CommitAuthorEmailEnv         *string                      `toml:"commit_author_email_env"`
+	CommitAuthorEmailFile        *string                      `toml:"commit_author_email_file"`
+	SSHPrivateKeyPath            *string                      `toml:"ssh_private_key_path"`
+	SSHPublicKeyPath             *string                      `toml:"ssh_public_key_path"`
+	SSHKnownHostsPath            *string                      `toml:"ssh_known_hosts_path"`
+	GitHubTokenEnv               *string                      `toml:"github_token_env"`
+	GitHubTokenFile              *string                      `toml:"github_token_file"`
+	GitHubCLIPath                *string                      `toml:"github_cli_path"`
+	Conventions                  *fileGitOpsConventionsConfig `toml:"conventions"`
+}
+
+type fileGitOpsConventionsConfig struct {
+	CommitType               *string `toml:"commit_type"`
+	CommitScope              *string `toml:"commit_scope"`
+	CommitSummaryTemplate    *string `toml:"commit_summary_template"`
+	PullRequestTitleTemplate *string `toml:"pull_request_title_template"`
+	WhatChangedTemplate      *string `toml:"what_changed_template"`
+	HowVerifiedTemplate      *string `toml:"how_verified_template"`
+	TestsTemplate            *string `toml:"tests_template"`
 }
 
 type fileIngestionConfig struct {
@@ -787,6 +798,29 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		}
 		if cfg.GitOps.GitHubCLIPath != nil {
 			base.GitOperations.GitHubCLIPath = strings.TrimSpace(*cfg.GitOps.GitHubCLIPath)
+		}
+		if cfg.GitOps.Conventions != nil {
+			if cfg.GitOps.Conventions.CommitType != nil {
+				base.GitOperations.Conventions.CommitType = strings.TrimSpace(*cfg.GitOps.Conventions.CommitType)
+			}
+			if cfg.GitOps.Conventions.CommitScope != nil {
+				base.GitOperations.Conventions.CommitScope = strings.TrimSpace(*cfg.GitOps.Conventions.CommitScope)
+			}
+			if cfg.GitOps.Conventions.CommitSummaryTemplate != nil {
+				base.GitOperations.Conventions.CommitSummaryTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.CommitSummaryTemplate)
+			}
+			if cfg.GitOps.Conventions.PullRequestTitleTemplate != nil {
+				base.GitOperations.Conventions.PullRequestTitleTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.PullRequestTitleTemplate)
+			}
+			if cfg.GitOps.Conventions.WhatChangedTemplate != nil {
+				base.GitOperations.Conventions.WhatChangedTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.WhatChangedTemplate)
+			}
+			if cfg.GitOps.Conventions.HowVerifiedTemplate != nil {
+				base.GitOperations.Conventions.HowVerifiedTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.HowVerifiedTemplate)
+			}
+			if cfg.GitOps.Conventions.TestsTemplate != nil {
+				base.GitOperations.Conventions.TestsTemplate = strings.TrimSpace(*cfg.GitOps.Conventions.TestsTemplate)
+			}
 		}
 	}
 

@@ -54,6 +54,12 @@ type workTaskStatusUpdater interface {
 	UpdateWorkTaskStatus(context.Context, projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error)
 }
 
+type remediationWorkPlanAPI interface {
+	CreateWorkPlan(context.Context, projectworkplan.CreateWorkPlanInput) (projectworkplan.WorkPlan, error)
+	CreateWorkTask(context.Context, projectworkplan.CreateWorkTaskInput) (projectworkplan.WorkTask, error)
+	UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
+}
+
 type Service struct {
 	store          Store
 	workTasks      WorkTaskAPI
@@ -63,6 +69,172 @@ type Service struct {
 	codexAvailable func() bool
 	codexPath      func() (string, bool)
 	codexRunner    func(context.Context, CodexCommand, int64) (CodexRunResult, error)
+}
+
+func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input CreateRemediationFromFindingInput) (CreateRemediationFromFindingResult, error) {
+	if svc.store == nil {
+		return CreateRemediationFromFindingResult{}, fmt.Errorf("%w: store is required", ErrInvalidInput)
+	}
+	workPlans, ok := svc.workTasks.(remediationWorkPlanAPI)
+	if !ok || workPlans == nil {
+		return CreateRemediationFromFindingResult{}, fmt.Errorf("%w: work plan API is required", ErrInvalidInput)
+	}
+	projectID, err := safeRef(input.ProjectID, "project_id")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	findingRef, err := safeRef(input.FindingRef, "finding_ref")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	if strings.TrimSpace(input.FindingStatus) != "confirmed" {
+		return CreateRemediationFromFindingResult{}, fmt.Errorf("%w: finding_status must be confirmed", ErrInvalidInput)
+	}
+	title, err := safeRequiredText(input.Title, "title", 200)
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	summary, err := safeRequiredText(input.Summary, "summary", 500)
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	severity, err := safeOptionalRef(input.Severity, "severity")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	ownerAgent, err := safeOptionalRef(input.OwnerAgent, "owner_agent")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	if ownerAgent == "" {
+		ownerAgent = "orchestrator"
+	}
+	implementationAgentID, err := safeOptionalRef(input.ImplementationAgentID, "implementation_agent_id")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	if implementationAgentID == "" {
+		implementationAgentID = "codex-worker"
+	}
+	runID, err := safeOptionalRef(input.CreatedByRunID, "created_by_run_id")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	traceID, err := safeOptionalRef(input.TraceID, "trace_id")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	verification, err := safeRequiredText(input.VerificationRequirement, "verification_requirement", 500)
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	reviewGate, err := safeOptionalText(input.ReviewGate, "review_gate", 500)
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	filesToRead, err := safeFileList(input.FilesToRead, "files_to_read")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	filesToEdit, err := safeFileList(input.FilesToEdit, "files_to_edit")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	likelyFiles, err := safeFileList(input.LikelyFilesAffected, "likely_files_affected")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	if len(likelyFiles) == 0 {
+		likelyFiles = append([]string(nil), filesToEdit...)
+	}
+	evidenceRefs, err := safeRefList(input.EvidenceRefs, "evidence_refs")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	findingToken := safeBranchToken(findingRef)
+	planRef := "remediate-" + findingRef
+	taskRef := "fix-" + findingRef
+	automationRef := "auto-remediate-" + findingRef
+	goal := "Fix confirmed finding " + findingRef + ": " + summary
+	if severity != "" {
+		goal = "Fix " + severity + " confirmed finding " + findingRef + ": " + summary
+	}
+	plan, err := workPlans.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
+		ProjectID:        projectID,
+		PlanRef:          planRef,
+		UserRequestRef:   findingRef,
+		Title:            "Remediate confirmed finding " + findingRef,
+		GoalSummary:      goal,
+		OwnerAgent:       ownerAgent,
+		CreatedByRunID:   runID,
+		TraceID:          traceID,
+		ResumeSummary:    "Use the ready remediation task generated from confirmed finding metadata.",
+		IsolationMode:    projectworkplan.WorkPlanIsolationDedicatedWorktree,
+		ParallelGroupRef: "finding-" + findingRef,
+		GitBranchRef:     "mivia/remediate-" + findingToken,
+		GitWorktreeRef:   "wt-remediate-" + findingToken,
+	})
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	task, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               projectID,
+		PlanID:                  plan.ID,
+		TaskRef:                 taskRef,
+		Title:                   title,
+		Description:             summary,
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              implementationAgentID,
+		RunID:                   runID,
+		TraceID:                 traceID,
+		EvidenceNeeded:          append([]string{"confirmed-finding:" + findingRef}, evidenceRefs...),
+		FilesToRead:             filesToRead,
+		FilesToEdit:             filesToEdit,
+		LikelyFilesAffected:     likelyFiles,
+		VerificationRequirement: verification,
+		ExpectedOutput:          "Implementation that fixes confirmed finding " + findingRef + " with safe review and verifier refs.",
+		FailureCriteria:         "Fail if the finding is not fixed, scope expands beyond the listed files without a new plan, or verification cannot be performed.",
+		ReviewGate:              reviewGate,
+		ResumeInstructions:      "Resume from confirmed finding ref " + findingRef + " and the generated remediation Work Plan.",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       projectID,
+		AutomationRef:   automationRef,
+		Title:           "Implement remediation " + findingRef,
+		Purpose:         "Execute confirmed finding remediation task " + task.ID + ".",
+		Status:          AutomationStatusEnabled,
+		AgentID:         implementationAgentID,
+		PlanID:          plan.ID,
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "work_plan_status_trigger",
+		PermissionRef:   "permission-remediation-" + findingRef,
+		SourceKind:      AutomationSourceManual,
+		CreatedByRunID:  runID,
+		TraceID:         traceID,
+	})
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	result := CreateRemediationFromFindingResult{WorkPlan: plan, WorkTask: task, Automation: automation}
+	if input.ActivatePlan {
+		activated, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:     projectID,
+			PlanID:        plan.ID,
+			Status:        projectworkplan.WorkPlanStatusActive,
+			ResumeSummary: "Automatic remediation queued through Work Plan status trigger.",
+		})
+		if err != nil {
+			return result, err
+		}
+		result.WorkPlan = activated
+		result.Activated = true
+	}
+	return result, nil
 }
 
 func New(store Store, workTasks WorkTaskAPI, options Options) *Service {
@@ -1413,10 +1585,36 @@ func safeRefList(values []string, field string) ([]string, error) {
 	return out, nil
 }
 
+func safeFileList(values []string, field string) ([]string, error) {
+	if len(values) > 100 {
+		return nil, fmt.Errorf("%w: %s has too many values", ErrInvalidInput, field)
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > 300 || strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "\x00\r\n\\") {
+			return nil, fmt.Errorf("%w: %s contains unsafe path", ErrInvalidInput, field)
+		}
+		out = append(out, trimmed)
+	}
+	return out, nil
+}
+
 func safeRequiredText(value, field string, max int) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", fmt.Errorf("%w: %s is required", ErrInvalidInput, field)
+	}
+	return safeText(value, field, max)
+}
+
+func safeOptionalText(value, field string, max int) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
 	}
 	return safeText(value, field, max)
 }
@@ -1437,6 +1635,32 @@ func safeText(value, field string, max int) (string, error) {
 		return "", fmt.Errorf("%w: %s contains pii-like content", ErrInvalidInput, field)
 	}
 	return value, nil
+}
+
+func safeBranchToken(value string) string {
+	value = strings.TrimSpace(value)
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		ok := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-'
+		if ok {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	token := strings.Trim(builder.String(), ".-_")
+	if token == "" {
+		return "finding"
+	}
+	if len(token) > 80 {
+		return token[:80]
+	}
+	return token
 }
 
 func safeAutomationStatus(value string) (string, error) {

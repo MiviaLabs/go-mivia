@@ -107,7 +107,7 @@ func TestExecuteQueuedRunManualEndsInVerifying(t *testing.T) {
 	}
 }
 
-func TestExecutorSubmitsAutomaticRunForReadyTaskOnce(t *testing.T) {
+func TestExecutorDoesNotSubmitAutomaticRunWithoutStatusTrigger(t *testing.T) {
 	ctx := context.Background()
 	svc := newExecutorTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1})
 	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
@@ -133,9 +133,9 @@ func TestExecutorSubmitsAutomaticRunForReadyTaskOnce(t *testing.T) {
 	})
 
 	executor.pollOnce(ctx)
-	waitForAutomationRuns(t, svc, automation.ID, 1)
+	waitForAutomationRuns(t, svc, automation.ID, 0)
 	executor.pollOnce(ctx)
-	waitForAutomationRuns(t, svc, automation.ID, 1)
+	waitForAutomationRuns(t, svc, automation.ID, 0)
 }
 
 func TestExecutorDoesNotSubmitAutomaticRunBeforeAutomationReviewDone(t *testing.T) {
@@ -164,18 +164,15 @@ func TestExecutorDoesNotSubmitAutomaticRunBeforeAutomationReviewDone(t *testing.
 		ProjectIDs: []string{"project-1"},
 	})
 
-	executor.pollOnce(ctx)
-	waitForAutomationRuns(t, svc, automation.ID, 0)
-
 	review := readyTask("automation-review", "automation-review", []string{"internal/foo.go"})
 	review.Status = projectworkplan.WorkTaskStatusDone
 	svc.workTasks.(*fakeWorkTasks).tasks["automation-review"] = review
 
 	executor.pollOnce(ctx)
-	waitForAutomationRuns(t, svc, automation.ID, 1)
+	waitForAutomationRuns(t, svc, automation.ID, 0)
 }
 
-func TestExecutorExternalModeSubmitsAutomaticRunWithoutExecuting(t *testing.T) {
+func TestExecutorExternalModeDoesNotSubmitAutomaticRunWithoutStatusTrigger(t *testing.T) {
 	ctx := context.Background()
 	svc := newExecutorTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1, RunnerExecution: RunnerExecutionExternal})
 	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
@@ -205,12 +202,12 @@ func TestExecutorExternalModeSubmitsAutomaticRunWithoutExecuting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRuns returned error: %v", err)
 	}
-	if len(runs) != 1 || runs[0].Status != RunStatusQueued {
-		t.Fatalf("expected one queued external run, got %#v", runs)
+	if len(runs) != 0 {
+		t.Fatalf("expected no queued external run without status trigger, got %#v", runs)
 	}
 }
 
-func TestExecutorManagedModeSubmitsAutomaticRunAndExecutes(t *testing.T) {
+func TestExecutorManagedModeExecutesQueuedRun(t *testing.T) {
 	ctx := context.Background()
 	svc := newExecutorTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1, RunnerExecution: RunnerExecutionManaged})
 	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
@@ -229,6 +226,16 @@ func TestExecutorManagedModeSubmitsAutomaticRunAndExecutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAutomation returned error: %v", err)
 	}
+	queued, err := svc.SubmitRun(ctx, SubmitRunInput{
+		ProjectID:    automation.ProjectID,
+		AutomationID: automation.ID,
+		PlanID:       automation.PlanID,
+		TaskID:       "task-a",
+		RunnerKind:   RunnerKindCodexCLI,
+	})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
 	executor := NewExecutor(svc, ExecutorOptions{
 		Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionManaged,
 		GlobalWorkerCount: 1, PerProjectWorkerLimit: 1, PerAgentWorkerLimit: 1,
@@ -236,14 +243,7 @@ func TestExecutorManagedModeSubmitsAutomaticRunAndExecutes(t *testing.T) {
 	})
 
 	executor.pollOnce(ctx)
-	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID})
-	if err != nil {
-		t.Fatalf("ListRuns returned error: %v", err)
-	}
-	if len(runs) != 1 {
-		t.Fatalf("expected one managed run, got %#v", runs)
-	}
-	waitForRunStatus(t, svc, runs[0].ProjectID, runs[0].ID, RunStatusVerifying)
+	waitForRunStatus(t, svc, queued.ProjectID, queued.ID, RunStatusVerifying)
 }
 
 func TestExecutorRespectsGlobalWorkerLimit(t *testing.T) {

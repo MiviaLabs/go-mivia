@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
 )
 
@@ -67,6 +68,85 @@ func TestResolveRunWorkDirFallsBackForSharedPlan(t *testing.T) {
 	}
 	if resolved != baseWorkDir {
 		t.Fatalf("expected fallback workdir %q, got %q", baseWorkDir, resolved)
+	}
+}
+
+func TestGetWorkTaskMetadataReadsReviewAndVerifierRefs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:                 "task-1",
+				TaskRef:            "task/ref",
+				Title:              "GitOps conventions",
+				ReviewResultRefs:   []string{"review:approved"},
+				VerifierResultRefs: []string{"verifier:focused"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	metadata, err := client.getWorkTaskMetadata(t.Context(), "project-1", "task-1")
+	if err != nil {
+		t.Fatalf("getWorkTaskMetadata returned error: %v", err)
+	}
+	if metadata.TaskRef != "task/ref" || strings.Join(metadata.ReviewResultRefs, ",") != "review:approved" || strings.Join(metadata.VerifierResultRefs, ",") != "verifier:focused" {
+		t.Fatalf("unexpected task metadata: %+v", metadata)
+	}
+}
+
+func TestGitOpsPostTaskInputCarriesRunAndTaskMetadata(t *testing.T) {
+	input := gitOpsPostTaskInput("fallback-project", "/tmp/worktree", "fallback-operator", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:           "automation_run_1",
+			ProjectID:    "project-1",
+			AutomationID: "automation_1",
+			AgentID:      "operator_1",
+			PlanID:       "work_plan_1",
+			TaskID:       "work_task_1",
+		},
+		CodexInput: projectautomation.CodexTaskInput{
+			TaskRef:             "task/ref-from-codex",
+			Title:               "Task title from Codex input",
+			LikelyFilesAffected: []string{"internal/projectgitops"},
+		},
+	}, runnerWorkTaskMetadata{
+		TaskRef:            "task/ref-current",
+		Title:              "Current task title",
+		ReviewResultRefs:   []string{"review:approved"},
+		VerifierResultRefs: []string{"verifier:focused"},
+	})
+
+	if input.ProjectID != "project-1" || input.AutomationID != "automation_1" || input.OperatorID != "operator_1" {
+		t.Fatalf("expected run metadata in gitops input, got %+v", input)
+	}
+	if input.TaskRef != "task/ref-current" || input.TaskTitle != "Current task title" {
+		t.Fatalf("expected current task metadata to win, got %+v", input)
+	}
+	if strings.Join(input.ReviewRefs, ",") != "review:approved" || strings.Join(input.VerifierRefs, ",") != "verifier:focused" {
+		t.Fatalf("expected review/verifier refs, got %+v", input)
+	}
+}
+
+func TestGitOpsOptionsFromConfigMapsConventions(t *testing.T) {
+	options := gitOpsOptionsFromConfig(config.GitOperations{
+		Enabled:         true,
+		CommitAfterTask: true,
+		Conventions: config.GitOpsConventions{
+			CommitType:               "feat",
+			CommitScope:              "gitops",
+			CommitSummaryTemplate:    "finish {{work_task_id}}",
+			PullRequestTitleTemplate: "{{commit_subject}}",
+			WhatChangedTemplate:      "Changed {{project_id}}.",
+			HowVerifiedTemplate:      "Verifier refs: {{verifier_refs}}",
+			TestsTemplate:            "{{test_results}}",
+		},
+	})
+	if options.Conventions.CommitType != "feat" || options.Conventions.CommitScope != "gitops" || options.Conventions.WhatChangedTemplate != "Changed {{project_id}}." {
+		t.Fatalf("expected convention mapping, got %+v", options.Conventions)
 	}
 }
 

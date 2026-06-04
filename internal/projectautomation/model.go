@@ -3,6 +3,8 @@ package projectautomation
 import (
 	"context"
 	"time"
+
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
 
 const (
@@ -240,6 +242,33 @@ type SubmitRunInput struct {
 	EvidenceRefs      []string `json:"evidence_refs,omitempty"`
 	VerifierRefs      []string `json:"verifier_result_refs,omitempty"`
 	SafeNextAction    string   `json:"safe_next_action,omitempty"`
+}
+
+type CreateRemediationFromFindingInput struct {
+	ProjectID               string   `json:"project_id,omitempty"`
+	FindingRef              string   `json:"finding_ref"`
+	FindingStatus           string   `json:"finding_status"`
+	Title                   string   `json:"title"`
+	Summary                 string   `json:"summary"`
+	Severity                string   `json:"severity,omitempty"`
+	OwnerAgent              string   `json:"owner_agent,omitempty"`
+	ImplementationAgentID   string   `json:"implementation_agent_id,omitempty"`
+	CreatedByRunID          string   `json:"created_by_run_id,omitempty"`
+	TraceID                 string   `json:"trace_id,omitempty"`
+	FilesToRead             []string `json:"files_to_read,omitempty"`
+	FilesToEdit             []string `json:"files_to_edit,omitempty"`
+	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
+	EvidenceRefs            []string `json:"evidence_refs,omitempty"`
+	VerificationRequirement string   `json:"verification_requirement"`
+	ReviewGate              string   `json:"review_gate,omitempty"`
+	ActivatePlan            bool     `json:"activate_plan,omitempty"`
+}
+
+type CreateRemediationFromFindingResult struct {
+	WorkPlan   projectworkplan.WorkPlan `json:"work_plan"`
+	WorkTask   projectworkplan.WorkTask `json:"work_task"`
+	Automation Automation               `json:"automation"`
+	Activated  bool                     `json:"activated"`
 }
 
 type RunFilter struct {

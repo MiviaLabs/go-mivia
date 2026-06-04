@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -137,6 +138,17 @@ type GitOperations struct {
 	GitHubTokenEnv               string
 	GitHubTokenFile              string
 	GitHubCLIPath                string
+	Conventions                  GitOpsConventions
+}
+
+type GitOpsConventions struct {
+	CommitType               string
+	CommitScope              string
+	CommitSummaryTemplate    string
+	PullRequestTitleTemplate string
+	WhatChangedTemplate      string
+	HowVerifiedTemplate      string
+	TestsTemplate            string
 }
 
 type WorkPlanStatusTrigger struct {
@@ -354,7 +366,7 @@ func defaultAutomation() Automation {
 		PerProjectWorkerLimit:     1,
 		PerAgentWorkerLimit:       1,
 		MaxParallelTasks:          1,
-		DefaultMaxRuntime:         10 * time.Minute,
+		DefaultMaxRuntime:         30 * time.Minute,
 		CodexBinaryPath:           "",
 		Agents:                    nil,
 		WorkPlanStatusTrigger:     WorkPlanStatusTrigger{Enabled: false, Statuses: []string{"active"}},
@@ -374,6 +386,18 @@ func defaultGitOperations() GitOperations {
 		CommitAuthorName:             "Mivia Automation",
 		CommitAuthorEmailEnv:         "MIVIA_GIT_AUTHOR_EMAIL",
 		GitHubCLIPath:                "gh",
+		Conventions:                  defaultGitOpsConventions(),
+	}
+}
+
+func defaultGitOpsConventions() GitOpsConventions {
+	return GitOpsConventions{
+		CommitType:               "chore",
+		CommitSummaryTemplate:    "complete {{work_task_id}}",
+		PullRequestTitleTemplate: "{{commit_subject}}",
+		WhatChangedTemplate:      "Completed automation work task {{work_task_id}} for project {{project_id}}.",
+		HowVerifiedTemplate:      "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}",
+		TestsTemplate:            "{{test_results}}",
 	}
 }
 
@@ -545,6 +569,13 @@ func applyEnvOverrides(cfg *Config) error {
 	cfg.GitOperations.GitHubTokenEnv = getenv("MIVIA_GIT_OPS_GITHUB_TOKEN_ENV", cfg.GitOperations.GitHubTokenEnv)
 	cfg.GitOperations.GitHubTokenFile = getenv("MIVIA_GIT_OPS_GITHUB_TOKEN_FILE", cfg.GitOperations.GitHubTokenFile)
 	cfg.GitOperations.GitHubCLIPath = getenv("MIVIA_GIT_OPS_GITHUB_CLI_PATH", cfg.GitOperations.GitHubCLIPath)
+	cfg.GitOperations.Conventions.CommitType = getenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE", cfg.GitOperations.Conventions.CommitType)
+	cfg.GitOperations.Conventions.CommitScope = getenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SCOPE", cfg.GitOperations.Conventions.CommitScope)
+	cfg.GitOperations.Conventions.CommitSummaryTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE", cfg.GitOperations.Conventions.CommitSummaryTemplate)
+	cfg.GitOperations.Conventions.PullRequestTitleTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_TITLE_TEMPLATE", cfg.GitOperations.Conventions.PullRequestTitleTemplate)
+	cfg.GitOperations.Conventions.WhatChangedTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_WHAT_CHANGED_TEMPLATE", cfg.GitOperations.Conventions.WhatChangedTemplate)
+	cfg.GitOperations.Conventions.HowVerifiedTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_HOW_VERIFIED_TEMPLATE", cfg.GitOperations.Conventions.HowVerifiedTemplate)
+	cfg.GitOperations.Conventions.TestsTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_TESTS_TEMPLATE", cfg.GitOperations.Conventions.TestsTemplate)
 	if cfg.AgentActivity.RetainRawPayloads, err = getenvBool("MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS", cfg.AgentActivity.RetainRawPayloads); err != nil {
 		return err
 	}
@@ -796,7 +827,83 @@ func (gitops GitOperations) Validate() error {
 	if gitops.DraftPRAfterPush && strings.TrimSpace(gitops.GitHubTokenEnv) == "" && strings.TrimSpace(gitops.GitHubTokenFile) == "" {
 		return errors.New("draft PR creation requires a GitHub token env or file reference")
 	}
+	if err := gitops.Conventions.Validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (conventions GitOpsConventions) Validate() error {
+	if !regexpMustMatch(`^[a-z][a-z0-9-]*$`, conventions.CommitType) {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE must be a safe Conventional Commit type")
+	}
+	if strings.TrimSpace(conventions.CommitScope) != "" && !regexpMustMatch(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`, conventions.CommitScope) {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SCOPE must be a safe Conventional Commit scope")
+	}
+	for name, value := range map[string]string{
+		"MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE":     conventions.CommitSummaryTemplate,
+		"MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_TITLE_TEMPLATE": conventions.PullRequestTitleTemplate,
+		"MIVIA_GIT_OPS_CONVENTIONS_WHAT_CHANGED_TEMPLATE":       conventions.WhatChangedTemplate,
+		"MIVIA_GIT_OPS_CONVENTIONS_HOW_VERIFIED_TEMPLATE":       conventions.HowVerifiedTemplate,
+		"MIVIA_GIT_OPS_CONVENTIONS_TESTS_TEMPLATE":              conventions.TestsTemplate,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s must not be empty", name)
+		}
+		if strings.Contains(value, "\x00") {
+			return fmt.Errorf("%s must not contain NUL characters", name)
+		}
+		if err := validateGitOpsTemplate(name, value); err != nil {
+			return err
+		}
+	}
+	for name, value := range map[string]string{
+		"MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE":     conventions.CommitSummaryTemplate,
+		"MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_TITLE_TEMPLATE": conventions.PullRequestTitleTemplate,
+	} {
+		if strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("%s must be single-line", name)
+		}
+	}
+	return nil
+}
+
+func validateGitOpsTemplate(name, value string) error {
+	allowed := map[string]bool{
+		"project_id":        true,
+		"work_plan_id":      true,
+		"work_task_id":      true,
+		"work_task_ref":     true,
+		"work_task_title":   true,
+		"automation_id":     true,
+		"automation_run_id": true,
+		"operator_id":       true,
+		"review_refs":       true,
+		"verifier_refs":     true,
+		"test_results":      true,
+		"commit_subject":    true,
+	}
+	for offset := 0; ; {
+		start := strings.Index(value[offset:], "{{")
+		if start < 0 {
+			return nil
+		}
+		start += offset
+		end := strings.Index(value[start+2:], "}}")
+		if end < 0 {
+			return fmt.Errorf("%s has an unclosed placeholder", name)
+		}
+		end += start + 2
+		placeholder := strings.TrimSpace(value[start+2 : end])
+		if !allowed[placeholder] {
+			return fmt.Errorf("%s uses unknown placeholder %q", name, placeholder)
+		}
+		offset = end + 2
+	}
+}
+
+func regexpMustMatch(pattern, value string) bool {
+	return regexp.MustCompile(pattern).MatchString(strings.TrimSpace(value))
 }
 
 func validateSafeGitToken(name, value string) error {

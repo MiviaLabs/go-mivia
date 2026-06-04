@@ -61,6 +61,30 @@ Environment variables remain final overrides over file values:
 - `MIVIA_INGESTION_INITIAL_SCAN_ON_START`
 - `MIVIA_INGESTION_SENSITIVE_MARKER_POLICY`
 - `MIVIA_WORKSPACE_ENABLED`
+- `MIVIA_GIT_OPS_ENABLED`
+- `MIVIA_GIT_OPS_COMMIT_AFTER_TASK`
+- `MIVIA_GIT_OPS_PUSH_AFTER_TASK`
+- `MIVIA_GIT_OPS_DRAFT_PR_AFTER_PUSH`
+- `MIVIA_GIT_OPS_REQUIRE_CLEAN_BEFORE_TASK`
+- `MIVIA_GIT_OPS_CLEANUP_WORKTREE_AFTER_PLAN_DONE`
+- `MIVIA_GIT_OPS_REMOTE_NAME`
+- `MIVIA_GIT_OPS_BRANCH_PREFIX`
+- `MIVIA_GIT_OPS_COMMIT_AUTHOR_NAME`
+- `MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_ENV`
+- `MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_FILE`
+- `MIVIA_GIT_OPS_SSH_PRIVATE_KEY_PATH`
+- `MIVIA_GIT_OPS_SSH_PUBLIC_KEY_PATH`
+- `MIVIA_GIT_OPS_SSH_KNOWN_HOSTS_PATH`
+- `MIVIA_GIT_OPS_GITHUB_TOKEN_ENV`
+- `MIVIA_GIT_OPS_GITHUB_TOKEN_FILE`
+- `MIVIA_GIT_OPS_GITHUB_CLI_PATH`
+- `MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE`
+- `MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SCOPE`
+- `MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE`
+- `MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_TITLE_TEMPLATE`
+- `MIVIA_GIT_OPS_CONVENTIONS_WHAT_CHANGED_TEMPLATE`
+- `MIVIA_GIT_OPS_CONVENTIONS_HOW_VERIFIED_TEMPLATE`
+- `MIVIA_GIT_OPS_CONVENTIONS_TESTS_TEMPLATE`
 
 Docker Compose also reads host-side publishing overrides that are not server config fields:
 
@@ -130,6 +154,13 @@ Do not treat that as a Go module proxy path. Go module publication uses reposito
 | `ingestion.initial_scan_on_start` | No | Optional startup rescan for live projects; default `false`. |
 | `ingestion.sensitive_marker_policy` | No | Only `skip_file` is accepted. |
 | `workspace.enabled` | No | Global workspace status/diff/read/create/delete/edit gate; default `false`. Must stay loopback-only. |
+| `git_operations.conventions.commit_type` | No | Conventional Commit type for runner-created commits and PR titles; default `chore`. |
+| `git_operations.conventions.commit_scope` | No | Optional safe Conventional Commit scope. |
+| `git_operations.conventions.commit_summary_template` | No | Safe placeholder template for the Conventional Commit summary; default `complete {{work_task_id}}`. |
+| `git_operations.conventions.pull_request_title_template` | No | Safe placeholder template for the PR title; must render as a Conventional Commit. |
+| `git_operations.conventions.what_changed_template` | No | Safe placeholder template for the PR `What changed` section. |
+| `git_operations.conventions.how_verified_template` | No | Safe placeholder template for the PR `How verified` section, usually including project, plan, task, automation, review, and verifier refs. |
+| `git_operations.conventions.tests_template` | No | Safe placeholder template for the PR `Tests` section; `{{test_results}}` includes supplied test summaries or states that orchestrator verification is pending. |
 
 Persisted ingestion runs in `pending` or `running` state are local in-memory queue leftovers after a server restart. Current builds mark them failed with `error_category=server_restarted` during startup; use live startup scans or submit a fresh `projects.ingest` run to repair freshness.
 | `projects.id` | Yes | Stable project slug. |
