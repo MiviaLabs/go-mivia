@@ -1205,12 +1205,14 @@ func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, auto
 				return fmt.Errorf("%w: automation_review_gate_open", ErrInvalidInput)
 			}
 			updated, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
-				ProjectID:      automation.ProjectID,
-				TaskID:         task.ID,
-				Status:         projectworkplan.WorkTaskStatusReady,
-				SafeNextAction: "automation_review_gate",
-				RunID:          input.OrchestratorRunID,
-				TraceID:        input.OrchestratorRunID,
+				WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+					ProjectID:      automation.ProjectID,
+					TaskID:         task.ID,
+					SafeNextAction: "automation_review_gate",
+					RunID:          input.OrchestratorRunID,
+					TraceID:        input.OrchestratorRunID,
+				},
+				Status: projectworkplan.WorkTaskStatusReady,
 			})
 			if err != nil {
 				return err
