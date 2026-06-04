@@ -43,6 +43,10 @@ services:
     pull_policy: build
     init: true
     entrypoint: []
+    # For writable bind-mounted repositories, set this to the host checkout
+    # owner, for example: MIVIA_CONTAINER_USER="$(id -u):$(id -g)".
+    # Do not run the automation runner as root unless you intentionally want
+    # root-owned commits, refs, and worktree metadata on the host.
     user: "${MIVIA_CONTAINER_USER:-10001:10001}"
     healthcheck:
       disable: true
@@ -91,3 +95,7 @@ volumes:
 #       - ./secrets/example-credentials.json:/app/secrets/example-credentials.json:ro
 #       - /home/example/projects/service-a:/home/example/projects/service-a
 #       - /home/example/projects/service-b:/home/example/projects/service-b
+#   mivia-automation-runner:
+#     # Match the host user that owns the writable checkout:
+#     # MIVIA_CONTAINER_USER="$(id -u):$(id -g)" docker compose ...
+#     user: "${MIVIA_CONTAINER_USER:-1000:1000}"

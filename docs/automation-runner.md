@@ -6,7 +6,7 @@ Classification: Internal; PII-prohibited
 
 ## Runner User
 
-Containerized automation that writes to a bind-mounted repository must run as the same host user that owns the checkout. The default local Docker Compose runner uses:
+Containerized automation that writes to a bind-mounted repository must run as the same host user that owns the checkout. In shared examples this is configured with:
 
 ```yaml
 user: "${MIVIA_CONTAINER_USER:-10001:10001}"
@@ -19,6 +19,14 @@ user: "${MIVIA_CONTAINER_USER:-1000:1000}"
 ```
 
 Set `MIVIA_CONTAINER_USER="$(id -u):$(id -g)"` when the host checkout is not owned by that default UID and GID. Do this before enabling GitOps commit, push, or draft PR automation.
+
+For ignored local overrides, use a runner-specific variable if the server still needs different permissions:
+
+```yaml
+user: "${MIVIA_AUTOMATION_CONTAINER_USER:-1000:1000}"
+```
+
+Set `MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)"` for the automation sidecar. Avoid `0:0`; root-run sidecars create root-owned commits, refs, and worktree metadata on Linux and macOS bind mounts.
 
 ## Ownership Cleanup
 

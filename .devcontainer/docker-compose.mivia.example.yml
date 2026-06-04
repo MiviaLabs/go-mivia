@@ -61,6 +61,10 @@ services:
     init: true
     entrypoint: []
     pull_policy: missing
+    # Match this UID:GID to the host/devcontainer user that owns the writable
+    # project checkout, for example: MIVIA_CONTAINER_USER="$(id -u):$(id -g)".
+    # Running the sidecar as root will create root-owned commits, refs, and
+    # worktree metadata on Linux/macOS bind mounts.
     user: "${MIVIA_CONTAINER_USER:-1000:1000}"
     command:
       - mivia-automation-runner
