@@ -20,6 +20,14 @@ user: "${MIVIA_CONTAINER_USER:-1000:1000}"
 
 Set `MIVIA_CONTAINER_USER="$(id -u):$(id -g)"` when the host checkout is not owned by that default UID and GID. Do this before enabling GitOps commit, push, or draft PR automation.
 
+For local Docker Compose runs, prefer the helper script so the automation sidecar user is inferred before Compose starts:
+
+```bash
+scripts/mivia-compose-up -d
+```
+
+The helper exports `MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)"` unless you already set it, includes `.docker-compose.local.yml` when present, and then runs `docker compose up` with the repository compose files. Pass normal `docker compose up` flags after the script name.
+
 For ignored local overrides, use a runner-specific variable if the server still needs different permissions:
 
 ```yaml

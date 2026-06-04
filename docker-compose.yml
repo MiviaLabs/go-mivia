@@ -97,5 +97,6 @@ volumes:
 #       - /home/example/projects/service-b:/home/example/projects/service-b
 #   mivia-automation-runner:
 #     # Match the host user that owns the writable checkout:
-#     # MIVIA_CONTAINER_USER="$(id -u):$(id -g)" docker compose ...
-#     user: "${MIVIA_CONTAINER_USER:-1000:1000}"
+#     # MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)" docker compose ...
+#     # Or use scripts/mivia-compose-up to infer the runner UID:GID.
+#     user: "${MIVIA_AUTOMATION_CONTAINER_USER:-1000:1000}"

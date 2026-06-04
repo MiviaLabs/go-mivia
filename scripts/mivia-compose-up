@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if [[ -z "${MIVIA_AUTOMATION_CONTAINER_USER:-}" ]]; then
+  if command -v id >/dev/null 2>&1; then
+    export MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)"
+  else
+    echo "MIVIA_AUTOMATION_CONTAINER_USER is unset and id(1) is unavailable" >&2
+    exit 2
+  fi
+fi
+
+compose_files=(-f docker-compose.yml)
+if [[ -f .docker-compose.local.yml ]]; then
+  compose_files+=(-f .docker-compose.local.yml)
+fi
+
+exec docker compose "${compose_files[@]}" up "$@"
