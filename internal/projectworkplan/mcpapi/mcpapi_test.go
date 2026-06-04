@@ -13,6 +13,25 @@ func TestToolDefinitionsExposeAllWorkPlanTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal definitions: %v", err)
 	}
+	for _, definition := range ToolDefinitions() {
+		name, _ := definition["name"].(string)
+		schema, ok := definition["inputSchema"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing schema for %v", name)
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing schema properties for %v", name)
+		}
+		if _, ok := properties["project_id"]; !ok {
+			t.Fatalf("%v schema does not expose project_id alias", name)
+		}
+		for _, forbidden := range []string{"anyOf", "oneOf", "allOf", "not"} {
+			if _, ok := schema[forbidden]; ok {
+				t.Fatalf("%v schema exposes top-level %s", name, forbidden)
+			}
+		}
+	}
 	for _, name := range workPlanTools {
 		if !bytes.Contains(encoded, []byte(`"name":"`+name+`"`)) {
 			t.Fatalf("missing tool %s in %s", name, string(encoded))

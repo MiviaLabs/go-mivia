@@ -494,15 +494,9 @@ func schema(properties map[string]any, required []string) map[string]any {
 		"additionalProperties": false,
 		"properties":           properties,
 	}
-	required, hasID := optionalizeIDRequired(required)
+	required, _ = optionalizeIDRequired(required)
 	if len(required) > 0 {
 		out["required"] = required
-	}
-	if hasID {
-		out["anyOf"] = []map[string]any{
-			{"required": []string{"id"}},
-			{"required": []string{"project_id"}},
-		}
 	}
 	return out
 }

@@ -116,7 +116,6 @@ func schema(properties map[string]any, required []string) map[string]any {
 			if len(filtered) > 0 {
 				out["required"] = filtered
 			}
-			out["anyOf"] = []map[string]any{{"required": []string{"id"}}, {"required": []string{"project_id"}}}
 			return out
 		}
 	}

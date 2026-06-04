@@ -78,7 +78,7 @@ func TestCallToolAcceptsProjectIDAlias(t *testing.T) {
 	}
 }
 
-func TestToolDefinitionsAllowIDOrProjectID(t *testing.T) {
+func TestToolDefinitionsExposeProjectIDWithoutTopLevelCombinators(t *testing.T) {
 	for _, definition := range ToolDefinitions() {
 		schema, ok := definition["inputSchema"].(map[string]any)
 		if !ok {
@@ -91,8 +91,10 @@ func TestToolDefinitionsAllowIDOrProjectID(t *testing.T) {
 		if _, ok := properties["project_id"]; !ok {
 			t.Fatalf("%v schema does not expose project_id", definition["name"])
 		}
-		if _, ok := schema["anyOf"]; !ok {
-			t.Fatalf("%v schema does not allow id/project_id alternatives", definition["name"])
+		for _, forbidden := range []string{"anyOf", "oneOf", "allOf", "not"} {
+			if _, ok := schema[forbidden]; ok {
+				t.Fatalf("%v schema exposes top-level %s", definition["name"], forbidden)
+			}
 		}
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -78,6 +80,24 @@ func TestWorkflowRoutesValidateImportListGetStatusAndCompile(t *testing.T) {
 	}
 }
 
+func TestWorkflowRoutesValidateCheckedInWorkflowTOML(t *testing.T) {
+	svc, _, _ := newWorkflowHTTPFixture()
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, svc)
+	for _, path := range checkedInWorkflowTOMLPaths(t) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read workflow fixture %s: %v", path, err)
+		}
+		validation := requestJSON[projectworkflow.ValidateWorkflowTOMLResult](t, mux, http.MethodPost, "/api/v1/projects/mivialabs-agents-monorepo/workflows/validate-toml", map[string]any{
+			"toml": string(data),
+		}, http.StatusOK)
+		if len(validation.Workflows) != 1 || len(validation.Issues) != 0 {
+			t.Fatalf("unexpected validation result for %s: %#v", path, validation)
+		}
+	}
+}
+
 func TestWorkflowRoutesAgentDefinitionsAndPermissionSnapshots(t *testing.T) {
 	svc, _, _ := newWorkflowHTTPFixture()
 	mux := http.NewServeMux()
@@ -103,6 +123,19 @@ func TestWorkflowRoutesAgentDefinitionsAndPermissionSnapshots(t *testing.T) {
 	if snapshot.AgentID != "worker" || snapshot.WorkflowID != "workflow-1" || !strings.HasPrefix(snapshot.ContentHash, "sha256-") {
 		t.Fatalf("unexpected permission snapshot: %#v", snapshot)
 	}
+}
+
+func checkedInWorkflowTOMLPaths(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Clean(filepath.Join("..", "..", "..", "configs", "workflows"))
+	paths, err := filepath.Glob(filepath.Join(root, "*.toml"))
+	if err != nil {
+		t.Fatalf("glob workflow fixtures: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("expected checked-in workflow TOML fixtures")
+	}
+	return paths
 }
 
 func TestWorkflowRoutesRejectUnknownJSONFields(t *testing.T) {

@@ -3,6 +3,8 @@ package mcpapi
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -73,6 +75,25 @@ func TestCallToolValidateTOMLReturnsIssuesWithoutPersistence(t *testing.T) {
 	}
 }
 
+func TestCallToolValidateCheckedInWorkflowTOML(t *testing.T) {
+	ctx := context.Background()
+	svc := projectworkflow.New(workflowstore.NewMemoryStore())
+	for _, path := range checkedInWorkflowTOMLPaths(t) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read workflow fixture %s: %v", path, err)
+		}
+		result, err := CallTool(ctx, svc, "projects.workflows.validate_toml", mustArgs(t, map[string]any{"id": "mivialabs-agents-monorepo", "toml": string(data)}))
+		if err != nil {
+			t.Fatalf("validate checked-in TOML %s: %v", path, err)
+		}
+		structured := result["structuredContent"].(projectworkflow.ValidateWorkflowTOMLResult)
+		if len(structured.Workflows) != 1 || len(structured.Issues) != 0 {
+			t.Fatalf("unexpected validation result for %s: %#v", path, structured)
+		}
+	}
+}
+
 func TestCallToolValidateTOMLDropsUnsafeParsedWorkflow(t *testing.T) {
 	ctx := context.Background()
 	svc := projectworkflow.New(workflowstore.NewMemoryStore())
@@ -88,6 +109,19 @@ func TestCallToolValidateTOMLDropsUnsafeParsedWorkflow(t *testing.T) {
 	if len(structured.Workflows) != 0 || len(structured.Issues) == 0 {
 		t.Fatalf("expected issues without parsed unsafe workflows: %#v", structured)
 	}
+}
+
+func checkedInWorkflowTOMLPaths(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Clean(filepath.Join("..", "..", "..", "configs", "workflows"))
+	paths, err := filepath.Glob(filepath.Join(root, "*.toml"))
+	if err != nil {
+		t.Fatalf("glob workflow fixtures: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("expected checked-in workflow TOML fixtures")
+	}
+	return paths
 }
 
 func TestCallToolImportGetListAndPermissionSnapshots(t *testing.T) {
