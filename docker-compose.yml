@@ -1,11 +1,11 @@
 services:
   mivia-server:
-    # Future public image example for the first registry release.
-    # Go module releases use Git tags such as v0.1.16; container image tags are
-    # registry tags and may be published as 0.1.16 by the release workflow.
+    # Future public image example for the v0.2.3 registry release.
+    # Go module releases use Git tags such as v0.2.3; container image tags are
+    # registry tags and may be published as 0.2.3 by the release workflow.
     # To pull instead of building locally, uncomment the image below and remove
     # the build block.
-    # image: ghcr.io/mivialabs/go-mivia:0.1.16
+    # image: ghcr.io/mivialabs/go-mivia:0.2.3
     build:
       context: .
       dockerfile: Dockerfile
@@ -25,7 +25,7 @@ services:
     volumes:
       # Persistent project graph/search stores are under
       # /var/lib/mivia/projects/<project-id>/.
-      # v0.1.16 bounds heavy per-project graph/search flushes during ingestion;
+      # Current releases bound heavy per-project graph/search flushes during ingestion;
       # tune configs/mivia-server.compose.toml full_scan_batch_size as a hard
       # file-count cap when local disks still need smaller write units.
       - mivia-data:/var/lib/mivia

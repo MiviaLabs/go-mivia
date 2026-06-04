@@ -1,7 +1,7 @@
 # System Architecture
 
 Status: Bootstrap current-state
-Date: 2026-06-01
+Date: 2026-06-04
 Classification: Internal; PII-prohibited
 Owners: Engineering owner TBD; Security/DPO required before PII, public exposure, provider, retention, or production decisions.
 
@@ -26,6 +26,7 @@ Local task plans and research plans are not stable technical documentation. Do n
 - Project workflow services: `internal/projectworkflow` validates and imports Workflow TOML as metadata only, exposes workflow lifecycle records, agent definitions, immutable permission snapshots, and compile-to-Work-Plan refs through REST and MCP. Workflow TOML is compile-only; it does not execute directly, does not run raw prompts or automation, and cannot bypass Work Plans, Work Tasks, required review gates, independent review refs, orchestrator verifier refs, Evidence Graph outcomes, confidence scoring, or Knowledge Promotion gates.
 - Project work plan services: `internal/projectworkplan` stores metadata-only Work Plans and Work Tasks for governed multi-step execution. MCP exposes `projects.work_tasks.get` for single-task inspection before lifecycle changes. Work Tasks must be decomposed for isolated low-intelligence workers, claimed before execution, and completed only after verifier refs plus independent review refs or a bounded tiny-task review exemption. Verifier and review refs are short safe identifiers, not commands, raw logs, raw stderr, paths, or source text. Implementer self-review is rejected when both run IDs are known. Review capacity is represented by reviewer Work Tasks and automation runs; client-side Codex subagent threads are optional helpers, not required infrastructure. Work Task records link context pack refs, Evidence Graph refs, confidence refs, verifier refs, review refs, AgentRun refs, and Knowledge Promotion candidate refs without storing raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
 - Project automation services: `internal/projectautomation` stores metadata-only automation definitions and runs over existing Work Plans and ready Work Tasks. Automation is an executor layer, not a planning substitute. When `automation.work_plan_status_trigger` is enabled, `internal/projectworkplan` status transitions such as `planned -> active` synchronously queue each enabled automatic automation for that Work Plan once. Codex CLI execution is required when available and enabled, external execution is claimed by `mivia-automation-runner` in the user's logged-in local Codex environment, and automatic workflow execution is blocked until generated automation review tasks are done. Automation output remains untrusted until independent review refs, verifier refs, Evidence Graph outcomes, confidence scoring where reusable, and Knowledge Promotion gates are complete.
+- Project GitOps services: `internal/projectgitops` reconciles configured post-task git operations for supervised external automation runs after Codex CLI exits successfully and before the run reports verifier-required state. It can commit scoped task changes, optionally push, and optionally create or reuse a draft GitHub PR through fixed `git`/`gh` templates. GitOps is disabled by default, fails closed without safe scoped affected paths, uses env/file credential references only, and stores safe refs rather than raw command output, roots, stderr, key material, token literals, prompts, source dumps, provider payloads, or PII.
 - Project knowledge services: `internal/projectknowledge` turns verified Evidence Graph and Confidence Engine conclusions into metadata-only reusable knowledge. Project-level promotion is the default. Org-level promotion is optional, stricter, explicit, never automatic, and limited to `org_ref=default` in v1. Implemented REST routes are `POST /api/v1/projects/{id}/knowledge/candidates`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/validate`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/promote-project`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/submit-org-review`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/promote-org`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/reject`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/supersede`, `POST /api/v1/projects/{id}/knowledge/{knowledge_id}/reuse-events`, `GET /api/v1/projects/{id}/knowledge/{knowledge_id}`, `GET /api/v1/projects/{id}/knowledge?scope=&state=&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=`, and `GET /api/v1/orgs/{org_ref}/knowledge?state=org_promoted&claim_id=&knowledge_ref=&confidence_band=&min_confidence=&max_confidence=&page_size=&page_token=`. Implemented MCP tools are `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, and `orgs.knowledge.list` with underscore aliases. Knowledge records must not store raw prompts, raw completions, raw source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
 - Stores: Ladybug graph abstraction for graph data; lazy-opened Pebble-backed Ladybug graphs for durable content-graph persistence; SQLite for local app configuration, ingestion state, extractor cache, and FTS-backed governed search. Content-graph projects can use persistent project-scoped graph/search stores or process-local memory; persistent stores derive from the configured Ladybug path parent under `projects/<project-id>/`, with project search filenames tied to the Pebble graph storage epoch.
 - Boundary: localhost-only by default; no approved production deployment, public API exposure, auth model, live provider, external crawling, embedding provider, vector dimension, arbitrary shell endpoint, raw patch upload, git commit/push/checkout/reset/branch/merge/rebase/stash/clean/restore tool, or PII processing.
@@ -57,6 +58,7 @@ flowchart TB
   ReviewGate["independent review gate"]
   VerifierGate["orchestrator verifier gate"]
   ProjectAutomation["project automation and Codex runner metadata"]
+  ProjectGitOps["project GitOps reconciler"]
   ProjectKnowledge["project and org knowledge metadata"]
   Scheduler["fair ingestion scheduler"]
   Watcher["live watcher orchestrator"]
@@ -147,8 +149,10 @@ flowchart TB
   MCP --> ProjectAutomation
   ProjectAutomation --> WorkPlans
   ProjectAutomation --> WorkTasks
+  ProjectAutomation --> ProjectGitOps
   ProjectAutomation --> ReviewGate
   ProjectAutomation --> VerifierGate
+  ProjectGitOps --> VerifierGate
   REST --> ProjectKnowledge
   MCP --> ProjectKnowledge
   ProjectKnowledge --> ProjectEvidence
@@ -162,6 +166,7 @@ flowchart TB
   WorkPlans --> Ladybug
   WorkTasks --> Ladybug
   ProjectAutomation --> Ladybug
+  ProjectGitOps --> Ladybug
   ResearchService --> Ladybug
   AgentRuns --> Ladybug
   AgentService --> SQLite
@@ -383,6 +388,7 @@ sequenceDiagram
   participant Knowledge as Knowledge Promotion
   participant Automation as Automation definition
   participant Runner as mivia-automation-runner
+  participant GitOps as Runner GitOps
 
   User->>Orchestrator: Request task xyz
   Orchestrator->>MCP: Resume or create Work Plan
@@ -392,6 +398,8 @@ sequenceDiagram
   Orchestrator->>Automation: Compile workflow into automation and review task refs
   Automation->>MCP: Wait for required automation review task IDs to be done
   Runner->>Automation: Claim queued external codex_cli run after gates pass
+  Runner->>GitOps: After successful Codex exit, reconcile scoped commit, optional push, and optional draft PR
+  GitOps-->>MCP: Report safe gitops refs before verifier-required state
   Orchestrator->>Worker: Assign one bounded task
   Worker->>MCP: Claim and start task
   Worker->>MCP: Attach safe evidence and claim refs
@@ -417,6 +425,7 @@ Completion rules:
 - `review_exempt_reason` is only for tiny mechanical tasks with no code, config, data, auth, tenancy, privacy, API, migration, automation, or promotion risk.
 - Reviewer capacity comes from reviewer Work Tasks and Mivia automation worker limits, not a client's ability to spawn a new Codex Desktop subagent thread. If no independent reviewer run is available, the task must wait or block with `reviewer_capacity_unavailable`; it must not self-review.
 - Automatic automation cannot queue, submit, claim, or execute until its required automation review task IDs are done.
+- Configured runner GitOps can only run after a successful external Codex attempt and before verifier-required reporting. It does not replace independent review, verifier refs, Evidence Graph outcomes, confidence scoring, Knowledge Promotion gates, or task completion.
 - Automation output is untrusted until independent review refs, verifier refs, Evidence Graph outcomes, confidence scoring where reusable, and Knowledge Promotion gates are complete.
 - Worker prompts and task metadata remain refs and bounded summaries only; no raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, or PII.
 
