@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -225,6 +224,13 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	runnerKind, err := svc.resolveRunnerKind(input.RunnerKind)
 	if err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
+	}
+	if taskID == "" && automation.TriggerKind == TriggerKindAutomatic && svc.workTasks != nil {
+		task, err := svc.resolveTask(ctx, AutomationRun{ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID, RunnerKind: runnerKind}, automation)
+		if err != nil {
+			return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "task_unavailable")
+		}
+		taskID = task.ID
 	}
 	if err := svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID); err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
@@ -871,21 +877,75 @@ type CodexTaskInput struct {
 
 func (svc *Service) writeCodexInput(run AutomationRun, task projectworkplan.WorkTask) (string, func(), error) {
 	payload := codexInputForRun(run, task)
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return "", nil, err
-	}
+	data := []byte(RenderCodexTaskPrompt(payload))
 	dir, err := os.MkdirTemp("", "mivia-automation-*")
 	if err != nil {
 		return "", nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
-	path := filepath.Join(dir, "codex-input.json")
+	path := filepath.Join(dir, "codex-input.txt")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		cleanup()
 		return "", nil, err
 	}
 	return path, cleanup, nil
+}
+
+func RenderCodexTaskPrompt(input CodexTaskInput) string {
+	var builder strings.Builder
+	builder.WriteString("You are a Mivia automation worker executing one governed Work Task.\n\n")
+	builder.WriteString("Perform the task now in the current repository workspace. Keep the change limited to the likely affected files. Do not run full test suites. Do not complete the Work Task; the orchestrator will verify and complete it.\n\n")
+	builder.WriteString("Identifiers:\n")
+	writePromptLine(&builder, "- Project ID", input.ProjectID)
+	writePromptLine(&builder, "- Automation run ID", input.AutomationRunID)
+	writePromptLine(&builder, "- Trace ID", input.TraceID)
+	writePromptLine(&builder, "- Work Plan ID", input.PlanID)
+	writePromptLine(&builder, "- Work Task ID", input.TaskID)
+	writePromptLine(&builder, "- Work Task ref", input.TaskRef)
+	builder.WriteString("\nTask:\n")
+	writePromptLine(&builder, "- Title", input.Title)
+	writePromptLine(&builder, "- Description", input.Description)
+	writePromptList(&builder, "- Evidence needed", input.EvidenceNeeded)
+	writePromptList(&builder, "- Context pack refs", input.ContextPackRefs)
+	writePromptList(&builder, "- Likely files affected", input.LikelyFilesAffected)
+	writePromptLine(&builder, "- Verification requirement", input.VerificationRequirement)
+	writePromptLine(&builder, "- Expected output", input.ExpectedOutput)
+	writePromptLine(&builder, "- Failure criteria", input.FailureCriteria)
+	writePromptLine(&builder, "- Resume instructions", input.ResumeInstructions)
+	builder.WriteString("\nRules:\n")
+	for _, instruction := range input.RunnerInstructions {
+		writePromptLine(&builder, "-", instruction)
+	}
+	builder.WriteString("- Return a concise summary of changed files, evidence, risks, and tests not run.\n")
+	return builder.String()
+}
+
+func writePromptLine(builder *strings.Builder, label string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	builder.WriteString(label)
+	builder.WriteString(": ")
+	builder.WriteString(value)
+	builder.WriteByte('\n')
+}
+
+func writePromptList(builder *strings.Builder, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	builder.WriteString(label)
+	builder.WriteString(":\n")
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		builder.WriteString("  - ")
+		builder.WriteString(value)
+		builder.WriteByte('\n')
+	}
 }
 
 func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTaskInput {
@@ -953,7 +1013,7 @@ func (svc *Service) resolveTask(ctx context.Context, run AutomationRun, automati
 		}
 		return task, nil
 	}
-	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: run.ProjectID, PlanID: run.PlanID, OwnerAgent: run.AgentID})
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: run.ProjectID, PlanID: run.PlanID})
 	if err != nil {
 		return projectworkplan.WorkTask{}, err
 	}

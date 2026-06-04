@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,6 +81,32 @@ func TestRunOnceDiscoversProjectsWhenProjectOmitted(t *testing.T) {
 	}
 	if completed.Load() != 1 {
 		t.Fatalf("expected one completed attempt report, got %d", completed.Load())
+	}
+}
+
+func TestWriteCodexInputWritesRenderedPrompt(t *testing.T) {
+	path, cleanup, err := writeCodexInput(testCodexInput("run-1"))
+	if err != nil {
+		t.Fatalf("writeCodexInput returned error: %v", err)
+	}
+	defer cleanup()
+	if filepath.Base(path) != "codex-input.txt" {
+		t.Fatalf("expected codex-input.txt, got %q", filepath.Base(path))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read codex input: %v", err)
+	}
+	prompt := string(data)
+	for _, want := range []string{
+		"Perform the task now",
+		"Automation run ID: run-1",
+		"Task",
+		"Do not run full test suites",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("rendered prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
@@ -209,14 +236,14 @@ func TestBuildRunnerCodexCommandSupportsWindowsLauncher(t *testing.T) {
 	}
 	t.Cleanup(func() { windowsPathForRunner = originalConverter })
 
-	command, err := buildRunnerCodexCommand(inputPath, time.Minute, codexLaunchOptions{Path: "codex", Launcher: "windows-cmd", WorkDir: "/workspace/repo"})
+	command, err := buildRunnerCodexCommand(inputPath, time.Minute, codexLaunchOptions{Path: "codex", Launcher: "windows-cmd", WorkDir: "/workspace/repo", Sandbox: "workspace-write"})
 	if err != nil {
 		t.Fatalf("buildRunnerCodexCommand returned error: %v", err)
 	}
 	if command.Path != "cmd.exe" {
 		t.Fatalf("expected cmd.exe launcher, got %q", command.Path)
 	}
-	want := []string{"/c", "type", `\\wsl.localhost\Ubuntu\tmp\codex-input.json`, "|", "codex", "exec", "--cd", `\\wsl.localhost\Ubuntu\workspace\repo`, "-"}
+	want := []string{"/c", "type", `\\wsl.localhost\Ubuntu\tmp\codex-input.json`, "|", "codex", "exec", "--sandbox", "workspace-write", "--cd", `\\wsl.localhost\Ubuntu\workspace\repo`, "-"}
 	if len(command.Args) != len(want) {
 		t.Fatalf("unexpected launcher args: %#v", command.Args)
 	}
@@ -229,11 +256,11 @@ func TestBuildRunnerCodexCommandSupportsWindowsLauncher(t *testing.T) {
 
 func TestBuildRunnerCodexCommandSupportsDirectLauncherWorkDir(t *testing.T) {
 	inputPath := filepath.Join(t.TempDir(), "codex-input.json")
-	command, err := buildRunnerCodexCommand(inputPath, time.Minute, codexLaunchOptions{Path: "/usr/local/bin/codex", Launcher: "direct", WorkDir: "/workspace/repo"})
+	command, err := buildRunnerCodexCommand(inputPath, time.Minute, codexLaunchOptions{Path: "/usr/local/bin/codex", Launcher: "direct", WorkDir: "/workspace/repo", Sandbox: "workspace-write"})
 	if err != nil {
 		t.Fatalf("buildRunnerCodexCommand returned error: %v", err)
 	}
-	want := []string{"exec", "--cd", "/workspace/repo", "-"}
+	want := []string{"exec", "--sandbox", "workspace-write", "--cd", "/workspace/repo", "-"}
 	if len(command.Args) != len(want) {
 		t.Fatalf("unexpected args: %#v", command.Args)
 	}
@@ -244,6 +271,23 @@ func TestBuildRunnerCodexCommandSupportsDirectLauncherWorkDir(t *testing.T) {
 	}
 	if command.StdinFile != inputPath {
 		t.Fatalf("stdin file = %q, want %q", command.StdinFile, inputPath)
+	}
+}
+
+func TestBuildRunnerCodexCommandSupportsBypassMode(t *testing.T) {
+	inputPath := filepath.Join(t.TempDir(), "codex-input.txt")
+	command, err := buildRunnerCodexCommand(inputPath, time.Minute, codexLaunchOptions{Path: "/usr/local/bin/codex", Launcher: "direct", WorkDir: "/workspace/repo", Sandbox: "workspace-write", BypassApprovalsAndSandbox: true})
+	if err != nil {
+		t.Fatalf("buildRunnerCodexCommand returned error: %v", err)
+	}
+	want := []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "--cd", "/workspace/repo", "-"}
+	if len(command.Args) != len(want) {
+		t.Fatalf("unexpected args: %#v", command.Args)
+	}
+	for index := range want {
+		if command.Args[index] != want[index] {
+			t.Fatalf("arg %d = %q, want %q; all args %#v", index, command.Args[index], want[index], command.Args)
+		}
 	}
 }
 

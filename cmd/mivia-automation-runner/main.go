@@ -30,6 +30,8 @@ func run(args []string) int {
 	codexPath := flags.String("codex", "codex", "codex CLI binary path")
 	codexLauncher := flags.String("codex-launcher", "direct", "codex launcher: direct or windows-cmd")
 	codexCD := flags.String("codex-cd", "", "optional workspace directory passed to codex exec --cd")
+	codexSandbox := flags.String("codex-sandbox", "workspace-write", "sandbox mode passed to codex exec")
+	codexBypass := flags.Bool("codex-bypass-approvals-and-sandbox", false, "pass Codex CLI's non-interactive approval and sandbox bypass flag")
 	once := flags.Bool("once", true, "claim and run one queued task, then exit")
 	watch := flags.Bool("watch", false, "continuously claim queued tasks until interrupted")
 	pollInterval := flags.Duration("poll-interval", 5*time.Second, "poll interval when once is false")
@@ -44,7 +46,7 @@ func run(args []string) int {
 	if *watch {
 		*once = false
 	}
-	codexOptions := codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD)}
+	codexOptions := codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD), Sandbox: strings.TrimSpace(*codexSandbox), BypassApprovalsAndSandbox: *codexBypass}
 	if err := checkCodexLauncher(context.Background(), codexOptions); err != nil {
 		fmt.Fprintf(os.Stderr, "codex launcher unavailable: %v\n", err)
 		return 1
@@ -116,9 +118,11 @@ func runnerProjectIDs(ctx context.Context, client *runnerClient, configuredProje
 }
 
 type codexLaunchOptions struct {
-	Path     string
-	Launcher string
-	WorkDir  string
+	Path                      string
+	Launcher                  string
+	WorkDir                   string
+	Sandbox                   string
+	BypassApprovalsAndSandbox bool
 }
 
 func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, projectID string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
@@ -202,6 +206,7 @@ func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptio
 			return projectautomation.CodexCommand{}, err
 		}
 		args := []string{"/c", "type", convertedInputPath, "|", binaryPath, "exec"}
+		args = appendCodexExecutionOptions(args, codexOptions)
 		if strings.TrimSpace(codexOptions.WorkDir) != "" {
 			convertedWorkDir, err := windowsPathForRunner(strings.TrimSpace(codexOptions.WorkDir))
 			if err != nil {
@@ -229,22 +234,35 @@ func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptio
 		return projectautomation.CodexCommand{}, err
 	}
 	if strings.TrimSpace(codexOptions.WorkDir) != "" {
-		command.Args = []string{"exec", "--cd", strings.TrimSpace(codexOptions.WorkDir), "-"}
+		args := []string{"exec"}
+		args = appendCodexExecutionOptions(args, codexOptions)
+		command.Args = append(args, "--cd", strings.TrimSpace(codexOptions.WorkDir), "-")
+	} else {
+		args := []string{"exec"}
+		args = appendCodexExecutionOptions(args, codexOptions)
+		command.Args = append(args, "-")
 	}
 	return command, nil
 }
 
-func writeCodexInput(input projectautomation.CodexTaskInput) (string, func(), error) {
-	data, err := json.MarshalIndent(input, "", "  ")
-	if err != nil {
-		return "", nil, err
+func appendCodexExecutionOptions(args []string, codexOptions codexLaunchOptions) []string {
+	if codexOptions.BypassApprovalsAndSandbox {
+		return append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
+	if sandbox := strings.TrimSpace(codexOptions.Sandbox); sandbox != "" {
+		return append(args, "--sandbox", sandbox)
+	}
+	return args
+}
+
+func writeCodexInput(input projectautomation.CodexTaskInput) (string, func(), error) {
+	data := []byte(projectautomation.RenderCodexTaskPrompt(input))
 	dir, err := os.MkdirTemp("", "mivia-external-automation-*")
 	if err != nil {
 		return "", nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
-	path := filepath.Join(dir, "codex-input.json")
+	path := filepath.Join(dir, "codex-input.txt")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		cleanup()
 		return "", nil, err

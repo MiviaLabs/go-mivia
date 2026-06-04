@@ -55,6 +55,9 @@ services:
       - "${MIVIA_AUTOMATION_CODEX_BINARY:-codex}"
       - --codex-cd
       - "${MIVIA_AUTOMATION_CODEX_CD:-/workspace}"
+      - --codex-sandbox
+      - "${MIVIA_AUTOMATION_CODEX_SANDBOX:-workspace-write}"
+      - "--codex-bypass-approvals-and-sandbox=${MIVIA_AUTOMATION_CODEX_BYPASS:-false}"
     volumes:
       - mivia-data:/var/lib/mivia
       # Mount a project workspace to /workspace and Codex auth to the runner

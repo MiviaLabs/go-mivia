@@ -2,9 +2,9 @@ package projectautomation
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +30,36 @@ func TestSubmitRunRequiresCodexWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
+	prompt := RenderCodexTaskPrompt(CodexTaskInput{
+		ProjectID:               "project-1",
+		AutomationRunID:         "run-1",
+		PlanID:                  "plan-1",
+		TaskID:                  "task-1",
+		TaskRef:                 "task/ref",
+		Title:                   "Create smoke marker",
+		Description:             "Create automation-smoke.txt with one line.",
+		LikelyFilesAffected:     []string{"automation-smoke.txt"},
+		VerificationRequirement: "orchestrator checks the file exists",
+		RunnerInstructions: []string{
+			"Do not run verifier commands unless this task explicitly allows worker verification.",
+			"Leave verifier execution and task completion to the orchestrator.",
+		},
+	})
+
+	for _, want := range []string{
+		"Perform the task now",
+		"Create smoke marker",
+		"automation-smoke.txt",
+		"Do not run full test suites",
+		"Leave verifier execution and task completion to the orchestrator.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("rendered prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestSubmitRunDefaultsToCodexWhenAvailable(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t, Options{Enabled: true, RunnerEnabled: true, RequireCodexWhenAvailable: true, MaxParallelTasks: 2})
@@ -50,7 +80,10 @@ func TestSubmitRunDefaultsToCodexWhenAvailable(t *testing.T) {
 
 func TestWorkPlanStatusTriggerQueuesAutomaticRunsOnce(t *testing.T) {
 	ctx := context.Background()
-	svc := newTestService(t, Options{
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "a", []string{"internal/foo.go"}),
+	}}
+	svc := New(newTestStore(), fake, Options{
 		Enabled:         true,
 		RunnerEnabled:   true,
 		RunnerExecution: RunnerExecutionExternal,
@@ -59,6 +92,7 @@ func TestWorkPlanStatusTriggerQueuesAutomaticRunsOnce(t *testing.T) {
 			Statuses: []string{projectworkplan.WorkPlanStatusActive},
 		},
 	})
+	svc.now = func() time.Time { return time.Unix(100, 0).UTC() }
 	automation := createAutomaticTriggerAutomation(t, ctx, svc)
 	event := projectworkplan.WorkPlanStatusChange{
 		ProjectID: "project-1",
@@ -87,6 +121,9 @@ func TestWorkPlanStatusTriggerQueuesAutomaticRunsOnce(t *testing.T) {
 	}
 	if runs[0].OrchestratorRunID == "" {
 		t.Fatal("expected trigger idempotency key")
+	}
+	if runs[0].TaskID != "task-a" {
+		t.Fatalf("expected automatic run to resolve ready task, got %q", runs[0].TaskID)
 	}
 }
 
@@ -204,12 +241,11 @@ func TestRunNowExecutesCodexCLIAndLeavesTaskForVerification(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected transient input file: %v", err)
 		}
-		var payload CodexTaskInput
-		if err := json.Unmarshal(data, &payload); err != nil {
-			t.Fatalf("decode input: %v", err)
-		}
-		if payload.TaskID != "task-a" || payload.AutomationRunID == "" || payload.VerificationRequirement == "" {
-			t.Fatalf("unexpected codex input: %+v", payload)
+		prompt := string(data)
+		for _, want := range []string{"Perform the task now", "Work Task ID: task-a", "Automation run ID: ", "Verification requirement:"} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("rendered codex prompt missing %q:\n%s", want, prompt)
+			}
 		}
 		sawInput = true
 		return CodexRunResult{ExitCode: 0, Duration: 2 * time.Second}, nil
