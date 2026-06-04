@@ -191,6 +191,53 @@ POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result
 
 `POST /api/v1/projects/{id}/automations/{automation_id}/runs` executes one automation run in in-process mode and queues one automation run in external mode. External runners call `POST /api/v1/projects/{id}/automation-runs/claim-next`, execute `codex exec --json --input-file <metadata-only-file>` locally, then call `POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result`. A successful Codex CLI exit leaves the run in verifier-required state; it does not prove verification, task completion, claim validation, confidence, or knowledge promotion.
 
+### Work Plan And Work Task Tools
+
+Work Plan and Work Task tools are the governed task system used by workflow compilation, automation, and orchestrators. Tool callers may pass either `id` or `project_id` for the project selector where exposed.
+
+Work Task list tools:
+
+```text
+projects.work_tasks.list
+projects.work_tasks.list_open
+projects.work_tasks.list_mine
+projects.work_tasks.list_blocked
+```
+
+`projects.work_tasks.list` is an alias for `projects.work_tasks.list_open`. It returns open tasks for non-terminal Work Plans and exists so clients that naturally look for a generic list tool do not receive a resource-not-found error.
+
+`projects.work_tasks.create` accepts these task-packet fields:
+
+```json
+{
+  "id": "project-id",
+  "plan_id": "work_plan_ref",
+  "task_ref": "safe-task-ref",
+  "title": "Bounded worker task",
+  "description": "Bounded metadata summary; safe project-relative paths are allowed.",
+  "status": "ready",
+  "owner_agent": "codex-cli",
+  "evidence_needed": ["source-read"],
+  "context_pack_refs": ["context-pack-ref"],
+  "files_to_read": ["internal/example/source.go"],
+  "files_to_edit": ["internal/example/source.go"],
+  "likely_files_affected": ["internal/example/source.go"],
+  "dependency_task_ids": ["work_task_dependency"],
+  "verification_requirement": "Orchestrator runs focused verifier.",
+  "resume_instructions": "Resume from this task metadata and attached refs.",
+  "expected_output": "Safe metadata-only output.",
+  "failure_criteria": "Block on unsafe metadata or unclear scope.",
+  "failure_block_criteria": "Legacy alias for failure_criteria.",
+  "review_gate": "Independent review required before completion.",
+  "knowledge_candidate_expectation": "none or bounded knowledge expectation",
+  "decomposition_quality": "ready",
+  "run_id": "agent-run-ref",
+  "trace_id": "trace-ref"
+}
+```
+
+`files_to_read`, `files_to_edit`, `likely_files_affected`, and safe project-relative paths in `description` reject absolute roots, traversal, UNC paths, home-directory shortcuts, drive prefixes, secrets, tokens, raw prompts, raw source dumps, provider payloads, and PII. Create-time `status` may be non-terminal only; terminal completion still requires review/verifier governance through the lifecycle tools.
+
 Strict end-to-end automation sequence:
 
 ```text

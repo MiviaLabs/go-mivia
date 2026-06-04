@@ -94,6 +94,9 @@ When exposed, agents MUST use this workflow for governed multi-step work:
    - Each Work Task must be executable by an isolated low-intelligence worker from task metadata and attached refs alone. It must not depend on prior chat memory, hidden orchestrator context, or broad repo intuition.
    - Verification requirements must be written for orchestrator-run verification. Worker agents may write tests or artifacts when scoped, but must not run verifier commands unless the human/orchestrator explicitly allows it.
    - If an orchestrator cannot hand the task to a low-intelligence worker without adding private context, the task is too broad or under-specified; split or block it before execution.
+   - Use first-class task packet fields when exposed: `files_to_read`, `files_to_edit`, `likely_files_affected`, `review_gate`, create-time non-terminal `status`, and `decomposition_quality`. Do not hide read/write scope or review gates in prose when those fields are available.
+   - `projects.work_tasks.list` is a supported alias for `projects.work_tasks.list_open`; use it when a client expects a generic list tool.
+   - Safe project-relative paths are allowed in Work Task descriptions and path fields. Roots, traversal, UNC paths, home-directory shortcuts, drive prefixes, secrets, raw prompts, raw source dumps, provider payloads, and PII remain prohibited.
 3. Reject broad or vague tasks, or keep them in `planned`, when evidence, context, verification, dependencies, or resume instructions are missing.
 4. Attach context pack refs before starting tasks that depend on indexed context. Store refs only, not context pack contents.
 5. Claim a task with `projects.work_tasks.claim` before editing files or executing the task, then mark execution start with `projects.work_tasks.start`.
