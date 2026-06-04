@@ -153,7 +153,7 @@ Dedicated worktrees are lifecycle resources. When a write-capable Work Plan reac
 
 ## Project Automation
 
-Project Automation is an executor layer over Work Plans and Work Tasks. It is not an alternate planning system. When `projects.automations.*` and `projects.automation_runs.*` are exposed by `tools/list`, agents MUST use them only after a Work Plan exists and tasks are isolated-worker-ready. `projects.automations.run` executes the selected run in in-process or managed mode and queues the selected run in external mode. When `automation.work_plan_status_trigger.enabled = true`, moving a Work Plan into a configured status such as `active` queues each enabled automatic automation for that plan once. Managed mode lets `mivia-server` own automatic execution in native runtimes; Docker Compose and devcontainer configs use external mode with a `mivia-automation-runner` sidecar. A successful Codex CLI exit still requires independent review refs and orchestrator verifier refs before task completion or knowledge promotion.
+Project Automation is an executor layer over Work Plans and Work Tasks. It is not an alternate planning system. When `projects.automations.*` and `projects.automation_runs.*` are exposed by `tools/list`, agents MUST use them only after a Work Plan exists and tasks are isolated-worker-ready. Steady-state automation MUST be status-triggered: create enabled automatic automations, complete decomposition, then move the Work Plan into the configured trigger status such as `active`. Do not manually call `projects.automations.run` for normal implementation flow. `projects.automations.run` is reserved for explicit user-requested smoke tests, diagnostics, or recovery actions, and the reason must be recorded in safe metadata. When `automation.work_plan_status_trigger.enabled = true`, moving a Work Plan into a configured status such as `active` queues each enabled automatic automation for that plan once. Managed mode lets `mivia-server` own automatic execution in native runtimes; Docker Compose and devcontainer configs use external mode with a `mivia-automation-runner` sidecar. A successful Codex CLI exit still requires independent review refs and orchestrator verifier refs before task completion or knowledge promotion.
 
 Mandatory rules:
 
@@ -162,15 +162,16 @@ Mandatory rules:
 3. Do not silently fall back from Codex CLI to manual/dry-run execution. A missing or denied runner is a policy/result state, not permission to improvise.
 4. External runners MUST call `projects.automation_runs.claim_next`, execute only the returned metadata-only Codex input, then call `projects.automation_runs.complete_attempt` with status metadata only.
 5. Do not call `projects.automations.create`, `projects.automations.run`, or `projects.automations.run_parallel_batch` until `projects.work_plans.*` and `projects.work_tasks.*` have created the execution structure.
-6. Required pre-automation task metadata: bounded objective, dependencies, evidence/context/claim refs where needed, likely affected files or discovery scope, verification requirement, and resume instructions.
-7. Parallel work must be orchestrator-owned. Use `projects.automations.run_parallel_batch` before running workers in parallel.
-8. A parallel batch may include only independent ready tasks with done dependencies, disjoint likely affected files, explicit verification requirements, and no overlapping artifact or promotion scope.
-9. Worker/subagent prompts must be generated from Work Task metadata and safe refs only. They must not depend on hidden chat context.
-10. Only the orchestrator runs verifier commands unless the task explicitly allows a worker to run a narrow verifier.
-11. Every automation-produced write-capable task needs an independent review result attached with `projects.work_tasks.attach_review_result` before completion. Do not let an implementation worker review its own task.
+6. For normal automation, do not call `projects.automations.run` after creating an enabled automatic automation. Activate the Work Plan and let the Work Plan status trigger queue the run. Manual run calls are only for explicit smoke, diagnostic, or recovery actions requested by the user or required by a documented surface gap.
+7. Required pre-automation task metadata: bounded objective, dependencies, evidence/context/claim refs where needed, likely affected files or discovery scope, verification requirement, and resume instructions.
+8. Parallel work must be orchestrator-owned. Use `projects.automations.run_parallel_batch` only for explicit parallel batches after dependency and file-overlap checks.
+9. A parallel batch may include only independent ready tasks with done dependencies, disjoint likely affected files, explicit verification requirements, and no overlapping artifact or promotion scope.
+10. Worker/subagent prompts must be generated from Work Task metadata and safe refs only. They must not depend on hidden chat context.
+11. Only the orchestrator runs verifier commands unless the task explicitly allows a worker to run a narrow verifier.
+12. Every automation-produced write-capable task needs an independent review result attached with `projects.work_tasks.attach_review_result` before completion. Do not let an implementation worker review its own task.
     - Reviewer execution must be modeled as reviewer Work Tasks and automation runs. Codex Desktop subagents are optional client-side helpers only; they are not the source of truth for reviewer capacity. Runner worker limits are controlled by Mivia automation config (`global_worker_count`, `per_project_worker_limit`, and `per_agent_worker_limit`).
-12. Automation output is untrusted until independent review refs, verifier refs, and Evidence Graph outcomes exist.
-13. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
+13. Automation output is untrusted until independent review refs, verifier refs, and Evidence Graph outcomes exist.
+14. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
 
 GitOps output rules:
 
@@ -186,8 +187,9 @@ Strict automation sequence:
 work plan
 -> isolated-worker-ready work tasks
 -> context/evidence/claim refs
--> automation definition
--> run or safe parallel batch
+-> enabled automatic automation definition
+-> Work Plan moved into configured trigger status
+-> status trigger queues run
 -> external claim/complete if configured
 -> independent review result attached to task
 -> orchestrator verification
