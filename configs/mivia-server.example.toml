@@ -65,7 +65,7 @@ global_worker_count = "auto"
 per_project_worker_limit = "auto"
 live_path_priority = true
 # Hard file-count cap for a prepared full-scan storage flush. Heavy files may
-# flush earlier in v0.2.0 because graph/search writes are also bounded by
+# flush earlier because graph/search writes are also bounded by
 # internal row/operation weight to avoid multi-minute per-project stalls.
 full_scan_batch_size = 500
 max_watched_directory_count = 0

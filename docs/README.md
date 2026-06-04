@@ -17,7 +17,7 @@ This index points only to stable repository documentation. Local task plans and 
 - [MCP capability contract](../api/mcp/agent-control.v1.md): Streamable HTTP MCP contract under `/mcp`.
 - [Local project configuration](configuration/local-projects.md): `MIVIA_CONFIG_PATH`, example config, graph storage selection, local project metadata APIs, manual digest, content graph ingestion, and live update boundaries.
 - [Local development runbook](runbooks/local-dev.md): local verification, server startup, REST smoke, MCP smoke, manual ingestion, live mode, watcher troubleshooting, and local reset.
-- [Release notes](releases/v0.2.0.md): current `v0.2.0` release notes for governed workflows and external automation runner support.
+- [Release notes](releases/v0.2.3.md): current `v0.2.3` release notes for automation GitOps and runner hardening.
 - [Test reports](reports/tests/README.md): convention for concise local verification and agent A/B experiment reports.
 - [Incident runbook](runbooks/incident.md): bootstrap incident response notes.
 - [Privacy baseline](security/privacy-baseline.md): default PII prohibition, local exceptions, and approval gates.
