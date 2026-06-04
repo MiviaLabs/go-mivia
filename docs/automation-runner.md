@@ -78,6 +78,38 @@ how_verified_template = "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_i
 tests_template = "{{test_results}}"
 ```
 
+## Confirmed Finding Remediation
+
+The automatic review-to-fix path is intentionally gated. A review or audit workflow may create remediation automation only after a finding is independently confirmed and represented by safe metadata refs.
+
+```mermaid
+flowchart LR
+  Review["Code review or audit workflow"]
+  Finding["Confirmed finding metadata"]
+  Remediation["create_remediation_from_finding"]
+  Plan["Remediation Work Plan"]
+  Task["Ready Work Task"]
+  Trigger["Work Plan status trigger"]
+  Run["Queued automation run"]
+  Runner["mivia-automation-runner"]
+  GitOps["Per-project GitOps"]
+  PR["Draft PR"]
+
+  Review --> Finding
+  Finding --> Remediation
+  Remediation --> Plan
+  Remediation --> Task
+  Plan --> Trigger
+  Trigger --> Run
+  Run --> Runner
+  Runner --> GitOps
+  GitOps --> PR
+```
+
+`projects.automations.create_remediation_from_finding` creates the remediation Work Plan, a ready implementation Work Task, and an enabled automatic implementation automation. When `activate_plan=true` and `automation.work_plan_status_trigger.enabled=true`, moving the generated Work Plan to an active trigger status queues execution automatically. Normal operation should not call `projects.automations.run` manually.
+
+The tool accepts only confirmed findings. It rejects speculative review notes, raw prompts, raw source dumps, raw stderr, secrets, roots, provider payloads, external URLs, and PII. The generated implementation still remains untrusted until independent review refs and orchestrator verifier refs are attached through the Work Task lifecycle.
+
 ## Ownership Cleanup
 
 If an older root-run container already wrote Git metadata, repair only the affected repository metadata before creating more worktrees or commits:

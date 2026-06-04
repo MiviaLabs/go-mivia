@@ -166,6 +166,7 @@ projects.automations.create
 projects.automations.get
 projects.automations.list
 projects.automations.update_status
+projects.automations.create_remediation_from_finding
 projects.automations.run
 projects.automations.run_parallel_batch
 projects.automation_runs.get
@@ -175,6 +176,10 @@ projects.automation_runs.complete_attempt
 ```
 
 Automation records must remain metadata-only. Raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, and PII are prohibited.
+
+`projects.automations.create_remediation_from_finding` is the MCP-only review-finding-to-implementation bridge. It accepts confirmed finding metadata only and creates a remediation Work Plan, ready Work Task, and enabled automatic implementation automation. `finding_status` must be `confirmed`; suspected, speculative, style-only, duplicate, or unreviewed findings must not use this tool. With `activate_plan=true` and `automation.work_plan_status_trigger.enabled=true`, the generated Work Plan is moved to a trigger status so automatic execution queues through the normal status-trigger path. Normal clients should not follow this by manually calling `projects.automations.run`.
+
+Allowed inputs are bounded summaries, safe finding refs, safe evidence refs, safe file scopes, review gate text, verification requirement text, owner/agent refs, run refs, and trace refs. The tool must not store raw prompts, raw source dumps, raw stderr, secrets, roots, provider payloads, external URLs, skipped sensitive content, or PII. The generated run remains untrusted until independent review refs and orchestrator verifier refs are attached through Work Task lifecycle tools.
 
 Project-scoped REST routes:
 
