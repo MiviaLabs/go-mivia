@@ -185,6 +185,12 @@ func (svc *Service) UpdateWorkPlanStatus(ctx context.Context, input UpdateWorkPl
 			return WorkPlan{}, err
 		}
 	}
+	if input.Outcome != "" {
+		plan.Outcome, err = safeOptionalText(input.Outcome, "outcome", 500)
+		if err != nil {
+			return WorkPlan{}, err
+		}
+	}
 	if input.CurrentTaskID != "" {
 		plan.CurrentTaskID, err = safeOptionalRef(input.CurrentTaskID, "current_task_id")
 		if err != nil {

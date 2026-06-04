@@ -528,7 +528,7 @@ func TestWorkspaceService_GitCreateWorktreeUsesSafeRefsAndDoesNotReturnPath(t *t
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package main\n")
 	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
-	runner := &recordingGitRunner{}
+	runner := &recordingGitRunner{createWorktreeTarget: true}
 	svc.SetGitRunner(runner)
 
 	result, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
@@ -558,6 +558,46 @@ func TestWorkspaceService_GitCreateWorktreeUsesSafeRefsAndDoesNotReturnPath(t *t
 	encoded := strings.Join([]string{result.ProjectID, result.WorktreeRef, result.BranchRef, result.BaseRef, result.IsolationRef}, " ")
 	if strings.Contains(encoded, root) || strings.Contains(encoded, runner.args[4]) {
 		t.Fatalf("metadata result leaked filesystem target: result=%#v target=%q", result, runner.args[4])
+	}
+}
+
+func TestWorkspaceService_GitCreateWorktreeRejectsMissingTargetAfterGitSuccess(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	runner := &recordingGitRunner{}
+	svc.SetGitRunner(runner)
+
+	_, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
+		WorktreeRef: "worktree/plan-1",
+		BranchRef:   "codex/plan-1",
+		BaseRef:     "main",
+	})
+	if !errors.Is(err, ErrGitUnavailable) {
+		t.Fatalf("expected missing target to be reported as git unavailable, got %v", err)
+	}
+	if !runner.sawWorktreePrune() {
+		t.Fatalf("expected missing target to trigger stale worktree prune, got %#v", runner.calls)
+	}
+}
+
+func TestWorkspaceService_GitCreateWorktreePrunesAndRetriesStaleMetadata(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	runner := &recordingGitRunner{createWorktreeTarget: true, failFirstWorktreeAdd: true}
+	svc.SetGitRunner(runner)
+
+	result, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
+		WorktreeRef: "worktree/plan-1",
+		BranchRef:   "codex/plan-1",
+		BaseRef:     "main",
+	})
+	if err != nil {
+		t.Fatalf("create worktree after prune retry: %v", err)
+	}
+	if !result.Applied || runner.worktreeAddCalls != 2 || !runner.sawWorktreePrune() {
+		t.Fatalf("expected prune retry with applied result, result=%#v calls=%#v", result, runner.calls)
 	}
 }
 
@@ -726,18 +766,43 @@ func (runner contextErrorGitRunner) Run(context.Context, string, int, ...string)
 }
 
 type recordingGitRunner struct {
-	root string
-	args []string
-	out  []byte
+	root                 string
+	args                 []string
+	calls                [][]string
+	out                  []byte
+	createWorktreeTarget bool
+	failFirstWorktreeAdd bool
+	worktreeAddCalls     int
 }
 
 func (runner *recordingGitRunner) Run(_ context.Context, root string, _ int, args ...string) ([]byte, bool, error) {
 	runner.root = root
 	runner.args = append([]string(nil), args...)
+	runner.calls = append(runner.calls, append([]string(nil), args...))
+	if len(args) >= 2 && args[0] == "worktree" && args[1] == "add" {
+		runner.worktreeAddCalls++
+		if runner.failFirstWorktreeAdd && runner.worktreeAddCalls == 1 {
+			return nil, false, errors.New("stale worktree metadata")
+		}
+	}
+	if runner.createWorktreeTarget && len(args) >= 5 && args[0] == "worktree" && args[1] == "add" {
+		if err := os.MkdirAll(args[4], 0o700); err != nil {
+			return nil, false, err
+		}
+	}
 	if runner.out != nil {
 		return runner.out, false, nil
 	}
 	return []byte("# branch.head main\x00# branch.oid 1234567890abcdef\x00"), false, nil
+}
+
+func (runner *recordingGitRunner) sawWorktreePrune() bool {
+	for _, call := range runner.calls {
+		if len(call) == 4 && call[0] == "worktree" && call[1] == "prune" && call[2] == "--expire" && call[3] == "now" {
+			return true
+		}
+	}
+	return false
 }
 
 func (fake *fakeWorkspaceIngestion) GetFile(context.Context, string, string) (projectingestion.FileMetadata, error) {

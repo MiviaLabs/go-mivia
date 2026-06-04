@@ -1,0 +1,293 @@
+package projectgitops
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+)
+
+var (
+	ErrInvalidInput  = errors.New("invalid git operations input")
+	ErrCommandFailed = errors.New("git operations command failed")
+	ErrDirtyWorktree = errors.New("git operations dirty worktree")
+)
+
+var safeRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
+
+type Service struct {
+	options Options
+	runner  CommandRunner
+}
+
+func New(options Options) *Service {
+	return NewWithRunner(options, execCommandRunner{})
+}
+
+func NewWithRunner(options Options, runner CommandRunner) *Service {
+	if strings.TrimSpace(options.RemoteName) == "" {
+		options.RemoteName = "origin"
+	}
+	if strings.TrimSpace(options.GitHubCLIPath) == "" {
+		options.GitHubCLIPath = "gh"
+	}
+	if strings.TrimSpace(options.CommitAuthorName) == "" {
+		options.CommitAuthorName = "Mivia Automation"
+	}
+	return &Service{options: options, runner: runner}
+}
+
+func (svc *Service) PreTask(ctx context.Context, workDir string) error {
+	if !svc.options.Enabled || !svc.options.CommitAfterTask || !svc.options.RequireCleanBeforeTask {
+		return nil
+	}
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" || !filepath.IsAbs(workDir) {
+		return fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
+	}
+	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status.Stdout) != "" {
+		return ErrDirtyWorktree
+	}
+	return nil
+}
+
+func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTaskResult, error) {
+	if !svc.options.Enabled || !svc.options.CommitAfterTask {
+		return PostTaskResult{Skipped: true}, nil
+	}
+	workDir := strings.TrimSpace(input.WorkDir)
+	if workDir == "" || !filepath.IsAbs(workDir) {
+		return PostTaskResult{}, fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
+	}
+	if err := validateSafeRef("plan id", input.PlanID); err != nil {
+		return PostTaskResult{}, err
+	}
+	if err := validateSafeRef("task id", input.TaskID); err != nil {
+		return PostTaskResult{}, err
+	}
+	if err := validateSafeRef("automation run id", input.AutomationRunID); err != nil {
+		return PostTaskResult{}, err
+	}
+	if err := svc.validatePushConfig(); err != nil {
+		return PostTaskResult{}, err
+	}
+
+	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	if strings.TrimSpace(status.Stdout) == "" {
+		return PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}, nil
+	}
+
+	pathspecs := sanitizePathspecs(input.AllowedPathspecs)
+	if len(pathspecs) == 0 {
+		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
+	}
+	addArgs := append([]string{"add", "--"}, pathspecs...)
+	if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
+		return PostTaskResult{}, err
+	}
+	if _, err := svc.git(ctx, workDir, nil, "diff", "--cached", "--check"); err != nil {
+		return PostTaskResult{}, err
+	}
+	message := commitMessage(input)
+	email, err := svc.authorEmail()
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	env := []string{
+		"GIT_AUTHOR_NAME=" + svc.options.CommitAuthorName,
+		"GIT_COMMITTER_NAME=" + svc.options.CommitAuthorName,
+	}
+	if email != "" {
+		env = append(env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
+	}
+	if _, err := svc.git(ctx, workDir, env, "commit", "-m", message); err != nil {
+		return PostTaskResult{}, err
+	}
+	sha, err := svc.git(ctx, workDir, nil, "rev-parse", "--short=12", "HEAD")
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	result := PostTaskResult{
+		CommitRef:    "git-commit-" + strings.TrimSpace(sha.Stdout),
+		EvidenceRefs: []string{"git-commit-created"},
+	}
+	if svc.options.PushAfterTask {
+		branch, err := svc.currentBranch(ctx, workDir)
+		if err != nil {
+			return PostTaskResult{}, err
+		}
+		if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", svc.options.RemoteName, "HEAD:"+branch); err != nil {
+			return PostTaskResult{}, err
+		}
+		result.PushRef = "git-push-" + safeHash(branch)
+		result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed")
+		if svc.options.DraftPRAfterPush {
+			prRef, err := svc.ensureDraftPR(ctx, workDir)
+			if err != nil {
+				return PostTaskResult{}, err
+			}
+			result.PullRequestRef = prRef
+			result.EvidenceRefs = append(result.EvidenceRefs, "draft-pr-ready")
+		}
+	}
+	return result, nil
+}
+
+func (svc *Service) validatePushConfig() error {
+	if !svc.options.PushAfterTask {
+		return nil
+	}
+	if strings.TrimSpace(svc.options.SSHPrivateKeyPath) == "" || strings.TrimSpace(svc.options.SSHKnownHostsPath) == "" {
+		return fmt.Errorf("%w: ssh key and known hosts are required for push", ErrInvalidInput)
+	}
+	for name, value := range map[string]string{
+		"ssh key":         svc.options.SSHPrivateKeyPath,
+		"ssh known hosts": svc.options.SSHKnownHostsPath,
+	} {
+		if !filepath.IsAbs(value) || strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("%w: %s path must be absolute and safe", ErrInvalidInput, name)
+		}
+	}
+	if svc.options.DraftPRAfterPush && strings.TrimSpace(svc.options.GitHubTokenEnv) == "" && strings.TrimSpace(svc.options.GitHubTokenFile) == "" {
+		return fmt.Errorf("%w: github token reference required for draft PR", ErrInvalidInput)
+	}
+	return nil
+}
+
+func (svc *Service) currentBranch(ctx context.Context, workDir string) (string, error) {
+	out, err := svc.git(ctx, workDir, nil, "branch", "--show-current")
+	if err != nil {
+		return "", err
+	}
+	branch := strings.TrimSpace(out.Stdout)
+	if err := validateSafeRef("branch", branch); err != nil {
+		return "", err
+	}
+	return branch, nil
+}
+
+func (svc *Service) ensureDraftPR(ctx context.Context, workDir string) (string, error) {
+	env := svc.githubEnv()
+	view, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"pr", "view", "--json", "number", "--jq", ".number"}, Dir: workDir, Env: env})
+	if err == nil && strings.TrimSpace(view.Stdout) != "" {
+		return "github-pr-" + strings.TrimSpace(view.Stdout), nil
+	}
+	create, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"pr", "create", "--draft", "--fill"}, Dir: workDir, Env: env})
+	if err != nil {
+		return "", err
+	}
+	return "github-pr-" + safeHash(create.Stdout), nil
+}
+
+func (svc *Service) git(ctx context.Context, dir string, env []string, args ...string) (CommandResult, error) {
+	return svc.run(ctx, Command{Path: "git", Args: args, Dir: dir, Env: env})
+}
+
+func (svc *Service) run(ctx context.Context, command Command) (CommandResult, error) {
+	result, err := svc.runner.Run(ctx, command)
+	if err != nil {
+		return result, fmt.Errorf("%w: %s", ErrCommandFailed, command.Path)
+	}
+	return result, nil
+}
+
+func (svc *Service) authorEmail() (string, error) {
+	if envName := strings.TrimSpace(svc.options.CommitAuthorEmailEnv); envName != "" {
+		return strings.TrimSpace(os.Getenv(envName)), nil
+	}
+	if path := strings.TrimSpace(svc.options.CommitAuthorEmailFile); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	return "", nil
+}
+
+func (svc *Service) gitSSHEnv() []string {
+	command := "ssh -i " + shellQuote(svc.options.SSHPrivateKeyPath) + " -o IdentitiesOnly=yes -o UserKnownHostsFile=" + shellQuote(svc.options.SSHKnownHostsPath)
+	return []string{"GIT_SSH_COMMAND=" + command}
+}
+
+func (svc *Service) githubEnv() []string {
+	if envName := strings.TrimSpace(svc.options.GitHubTokenEnv); envName != "" {
+		return []string{"GH_TOKEN=" + os.Getenv(envName)}
+	}
+	if path := strings.TrimSpace(svc.options.GitHubTokenFile); path != "" {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return []string{"GH_TOKEN=" + strings.TrimSpace(string(data))}
+		}
+	}
+	return nil
+}
+
+func commitMessage(input PostTaskInput) string {
+	subject := strings.TrimSpace(input.CommitSubject)
+	if subject == "" {
+		subject = "chore: complete " + input.TaskID
+	}
+	body := strings.TrimSpace(input.CommitBody)
+	if body != "" {
+		body += "\n\n"
+	}
+	body += "Work Plan: " + input.PlanID + "\nWork Task: " + input.TaskID + "\nAutomation Run: " + input.AutomationRunID
+	return subject + "\n\n" + body
+}
+
+func sanitizePathspecs(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "\x00\r\n") {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func validateSafeRef(name, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || !safeRefPattern.MatchString(trimmed) || strings.Contains(trimmed, "..") || strings.Contains(trimmed, "//") {
+		return fmt.Errorf("%w: unsafe %s", ErrInvalidInput, name)
+	}
+	return nil
+}
+
+func safeHash(value string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(value)))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+type execCommandRunner struct{}
+
+func (execCommandRunner) Run(ctx context.Context, command Command) (CommandResult, error) {
+	cmd := exec.CommandContext(ctx, command.Path, command.Args...)
+	cmd.Dir = command.Dir
+	cmd.Env = append(os.Environ(), command.Env...)
+	out, err := cmd.Output()
+	result := CommandResult{Stdout: string(out)}
+	if exitErr := new(exec.ExitError); errors.As(err, &exitErr) {
+		result.Stderr = string(exitErr.Stderr)
+	}
+	return result, err
+}

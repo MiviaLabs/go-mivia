@@ -36,7 +36,7 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid work plan arguments", ErrInvalidInput)
 		}
-		return svc.UpdateWorkPlanStatus(ctx, UpdateWorkPlanStatusInput{ProjectID: input.projectID(), PlanID: input.PlanID, Status: input.Status, ResumeSummary: input.ResumeSummary})
+		return svc.UpdateWorkPlanStatus(ctx, UpdateWorkPlanStatusInput{ProjectID: input.projectID(), PlanID: input.PlanID, Status: input.Status, ResumeSummary: input.ResumeSummary, Outcome: input.Outcome})
 	case "projects.work_plans.resume":
 		var input resumePlanInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -218,6 +218,7 @@ type updatePlanStatusInput struct {
 	Status         string `json:"status"`
 	SafeNextAction string `json:"safe_next_action"`
 	ResumeSummary  string `json:"resume_summary,omitempty"`
+	Outcome        string `json:"outcome,omitempty"`
 	RunID          string `json:"run_id,omitempty"`
 	TraceID        string `json:"trace_id,omitempty"`
 }

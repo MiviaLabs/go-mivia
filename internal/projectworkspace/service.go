@@ -247,6 +247,18 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return GitCreateWorktreeResult{}, err
 		}
+		if _, _, pruneErr := svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now"); pruneErr != nil {
+			return GitCreateWorktreeResult{}, ErrGitUnavailable
+		}
+		if _, _, retryErr := svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "add", "-b", branchRef, target, baseRef); retryErr != nil {
+			if errors.Is(retryErr, context.Canceled) || errors.Is(retryErr, context.DeadlineExceeded) {
+				return GitCreateWorktreeResult{}, retryErr
+			}
+			return GitCreateWorktreeResult{}, ErrGitUnavailable
+		}
+	}
+	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+		_, _, _ = svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now")
 		return GitCreateWorktreeResult{}, ErrGitUnavailable
 	}
 	return result, nil

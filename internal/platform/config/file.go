@@ -56,6 +56,7 @@ type fileConfig struct {
 	Workspace  *fileWorkspaceConfig  `toml:"workspace"`
 	Workflows  *fileWorkflowConfig   `toml:"workflows"`
 	Automation *fileAutomationConfig `toml:"automation"`
+	GitOps     *fileGitOpsConfig     `toml:"git_operations"`
 	Projects   []fileProjectConfig   `toml:"projects"`
 }
 
@@ -144,6 +145,26 @@ type fileAutomationAgentConfig struct {
 type fileAutomationCommandConfig struct {
 	Command string   `toml:"command"`
 	Args    []string `toml:"args"`
+}
+
+type fileGitOpsConfig struct {
+	Enabled                      *bool   `toml:"enabled"`
+	CommitAfterTask              *bool   `toml:"commit_after_task"`
+	PushAfterTask                *bool   `toml:"push_after_task"`
+	DraftPRAfterPush             *bool   `toml:"draft_pr_after_push"`
+	RequireCleanBeforeTask       *bool   `toml:"require_clean_before_task"`
+	CleanupWorktreeAfterPlanDone *bool   `toml:"cleanup_worktree_after_plan_done"`
+	RemoteName                   *string `toml:"remote_name"`
+	BranchPrefix                 *string `toml:"branch_prefix"`
+	CommitAuthorName             *string `toml:"commit_author_name"`
+	CommitAuthorEmailEnv         *string `toml:"commit_author_email_env"`
+	CommitAuthorEmailFile        *string `toml:"commit_author_email_file"`
+	SSHPrivateKeyPath            *string `toml:"ssh_private_key_path"`
+	SSHPublicKeyPath             *string `toml:"ssh_public_key_path"`
+	SSHKnownHostsPath            *string `toml:"ssh_known_hosts_path"`
+	GitHubTokenEnv               *string `toml:"github_token_env"`
+	GitHubTokenFile              *string `toml:"github_token_file"`
+	GitHubCLIPath                *string `toml:"github_cli_path"`
 }
 
 type fileIngestionConfig struct {
@@ -712,6 +733,60 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 				return Config{}, err
 			}
 			base.Automation.Agents = append(base.Automation.Agents, converted)
+		}
+	}
+
+	if cfg.GitOps != nil {
+		if cfg.GitOps.Enabled != nil {
+			base.GitOperations.Enabled = *cfg.GitOps.Enabled
+		}
+		if cfg.GitOps.CommitAfterTask != nil {
+			base.GitOperations.CommitAfterTask = *cfg.GitOps.CommitAfterTask
+		}
+		if cfg.GitOps.PushAfterTask != nil {
+			base.GitOperations.PushAfterTask = *cfg.GitOps.PushAfterTask
+		}
+		if cfg.GitOps.DraftPRAfterPush != nil {
+			base.GitOperations.DraftPRAfterPush = *cfg.GitOps.DraftPRAfterPush
+		}
+		if cfg.GitOps.RequireCleanBeforeTask != nil {
+			base.GitOperations.RequireCleanBeforeTask = *cfg.GitOps.RequireCleanBeforeTask
+		}
+		if cfg.GitOps.CleanupWorktreeAfterPlanDone != nil {
+			base.GitOperations.CleanupWorktreeAfterPlanDone = *cfg.GitOps.CleanupWorktreeAfterPlanDone
+		}
+		if cfg.GitOps.RemoteName != nil {
+			base.GitOperations.RemoteName = strings.TrimSpace(*cfg.GitOps.RemoteName)
+		}
+		if cfg.GitOps.BranchPrefix != nil {
+			base.GitOperations.BranchPrefix = strings.TrimSpace(*cfg.GitOps.BranchPrefix)
+		}
+		if cfg.GitOps.CommitAuthorName != nil {
+			base.GitOperations.CommitAuthorName = strings.TrimSpace(*cfg.GitOps.CommitAuthorName)
+		}
+		if cfg.GitOps.CommitAuthorEmailEnv != nil {
+			base.GitOperations.CommitAuthorEmailEnv = strings.TrimSpace(*cfg.GitOps.CommitAuthorEmailEnv)
+		}
+		if cfg.GitOps.CommitAuthorEmailFile != nil {
+			base.GitOperations.CommitAuthorEmailFile = strings.TrimSpace(*cfg.GitOps.CommitAuthorEmailFile)
+		}
+		if cfg.GitOps.SSHPrivateKeyPath != nil {
+			base.GitOperations.SSHPrivateKeyPath = strings.TrimSpace(*cfg.GitOps.SSHPrivateKeyPath)
+		}
+		if cfg.GitOps.SSHPublicKeyPath != nil {
+			base.GitOperations.SSHPublicKeyPath = strings.TrimSpace(*cfg.GitOps.SSHPublicKeyPath)
+		}
+		if cfg.GitOps.SSHKnownHostsPath != nil {
+			base.GitOperations.SSHKnownHostsPath = strings.TrimSpace(*cfg.GitOps.SSHKnownHostsPath)
+		}
+		if cfg.GitOps.GitHubTokenEnv != nil {
+			base.GitOperations.GitHubTokenEnv = strings.TrimSpace(*cfg.GitOps.GitHubTokenEnv)
+		}
+		if cfg.GitOps.GitHubTokenFile != nil {
+			base.GitOperations.GitHubTokenFile = strings.TrimSpace(*cfg.GitOps.GitHubTokenFile)
+		}
+		if cfg.GitOps.GitHubCLIPath != nil {
+			base.GitOperations.GitHubCLIPath = strings.TrimSpace(*cfg.GitOps.GitHubCLIPath)
 		}
 	}
 

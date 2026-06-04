@@ -53,7 +53,7 @@ func TestCallToolPlanLifecycleReturnsMetadataOnlyShape(t *testing.T) {
 	planID := structuredString(t, plan, "plan_id")
 	list := call(t, api, "projects.work_plans.list", `{"project_id":"example-service"}`)
 	got := call(t, api, "projects.work_plans.get", `{"project_id":"example-service","plan_id":"`+planID+`"}`)
-	updated := call(t, api, "projects.work_plans.update_status", `{"project_id":"example-service","plan_id":"`+planID+`","status":"active","safe_next_action":"create bounded tasks"}`)
+	updated := call(t, api, "projects.work_plans.update_status", `{"project_id":"example-service","plan_id":"`+planID+`","status":"active","safe_next_action":"create bounded tasks","outcome":"plan ready for implementation"}`)
 
 	for _, result := range []map[string]any{plan, list, got, updated} {
 		requireCommonOutput(t, result)
@@ -65,6 +65,9 @@ func TestCallToolPlanLifecycleReturnsMetadataOnlyShape(t *testing.T) {
 	}
 	if structuredString(t, updated, "status") != "active" {
 		t.Fatalf("expected active status, got %#v", updated)
+	}
+	if structuredString(t, updated, "outcome") != "plan ready for implementation" {
+		t.Fatalf("expected outcome to persist, got %#v", updated)
 	}
 	if structuredString(t, plan, "git_worktree_ref") != "worktree/mcp-plan" || structuredString(t, plan, "isolation_mode") != "dedicated_worktree" {
 		t.Fatalf("expected worktree isolation metadata, got %s", jsonText(t, plan))
@@ -269,6 +272,7 @@ func (api *fakeWorkPlanAPI) CallWorkPlanTool(_ context.Context, name string, arg
 		}
 		plan["status"] = input["status"]
 		plan["safe_next_action"] = input["safe_next_action"]
+		plan["outcome"] = input["outcome"]
 		return plan, nil
 	case "projects.work_plans.resume":
 		plan, _ := api.plan(input)

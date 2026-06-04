@@ -202,6 +202,35 @@ func TestRunPreflightFailsBeforeClaim(t *testing.T) {
 	}
 }
 
+func TestRunGitOpsRequiresAbsoluteCodexCDBeforeClaim(t *testing.T) {
+	var claims atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next" {
+			claims.Add(1)
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	configPath := filepath.Join(t.TempDir(), "mivia.toml")
+	if err := os.WriteFile(configPath, []byte(`version = 1
+
+[git_operations]
+enabled = true
+commit_after_task = true
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("MIVIA_CONFIG_PATH", configPath)
+
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", fakeCodex(t, 0)})
+	if status == 0 {
+		t.Fatal("expected git operations preflight failure")
+	}
+	if claims.Load() != 0 {
+		t.Fatalf("expected no claims after git operations preflight failure, got %d", claims.Load())
+	}
+}
+
 func TestCheckCodexLauncherDirect(t *testing.T) {
 	binary := fakeCodex(t, 0)
 	if err := checkCodexLauncher(t.Context(), codexLaunchOptions{Path: binary}); err != nil {

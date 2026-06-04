@@ -188,12 +188,15 @@ func TestServiceUpdateWorkPlanStatusNotifiesHandler(t *testing.T) {
 	handler := &statusChangeRecorder{}
 	svc.SetStatusChangeHandler(handler)
 
-	updated, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{ProjectID: "project-1", PlanID: plan.ID, Status: projectworkplan.WorkPlanStatusActive})
+	updated, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{ProjectID: "project-1", PlanID: plan.ID, Status: projectworkplan.WorkPlanStatusActive, Outcome: "plan is ready for implementation"})
 	if err != nil {
 		t.Fatalf("update status: %v", err)
 	}
 	if updated.Status != projectworkplan.WorkPlanStatusActive {
 		t.Fatalf("expected active status, got %q", updated.Status)
+	}
+	if updated.Outcome != "plan is ready for implementation" {
+		t.Fatalf("expected outcome to persist, got %q", updated.Outcome)
 	}
 	if len(handler.events) != 1 {
 		t.Fatalf("expected one status change event, got %d", len(handler.events))
@@ -225,6 +228,28 @@ func TestServiceStartTaskAcceptsContextPackRefs(t *testing.T) {
 	}
 	if !contains(started.ContextPackRefs, "context-pack:manifest:68c3ee2ad1556459") {
 		t.Fatalf("expected context ref to be preserved, got %#v", started.ContextPackRefs)
+	}
+}
+
+func TestServiceCallWorkPlanToolUpdateStatusAcceptsOutcome(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-mcp-outcome")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	result, err := svc.CallWorkPlanTool(ctx, "projects.work_plans.update_status", json.RawMessage(`{"id":"project-1","plan_id":"`+plan.ID+`","status":"active","safe_next_action":"create bounded tasks","outcome":"implementation completed"}`))
+	if err != nil {
+		t.Fatalf("update status via MCP adapter: %v", err)
+	}
+	updated, ok := result.(projectworkplan.WorkPlan)
+	if !ok {
+		t.Fatalf("expected work plan result, got %T", result)
+	}
+	if updated.Outcome != "implementation completed" {
+		t.Fatalf("expected outcome from MCP adapter, got %+v", updated)
 	}
 }
 

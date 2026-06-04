@@ -56,6 +56,7 @@ type WorkPlan struct {
 	TraceID          string    `json:"trace_id,omitempty"`
 	CurrentTaskID    string    `json:"current_task_id,omitempty"`
 	ResumeSummary    string    `json:"resume_summary,omitempty"`
+	Outcome          string    `json:"outcome,omitempty"`
 	IsolationMode    string    `json:"isolation_mode,omitempty"`
 	ParallelGroupRef string    `json:"parallel_group_ref,omitempty"`
 	WorkspaceRef     string    `json:"workspace_ref,omitempty"`
@@ -151,6 +152,7 @@ type UpdateWorkPlanStatusInput struct {
 	PlanID        string `json:"plan_id"`
 	Status        string `json:"status"`
 	ResumeSummary string `json:"resume_summary,omitempty"`
+	Outcome       string `json:"outcome,omitempty"`
 	CurrentTaskID string `json:"current_task_id,omitempty"`
 }
 

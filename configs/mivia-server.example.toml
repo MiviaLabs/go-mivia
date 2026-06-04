@@ -115,6 +115,27 @@ default_max_runtime = "10m"
 enabled = false
 statuses = ["active"]
 
+[git_operations]
+# Disabled by default. When enabled in a supervised automation runner, a
+# successful task attempt can commit, optionally push, and optionally create a
+# draft GitHub PR before orchestrator verification. Public key paths are for
+# validation only; push requires a private key plus known_hosts.
+enabled = false
+commit_after_task = true
+push_after_task = false
+draft_pr_after_push = false
+require_clean_before_task = true
+cleanup_worktree_after_plan_done = true
+remote_name = "origin"
+branch_prefix = "mivia/"
+commit_author_name = "Mivia Automation"
+commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
+# ssh_private_key_path = "/run/secrets/mivia_git_ssh_key"
+# ssh_public_key_path = "/run/secrets/mivia_git_ssh_key.pub"
+# ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
+# github_token_env = "GITHUB_TOKEN"
+github_cli_path = "gh"
+
 [[projects]]
 id = "example-service"
 # Optional safe lookup IDs accepted anywhere a project id is accepted. Use this

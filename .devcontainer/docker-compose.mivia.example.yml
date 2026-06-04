@@ -72,14 +72,48 @@ services:
       - "${MIVIA_AUTOMATION_CODEX_BINARY:-codex}"
       - --codex-cd
       - "${MIVIA_AUTOMATION_CODEX_CD:-/workspaces/example-project}"
+    environment:
+      MIVIA_CONFIG_PATH: /app/configs/mivia-server.local.toml
+      # Enable these only after the mounted project config opts into
+      # [git_operations] and the runner has Codex, SSH, and GitHub auth.
+      MIVIA_GIT_OPS_ENABLED: "${MIVIA_GIT_OPS_ENABLED:-false}"
+      MIVIA_GIT_OPS_COMMIT_AFTER_TASK: "${MIVIA_GIT_OPS_COMMIT_AFTER_TASK:-true}"
+      MIVIA_GIT_OPS_PUSH_AFTER_TASK: "${MIVIA_GIT_OPS_PUSH_AFTER_TASK:-false}"
+      MIVIA_GIT_OPS_DRAFT_PR_AFTER_PUSH: "${MIVIA_GIT_OPS_DRAFT_PR_AFTER_PUSH:-false}"
+      MIVIA_GIT_OPS_SSH_PRIVATE_KEY_PATH: /run/secrets/mivia_git_ssh_key
+      MIVIA_GIT_OPS_SSH_PUBLIC_KEY_PATH: /run/secrets/mivia_git_ssh_key.pub
+      MIVIA_GIT_OPS_SSH_KNOWN_HOSTS_PATH: /run/secrets/mivia_known_hosts
+      MIVIA_GIT_OPS_GITHUB_TOKEN_ENV: GITHUB_TOKEN
+      MIVIA_GIT_AUTHOR_EMAIL: "${MIVIA_GIT_AUTHOR_EMAIL:-}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
     volumes:
       - mivia_data:/var/lib/mivia
+      - type: bind
+        source: ../configs/mivia-server.local.toml
+        target: /app/configs/mivia-server.local.toml
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ..
         target: /workspaces/example-project
         read_only: false
       # Mount Codex CLI auth through an ignored local override before enabling
       # real automatic execution in a container.
+      # Mount SSH/GitHub auth only into the runner sidecar before enabling push
+      # or draft PR creation. Keep host paths in ignored local overrides.
+      # - type: bind
+      #   source: ~/.ssh/id_rsa
+      #   target: /run/secrets/mivia_git_ssh_key
+      #   read_only: true
+      # - type: bind
+      #   source: ~/.ssh/id_rsa.pub
+      #   target: /run/secrets/mivia_git_ssh_key.pub
+      #   read_only: true
+      # - type: bind
+      #   source: ~/.ssh/known_hosts
+      #   target: /run/secrets/mivia_known_hosts
+      #   read_only: true
     depends_on:
       mivia-server:
         condition: service_healthy

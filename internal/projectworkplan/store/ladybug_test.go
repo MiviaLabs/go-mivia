@@ -174,6 +174,11 @@ func TestLadybugStorePersistentReopenPlanTaskGraph(t *testing.T) {
 	}
 	store := bootstrappedWorkPlanStore(t, ctx, graph)
 	plan := createWorkPlan(t, ctx, store, "project-a", "plan/ref/a")
+	plan.Outcome = "persisted plan outcome"
+	plan, err = store.UpdateWorkPlan(ctx, plan)
+	if err != nil {
+		t.Fatalf("update plan outcome: %v", err)
+	}
 	dependency := createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/dependency", nil)
 	task := createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/blocked", []string{dependency.ID})
 	if _, err := store.CreateAttachment(ctx, model.Attachment{ID: "attachment-claim", ProjectID: task.ProjectID, PlanID: task.PlanID, TaskID: task.ID, Kind: "claim_ref", Ref: "claim/ref/a", AttachedByRunID: "agent_run_a"}); err != nil {
@@ -199,6 +204,9 @@ func TestLadybugStorePersistentReopenPlanTaskGraph(t *testing.T) {
 	}
 	if gotPlan.PlanRef != plan.PlanRef || len(gotTask.DependencyTaskIDs) != 1 || gotTask.DependencyTaskIDs[0] != dependency.ID || len(gotTask.ClaimRefs) != 1 {
 		t.Fatalf("unexpected reopened graph: plan=%#v task=%#v", gotPlan, gotTask)
+	}
+	if gotPlan.Outcome != "persisted plan outcome" {
+		t.Fatalf("expected reopened plan outcome, got %#v", gotPlan)
 	}
 }
 

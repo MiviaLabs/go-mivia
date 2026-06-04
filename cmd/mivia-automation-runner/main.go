@@ -15,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 )
 
 func main() {
@@ -47,6 +49,16 @@ func run(args []string) int {
 		*once = false
 	}
 	codexOptions := codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD), Sandbox: strings.TrimSpace(*codexSandbox), BypassApprovalsAndSandbox: *codexBypass}
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config load failed: %v\n", err)
+		return 1
+	}
+	if cfg.GitOperations.Enabled && cfg.GitOperations.CommitAfterTask && !filepath.IsAbs(strings.TrimSpace(codexOptions.WorkDir)) {
+		fmt.Fprintln(os.Stderr, "git operations require an absolute --codex-cd worktree")
+		return 1
+	}
+	gitOps := projectgitops.New(gitOpsOptionsFromConfig(cfg.GitOperations))
 	if err := checkCodexLauncher(context.Background(), codexOptions); err != nil {
 		fmt.Fprintf(os.Stderr, "codex launcher unavailable: %v\n", err)
 		return 1
@@ -59,7 +71,7 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "project discovery failed: %v\n", err)
 			return 1
 		}
-		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, projectIDs, strings.TrimSpace(*agentID), codexOptions)
+		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, projectIDs, strings.TrimSpace(*agentID), codexOptions, gitOps)
 		if *once || !keepWatching {
 			return status
 		}
@@ -125,7 +137,7 @@ type codexLaunchOptions struct {
 	BypassApprovalsAndSandbox bool
 }
 
-func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, projectID string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
+func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, projectID string, agentID string, codexOptions codexLaunchOptions, gitOps *projectgitops.Service) (int, bool, bool) {
 	claimed, ok, err := client.claimNext(ctx, projectID, agentID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "claim failed: %v\n", err)
@@ -135,11 +147,49 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, project
 		fmt.Fprintln(os.Stdout, "no queued automation run")
 		return 0, true, false
 	}
+	if err := gitOps.PreTask(ctx, strings.TrimSpace(codexOptions.WorkDir)); err != nil {
+		result := projectautomation.CompleteAttemptInput{
+			Status:          projectautomation.RunStatusFailed,
+			FailureCategory: "gitops_pre_task_failed",
+		}
+		if errors.Is(err, projectgitops.ErrDirtyWorktree) {
+			result.FailureCategory = "gitops_dirty_worktree"
+		}
+		if _, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); reportErr != nil {
+			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
+			return 1, false, true
+		}
+		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, result.Status)
+		return 1, true, true
+	}
 	status, failureCategory, durationMS := runCodex(ctx, claimed, codexOptions)
+	var evidenceRefs []string
+	if status == projectautomation.RunStatusCompleted {
+		gitResult, err := gitOps.PostTask(ctx, projectgitops.PostTaskInput{
+			WorkDir:          strings.TrimSpace(codexOptions.WorkDir),
+			PlanID:           claimed.Run.PlanID,
+			TaskID:           claimed.Run.TaskID,
+			AutomationRunID:  claimed.Run.ID,
+			CommitSubject:    "chore: complete " + claimed.Run.TaskID,
+			AllowedPathspecs: claimed.CodexInput.LikelyFilesAffected,
+		})
+		if err != nil {
+			status = projectautomation.RunStatusFailed
+			failureCategory = "gitops_post_task_failed"
+		} else {
+			evidenceRefs = append(evidenceRefs, gitResult.EvidenceRefs...)
+			for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
+				if strings.TrimSpace(ref) != "" {
+					evidenceRefs = append(evidenceRefs, ref)
+				}
+			}
+		}
+	}
 	result := projectautomation.CompleteAttemptInput{
 		Status:          status,
 		FailureCategory: failureCategory,
 		DurationMS:      durationMS,
+		EvidenceRefs:    evidenceRefs,
 	}
 	if _, err := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); err != nil {
 		fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
@@ -152,18 +202,40 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, project
 	return 1, true, true
 }
 
-func claimProjectRunsExecuteAndReport(ctx context.Context, client *runnerClient, projectIDs []string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
+func claimProjectRunsExecuteAndReport(ctx context.Context, client *runnerClient, projectIDs []string, agentID string, codexOptions codexLaunchOptions, gitOps *projectgitops.Service) (int, bool, bool) {
 	if len(projectIDs) == 0 {
 		fmt.Fprintln(os.Stdout, "no configured projects")
 		return 0, true, false
 	}
 	for _, projectID := range projectIDs {
-		status, keepWatching, claimed := claimRunExecuteAndReport(ctx, client, projectID, agentID, codexOptions)
+		status, keepWatching, claimed := claimRunExecuteAndReport(ctx, client, projectID, agentID, codexOptions, gitOps)
 		if claimed || !keepWatching || status != 0 {
 			return status, keepWatching, claimed
 		}
 	}
 	return 0, true, false
+}
+
+func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
+	return projectgitops.Options{
+		Enabled:                      cfg.Enabled,
+		CommitAfterTask:              cfg.CommitAfterTask,
+		PushAfterTask:                cfg.PushAfterTask,
+		DraftPRAfterPush:             cfg.DraftPRAfterPush,
+		RequireCleanBeforeTask:       cfg.RequireCleanBeforeTask,
+		CleanupWorktreeAfterPlanDone: cfg.CleanupWorktreeAfterPlanDone,
+		RemoteName:                   cfg.RemoteName,
+		BranchPrefix:                 cfg.BranchPrefix,
+		CommitAuthorName:             cfg.CommitAuthorName,
+		CommitAuthorEmailEnv:         cfg.CommitAuthorEmailEnv,
+		CommitAuthorEmailFile:        cfg.CommitAuthorEmailFile,
+		SSHPrivateKeyPath:            cfg.SSHPrivateKeyPath,
+		SSHPublicKeyPath:             cfg.SSHPublicKeyPath,
+		SSHKnownHostsPath:            cfg.SSHKnownHostsPath,
+		GitHubTokenEnv:               cfg.GitHubTokenEnv,
+		GitHubTokenFile:              cfg.GitHubTokenFile,
+		GitHubCLIPath:                cfg.GitHubCLIPath,
+	}
 }
 
 func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexOptions codexLaunchOptions) (string, string, int64) {

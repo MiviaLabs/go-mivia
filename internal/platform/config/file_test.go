@@ -146,6 +146,57 @@ func TestAutomationEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestGitOperationsFileAndEnvOverrides(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[git_operations]
+enabled = true
+commit_after_task = true
+push_after_task = true
+draft_pr_after_push = true
+require_clean_before_task = true
+cleanup_worktree_after_plan_done = true
+remote_name = "upstream"
+branch_prefix = "mivia/"
+commit_author_name = "Mivia Automation"
+commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
+ssh_private_key_path = "/run/secrets/mivia_git_key"
+ssh_public_key_path = "/run/secrets/mivia_git_key.pub"
+ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
+github_token_env = "GITHUB_TOKEN"
+github_cli_path = "gh"
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected git operations config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected git operations config to apply: %v", err)
+	}
+	merged.resolveAutoSettings(1)
+	if err := merged.Validate(); err != nil {
+		t.Fatalf("expected git operations config to validate: %v", err)
+	}
+	if !merged.GitOperations.Enabled || !merged.GitOperations.PushAfterTask || !merged.GitOperations.DraftPRAfterPush {
+		t.Fatalf("expected git operations enabled flags, got %+v", merged.GitOperations)
+	}
+	if merged.GitOperations.RemoteName != "upstream" || merged.GitOperations.SSHKnownHostsPath == "" {
+		t.Fatalf("unexpected git operations config: %+v", merged.GitOperations)
+	}
+
+	t.Setenv("MIVIA_GIT_OPS_REMOTE_NAME", "origin")
+	t.Setenv("MIVIA_GIT_OPS_DRAFT_PR_AFTER_PUSH", "false")
+	if err := applyEnvOverrides(&merged); err != nil {
+		t.Fatalf("expected git operations env overrides: %v", err)
+	}
+	if merged.GitOperations.RemoteName != "origin" || merged.GitOperations.DraftPRAfterPush {
+		t.Fatalf("unexpected git operations env overrides: %+v", merged.GitOperations)
+	}
+}
+
 func TestLoadFileConfig_RejectsInvalidAutomationSettings(t *testing.T) {
 	for name, body := range map[string]string{
 		"runner_without_enabled": `
@@ -223,6 +274,40 @@ statuses = ["ready"]
 			}
 			if err := merged.Validate(); err == nil {
 				t.Fatal("expected invalid automation settings to fail validation")
+			}
+		})
+	}
+}
+
+func TestGitOperationsValidateRejectsUnsafeCombinations(t *testing.T) {
+	for name, mutate := range map[string]func(*Config){
+		"push_without_commit": func(cfg *Config) {
+			cfg.GitOperations.PushAfterTask = true
+			cfg.GitOperations.CommitAfterTask = false
+		},
+		"draft_without_push": func(cfg *Config) {
+			cfg.GitOperations.DraftPRAfterPush = true
+			cfg.GitOperations.PushAfterTask = false
+		},
+		"push_without_known_hosts": func(cfg *Config) {
+			cfg.GitOperations.PushAfterTask = true
+			cfg.GitOperations.SSHPrivateKeyPath = "/run/secrets/mivia_git_key"
+			cfg.GitOperations.SSHKnownHostsPath = ""
+		},
+		"relative_key_path": func(cfg *Config) {
+			cfg.GitOperations.SSHPrivateKeyPath = "secrets/mivia_git_key"
+		},
+		"two_token_refs": func(cfg *Config) {
+			cfg.GitOperations.GitHubTokenEnv = "GITHUB_TOKEN"
+			cfg.GitOperations.GitHubTokenFile = "/run/secrets/github_token"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := defaultConfig("test.toml")
+			cfg.resolveAutoSettings(1)
+			mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected invalid git operations config to fail")
 			}
 		})
 	}
