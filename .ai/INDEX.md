@@ -51,5 +51,6 @@ Phase discipline:
 
 - Implement one approved phase at a time.
 - Re-read the relevant rules before editing.
+- For any write-capable Work Plan, use dedicated worktree isolation by default. `isolation_mode=shared` is only for read-only planning or inspection; implementation, docs, config, generated-file, automation, and test writes require `dedicated_worktree` when MCP workspace git support is available.
 - Run the phase-specific verifier.
 - Write a handoff summary that names changed files, verification, residual risk, and the next copy-paste prompt.

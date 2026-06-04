@@ -130,7 +130,7 @@ Work Plan and Work Task metadata must stay metadata-only. Never store raw prompt
 
 ### Parallel Work Plan Isolation
 
-When `projects.workspace.git_status` or equivalent MCP workspace git support is available, every write-capable parallel Work Plan MUST carry a dedicated worktree binding on `projects.work_plans.create`:
+When `projects.workspace.git_status` or equivalent MCP workspace git support is available, every write-capable Work Plan MUST carry a dedicated worktree binding on `projects.work_plans.create`, even when only one worker or one Work Plan is expected. Parallel execution makes this mandatory, but single write-capable implementation plans must use the same isolation by default.
 
 - `isolation_mode=dedicated_worktree`
 - `parallel_group_ref=<shared orchestration ref>`
@@ -139,9 +139,11 @@ When `projects.workspace.git_status` or equivalent MCP workspace git support is 
 - `git_branch_ref=<per-plan branch ref>`
 - `git_worktree_ref=<opaque per-plan worktree ref>`
 
-Use `isolation_mode=shared` only for read-only planning. Use `isolation_mode=unavailable` only when git isolation is genuinely unavailable and report the risk. These are refs, not filesystem locations. Do not run two write-capable Work Plans in the same worktree ref when likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
+Use `isolation_mode=shared` only for read-only planning or inspection Work Plans. Do not use `shared` for implementation, generated-file writes, config changes, docs changes, test changes, automation writes, or any task that may modify the workspace. Use `isolation_mode=unavailable` only when git isolation is genuinely unavailable and report the risk before execution. These are refs, not filesystem locations. Do not run two write-capable Work Plans in the same worktree ref when likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
 
-When `projects.workspace.git_worktree_create` is exposed, the orchestrator MUST call it before assigning executable parallel Work Tasks for a new Work Plan. The tool creates the dedicated worktree from `worktree_ref`, `branch_ref`, and optional `base_ref`, and returns metadata refs only. Agents must use the returned `isolation_ref`/`worktree_ref` in Work Plan metadata and automation refs. Do not create worktrees with raw shell commands when the MCP tool is available.
+When `projects.workspace.git_worktree_create` is exposed, the orchestrator MUST call it before assigning executable write-capable Work Tasks for a new Work Plan. The tool creates the dedicated worktree from `worktree_ref`, `branch_ref`, and optional `base_ref`, and returns metadata refs only. Agents must use the returned `isolation_ref`/`worktree_ref` in Work Plan metadata and automation refs. Do not create worktrees with raw shell commands when the MCP tool is available.
+
+Dedicated worktrees are lifecycle resources. When a write-capable Work Plan reaches a terminal status (`done`, `failed`, `cancelled`, or `superseded`), the orchestrator or automation cleanup path must remove the dedicated worktree after verifier/review evidence is preserved and only when no active runs, unpreserved changes, or dependent review gates still need it. If cleanup tooling is missing, record the cleanup gap in the Work Plan/final report instead of leaving it implicit.
 
 ## Project Automation
 
