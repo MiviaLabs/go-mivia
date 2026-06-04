@@ -116,6 +116,12 @@ type fileAutomationConfig struct {
 	DefaultMaxRuntime         *string                     `toml:"default_max_runtime"`
 	CodexBinaryPath           *string                     `toml:"codex_binary_path"`
 	Agents                    []fileAutomationAgentConfig `toml:"agents"`
+	WorkPlanStatusTrigger     *fileWorkPlanStatusTrigger  `toml:"work_plan_status_trigger"`
+}
+
+type fileWorkPlanStatusTrigger struct {
+	Enabled  *bool    `toml:"enabled"`
+	Statuses []string `toml:"statuses"`
 }
 
 type fileAutomationAgentConfig struct {
@@ -690,6 +696,14 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		}
 		if cfg.Automation.CodexBinaryPath != nil {
 			base.Automation.CodexBinaryPath = *cfg.Automation.CodexBinaryPath
+		}
+		if cfg.Automation.WorkPlanStatusTrigger != nil {
+			if cfg.Automation.WorkPlanStatusTrigger.Enabled != nil {
+				base.Automation.WorkPlanStatusTrigger.Enabled = *cfg.Automation.WorkPlanStatusTrigger.Enabled
+			}
+			if cfg.Automation.WorkPlanStatusTrigger.Statuses != nil {
+				base.Automation.WorkPlanStatusTrigger.Statuses = append([]string(nil), cfg.Automation.WorkPlanStatusTrigger.Statuses...)
+			}
 		}
 		base.Automation.Agents = make([]AutomationAgent, 0, len(cfg.Automation.Agents))
 		for _, agent := range cfg.Automation.Agents {

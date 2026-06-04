@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -99,6 +100,7 @@ func TestRunOnceWithNoConfiguredProjectsExitsIdle(t *testing.T) {
 }
 
 func TestWatchContinuesAfterReportedTaskFailure(t *testing.T) {
+	codexPath := fakeCodex(t, 1)
 	var claimCount atomic.Int32
 	var failedReports atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +132,7 @@ func TestWatchContinuesAfterReportedTaskFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", "/bin/false", "--watch", "--poll-interval", "1ms", "--idle-exit-after", "5ms"})
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", codexPath, "--watch", "--poll-interval", "1ms", "--idle-exit-after", "5ms"})
 	if status != 0 {
 		t.Fatalf("watch should continue after reported task failure and exit idle with 0, got %d", status)
 	}
@@ -152,6 +154,43 @@ func TestClaimNextTreatsPolicyBadRequestAsError(t *testing.T) {
 	if _, ok, err := client.claimNext(t.Context(), "project-1", ""); err == nil || ok {
 		t.Fatalf("expected non-idle bad request to return error, ok=%v err=%v", ok, err)
 	}
+}
+
+func TestRunPreflightFailsBeforeClaim(t *testing.T) {
+	var claims atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next" {
+			claims.Add(1)
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", filepath.Join(t.TempDir(), "missing-codex")})
+	if status == 0 {
+		t.Fatal("expected preflight failure")
+	}
+	if claims.Load() != 0 {
+		t.Fatalf("expected no claims after failed preflight, got %d", claims.Load())
+	}
+}
+
+func TestCheckCodexLauncherDirect(t *testing.T) {
+	binary := fakeCodex(t, 0)
+	if err := checkCodexLauncher(t.Context(), codexLaunchOptions{Path: binary}); err != nil {
+		t.Fatalf("expected fake codex launcher to pass: %v", err)
+	}
+}
+
+func fakeCodex(t *testing.T, execStatus int) string {
+	t.Helper()
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-test; exit 0; fi\nexit " + string(rune('0'+execStatus)) + "\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	return binary
 }
 
 func TestBuildRunnerCodexCommandSupportsWindowsLauncher(t *testing.T) {

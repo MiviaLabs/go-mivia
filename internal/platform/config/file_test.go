@@ -92,6 +92,10 @@ per_agent_worker_limit = 1
 max_parallel_tasks = 2
 default_max_runtime = "5m"
 codex_binary_path = "codex"
+
+[automation.work_plan_status_trigger]
+enabled = true
+statuses = ["active"]
 `)
 
 	cfg, err := loadFileConfig(path)
@@ -111,8 +115,34 @@ codex_binary_path = "codex"
 	if merged.Automation.RunnerExecution != "managed" {
 		t.Fatalf("unexpected runner execution: %+v", merged.Automation)
 	}
+	if !merged.Automation.WorkPlanStatusTrigger.Enabled || len(merged.Automation.WorkPlanStatusTrigger.Statuses) != 1 || merged.Automation.WorkPlanStatusTrigger.Statuses[0] != "active" {
+		t.Fatalf("unexpected work plan status trigger config: %+v", merged.Automation.WorkPlanStatusTrigger)
+	}
 	if merged.Workflows.Enabled || len(merged.Workflows.DefinitionPaths) != 1 || merged.Workflows.DefinitionPaths[0] != "configs/workflows/governed-feature.toml" {
 		t.Fatalf("unexpected workflow config: %+v", merged.Workflows)
+	}
+}
+
+func TestAutomationEnvOverrides(t *testing.T) {
+	t.Setenv("MIVIA_AUTOMATION_ENABLED", "true")
+	t.Setenv("MIVIA_AUTOMATION_RUNNER_ENABLED", "true")
+	t.Setenv("MIVIA_AUTOMATION_RUNNER_EXECUTION", "external")
+	t.Setenv("MIVIA_AUTOMATION_CODEX_BINARY_PATH", "codex")
+	t.Setenv("MIVIA_AUTOMATION_WORK_PLAN_STATUS_TRIGGER_ENABLED", "true")
+	t.Setenv("MIVIA_AUTOMATION_WORK_PLAN_STATUS_TRIGGER_STATUSES", "active,needs_review")
+
+	cfg := defaultConfig("")
+	if err := applyEnvOverrides(&cfg); err != nil {
+		t.Fatalf("apply env overrides: %v", err)
+	}
+	if !cfg.Automation.Enabled || !cfg.Automation.RunnerEnabled {
+		t.Fatalf("expected automation enabled from env: %+v", cfg.Automation)
+	}
+	if cfg.Automation.RunnerExecution != "external" || cfg.Automation.CodexBinaryPath != "codex" {
+		t.Fatalf("unexpected automation runner env config: %+v", cfg.Automation)
+	}
+	if !cfg.Automation.WorkPlanStatusTrigger.Enabled || strings.Join(cfg.Automation.WorkPlanStatusTrigger.Statuses, ",") != "active,needs_review" {
+		t.Fatalf("unexpected status trigger env config: %+v", cfg.Automation.WorkPlanStatusTrigger)
 	}
 }
 
@@ -166,6 +196,13 @@ version = 1
 
 [automation]
 runner_execution = "container_magic"
+`,
+		"unsupported_status_trigger": `
+version = 1
+
+[automation.work_plan_status_trigger]
+enabled = true
+statuses = ["ready"]
 `,
 	} {
 		t.Run(name, func(t *testing.T) {

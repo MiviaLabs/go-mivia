@@ -110,7 +110,13 @@ func (store *MemoryStore) ListRuns(_ context.Context, filter projectautomation.R
 		if filter.AutomationID != "" && value.AutomationID != filter.AutomationID {
 			continue
 		}
+		if filter.PlanID != "" && value.PlanID != filter.PlanID {
+			continue
+		}
 		if filter.Status != "" && value.Status != filter.Status {
+			continue
+		}
+		if filter.OrchestratorRunID != "" && value.OrchestratorRunID != filter.OrchestratorRunID {
 			continue
 		}
 		out = append(out, cloneRun(value))

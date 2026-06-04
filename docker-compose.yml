@@ -57,8 +57,9 @@ services:
       - "${MIVIA_AUTOMATION_CODEX_CD:-/workspace}"
     volumes:
       - mivia-data:/var/lib/mivia
-      # Mount a project workspace and Codex auth in an ignored local override
-      # when the runner should execute real Codex CLI work from a container.
+      # Mount a project workspace to /workspace and Codex auth to the runner
+      # user's CODEX_HOME in an ignored local override when the runner should
+      # execute real Codex CLI work from a container.
     depends_on:
       mivia-server:
         condition: service_healthy

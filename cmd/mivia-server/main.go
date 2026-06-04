@@ -242,7 +242,12 @@ func run() error {
 		CodexBinaryPath:           cfg.Automation.CodexBinaryPath,
 		Agents:                    automationAgents(cfg.Automation.Agents),
 		PermissionResolver:        projectWorkflowService,
+		WorkPlanStatusTrigger: projectautomation.WorkPlanStatusTriggerOptions{
+			Enabled:  cfg.Automation.WorkPlanStatusTrigger.Enabled,
+			Statuses: append([]string(nil), cfg.Automation.WorkPlanStatusTrigger.Statuses...),
+		},
 	})
+	projectWorkPlanService.SetStatusChangeHandler(projectAutomationService)
 	projectAutomationExecutor := projectautomation.NewExecutor(projectAutomationService, projectautomation.ExecutorOptions{
 		Enabled:               cfg.Automation.Enabled,
 		RunnerEnabled:         cfg.Automation.RunnerEnabled,

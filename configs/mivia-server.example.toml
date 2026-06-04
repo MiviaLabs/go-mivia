@@ -109,6 +109,12 @@ max_parallel_tasks = 1
 default_max_runtime = "10m"
 # codex_binary_path = "codex"
 
+[automation.work_plan_status_trigger]
+# Queues enabled automatic automations for a Work Plan when it enters one of
+# these statuses. Keep disabled until workflow review gates are configured.
+enabled = false
+statuses = ["active"]
+
 [[projects]]
 id = "example-service"
 # Optional safe lookup IDs accepted anywhere a project id is accepted. Use this

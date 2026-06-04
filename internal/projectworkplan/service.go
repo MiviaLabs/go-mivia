@@ -36,13 +36,32 @@ type Store interface {
 }
 
 type Service struct {
-	store Store
-	now   func() time.Time
-	newID func(string) string
+	store               Store
+	now                 func() time.Time
+	newID               func(string) string
+	statusChangeHandler WorkPlanStatusChangeHandler
 }
 
 func New(store Store) *Service {
 	return &Service{store: store, now: func() time.Time { return time.Now().UTC() }, newID: newID}
+}
+
+type WorkPlanStatusChange struct {
+	ProjectID  string
+	PlanID     string
+	PlanRef    string
+	OldStatus  string
+	NewStatus  string
+	OwnerAgent string
+	ChangedAt  time.Time
+}
+
+type WorkPlanStatusChangeHandler interface {
+	HandleWorkPlanStatusChanged(context.Context, WorkPlanStatusChange) error
+}
+
+func (svc *Service) SetStatusChangeHandler(handler WorkPlanStatusChangeHandler) {
+	svc.statusChangeHandler = handler
 }
 
 func (svc *Service) CreateWorkPlan(ctx context.Context, input CreateWorkPlanInput) (WorkPlan, error) {
@@ -172,9 +191,27 @@ func (svc *Service) UpdateWorkPlanStatus(ctx context.Context, input UpdateWorkPl
 			return WorkPlan{}, err
 		}
 	}
+	oldStatus := plan.Status
 	plan.Status = next
 	plan.UpdatedAt = svc.now()
-	return svc.store.UpdateWorkPlan(ctx, plan)
+	updated, err := svc.store.UpdateWorkPlan(ctx, plan)
+	if err != nil {
+		return WorkPlan{}, err
+	}
+	if svc.statusChangeHandler != nil && oldStatus != updated.Status {
+		if err := svc.statusChangeHandler.HandleWorkPlanStatusChanged(ctx, WorkPlanStatusChange{
+			ProjectID:  updated.ProjectID,
+			PlanID:     updated.ID,
+			PlanRef:    updated.PlanRef,
+			OldStatus:  oldStatus,
+			NewStatus:  updated.Status,
+			OwnerAgent: updated.OwnerAgent,
+			ChangedAt:  updated.UpdatedAt,
+		}); err != nil {
+			return updated, err
+		}
+	}
+	return updated, nil
 }
 
 func (svc *Service) ResumeWorkPlan(ctx context.Context, input ResumeWorkPlanInput) (WorkPlan, error) {

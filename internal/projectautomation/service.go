@@ -263,7 +263,81 @@ func (svc *Service) ListRuns(ctx context.Context, filter RunFilter) ([]Automatio
 		return nil, err
 	}
 	filter.ProjectID = projectID
+	if filter.AutomationID != "" {
+		if filter.AutomationID, err = safeOptionalRef(filter.AutomationID, "automation_id"); err != nil {
+			return nil, err
+		}
+	}
+	if filter.PlanID != "" {
+		if filter.PlanID, err = safeOptionalRef(filter.PlanID, "plan_id"); err != nil {
+			return nil, err
+		}
+	}
+	if filter.OrchestratorRunID != "" {
+		if filter.OrchestratorRunID, err = safeOptionalRef(filter.OrchestratorRunID, "orchestrator_run_id"); err != nil {
+			return nil, err
+		}
+	}
 	return svc.store.ListRuns(ctx, filter)
+}
+
+func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, event projectworkplan.WorkPlanStatusChange) error {
+	if svc == nil || svc.store == nil || !svc.options.Enabled || !svc.options.WorkPlanStatusTrigger.Enabled {
+		return nil
+	}
+	if !svc.workPlanStatusTriggers(event.NewStatus) {
+		return nil
+	}
+	automations, err := svc.store.ListAutomations(ctx, AutomationFilter{ProjectID: event.ProjectID, Status: AutomationStatusEnabled})
+	if err != nil {
+		return err
+	}
+	for _, automation := range automations {
+		if automation.TriggerKind != TriggerKindAutomatic || automation.PlanID != event.PlanID {
+			continue
+		}
+		triggerRunID := workPlanStatusTriggerRunID(event, automation)
+		existing, err := svc.store.ListRuns(ctx, RunFilter{
+			ProjectID:         event.ProjectID,
+			AutomationID:      automation.ID,
+			PlanID:            event.PlanID,
+			OrchestratorRunID: triggerRunID,
+		})
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			continue
+		}
+		if _, err := svc.SubmitRun(ctx, SubmitRunInput{
+			ProjectID:         event.ProjectID,
+			AutomationID:      automation.ID,
+			PlanID:            event.PlanID,
+			OwnerAgent:        automation.AgentID,
+			OrchestratorRunID: triggerRunID,
+			SafeNextAction:    "work_plan_status_trigger",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) workPlanStatusTriggers(status string) bool {
+	statuses := svc.options.WorkPlanStatusTrigger.Statuses
+	if len(statuses) == 0 {
+		statuses = []string{projectworkplan.WorkPlanStatusActive}
+	}
+	for _, candidate := range statuses {
+		if strings.TrimSpace(candidate) == status {
+			return true
+		}
+	}
+	return false
+}
+
+func workPlanStatusTriggerRunID(event projectworkplan.WorkPlanStatusChange, automation Automation) string {
+	return "workplan-status:" + event.PlanID + ":" + event.NewStatus + ":" + automation.ID
 }
 
 func (svc *Service) RunNow(ctx context.Context, input SubmitRunInput) (AutomationRun, error) {

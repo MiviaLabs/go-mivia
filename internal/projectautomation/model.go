@@ -177,6 +177,12 @@ type Options struct {
 	Agents                    []AutomationAgent
 	PermissionResolver        PermissionResolver
 	Governance                GovernanceOptions
+	WorkPlanStatusTrigger     WorkPlanStatusTriggerOptions
+}
+
+type WorkPlanStatusTriggerOptions struct {
+	Enabled  bool
+	Statuses []string
 }
 
 type ExecutorOptions struct {
@@ -229,9 +235,11 @@ type SubmitRunInput struct {
 }
 
 type RunFilter struct {
-	ProjectID    string `json:"project_id,omitempty"`
-	AutomationID string `json:"automation_id,omitempty"`
-	Status       string `json:"status,omitempty"`
+	ProjectID         string `json:"project_id,omitempty"`
+	AutomationID      string `json:"automation_id,omitempty"`
+	PlanID            string `json:"plan_id,omitempty"`
+	Status            string `json:"status,omitempty"`
+	OrchestratorRunID string `json:"orchestrator_run_id,omitempty"`
 }
 
 type ComputeParallelBatchInput struct {

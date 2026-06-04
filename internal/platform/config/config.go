@@ -114,6 +114,12 @@ type Automation struct {
 	DefaultMaxRuntime         time.Duration
 	CodexBinaryPath           string
 	Agents                    []AutomationAgent
+	WorkPlanStatusTrigger     WorkPlanStatusTrigger
+}
+
+type WorkPlanStatusTrigger struct {
+	Enabled  bool
+	Statuses []string
 }
 
 type AutomationAgent struct {
@@ -328,6 +334,7 @@ func defaultAutomation() Automation {
 		DefaultMaxRuntime:         10 * time.Minute,
 		CodexBinaryPath:           "",
 		Agents:                    nil,
+		WorkPlanStatusTrigger:     WorkPlanStatusTrigger{Enabled: false, Statuses: []string{"active"}},
 	}
 }
 
@@ -455,6 +462,20 @@ func applyEnvOverrides(cfg *Config) error {
 	cfg.Ingestion.SensitiveMarkerPolicy = getenv("MIVIA_INGESTION_SENSITIVE_MARKER_POLICY", cfg.Ingestion.SensitiveMarkerPolicy)
 	if cfg.Workspace.Enabled, err = getenvBool("MIVIA_WORKSPACE_ENABLED", cfg.Workspace.Enabled); err != nil {
 		return err
+	}
+	if cfg.Automation.Enabled, err = getenvBool("MIVIA_AUTOMATION_ENABLED", cfg.Automation.Enabled); err != nil {
+		return err
+	}
+	if cfg.Automation.RunnerEnabled, err = getenvBool("MIVIA_AUTOMATION_RUNNER_ENABLED", cfg.Automation.RunnerEnabled); err != nil {
+		return err
+	}
+	cfg.Automation.RunnerExecution = getenv("MIVIA_AUTOMATION_RUNNER_EXECUTION", cfg.Automation.RunnerExecution)
+	cfg.Automation.CodexBinaryPath = getenv("MIVIA_AUTOMATION_CODEX_BINARY_PATH", cfg.Automation.CodexBinaryPath)
+	if cfg.Automation.WorkPlanStatusTrigger.Enabled, err = getenvBool("MIVIA_AUTOMATION_WORK_PLAN_STATUS_TRIGGER_ENABLED", cfg.Automation.WorkPlanStatusTrigger.Enabled); err != nil {
+		return err
+	}
+	if rawStatuses := os.Getenv("MIVIA_AUTOMATION_WORK_PLAN_STATUS_TRIGGER_STATUSES"); strings.TrimSpace(rawStatuses) != "" {
+		cfg.Automation.WorkPlanStatusTrigger.Statuses = splitCSV(rawStatuses)
 	}
 	if cfg.AgentActivity.RetainRawPayloads, err = getenvBool("MIVIA_AGENT_ACTIVITY_RETAIN_RAW_PAYLOADS", cfg.AgentActivity.RetainRawPayloads); err != nil {
 		return err
@@ -640,9 +661,35 @@ func (automation Automation) Validate() error {
 	if strings.ContainsAny(automation.CodexBinaryPath, "\r\n\x00") {
 		return errors.New("MIVIA_AUTOMATION_CODEX_BINARY_PATH must not contain control characters")
 	}
+	if err := automation.WorkPlanStatusTrigger.Validate(); err != nil {
+		return err
+	}
 	for _, agent := range automation.Agents {
 		if err := agent.Validate(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (trigger WorkPlanStatusTrigger) Validate() error {
+	allowed := map[string]bool{
+		"planned":      true,
+		"active":       true,
+		"blocked":      true,
+		"needs_review": true,
+		"done":         true,
+		"failed":       true,
+		"cancelled":    true,
+		"superseded":   true,
+	}
+	for _, status := range trigger.Statuses {
+		trimmed := strings.TrimSpace(status)
+		if trimmed == "" {
+			return errors.New("MIVIA_AUTOMATION_WORK_PLAN_STATUS_TRIGGER_STATUSES must not contain empty statuses")
+		}
+		if !allowed[trimmed] {
+			return fmt.Errorf("MIVIA_AUTOMATION_WORK_PLAN_STATUS_TRIGGER_STATUSES contains unsupported status %q", status)
 		}
 	}
 	return nil
@@ -696,6 +743,17 @@ func getenv(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func splitCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	return values
 }
 
 func getenvInt64(key string, fallback int64) (int64, error) {

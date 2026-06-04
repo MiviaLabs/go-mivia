@@ -44,6 +44,11 @@ func run(args []string) int {
 	if *watch {
 		*once = false
 	}
+	codexOptions := codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD)}
+	if err := checkCodexLauncher(context.Background(), codexOptions); err != nil {
+		fmt.Fprintf(os.Stderr, "codex launcher unavailable: %v\n", err)
+		return 1
+	}
 	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: http.DefaultClient}
 	var idleSince time.Time
 	for {
@@ -52,7 +57,7 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "project discovery failed: %v\n", err)
 			return 1
 		}
-		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, projectIDs, strings.TrimSpace(*agentID), codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD)})
+		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, projectIDs, strings.TrimSpace(*agentID), codexOptions)
 		if *once || !keepWatching {
 			return status
 		}
@@ -69,6 +74,37 @@ func run(args []string) int {
 			idleSince = time.Time{}
 		}
 		time.Sleep(*pollInterval)
+	}
+}
+
+func checkCodexLauncher(ctx context.Context, codexOptions codexLaunchOptions) error {
+	launcher := strings.TrimSpace(codexOptions.Launcher)
+	if launcher == "" {
+		launcher = "direct"
+	}
+	binaryPath := strings.TrimSpace(codexOptions.Path)
+	if binaryPath == "" {
+		binaryPath = "codex"
+	}
+	switch launcher {
+	case "direct":
+		command := exec.CommandContext(ctx, binaryPath, "--version")
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("%s --version failed: %w: %s", binaryPath, err, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	case "windows-cmd":
+		command := exec.CommandContext(ctx, "cmd.exe", "/c", binaryPath, "--version")
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("cmd.exe /c %s --version failed: %w: %s", binaryPath, err, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown codex launcher", projectautomation.ErrInvalidInput)
 	}
 }
 

@@ -27,6 +27,8 @@ services:
       # Keep full_scan_batch_size in the mounted TOML as the hard file-count cap.
       MIVIA_LADYBUG_PATH: /var/lib/mivia/mivialabs.lbug
       MIVIA_SQLITE_PATH: /var/lib/mivia/mivialabs-config.sqlite
+      MIVIA_AUTOMATION_RUNNER_EXECUTION: external
+      MIVIA_AUTOMATION_CODEX_BINARY_PATH: codex
     volumes:
       - mivia_data:/var/lib/mivia
       # Put the consuming project's Mivia config in an ignored local file.

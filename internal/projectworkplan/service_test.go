@@ -158,6 +158,33 @@ func TestServiceTaskTransitions(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateWorkPlanStatusNotifiesHandler(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-status-hook")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	handler := &statusChangeRecorder{}
+	svc.SetStatusChangeHandler(handler)
+
+	updated, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{ProjectID: "project-1", PlanID: plan.ID, Status: projectworkplan.WorkPlanStatusActive})
+	if err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	if updated.Status != projectworkplan.WorkPlanStatusActive {
+		t.Fatalf("expected active status, got %q", updated.Status)
+	}
+	if len(handler.events) != 1 {
+		t.Fatalf("expected one status change event, got %d", len(handler.events))
+	}
+	event := handler.events[0]
+	if event.PlanID != plan.ID || event.OldStatus != projectworkplan.WorkPlanStatusPlanned || event.NewStatus != projectworkplan.WorkPlanStatusActive {
+		t.Fatalf("unexpected event: %+v", event)
+	}
+}
+
 func TestServiceStartTaskAcceptsContextPackRefs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -180,6 +207,15 @@ func TestServiceStartTaskAcceptsContextPackRefs(t *testing.T) {
 	if !contains(started.ContextPackRefs, "context-pack:manifest:68c3ee2ad1556459") {
 		t.Fatalf("expected context ref to be preserved, got %#v", started.ContextPackRefs)
 	}
+}
+
+type statusChangeRecorder struct {
+	events []projectworkplan.WorkPlanStatusChange
+}
+
+func (recorder *statusChangeRecorder) HandleWorkPlanStatusChanged(_ context.Context, event projectworkplan.WorkPlanStatusChange) error {
+	recorder.events = append(recorder.events, event)
+	return nil
 }
 
 func TestServiceOpenAndNextIgnoreTerminalPlanTasks(t *testing.T) {

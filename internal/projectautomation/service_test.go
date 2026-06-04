@@ -48,6 +48,77 @@ func TestSubmitRunDefaultsToCodexWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestWorkPlanStatusTriggerQueuesAutomaticRunsOnce(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, Options{
+		Enabled:         true,
+		RunnerEnabled:   true,
+		RunnerExecution: RunnerExecutionExternal,
+		WorkPlanStatusTrigger: WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	event := projectworkplan.WorkPlanStatusChange{
+		ProjectID: "project-1",
+		PlanID:    "plan-1",
+		PlanRef:   "plan/ref",
+		OldStatus: projectworkplan.WorkPlanStatusPlanned,
+		NewStatus: projectworkplan.WorkPlanStatusActive,
+		ChangedAt: time.Unix(100, 0).UTC(),
+	}
+
+	if err := svc.HandleWorkPlanStatusChanged(ctx, event); err != nil {
+		t.Fatalf("HandleWorkPlanStatusChanged returned error: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, event); err != nil {
+		t.Fatalf("duplicate HandleWorkPlanStatusChanged returned error: %v", err)
+	}
+	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected one queued run, got %d", len(runs))
+	}
+	if runs[0].Status != RunStatusQueued || runs[0].RunnerKind != RunnerKindCodexCLI {
+		t.Fatalf("unexpected run: %+v", runs[0])
+	}
+	if runs[0].OrchestratorRunID == "" {
+		t.Fatal("expected trigger idempotency key")
+	}
+}
+
+func TestWorkPlanStatusTriggerIgnoresUnconfiguredStatus(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, Options{
+		Enabled:         true,
+		RunnerEnabled:   true,
+		RunnerExecution: RunnerExecutionExternal,
+		WorkPlanStatusTrigger: WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID: "project-1",
+		PlanID:    "plan-1",
+		NewStatus: projectworkplan.WorkPlanStatusNeedsReview,
+	}); err != nil {
+		t.Fatalf("HandleWorkPlanStatusChanged returned error: %v", err)
+	}
+	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected no runs, got %d", len(runs))
+	}
+}
+
 func TestComputeParallelBatchRejectsConflictingFiles(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
@@ -551,6 +622,25 @@ func createTestAutomation(t *testing.T, ctx context.Context, svc *Service) Autom
 	return automation
 }
 
+func createAutomaticTriggerAutomation(t *testing.T, ctx context.Context, svc *Service) Automation {
+	t.Helper()
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:     "project-1",
+		AutomationRef: "auto/status-trigger",
+		Title:         "Status trigger automation",
+		Purpose:       "Run safe work tasks after plan status changes",
+		Status:        AutomationStatusEnabled,
+		AgentID:       "agent-1",
+		PlanID:        "plan-1",
+		TriggerKind:   TriggerKindAutomatic,
+		PermissionRef: "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	return automation
+}
+
 func createWorkflowAutomation(t *testing.T, ctx context.Context, svc *Service, allowedTaskRefs []string, agentID string) Automation {
 	t.Helper()
 	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
@@ -680,7 +770,13 @@ func (store *testStore) ListRuns(_ context.Context, filter RunFilter) ([]Automat
 		if filter.AutomationID != "" && value.AutomationID != filter.AutomationID {
 			continue
 		}
+		if filter.PlanID != "" && value.PlanID != filter.PlanID {
+			continue
+		}
 		if filter.Status != "" && value.Status != filter.Status {
+			continue
+		}
+		if filter.OrchestratorRunID != "" && value.OrchestratorRunID != filter.OrchestratorRunID {
 			continue
 		}
 		out = append(out, value)
