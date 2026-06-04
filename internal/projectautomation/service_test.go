@@ -53,6 +53,7 @@ func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
 		"Create smoke marker",
 		"automation-smoke.txt",
 		"Do not run full test suites",
+		"commit, push, or draft pull request",
 		"Leave verifier execution and task completion to the orchestrator.",
 	} {
 		if !strings.Contains(prompt, want) {

@@ -1078,6 +1078,7 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 			"Use the Mivia MCP project id from this input.",
 			"Do not store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or PII.",
 			"Use only the bounded task scope and likely affected files unless current source proves a narrower necessary change.",
+			"If the task expected output or resume instructions explicitly require a commit, push, or draft pull request, perform those git operations within the task scope.",
 			"Do not run verifier commands unless this task explicitly allows worker verification.",
 			"Leave verifier execution and task completion to the orchestrator.",
 		},
