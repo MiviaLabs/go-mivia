@@ -178,6 +178,37 @@ func (svc *Service) GetAutomation(ctx context.Context, projectID, automationID s
 	return svc.store.GetAutomation(ctx, projectID, automationID)
 }
 
+func (svc *Service) UpdateAutomationStatus(ctx context.Context, input UpdateAutomationStatusInput) (Automation, error) {
+	if svc.store == nil {
+		return Automation{}, fmt.Errorf("%w: store is required", ErrInvalidInput)
+	}
+	projectID, automationID, err := safeProjectObject(input.ProjectID, input.AutomationID, "automation_id")
+	if err != nil {
+		return Automation{}, err
+	}
+	status, err := safeAutomationStatus(input.Status)
+	if err != nil {
+		return Automation{}, err
+	}
+	if _, err := safeOptionalRef(input.RunID, "run_id"); err != nil {
+		return Automation{}, err
+	}
+	traceID, err := safeOptionalRef(input.TraceID, "trace_id")
+	if err != nil {
+		return Automation{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, projectID, automationID)
+	if err != nil {
+		return Automation{}, err
+	}
+	automation.Status = status
+	if traceID != "" {
+		automation.TraceID = traceID
+	}
+	automation.UpdatedAt = svc.now()
+	return svc.store.UpdateAutomation(ctx, automation)
+}
+
 func (svc *Service) ListAutomations(ctx context.Context, filter AutomationFilter) ([]Automation, error) {
 	projectID, err := safeRef(filter.ProjectID, "project_id")
 	if err != nil {

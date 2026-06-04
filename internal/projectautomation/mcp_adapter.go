@@ -29,6 +29,12 @@ func (svc *Service) CallAutomationTool(ctx context.Context, name string, argumen
 			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
 		}
 		return svc.ListAutomations(ctx, AutomationFilter{ProjectID: input.projectID(), Status: input.Status, AgentID: input.AgentID})
+	case "projects.automations.update_status":
+		var input updateAutomationStatusMCPInput
+		if err := decodeMCP(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
+		}
+		return svc.UpdateAutomationStatus(ctx, UpdateAutomationStatusInput{ProjectID: input.projectID(), AutomationID: input.AutomationID, Status: input.Status, RunID: input.RunID, TraceID: input.TraceID})
 	case "projects.automations.run":
 		var input submitRunMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -118,6 +124,19 @@ type listAutomationsMCPInput struct {
 }
 
 func (input listAutomationsMCPInput) projectID() string {
+	return projectIDAlias(input.ID, input.ProjectID)
+}
+
+type updateAutomationStatusMCPInput struct {
+	ID           string `json:"id"`
+	ProjectID    string `json:"project_id,omitempty"`
+	AutomationID string `json:"automation_id"`
+	Status       string `json:"status"`
+	RunID        string `json:"run_id,omitempty"`
+	TraceID      string `json:"trace_id,omitempty"`
+}
+
+func (input updateAutomationStatusMCPInput) projectID() string {
 	return projectIDAlias(input.ID, input.ProjectID)
 }
 

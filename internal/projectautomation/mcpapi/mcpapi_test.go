@@ -52,6 +52,9 @@ func TestIsAutomationToolAcceptsUnderscoreAlias(t *testing.T) {
 	if !IsAutomationTool("projects_automation_runs_claim_next") {
 		t.Fatal("expected external runner alias to be accepted")
 	}
+	if !IsAutomationTool("projects_automations_update_status") {
+		t.Fatal("expected update status alias to be accepted")
+	}
 }
 
 func TestCallToolAcceptsProjectIDAlias(t *testing.T) {
@@ -92,6 +95,25 @@ func TestToolDefinitionsAllowIDOrProjectID(t *testing.T) {
 			t.Fatalf("%v schema does not allow id/project_id alternatives", definition["name"])
 		}
 	}
+}
+
+func TestToolDefinitionsExposeAutomationStatusUpdate(t *testing.T) {
+	for _, definition := range ToolDefinitions() {
+		if definition["name"] != "projects.automations.update_status" {
+			continue
+		}
+		schema := definition["inputSchema"].(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		status := properties["status"].(map[string]any)
+		values := status["enum"].([]string)
+		for _, value := range values {
+			if value == "disabled" {
+				return
+			}
+		}
+		t.Fatalf("status enum does not include disabled: %#v", values)
+	}
+	t.Fatal("missing projects.automations.update_status definition")
 }
 
 type captureAutomationAPI struct {

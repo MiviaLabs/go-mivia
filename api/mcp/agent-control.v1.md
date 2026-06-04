@@ -165,6 +165,7 @@ Dotted tools and underscore aliases:
 projects.automations.create
 projects.automations.get
 projects.automations.list
+projects.automations.update_status
 projects.automations.run
 projects.automations.run_parallel_batch
 projects.automation_runs.get
@@ -181,6 +182,7 @@ Project-scoped REST routes:
 POST /api/v1/projects/{id}/automations
 GET /api/v1/projects/{id}/automations
 GET /api/v1/projects/{id}/automations/{automation_id}
+POST /api/v1/projects/{id}/automations/{automation_id}/status
 POST /api/v1/projects/{id}/automations/{automation_id}/runs
 POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches
 GET /api/v1/projects/{id}/automation-runs

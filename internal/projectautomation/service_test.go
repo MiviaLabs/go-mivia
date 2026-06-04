@@ -78,6 +78,46 @@ func TestSubmitRunDefaultsToCodexWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestUpdateAutomationStatusDisablesExistingAutomation(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 2})
+	automation := createTestAutomation(t, ctx, svc)
+
+	updated, err := svc.UpdateAutomationStatus(ctx, UpdateAutomationStatusInput{
+		ProjectID:    automation.ProjectID,
+		AutomationID: automation.ID,
+		Status:       AutomationStatusDisabled,
+		RunID:        "run-disable",
+		TraceID:      "trace-disable",
+	})
+	if err != nil {
+		t.Fatalf("UpdateAutomationStatus returned error: %v", err)
+	}
+	if updated.Status != AutomationStatusDisabled {
+		t.Fatalf("expected disabled status, got %q", updated.Status)
+	}
+	if updated.TraceID != "trace-disable" {
+		t.Fatalf("expected trace to update, got %q", updated.TraceID)
+	}
+	if !updated.UpdatedAt.After(automation.UpdatedAt) && !updated.UpdatedAt.Equal(automation.UpdatedAt) {
+		t.Fatalf("unexpected updated_at: before original")
+	}
+}
+
+func TestUpdateAutomationStatusRejectsUnknownStatus(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 2})
+	automation := createTestAutomation(t, ctx, svc)
+
+	if _, err := svc.UpdateAutomationStatus(ctx, UpdateAutomationStatusInput{
+		ProjectID:    automation.ProjectID,
+		AutomationID: automation.ID,
+		Status:       "deleted",
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected invalid input, got %v", err)
+	}
+}
+
 func TestWorkPlanStatusTriggerQueuesAutomaticRunsOnce(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{

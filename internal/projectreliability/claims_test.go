@@ -196,7 +196,7 @@ func TestClaimChecker_VerifiesAutomationToolsRoutesAndAliases(t *testing.T) {
 		IncludeVerified: true,
 		Documents: []ClaimDocument{{
 			Path: "api/mcp/agent-control.v1.md",
-			Text: "Use projects.automations.create, projects_automations_run_parallel_batch, projects.automation_runs.list, projects.automation_runs.claim_next, projects_automation_runs_complete_attempt, GET /api/v1/projects/{id}/automations/{automation_id}, POST /api/v1/projects/{id}/automations/{automation_id}/runs, POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches, GET /api/v1/projects/{id}/automation-runs, POST /api/v1/projects/{id}/automation-runs/claim-next, GET /api/v1/projects/{id}/automation-runs/{run_id}, and POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result.",
+			Text: "Use projects.automations.create, projects.automations.update_status, projects_automations_run_parallel_batch, projects.automation_runs.list, projects.automation_runs.claim_next, projects_automation_runs_complete_attempt, GET /api/v1/projects/{id}/automations/{automation_id}, POST /api/v1/projects/{id}/automations/{automation_id}/status, POST /api/v1/projects/{id}/automations/{automation_id}/runs, POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches, GET /api/v1/projects/{id}/automation-runs, POST /api/v1/projects/{id}/automation-runs/claim-next, GET /api/v1/projects/{id}/automation-runs/{run_id}, and POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result.",
 		}},
 	})
 	if err != nil {
@@ -204,11 +204,13 @@ func TestClaimChecker_VerifiesAutomationToolsRoutesAndAliases(t *testing.T) {
 	}
 	for _, claim := range []string{
 		"projects.automations.create",
+		"projects.automations.update_status",
 		"projects_automations_run_parallel_batch",
 		"projects.automation_runs.list",
 		"projects.automation_runs.claim_next",
 		"projects_automation_runs_complete_attempt",
 		"/api/v1/projects/{id}/automations/{automation_id}",
+		"/api/v1/projects/{id}/automations/{automation_id}/status",
 		"/api/v1/projects/{id}/automations/{automation_id}/runs",
 		"/api/v1/projects/{id}/automations/{automation_id}/parallel-batches",
 		"/api/v1/projects/{id}/automation-runs",

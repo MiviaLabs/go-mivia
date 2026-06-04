@@ -47,6 +47,21 @@ func TestAutomationRoutesCreateRunAndList(t *testing.T) {
 		t.Fatalf("unexpected automation: %+v", created)
 	}
 
+	disabled := requestJSON[projectautomation.Automation](t, mux, http.MethodPost, "/api/v1/projects/project-1/automations/"+created.ID+"/status", map[string]any{
+		"status": projectautomation.AutomationStatusDisabled,
+		"run_id": "run-disable",
+	}, http.StatusOK)
+	if disabled.Status != projectautomation.AutomationStatusDisabled {
+		t.Fatalf("expected disabled automation, got %+v", disabled)
+	}
+
+	reenabled := requestJSON[projectautomation.Automation](t, mux, http.MethodPost, "/api/v1/projects/project-1/automations/"+created.ID+"/status", map[string]any{
+		"status": projectautomation.AutomationStatusEnabled,
+	}, http.StatusOK)
+	if reenabled.Status != projectautomation.AutomationStatusEnabled {
+		t.Fatalf("expected enabled automation, got %+v", reenabled)
+	}
+
 	run := requestJSON[projectautomation.AutomationRun](t, mux, http.MethodPost, "/api/v1/projects/project-1/automations/"+created.ID+"/runs", map[string]any{
 		"plan_id":          "plan-1",
 		"task_id":          "task-a",

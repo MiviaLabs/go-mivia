@@ -214,6 +214,14 @@ type CreateAutomationInput struct {
 	TraceID               string   `json:"trace_id,omitempty"`
 }
 
+type UpdateAutomationStatusInput struct {
+	ProjectID    string `json:"project_id,omitempty"`
+	AutomationID string `json:"automation_id"`
+	Status       string `json:"status"`
+	RunID        string `json:"run_id,omitempty"`
+	TraceID      string `json:"trace_id,omitempty"`
+}
+
 type AutomationFilter struct {
 	ProjectID string `json:"project_id,omitempty"`
 	Status    string `json:"status,omitempty"`

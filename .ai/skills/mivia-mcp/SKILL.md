@@ -191,6 +191,7 @@ Use these tools:
 projects.automations.create
 projects.automations.get
 projects.automations.list
+projects.automations.update_status
 projects.automations.run
 projects.automations.run_parallel_batch
 projects.automation_runs.get
@@ -205,6 +206,7 @@ REST mirrors the same metadata surface at:
 POST /api/v1/projects/{id}/automations
 GET /api/v1/projects/{id}/automations
 GET /api/v1/projects/{id}/automations/{automation_id}
+POST /api/v1/projects/{id}/automations/{automation_id}/status
 POST /api/v1/projects/{id}/automations/{automation_id}/runs
 POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches
 GET /api/v1/projects/{id}/automation-runs
@@ -324,7 +326,7 @@ Use dotted names when available. Codex-style underscore aliases are accepted by 
 | Evidence Graph metadata only | `projects.evidence_graph.claims.create`, `projects.evidence_graph.claims.get`, `projects.evidence_graph.claims.list`, `projects.evidence_graph.evidence.append`, `projects.evidence_graph.decisions.create`, `projects.evidence_graph.actions.create`, `projects.evidence_graph.outcomes.create`, `projects.evidence_graph.artifacts.link`, `projects.evidence_graph.promotions.link` plus underscore aliases |
 | Knowledge Promotion metadata only | `projects.knowledge.candidates.create`, `projects.knowledge.validate`, `projects.knowledge.promote_project`, `projects.knowledge.submit_org_review`, `projects.knowledge.promote_org`, `projects.knowledge.reject`, `projects.knowledge.supersede`, `projects.knowledge.reuse_events.record`, `projects.knowledge.get`, `projects.knowledge.list`, `orgs.knowledge.list` plus underscore aliases |
 | Work Plans and Work Tasks metadata only | `projects.work_plans.create`, `projects.work_plans.get`, `projects.work_plans.list`, `projects.work_plans.update_status`, `projects.work_plans.resume`, `projects.work_tasks.create`, `projects.work_tasks.get`, `projects.work_tasks.update_status`, `projects.work_tasks.claim`, `projects.work_tasks.release`, `projects.work_tasks.start`, `projects.work_tasks.complete`, `projects.work_tasks.fail`, `projects.work_tasks.block`, `projects.work_tasks.list_open`, `projects.work_tasks.list_mine`, `projects.work_tasks.list_blocked`, `projects.work_tasks.get_next`, `projects.work_tasks.attach_evidence`, `projects.work_tasks.attach_context_pack`, `projects.work_tasks.attach_claim`, `projects.work_tasks.attach_verifier_result`, `projects.work_tasks.attach_review_result`, `projects.work_tasks.promote_knowledge_candidate` plus underscore aliases |
-| Project Automation metadata only | `projects.automations.create`, `projects.automations.get`, `projects.automations.list`, `projects.automations.run`, `projects.automations.run_parallel_batch`, `projects.automation_runs.get`, `projects.automation_runs.list`, `projects.automation_runs.claim_next`, `projects.automation_runs.complete_attempt` plus underscore aliases |
+| Project Automation metadata only | `projects.automations.create`, `projects.automations.get`, `projects.automations.list`, `projects.automations.update_status`, `projects.automations.run`, `projects.automations.run_parallel_batch`, `projects.automation_runs.get`, `projects.automation_runs.list`, `projects.automation_runs.claim_next`, `projects.automation_runs.complete_attempt` plus underscore aliases |
 | Diagnostics | `projects.diagnostics.ingestion` |
 | Project integrations | `projects.integrations.list`, `projects.integrations.status`, `projects.integrations.counts`, `projects.integrations.poll`, `projects.integrations.poll_status`, `projects.integrations.search`, `projects.jira.issue.get`, `projects.confluence.page.get` |
 

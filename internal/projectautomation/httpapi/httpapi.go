@@ -29,6 +29,7 @@ func RegisterRoutes(mux *http.ServeMux, svc *projectautomation.Service) {
 	mux.Handle("POST /api/v1/projects/{id}/automations", createAutomationHandler(svc))
 	mux.Handle("GET /api/v1/projects/{id}/automations", listAutomationsHandler(svc))
 	mux.Handle("GET /api/v1/projects/{id}/automations/{automation_id}", getAutomationHandler(svc))
+	mux.Handle("POST /api/v1/projects/{id}/automations/{automation_id}/status", updateAutomationStatusHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/automations/{automation_id}/runs", submitRunHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches", computeParallelBatchHandler(svc))
 	mux.Handle("GET /api/v1/projects/{id}/automation-runs", listRunsHandler(svc))
@@ -67,6 +68,23 @@ func listAutomationsHandler(svc *projectautomation.Service) http.Handler {
 func getAutomationHandler(svc *projectautomation.Service) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		automation, err := svc.GetAutomation(r.Context(), projectID(r), r.PathValue("automation_id"))
+		writeResult(w, automation, err, http.StatusOK)
+	})
+}
+
+func updateAutomationStatusHandler(svc *projectautomation.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !requireJSON(w, r) {
+			return
+		}
+		var input projectautomation.UpdateAutomationStatusInput
+		if err := decodeJSON(r, &input); err != nil {
+			writeInvalidJSON(w)
+			return
+		}
+		input.ProjectID = projectID(r)
+		input.AutomationID = r.PathValue("automation_id")
+		automation, err := svc.UpdateAutomationStatus(r.Context(), input)
 		writeResult(w, automation, err, http.StatusOK)
 	})
 }
