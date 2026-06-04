@@ -52,7 +52,7 @@ projects.permission_snapshots.list
 Rules:
 
 1. `projects.workflows.validate_toml` validates TOML as metadata/config only and returns parsed metadata plus validation issues.
-2. `projects.workflows.import_toml` stores workflow metadata only after validation. It does not create Work Plans, Work Tasks, automation runs, shell commands, Codex CLI runs, or provider calls.
+2. `projects.workflows.import_toml` stores workflow metadata only after validation. It does not create Work Plans, Work Tasks, automation runs, shell commands, Codex CLI runs, or provider calls. The request project id is authoritative for project-scoped imports; checked-in workflow TOML may be reused as a template across configured projects, and import rebinds workflow metadata to the requested project.
 3. `projects.workflows.update_status` changes lifecycle metadata only. Enabling a workflow does not execute anything.
 4. `projects.workflows.compile_to_work_plan` is the only workflow-to-execution bridge. It requires an enabled workflow and returns Work Plan, Work Task, reviewer task, automation, and permission snapshot refs plus validation issues. `dry_run=true` returns refs/issues only.
 5. Required review gates compile into reviewer Work Tasks. When `independent_from_owner=true`, the reviewer agent must differ from the implementation or automation agent.

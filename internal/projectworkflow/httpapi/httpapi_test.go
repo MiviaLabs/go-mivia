@@ -173,24 +173,21 @@ func TestWorkflowRoutesRejectTrailingJSON(t *testing.T) {
 	}
 }
 
-func TestWorkflowRoutesRejectProjectMismatchWithoutEchoingTOML(t *testing.T) {
+func TestWorkflowRoutesRebindImportToRequestProject(t *testing.T) {
 	svc, _, _ := newWorkflowHTTPFixture()
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, svc)
 	toml := strings.Replace(validWorkflowTOML(), `project_id = "project-1"`, `project_id = "other-project"`, 1)
 
-	response := requestRaw(t, mux, http.MethodPost, "/api/v1/projects/project-1/workflows/import-toml", map[string]any{
+	imported := requestJSON[projectworkflow.ImportWorkflowTOMLResult](t, mux, http.MethodPost, "/api/v1/projects/project-1/workflows/import-toml", map[string]any{
 		"toml": toml,
-	})
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("expected project mismatch rejection, got %d body=%s", response.Code, response.Body.String())
-	}
-	if strings.Contains(response.Body.String(), "other-project") || strings.Contains(response.Body.String(), "workflow-rest") {
-		t.Fatalf("mismatch response echoed raw TOML metadata: %s", response.Body.String())
+	}, http.StatusCreated)
+	if len(imported.Workflows) != 1 || imported.Workflows[0].ProjectID != "project-1" {
+		t.Fatalf("expected imported workflow to use request project: %#v", imported)
 	}
 	list := requestJSON[workflowListResponse](t, mux, http.MethodGet, "/api/v1/projects/project-1/workflows", nil, http.StatusOK)
-	if len(list.Workflows) != 0 {
-		t.Fatalf("project mismatch persisted workflow: %#v", list)
+	if len(list.Workflows) != 1 || list.Workflows[0].ProjectID != "project-1" {
+		t.Fatalf("expected workflow under request project: %#v", list)
 	}
 }
 

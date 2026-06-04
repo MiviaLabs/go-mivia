@@ -146,9 +146,9 @@ func (svc *Service) ImportWorkflowTOML(ctx context.Context, input ImportWorkflow
 	snapshotsByWorkflow := make([][]WorkflowPermissionSnapshot, 0, len(defs))
 	for _, def := range defs {
 		if projectID != "" {
-			if def.ProjectID != "" && def.ProjectID != projectID {
-				return ImportWorkflowTOMLResult{}, fmt.Errorf("%w: workflow project_id does not match request project", ErrInvalidInput)
-			}
+			// Checked-in workflow TOML is a reusable template. The request
+			// project is the import authority, so a project-scoped import
+			// deliberately rebinds workflow metadata to that project.
 			def.ProjectID = projectID
 		}
 		workflow, err := svc.prepareWorkflow(def, input.CreatedByRunID, input.TraceID, true)

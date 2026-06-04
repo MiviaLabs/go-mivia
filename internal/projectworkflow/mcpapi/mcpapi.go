@@ -37,7 +37,7 @@ var workflowTools = []string{
 func ToolDefinitions() []map[string]any {
 	ref := map[string]any{"type": "string", "minLength": 1, "maxLength": 200}
 	text := map[string]any{"type": "string", "minLength": 1, "maxLength": 500}
-	workflowTOML := map[string]any{"type": "string", "minLength": 1, "maxLength": 20000}
+	workflowTOML := map[string]any{"type": "string", "minLength": 1}
 	pageFields := map[string]any{
 		"page_size":  map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
 		"page_token": map[string]any{"type": "string", "maxLength": 20},

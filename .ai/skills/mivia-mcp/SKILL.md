@@ -52,7 +52,7 @@ projects.permission_snapshots.list
 Rules:
 
 1. Validate TOML before import. Validation returns metadata and issues only.
-2. Import stores workflow metadata only. Import does not create execution runs and does not bypass Work Plans or Work Tasks.
+2. Import stores workflow metadata only. Import does not create execution runs and does not bypass Work Plans or Work Tasks. The request project id is authoritative: checked-in workflow TOML can be reused as a template for another configured project, and project-scoped import rebinds workflow metadata to that project.
 3. Enable workflow metadata only after review gates, verifier requirements, evidence/claim refs, resume instructions, safe affected-file refs, and permission metadata are present.
 4. Compile with `projects.workflows.compile_to_work_plan` before automation. Compile creates or returns Work Plan, Work Task, reviewer task, automation, and permission snapshot refs; it does not run automation.
 5. Required review gates must be independent when `independent_from_owner=true`; a reviewer agent cannot review the same agent's implementation or automation step.

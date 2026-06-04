@@ -3,6 +3,8 @@ package projectworkflow
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +119,37 @@ func TestServiceImportCreatesPermissionSnapshotForEveryAgent(t *testing.T) {
 	}
 	if !seen["worker"] || !seen["reviewer"] {
 		t.Fatalf("missing agent snapshots: %#v", seen)
+	}
+}
+
+func TestServiceImportConfigWorkflowDefinitions(t *testing.T) {
+	ctx := context.Background()
+	paths, err := filepath.Glob(filepath.Join("..", "..", "configs", "workflows", "*.toml"))
+	if err != nil {
+		t.Fatalf("glob workflow definitions: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("expected workflow definitions")
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read workflow definition: %v", err)
+			}
+			store := newWorkflowServiceStore()
+			svc := testWorkflowService(store)
+			result, err := svc.ImportWorkflowTOML(ctx, ImportWorkflowTOMLInput{ProjectID: "mass-monorepo", Data: data, CreatedByRunID: "run-import", TraceID: "trace-import"})
+			if err != nil {
+				t.Fatalf("import checked-in workflow: %v issues=%#v", err, result.ValidationIssues)
+			}
+			if len(result.Workflows) != 1 {
+				t.Fatalf("expected one imported workflow, got %#v", result.Workflows)
+			}
+			if len(result.PermissionSnapshotIDs) == 0 {
+				t.Fatalf("expected permission snapshots for imported workflow, got %#v", result)
+			}
+		})
 	}
 }
 

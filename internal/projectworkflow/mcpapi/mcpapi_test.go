@@ -279,18 +279,23 @@ func TestCallToolImportGetListAndPermissionSnapshots(t *testing.T) {
 	}
 }
 
-func TestCallToolImportRejectsProjectMismatch(t *testing.T) {
+func TestCallToolImportRebindsWorkflowToRequestProject(t *testing.T) {
 	ctx := context.Background()
 	svc := projectworkflow.New(workflowstore.NewMemoryStore())
-	if _, err := CallTool(ctx, svc, "projects.workflows.import_toml", mustArgs(t, map[string]any{"id": "project-2", "toml": workflowMCPValidTOML()})); err == nil {
-		t.Fatal("expected project-scoped import mismatch to fail")
+	result, err := CallTool(ctx, svc, "projects.workflows.import_toml", mustArgs(t, map[string]any{"id": "project-2", "toml": workflowMCPValidTOML()}))
+	if err != nil {
+		t.Fatalf("expected project-scoped import to rebind workflow: %v", err)
 	}
-	workflows, err := svc.ListWorkflows(ctx, projectworkflow.WorkflowFilter{ProjectID: "project-1"})
+	imported := result["structuredContent"].(projectworkflow.ImportWorkflowTOMLResult)
+	if len(imported.Workflows) != 1 || imported.Workflows[0].ProjectID != "project-2" {
+		t.Fatalf("expected import to use request project, got %#v", imported)
+	}
+	workflows, err := svc.ListWorkflows(ctx, projectworkflow.WorkflowFilter{ProjectID: "project-2"})
 	if err != nil {
 		t.Fatalf("list workflows: %v", err)
 	}
-	if len(workflows) != 0 {
-		t.Fatalf("mismatched import persisted workflow: %#v", workflows)
+	if len(workflows) != 1 || workflows[0].ProjectID != "project-2" {
+		t.Fatalf("expected rebound workflow to persist under request project: %#v", workflows)
 	}
 }
 
