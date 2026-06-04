@@ -261,7 +261,85 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 		_, _, _ = svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now")
 		return GitCreateWorktreeResult{}, ErrGitUnavailable
 	}
+	metadataName := safeWorktreeDirName(project.ID + "-" + worktreeRef)
+	if err := restoreWorktreeOwnership(project.CanonicalRootPath, target, metadataName, branchRef); err != nil {
+		return GitCreateWorktreeResult{}, ErrGitUnavailable
+	}
+	if err := svc.verifyCreatedWorktree(ctx, target, branchRef); err != nil {
+		_, _, _ = svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now")
+		return GitCreateWorktreeResult{}, err
+	}
 	return result, nil
+}
+
+func restoreWorktreeOwnership(root string, target string, metadataName string, branchRef string) error {
+	uid, gid, ok := filesystemOwner(root)
+	if !ok || os.Geteuid() != 0 {
+		return nil
+	}
+	paths := []string{
+		filepath.Join(root, ".mivia-worktrees"),
+		target,
+		filepath.Join(root, ".git", "worktrees", metadataName),
+		filepath.Join(root, ".git", "refs", "heads", filepath.FromSlash(branchRef)),
+		filepath.Join(root, ".git", "logs", "refs", "heads", filepath.FromSlash(branchRef)),
+	}
+	for _, path := range paths {
+		if err := chownTree(path, uid, gid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func filesystemOwner(path string) (int, int, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, false
+	}
+	return int(stat.Uid), int(stat.Gid), true
+}
+
+func chownTree(path string, uid int, gid int) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return filepath.Walk(path, func(current string, _ os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Lchown(current, uid, gid)
+	})
+}
+
+func (svc *Service) verifyCreatedWorktree(ctx context.Context, target string, branchRef string) error {
+	out, _, err := svc.git.Run(ctx, target, 64, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return ErrGitUnavailable
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return ErrGitUnavailable
+	}
+	out, _, err = svc.git.Run(ctx, target, 256, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return ErrGitUnavailable
+	}
+	if strings.TrimSpace(string(out)) != branchRef {
+		return ErrGitUnavailable
+	}
+	return nil
 }
 
 func (svc *Service) ReadFile(ctx context.Context, projectID string, options ReadFileOptions) (WorkspaceFile, error) {
@@ -304,12 +382,11 @@ func safeGitRef(value string) (string, error) {
 
 func worktreeTargetPath(project projectregistry.Project, worktreeRef string) (string, error) {
 	root := filepath.Clean(project.CanonicalRootPath)
-	parent := filepath.Dir(root)
 	name := safeWorktreeDirName(project.ID + "-" + worktreeRef)
 	if name == "" {
 		return "", ErrInvalidInput
 	}
-	base := filepath.Join(parent, ".mivia-worktrees", project.ID)
+	base := filepath.Join(root, ".mivia-worktrees", project.ID)
 	target := filepath.Join(base, name)
 	cleanTarget := filepath.Clean(target)
 	relative, err := filepath.Rel(base, cleanTarget)

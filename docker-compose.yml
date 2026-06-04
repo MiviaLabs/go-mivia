@@ -44,6 +44,8 @@ services:
     init: true
     entrypoint: []
     user: "${MIVIA_CONTAINER_USER:-10001:10001}"
+    healthcheck:
+      disable: true
     command:
       - mivia-automation-runner
       - --server

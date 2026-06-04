@@ -495,7 +495,6 @@ func schema(properties map[string]any, required []string) map[string]any {
 		"additionalProperties": false,
 		"properties":           properties,
 	}
-	required, _ = optionalizeIDRequired(required)
 	if len(required) > 0 {
 		out["required"] = required
 	}
@@ -622,7 +621,6 @@ func hasUnsafeValue(value any) bool {
 		"wsl.localhost",
 		"c:\\",
 		"\\\\",
-		"..",
 	} {
 		if strings.Contains(lower, marker) {
 			return true

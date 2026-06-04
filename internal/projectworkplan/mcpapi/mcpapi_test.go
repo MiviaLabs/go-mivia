@@ -31,6 +31,25 @@ func TestToolDefinitionsExposeAllWorkPlanTools(t *testing.T) {
 				t.Fatalf("%v schema exposes top-level %s", name, forbidden)
 			}
 		}
+		if schema["type"] != "object" {
+			t.Fatalf("%v schema must be a top-level object, got %#v", name, schema["type"])
+		}
+		if _, ok := schema["enum"]; ok {
+			t.Fatalf("%v schema exposes top-level enum", name)
+		}
+		required, _ := schema["required"].([]string)
+		if required == nil {
+			if raw, ok := schema["required"].([]any); ok {
+				for _, value := range raw {
+					if text, ok := value.(string); ok {
+						required = append(required, text)
+					}
+				}
+			}
+		}
+		if !containsString(required, "id") {
+			t.Fatalf("%v schema must require id for project-scoped calls, required=%#v", name, required)
+		}
 	}
 	for _, name := range workPlanTools {
 		if !bytes.Contains(encoded, []byte(`"name":"`+name+`"`)) {
@@ -45,6 +64,15 @@ func TestToolDefinitionsExposeAllWorkPlanTools(t *testing.T) {
 			t.Fatalf("tool descriptions/schemas missing %q in %s", required, string(encoded))
 		}
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCallToolPlanLifecycleReturnsMetadataOnlyShape(t *testing.T) {
@@ -156,6 +184,21 @@ func TestCallToolCreateTaskAllowsRichMetadataAndSafetyGuidance(t *testing.T) {
 	for _, want := range []string{"files_to_read", "files_to_edit", "review_gate", "data/dashboard-operations-redesign-plan-2026-06-04.md"} {
 		if !bytes.Contains(jsonText(t, task), []byte(want)) {
 			t.Fatalf("expected rich metadata %q in response: %s", want, jsonText(t, task))
+		}
+	}
+}
+
+func TestCallToolCreateTaskAllowsHiddenDirectoryPathMetadata(t *testing.T) {
+	api := newFakeWorkPlanAPI()
+	plan := call(t, api, "projects.work_plans.create", `{"id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"Expose metadata-only work plan tools"}`)
+	planID := structuredString(t, plan, "plan_id")
+	task := call(t, api, "projects.work_tasks.create", `{"id":"example-service","plan_id":"`+planID+`","task_ref":"task/docs","title":"Update docs","description":"Docs-only metadata task with project-relative paths.","status":"ready","evidence_needed":["current docs"],"files_to_read":[".ai/skills/mivia-mcp/SKILL.md",".devcontainer/docker-compose.mivia.example.yml","configs/mivia-server.example.toml"],"files_to_edit":[".ai/skills/mivia-mcp/SKILL.md",".devcontainer/docker-compose.mivia.example.yml","configs/mivia-server.example.toml"],"likely_files_affected":[".ai/skills/mivia-mcp/SKILL.md",".devcontainer/docker-compose.mivia.example.yml","configs/mivia-server.example.toml"],"verification_requirement":"diff check","resume_instructions":"update docs and verify","decomposition_quality":"ready"}`)
+	if structuredString(t, task, "task_id") == "" {
+		t.Fatalf("expected task id in hidden-path create response: %s", jsonText(t, task))
+	}
+	for _, want := range []string{".ai/skills/mivia-mcp/SKILL.md", ".devcontainer/docker-compose.mivia.example.yml", "configs/mivia-server.example.toml"} {
+		if !bytes.Contains(jsonText(t, task), []byte(want)) {
+			t.Fatalf("expected hidden path metadata %q in response: %s", want, jsonText(t, task))
 		}
 	}
 }

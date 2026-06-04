@@ -545,19 +545,23 @@ func TestWorkspaceService_GitCreateWorktreeUsesSafeRefsAndDoesNotReturnPath(t *t
 	if strings.Contains(result.IsolationRef, root) {
 		t.Fatalf("result leaked root: %#v", result)
 	}
-	if runner.root != filepath.Clean(root) {
-		t.Fatalf("expected git to run at root %q, got %q", filepath.Clean(root), runner.root)
+	if len(runner.calls) < 3 || runner.roots[0] != filepath.Clean(root) {
+		t.Fatalf("expected first git call at root %q, roots=%#v calls=%#v", filepath.Clean(root), runner.roots, runner.calls)
 	}
-	if len(runner.args) != 6 || runner.args[0] != "worktree" || runner.args[1] != "add" || runner.args[2] != "-b" || runner.args[3] != "codex/plan-1" || runner.args[5] != "main" {
-		t.Fatalf("unexpected git worktree args: %#v", runner.args)
+	addArgs := runner.calls[0]
+	if len(addArgs) != 6 || addArgs[0] != "worktree" || addArgs[1] != "add" || addArgs[2] != "-b" || addArgs[3] != "codex/plan-1" || addArgs[5] != "main" {
+		t.Fatalf("unexpected git worktree args: %#v", addArgs)
 	}
-	if !strings.Contains(runner.args[4], ".mivia-worktrees") || strings.Contains(runner.args[4], "worktree/plan-1") {
-		t.Fatalf("expected internal sanitized target path, got %#v", runner.args)
+	if !strings.Contains(addArgs[4], ".mivia-worktrees") || strings.Contains(addArgs[4], "worktree/plan-1") {
+		t.Fatalf("expected internal sanitized target path, got %#v", addArgs)
+	}
+	if runner.roots[1] != addArgs[4] || runner.roots[2] != addArgs[4] {
+		t.Fatalf("expected worktree verification to run in target %q, roots=%#v", addArgs[4], runner.roots)
 	}
 
 	encoded := strings.Join([]string{result.ProjectID, result.WorktreeRef, result.BranchRef, result.BaseRef, result.IsolationRef}, " ")
-	if strings.Contains(encoded, root) || strings.Contains(encoded, runner.args[4]) {
-		t.Fatalf("metadata result leaked filesystem target: result=%#v target=%q", result, runner.args[4])
+	if strings.Contains(encoded, root) || strings.Contains(encoded, addArgs[4]) {
+		t.Fatalf("metadata result leaked filesystem target: result=%#v target=%q", result, addArgs[4])
 	}
 }
 
@@ -578,6 +582,26 @@ func TestWorkspaceService_GitCreateWorktreeRejectsMissingTargetAfterGitSuccess(t
 	}
 	if !runner.sawWorktreePrune() {
 		t.Fatalf("expected missing target to trigger stale worktree prune, got %#v", runner.calls)
+	}
+}
+
+func TestWorkspaceService_GitCreateWorktreeRejectsInvalidTargetAfterGitSuccess(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	runner := &recordingGitRunner{createWorktreeTarget: true, failWorktreeVerify: true}
+	svc.SetGitRunner(runner)
+
+	_, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
+		WorktreeRef: "worktree/plan-1",
+		BranchRef:   "codex/plan-1",
+		BaseRef:     "main",
+	})
+	if !errors.Is(err, ErrGitUnavailable) {
+		t.Fatalf("expected invalid target to be reported as git unavailable, got %v", err)
+	}
+	if !runner.sawWorktreePrune() {
+		t.Fatalf("expected invalid target to trigger stale worktree prune, got %#v", runner.calls)
 	}
 }
 
@@ -767,16 +791,20 @@ func (runner contextErrorGitRunner) Run(context.Context, string, int, ...string)
 
 type recordingGitRunner struct {
 	root                 string
+	roots                []string
 	args                 []string
 	calls                [][]string
 	out                  []byte
 	createWorktreeTarget bool
 	failFirstWorktreeAdd bool
+	failWorktreeVerify   bool
+	worktreeBranch       string
 	worktreeAddCalls     int
 }
 
 func (runner *recordingGitRunner) Run(_ context.Context, root string, _ int, args ...string) ([]byte, bool, error) {
 	runner.root = root
+	runner.roots = append(runner.roots, root)
 	runner.args = append([]string(nil), args...)
 	runner.calls = append(runner.calls, append([]string(nil), args...))
 	if len(args) >= 2 && args[0] == "worktree" && args[1] == "add" {
@@ -789,6 +817,19 @@ func (runner *recordingGitRunner) Run(_ context.Context, root string, _ int, arg
 		if err := os.MkdirAll(args[4], 0o700); err != nil {
 			return nil, false, err
 		}
+	}
+	if len(args) == 2 && args[0] == "rev-parse" && args[1] == "--is-inside-work-tree" {
+		if runner.failWorktreeVerify {
+			return nil, false, errors.New("not a valid worktree")
+		}
+		return []byte("true\n"), false, nil
+	}
+	if len(args) == 3 && args[0] == "rev-parse" && args[1] == "--abbrev-ref" && args[2] == "HEAD" {
+		branch := runner.worktreeBranch
+		if branch == "" {
+			branch = "codex/plan-1"
+		}
+		return []byte(branch + "\n"), false, nil
 	}
 	if runner.out != nil {
 		return runner.out, false, nil

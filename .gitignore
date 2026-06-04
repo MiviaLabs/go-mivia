@@ -23,6 +23,7 @@ coverage.*
 
 # Local datastore files
 /data/
+.mivia-worktrees/
 *.lbug
 *.lbug-wal
 *.lbug-shm
