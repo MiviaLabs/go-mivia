@@ -710,6 +710,19 @@ func readyTask(id string, ref string, files []string) projectworkplan.WorkTask {
 	}
 }
 
+func TestValidateAllowedTaskRefAcceptsTaskIDOrTaskRef(t *testing.T) {
+	task := readyTask("work_task_123", "task/ref", []string{"internal/foo.go"})
+	for _, allowed := range []string{"work_task_123", "task/ref"} {
+		automation := Automation{AllowedTaskRefs: []string{allowed}}
+		if err := validateAllowedTaskRef(automation, task); err != nil {
+			t.Fatalf("expected allowed task ref %q to pass, got %v", allowed, err)
+		}
+	}
+	if err := validateAllowedTaskRef(Automation{AllowedTaskRefs: []string{"other-task"}}, task); err == nil {
+		t.Fatal("expected unrelated allowed task ref to fail")
+	}
+}
+
 type fakeWorkTasks struct {
 	tasks         map[string]projectworkplan.WorkTask
 	evidenceRefs  []string

@@ -34,6 +34,7 @@ var workPlanTools = []string{
 	"projects.work_tasks.complete",
 	"projects.work_tasks.fail",
 	"projects.work_tasks.block",
+	"projects.work_tasks.list",
 	"projects.work_tasks.list_open",
 	"projects.work_tasks.list_mine",
 	"projects.work_tasks.list_blocked",
@@ -70,7 +71,7 @@ func ToolDefinitions() []map[string]any {
 		tool("projects.work_plans.resume", "Resume Work Plan", "MUST be used when an agent resumes a session, enters an existing project, or asks what was happening. Prior state: project id is known; plan_id is optional if service can select the active plan. Required fields: id. Safety: return current plan, current task, open mine, blocked summary, and next safe task hint as metadata only. Next tool: projects.work_tasks.get_next or projects.work_tasks.list_mine. Must not rely on prior chat memory.",
 			schema(map[string]any{"id": ref, "plan_id": ref, "owner_agent": ref, "run_id": ref, "trace_id": ref}, []string{"id"})),
 		tool("projects.work_tasks.create", "Create Work Task", "MUST create small dependency-aware tasks suitable for an isolated low-intelligence worker. Prior state: a Work Plan exists. Required fields: id, plan_id, task_ref, title, evidence_needed, likely_files_affected or discovery scope in description, verification_requirement, and resume_instructions. The task must be executable from its metadata and attached refs alone, without prior chat memory or hidden orchestrator context; verification must be written so the orchestrator can run it independently. Safety: refs and bounded metadata only; reject broad or vague work. Next tool: projects.work_tasks.claim after dependencies are ready. Must not store raw context pack contents or source dumps.",
-			schema(map[string]any{"id": ref, "plan_id": ref, "task_ref": ref, "title": text, "description": optionalText, "owner_agent": ref, "evidence_needed": refArray, "context_pack_refs": refArray, "likely_files_affected": fileArray, "dependency_task_ids": refArray, "verification_requirement": longText, "resume_instructions": longText, "expected_output": optionalText, "failure_block_criteria": optionalText, "knowledge_candidate_expectation": optionalText, "run_id": ref, "trace_id": ref}, []string{"id", "plan_id", "task_ref", "title", "evidence_needed", "verification_requirement", "resume_instructions"})),
+			schema(map[string]any{"id": ref, "plan_id": ref, "task_ref": ref, "title": text, "description": optionalText, "status": statusSchema(nonTerminalTaskStatuses()), "owner_agent": ref, "evidence_needed": refArray, "context_pack_refs": refArray, "files_to_read": fileArray, "files_to_edit": fileArray, "likely_files_affected": fileArray, "dependency_task_ids": refArray, "verification_requirement": longText, "resume_instructions": longText, "expected_output": optionalText, "failure_criteria": optionalText, "failure_block_criteria": optionalText, "review_gate": optionalText, "knowledge_candidate_expectation": optionalText, "decomposition_quality": statusSchema(decompositionQualities()), "run_id": ref, "trace_id": ref}, []string{"id", "plan_id", "task_ref", "title", "evidence_needed", "verification_requirement", "resume_instructions"})),
 		tool("projects.work_tasks.get", "Get Work Task", "MUST be used to inspect one existing Work Task before changing task state, attaching refs, or resuming task execution. Prior state: project id and task_id are known. Required fields: id and task_id. Safety: return bounded task metadata only; no raw prompt/source/log/provider material. Next tool: projects.work_tasks.claim, start, update_status, or complete according to lifecycle.",
 			schema(map[string]any{"id": ref, "task_id": ref}, []string{"id", "task_id"})),
 		tool("projects.work_tasks.update_status", "Update Work Task Status", "MUST be used when a Work Task lifecycle state changes outside claim/start/complete/fail/block helpers, especially to cancel or supersede stale planned metadata. Prior state: projects.work_tasks.get or list_open identified the task. Required fields: id, task_id, status, and safe_next_action. Normal lifecycle is planned -> ready -> claimed -> in_progress -> needs_review -> verifying -> done; do not jump planned -> done. Safety: bounded metadata only; do not bypass verifier, independent review, Evidence Graph, confidence, or knowledge-decision requirements for done tasks. Next tool: projects.work_tasks.get_next or list_open.",
@@ -87,6 +88,8 @@ func ToolDefinitions() []map[string]any {
 			schema(map[string]any{"id": ref, "task_id": ref, "outcome": longText, "safe_next_action": text, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "outcome", "safe_next_action"})),
 		tool("projects.work_tasks.block", "Block Work Task", "MUST be used instead of silently stopping when a task cannot proceed. Prior state: task exists and a blocker is known. Required fields: id, task_id, blocked_reason, resume_instructions, and safe_next_action. Safety: redacted blocker metadata only. Next tool: projects.work_tasks.get_next or projects.work_tasks.list_blocked. Must not use raw logs, raw source, secrets, roots, or PII as blocker text.",
 			schema(map[string]any{"id": ref, "task_id": ref, "blocked_reason": longText, "resume_instructions": longText, "blocked_by_task_ids": refArray, "safe_next_action": text, "run_id": ref, "trace_id": ref}, []string{"id", "task_id", "blocked_reason", "resume_instructions", "safe_next_action"})),
+		tool("projects.work_tasks.list", "List Work Tasks", "Alias for projects.work_tasks.list_open. MUST be used to inspect ready or in-progress project work before choosing a task. Prior state: project id is known. Required fields: id; plan_id is optional. Safety: metadata-only task summaries. Next tool: projects.work_tasks.get_next or projects.work_tasks.claim.",
+			schema(merge(map[string]any{"id": ref, "plan_id": ref}, pageFields), []string{"id"})),
 		tool("projects.work_tasks.list_open", "List Open Work Tasks", "MUST be used to inspect ready or in-progress project work before choosing a task. Prior state: project id is known. Required fields: id; plan_id is optional. Safety: metadata-only task summaries. Next tool: projects.work_tasks.get_next or projects.work_tasks.claim. Must not infer readiness from stale chat notes.",
 			schema(merge(map[string]any{"id": ref, "plan_id": ref}, pageFields), []string{"id"})),
 		tool("projects.work_tasks.list_mine", "List My Work Tasks", "MUST be used to recover tasks owned or claimed by the current agent/run. Prior state: owner_agent or run_id is known. Required fields: id and either owner_agent or run_id. Safety: metadata-only summaries. Next tool: projects.work_tasks.start, complete, block, fail, or release based on status. Must not expose other agents' raw work payloads.",
@@ -128,6 +131,7 @@ func CallTool(ctx context.Context, api API, name string, arguments json.RawMessa
 	if canonical == "" {
 		return nil, ErrNotFound
 	}
+	arguments = normalizeProjectIDAlias(arguments)
 	if err := validateArguments(canonical, arguments); err != nil {
 		return nil, err
 	}
@@ -169,7 +173,7 @@ func validateArguments(name string, arguments json.RawMessage) error {
 		value = &failTaskInput{}
 	case "projects.work_tasks.block":
 		value = &blockTaskInput{}
-	case "projects.work_tasks.list_open", "projects.work_tasks.list_blocked":
+	case "projects.work_tasks.list", "projects.work_tasks.list_open", "projects.work_tasks.list_blocked":
 		value = &listTasksInput{}
 	case "projects.work_tasks.list_mine":
 		value = &listMineTasksInput{}
@@ -266,16 +270,22 @@ type createTaskInput struct {
 	TaskRef                       string          `json:"task_ref"`
 	Title                         string          `json:"title"`
 	Description                   string          `json:"description,omitempty"`
+	Status                        string          `json:"status,omitempty"`
 	OwnerAgent                    string          `json:"owner_agent,omitempty"`
 	EvidenceNeeded                []string        `json:"evidence_needed"`
 	ContextPackRefs               []string        `json:"context_pack_refs,omitempty"`
+	FilesToRead                   []string        `json:"files_to_read,omitempty"`
+	FilesToEdit                   []string        `json:"files_to_edit,omitempty"`
 	LikelyFilesAffected           []string        `json:"likely_files_affected,omitempty"`
 	DependencyTaskIDs             []string        `json:"dependency_task_ids,omitempty"`
 	VerificationRequirement       string          `json:"verification_requirement"`
 	ResumeInstructions            string          `json:"resume_instructions"`
 	ExpectedOutput                string          `json:"expected_output,omitempty"`
+	FailureCriteria               string          `json:"failure_criteria,omitempty"`
 	FailureBlockCriteria          string          `json:"failure_block_criteria,omitempty"`
+	ReviewGate                    string          `json:"review_gate,omitempty"`
 	KnowledgeCandidateExpectation string          `json:"knowledge_candidate_expectation,omitempty"`
+	DecompositionQuality          string          `json:"decomposition_quality,omitempty"`
 	RunID                         string          `json:"run_id,omitempty"`
 	TraceID                       string          `json:"trace_id,omitempty"`
 	Meta                          json.RawMessage `json:"_meta,omitempty"`
@@ -520,6 +530,14 @@ func planStatuses() []string {
 
 func taskStatuses() []string {
 	return []string{"planned", "ready", "claimed", "in_progress", "blocked", "needs_review", "verifying", "done", "failed", "cancelled", "superseded"}
+}
+
+func nonTerminalTaskStatuses() []string {
+	return []string{"planned", "ready", "claimed", "in_progress", "blocked", "needs_review", "verifying"}
+}
+
+func decompositionQualities() []string {
+	return []string{"draft", "ready", "too_broad", "missing_evidence", "missing_context", "missing_verification", "missing_resume"}
 }
 
 func merge(first map[string]any, second map[string]any) map[string]any {

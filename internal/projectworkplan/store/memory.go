@@ -183,6 +183,8 @@ func (store *MemoryStore) ListAttachments(_ context.Context, projectID, taskID s
 func cloneTask(task projectworkplan.WorkTask) projectworkplan.WorkTask {
 	task.EvidenceNeeded = append([]string(nil), task.EvidenceNeeded...)
 	task.ContextPackRefs = append([]string(nil), task.ContextPackRefs...)
+	task.FilesToRead = append([]string(nil), task.FilesToRead...)
+	task.FilesToEdit = append([]string(nil), task.FilesToEdit...)
 	task.LikelyFilesAffected = append([]string(nil), task.LikelyFilesAffected...)
 	task.DependencyTaskIDs = append([]string(nil), task.DependencyTaskIDs...)
 	task.BlockedByTaskIDs = append([]string(nil), task.BlockedByTaskIDs...)

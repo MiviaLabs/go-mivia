@@ -520,7 +520,7 @@ func TestCallToolWithWorkspace_GitWorktreeCreate(t *testing.T) {
 	}
 
 	result, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects_workspace_git_worktree_create", marshalArgs(t, map[string]any{
-		"id":           "example-service",
+		"project_id":   "example-service",
 		"worktree_ref": "worktree/mcp-plan",
 		"branch_ref":   "codex/mcp-plan",
 		"base_ref":     "main",

@@ -803,6 +803,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 	case "projects.workspace.git_worktree_create", "projects_workspace_git_worktree_create":
 		var input struct {
 			ID          string          `json:"id"`
+			ProjectID   string          `json:"project_id,omitempty"`
 			WorktreeRef string          `json:"worktree_ref"`
 			BranchRef   string          `json:"branch_ref"`
 			BaseRef     string          `json:"base_ref,omitempty"`
@@ -812,13 +813,14 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 		if err := decodeRaw(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid workspace arguments", projectregistry.ErrInvalidInput)
 		}
-		if err := validateWorkspaceProjectID(input.ID); err != nil {
+		projectID := projectIDAlias(input.ID, input.ProjectID)
+		if err := validateWorkspaceProjectID(projectID); err != nil {
 			return nil, err
 		}
 		if workspace == nil {
 			return nil, projectworkspace.ErrWorkspaceDisabled
 		}
-		result, err := workspace.GitCreateWorktree(ctx, strings.TrimSpace(input.ID), projectworkspace.GitCreateWorktreeOptions{
+		result, err := workspace.GitCreateWorktree(ctx, projectID, projectworkspace.GitCreateWorktreeOptions{
 			WorktreeRef: input.WorktreeRef,
 			BranchRef:   input.BranchRef,
 			BaseRef:     input.BaseRef,
@@ -983,6 +985,13 @@ func ReadResourceWithIngestion(ctx context.Context, registry *projectregistry.Re
 		return resourceResult(uri, outline)
 	}
 	return nil, projectregistry.ErrProjectNotFound
+}
+
+func projectIDAlias(id string, projectID string) string {
+	if strings.TrimSpace(projectID) != "" {
+		return strings.TrimSpace(projectID)
+	}
+	return strings.TrimSpace(id)
 }
 
 func validateWorkspaceProjectID(id string) error {
@@ -1373,6 +1382,7 @@ func workspaceToolDefinitions() []map[string]any {
 			"description": "Create one dedicated git worktree for an opted-in edit-mode local project from safe refs. Returns only metadata refs; never returns roots, filesystem paths, raw command lines, or raw stderr. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
 			"inputSchema": objectSchema(map[string]any{
 				"id":           map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
+				"project_id":   map[string]any{"type": "string", "minLength": 1, "description": "Preferred project id or safe alias returned by projects.list/projects.get."},
 				"worktree_ref": map[string]any{"type": "string", "minLength": 1, "maxLength": 200, "description": "Opaque per-plan worktree ref, not a filesystem path."},
 				"branch_ref":   map[string]any{"type": "string", "minLength": 1, "maxLength": 200, "description": "Per-plan branch ref to create."},
 				"base_ref":     map[string]any{"type": "string", "maxLength": 200, "description": "Safe base ref. Defaults to HEAD."},

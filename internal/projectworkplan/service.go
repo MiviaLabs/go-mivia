@@ -266,6 +266,14 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	if err != nil {
 		return WorkTask{}, err
 	}
+	filesToRead, err := safePathList(input.FilesToRead, "files_to_read")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	filesToEdit, err := safePathList(input.FilesToEdit, "files_to_edit")
+	if err != nil {
+		return WorkTask{}, err
+	}
 	files, err := safePathList(input.LikelyFilesAffected, "likely_files_affected")
 	if err != nil {
 		return WorkTask{}, err
@@ -283,6 +291,10 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 		return WorkTask{}, err
 	}
 	failure, err := safeOptionalText(input.FailureCriteria, "failure_criteria", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	reviewGate, err := safeOptionalText(input.ReviewGate, "review_gate", 500)
 	if err != nil {
 		return WorkTask{}, err
 	}
@@ -306,7 +318,16 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	if quality == DecompositionReady {
 		status = WorkTaskStatusReady
 	}
-	return WorkTask{ID: svc.newID("work_task"), ProjectID: projectID, PlanID: planID, TaskRef: taskRef, Title: title, Description: description, Status: status, OwnerAgent: owner, TraceID: traceID, EvidenceNeeded: evidence, ContextPackRefs: contextRefs, LikelyFilesAffected: files, DependencyTaskIDs: deps, VerificationRequirement: verify, ExpectedOutput: expected, FailureCriteria: failure, ResumeInstructions: resume, KnowledgeCandidateRefs: knowledgeRefs, AgentRunIDs: optionalRefSlice(runID), DecompositionQuality: quality, CreatedAt: now, UpdatedAt: now}, nil
+	if input.Status != "" {
+		status, err = safeTaskStatus(input.Status)
+		if err != nil {
+			return WorkTask{}, err
+		}
+		if isTerminalTaskStatus(status) {
+			return WorkTask{}, fmt.Errorf("%w: create task status cannot be terminal", ErrInvalidInput)
+		}
+	}
+	return WorkTask{ID: svc.newID("work_task"), ProjectID: projectID, PlanID: planID, TaskRef: taskRef, Title: title, Description: description, Status: status, OwnerAgent: owner, TraceID: traceID, EvidenceNeeded: evidence, ContextPackRefs: contextRefs, FilesToRead: filesToRead, FilesToEdit: filesToEdit, LikelyFilesAffected: files, DependencyTaskIDs: deps, VerificationRequirement: verify, ExpectedOutput: expected, FailureCriteria: failure, ReviewGate: reviewGate, ResumeInstructions: resume, KnowledgeCandidateRefs: knowledgeRefs, AgentRunIDs: optionalRefSlice(runID), DecompositionQuality: quality, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (svc *Service) GetWorkTask(ctx context.Context, projectID, taskID string) (WorkTask, error) {
@@ -950,10 +971,33 @@ func safeOptionalText(value string, name string, max int) (string, error) {
 	if len(value) > max {
 		return "", fmt.Errorf("%w: %s is too long", ErrInvalidInput, name)
 	}
-	if containsUnsafeMarker(value) || emailPattern.MatchString(value) || phonePattern.MatchString(value) {
+	piiCheckValue := redactSafePathTokens(value)
+	if containsUnsafeMarker(value) || emailPattern.MatchString(piiCheckValue) || phonePattern.MatchString(piiCheckValue) {
 		return "", fmt.Errorf("%w: %s contains unsafe content", ErrInvalidInput, name)
 	}
 	return value, nil
+}
+
+func redactSafePathTokens(value string) string {
+	fields := strings.Fields(value)
+	for index, field := range fields {
+		trimmed := strings.Trim(field, ".,;:()[]{}<>\"'")
+		normalized := filepath.ToSlash(trimmed)
+		if strings.Contains(normalized, "/") && safePathToken(normalized) {
+			fields[index] = strings.Replace(field, trimmed, "path-ref", 1)
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
+func safePathToken(value string) bool {
+	if value == "" || strings.HasPrefix(value, "/") || strings.HasPrefix(value, "\\") || strings.HasPrefix(value, "~") || strings.Contains(value, "..") || strings.Contains(value, ":") || filepath.IsAbs(value) || containsRootMarker(value) {
+		return false
+	}
+	if strings.ContainsAny(value, "\x00\r\n\t") {
+		return false
+	}
+	return true
 }
 
 func safeTextList(values []string, name string, max int) ([]string, error) {

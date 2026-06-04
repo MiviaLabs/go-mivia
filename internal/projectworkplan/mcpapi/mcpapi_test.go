@@ -30,11 +30,11 @@ func TestToolDefinitionsExposeAllWorkPlanTools(t *testing.T) {
 
 func TestCallToolPlanLifecycleReturnsMetadataOnlyShape(t *testing.T) {
 	api := newFakeWorkPlanAPI()
-	plan := call(t, api, "projects.work_plans.create", `{"id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"Expose metadata-only work plan tools","owner_agent":"worker-4","isolation_mode":"dedicated_worktree","parallel_group_ref":"parallel/ref","workspace_ref":"workspace/ref","git_base_ref":"main","git_branch_ref":"codex/mcp-plan","git_worktree_ref":"worktree/mcp-plan"}`)
+	plan := call(t, api, "projects.work_plans.create", `{"project_id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"Expose metadata-only work plan tools","owner_agent":"worker-4","isolation_mode":"dedicated_worktree","parallel_group_ref":"parallel/ref","workspace_ref":"workspace/ref","git_base_ref":"main","git_branch_ref":"codex/mcp-plan","git_worktree_ref":"worktree/mcp-plan"}`)
 	planID := structuredString(t, plan, "plan_id")
-	list := call(t, api, "projects.work_plans.list", `{"id":"example-service"}`)
-	got := call(t, api, "projects.work_plans.get", `{"id":"example-service","plan_id":"`+planID+`"}`)
-	updated := call(t, api, "projects.work_plans.update_status", `{"id":"example-service","plan_id":"`+planID+`","status":"active","safe_next_action":"create bounded tasks"}`)
+	list := call(t, api, "projects.work_plans.list", `{"project_id":"example-service"}`)
+	got := call(t, api, "projects.work_plans.get", `{"project_id":"example-service","plan_id":"`+planID+`"}`)
+	updated := call(t, api, "projects.work_plans.update_status", `{"project_id":"example-service","plan_id":"`+planID+`","status":"active","safe_next_action":"create bounded tasks"}`)
 
 	for _, result := range []map[string]any{plan, list, got, updated} {
 		requireCommonOutput(t, result)
@@ -56,7 +56,7 @@ func TestCallToolTaskLifecycleAttachmentsResumeAndNext(t *testing.T) {
 	api := newFakeWorkPlanAPI()
 	plan := call(t, api, "projects.work_plans.create", `{"id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"Expose metadata-only work plan tools"}`)
 	planID := structuredString(t, plan, "plan_id")
-	taskBody := `{"id":"example-service","plan_id":"` + planID + `","task_ref":"task/ref","title":"Wire MCP","evidence_needed":["source patterns"],"likely_files_affected":["internal/agentcontrol/mcpapi/mcpapi.go"],"verification_requirement":"focused MCP tests","resume_instructions":"continue from tool routing"}`
+	taskBody := `{"id":"example-service","plan_id":"` + planID + `","task_ref":"task/ref","title":"Wire MCP","description":"Files to read include internal/projectworkplan/mcpapi/mcpapi.go.","status":"ready","evidence_needed":["source patterns"],"files_to_read":["internal/projectworkplan/mcpapi/mcpapi.go"],"files_to_edit":["internal/projectworkplan/mcpapi/mcpapi.go"],"likely_files_affected":["internal/agentcontrol/mcpapi/mcpapi.go"],"review_gate":"independent review required before completion","decomposition_quality":"ready","verification_requirement":"focused MCP tests","resume_instructions":"continue from tool routing"}`
 	task := call(t, api, "projects.work_tasks.create", taskBody)
 	taskID := structuredString(t, task, "task_id")
 	gotTask := call(t, api, "projects.work_tasks.get", `{"id":"example-service","task_id":"`+taskID+`"}`)
@@ -73,14 +73,19 @@ func TestCallToolTaskLifecycleAttachmentsResumeAndNext(t *testing.T) {
 	review := call(t, api, "projects.work_tasks.attach_review_result", `{"id":"example-service","task_id":"`+taskID+`","review_result_ref":"review-focused","status":"passed","attached_by_run_id":"agent_run_review"}`)
 	candidate := call(t, api, "projects.work_tasks.promote_knowledge_candidate", `{"id":"example-service","task_id":"`+taskID+`","knowledge_candidate_ref":"knowledge-candidate-1","claim_refs":["claim-1"],"evidence_refs":["evidence-1"],"confidence_ref":"confidence-1","verifier_result_refs":["go-test-focused"]}`)
 	complete := call(t, api, "projects.work_tasks.complete", `{"id":"example-service","task_id":"`+taskID+`","outcome":"MCP tools wired","safe_next_action":"get next task","verifier_result_refs":["go-test-focused"],"review_result_refs":["review-focused"],"claim_refs":["claim-1"],"evidence_refs":["evidence-1"],"knowledge_candidate_refs":["knowledge-candidate-1"]}`)
-	next := call(t, api, "projects.work_tasks.get_next", `{"id":"example-service","plan_id":"`+planID+`"}`)
-	resume := call(t, api, "projects.work_plans.resume", `{"id":"example-service","plan_id":"`+planID+`","owner_agent":"worker-4"}`)
+	next := call(t, api, "projects.work_tasks.get_next", `{"project_id":"example-service","plan_id":"`+planID+`"}`)
+	resume := call(t, api, "projects.work_plans.resume", `{"project_id":"example-service","plan_id":"`+planID+`","owner_agent":"worker-4"}`)
 
 	for _, result := range []map[string]any{task, gotTask, stale, cancelled, claim, start, evidence, contextPack, claimRef, verifier, review, candidate, complete, next, resume} {
 		requireCommonOutput(t, result)
 	}
 	if structuredString(t, gotTask, "task_id") != taskID {
 		t.Fatalf("expected get task %s, got %s", taskID, jsonText(t, gotTask))
+	}
+	for _, want := range []string{"files_to_read", "files_to_edit", "review_gate", "internal/projectworkplan/mcpapi/mcpapi.go"} {
+		if !bytes.Contains(jsonText(t, gotTask), []byte(want)) {
+			t.Fatalf("expected task metadata %q in get response: %s", want, jsonText(t, gotTask))
+		}
 	}
 	if structuredString(t, cancelled, "status") != "cancelled" {
 		t.Fatalf("expected cancelled stale task, got %#v", cancelled)
@@ -106,10 +111,11 @@ func TestCallToolBlockAndLists(t *testing.T) {
 
 	blocked := call(t, api, "projects.work_tasks.block", `{"id":"example-service","task_id":"`+taskID+`","blocked_reason":"waiting for service package","resume_instructions":"re-run after service worker lands","safe_next_action":"list blocked tasks"}`)
 	listBlocked := call(t, api, "projects_work_tasks_list_blocked", `{"id":"example-service","plan_id":"`+planID+`"}`)
+	listAlias := call(t, api, "projects.work_tasks.list", `{"id":"example-service","plan_id":"`+planID+`"}`)
 	listOpen := call(t, api, "projects.work_tasks.list_open", `{"id":"example-service","plan_id":"`+planID+`"}`)
 	listMine := call(t, api, "projects.work_tasks.list_mine", `{"id":"example-service","owner_agent":"worker-4"}`)
 
-	for _, result := range []map[string]any{blocked, listBlocked, listOpen, listMine} {
+	for _, result := range []map[string]any{blocked, listBlocked, listAlias, listOpen, listMine} {
 		requireCommonOutput(t, result)
 	}
 	if structuredString(t, blocked, "status") != "blocked" || !bytes.Contains(jsonText(t, listBlocked), []byte(taskID)) {
@@ -121,9 +127,14 @@ func TestCallToolCreateTaskAllowsRichMetadataAndSafetyGuidance(t *testing.T) {
 	api := newFakeWorkPlanAPI()
 	plan := call(t, api, "projects.work_plans.create", `{"id":"example-service","plan_ref":"plan/ref","title":"MCP surface","goal_summary":"Expose metadata-only work plan tools"}`)
 	planID := structuredString(t, plan, "plan_id")
-	task := call(t, api, "projects.work_tasks.create", `{"id":"example-service","plan_id":"`+planID+`","task_ref":"task/rich","title":"Prepare isolated fixture","description":"Metadata-only task; no raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, or PII.","owner_agent":"gpt-5.5-low-worker","evidence_needed":["current source and focused verifier refs"],"context_pack_refs":["context-pack:manifest:68c3ee2ad1556459"],"likely_files_affected":["tmp/mivia-workplan-smoke"],"verification_requirement":"orchestrator runs focused tests after worker output is reviewed","resume_instructions":"resume by claiming the next ready task and reading attached refs","expected_output":"safe metadata-only task output","failure_block_criteria":"block if metadata would expose credentials, roots, paths, raw prompts, source dumps, or provider payloads","knowledge_candidate_expectation":"none for smoke test","run_id":"agent_run_1","trace_id":"trace_1"}`)
+	task := call(t, api, "projects.work_tasks.create", `{"id":"example-service","plan_id":"`+planID+`","task_ref":"task/rich","title":"Prepare isolated fixture","description":"Metadata-only task for data/dashboard-operations-redesign-plan-2026-06-04.md.","status":"ready","owner_agent":"gpt-5.5-low-worker","evidence_needed":["current source and focused verifier refs"],"context_pack_refs":["context-pack:manifest:68c3ee2ad1556459"],"files_to_read":["data/dashboard-operations-redesign-plan-2026-06-04.md"],"files_to_edit":["internal/dashboard/httpapi/assets/app.js"],"likely_files_affected":["tmp/mivia-workplan-smoke"],"verification_requirement":"orchestrator runs focused tests after worker output is reviewed","resume_instructions":"resume by claiming the next ready task and reading attached refs","expected_output":"safe metadata-only task output","failure_criteria":"block if metadata would expose credentials, roots, paths, raw prompts, source dumps, or provider payloads","review_gate":"independent reviewer must pass before done","knowledge_candidate_expectation":"none for smoke test","decomposition_quality":"ready","run_id":"agent_run_1","trace_id":"trace_1"}`)
 	if structuredString(t, task, "task_id") == "" {
 		t.Fatalf("expected task id in rich create response: %s", jsonText(t, task))
+	}
+	for _, want := range []string{"files_to_read", "files_to_edit", "review_gate", "data/dashboard-operations-redesign-plan-2026-06-04.md"} {
+		if !bytes.Contains(jsonText(t, task), []byte(want)) {
+			t.Fatalf("expected rich metadata %q in response: %s", want, jsonText(t, task))
+		}
 	}
 }
 
@@ -249,12 +260,19 @@ func (api *fakeWorkPlanAPI) CallWorkPlanTool(_ context.Context, name string, arg
 		task["id"] = taskID
 		task["task_ref"] = input["task_ref"]
 		task["title"] = input["title"]
+		task["description"] = input["description"]
 		task["evidence_needed"] = arrayValue(input, "evidence_needed")
 		task["context_pack_refs"] = arrayValue(input, "context_pack_refs")
+		task["files_to_read"] = arrayValue(input, "files_to_read")
+		task["files_to_edit"] = arrayValue(input, "files_to_edit")
 		task["likely_files_affected"] = arrayValue(input, "likely_files_affected")
 		task["dependency_task_ids"] = arrayValue(input, "dependency_task_ids")
 		task["verification_requirement"] = input["verification_requirement"]
 		task["resume_instructions"] = input["resume_instructions"]
+		task["expected_output"] = input["expected_output"]
+		task["failure_criteria"] = input["failure_criteria"]
+		task["review_gate"] = input["review_gate"]
+		task["decomposition_quality"] = input["decomposition_quality"]
 		task["claim_refs"] = []string{}
 		task["evidence_refs"] = []string{}
 		task["verifier_result_refs"] = []string{}
@@ -285,7 +303,7 @@ func (api *fakeWorkPlanAPI) CallWorkPlanTool(_ context.Context, name string, arg
 		return api.updateTask(input, "failed", stringValue(input, "safe_next_action"), map[string]any{"outcome": input["outcome"]})
 	case "projects.work_tasks.block":
 		return api.updateTask(input, "blocked", stringValue(input, "safe_next_action"), map[string]any{"blocked_reason": input["blocked_reason"], "resume_instructions": input["resume_instructions"], "blocked_by_task_ids": arrayValue(input, "blocked_by_task_ids")})
-	case "projects.work_tasks.list_open":
+	case "projects.work_tasks.list", "projects.work_tasks.list_open":
 		return api.commonList(projectID, "listed", "claim next ready task", "tasks", maps(api.tasks)), nil
 	case "projects.work_tasks.list_mine":
 		return api.commonList(projectID, "listed", "continue claimed task", "tasks", maps(api.tasks)), nil

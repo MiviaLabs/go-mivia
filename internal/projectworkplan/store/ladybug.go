@@ -378,11 +378,14 @@ func workTaskNode(task model.WorkTask) ladybug.Node {
 		"trace_id":                 task.TraceID,
 		"evidence_needed":          joinList(task.EvidenceNeeded),
 		"context_pack_refs":        joinList(task.ContextPackRefs),
+		"files_to_read":            joinList(task.FilesToRead),
+		"files_to_edit":            joinList(task.FilesToEdit),
 		"likely_files_affected":    joinList(task.LikelyFilesAffected),
 		"dependency_task_ids":      joinList(task.DependencyTaskIDs),
 		"verification_requirement": task.VerificationRequirement,
 		"expected_output":          task.ExpectedOutput,
 		"failure_criteria":         task.FailureCriteria,
+		"review_gate":              task.ReviewGate,
 		"outcome":                  task.Outcome,
 		"resume_instructions":      task.ResumeInstructions,
 		"blocked_reason":           task.BlockedReason,
@@ -445,11 +448,14 @@ func nodeToWorkTask(node ladybug.Node) model.WorkTask {
 		TraceID:                 props["trace_id"],
 		EvidenceNeeded:          splitList(props["evidence_needed"]),
 		ContextPackRefs:         splitList(props["context_pack_refs"]),
+		FilesToRead:             splitList(props["files_to_read"]),
+		FilesToEdit:             splitList(props["files_to_edit"]),
 		LikelyFilesAffected:     splitList(props["likely_files_affected"]),
 		DependencyTaskIDs:       splitList(props["dependency_task_ids"]),
 		VerificationRequirement: props["verification_requirement"],
 		ExpectedOutput:          props["expected_output"],
 		FailureCriteria:         props["failure_criteria"],
+		ReviewGate:              props["review_gate"],
 		Outcome:                 props["outcome"],
 		ResumeInstructions:      props["resume_instructions"],
 		BlockedReason:           props["blocked_reason"],
@@ -559,6 +565,8 @@ func cloneWorkPlan(plan model.WorkPlan) model.WorkPlan {
 func cloneWorkTask(task model.WorkTask) model.WorkTask {
 	task.EvidenceNeeded = cloneStrings(task.EvidenceNeeded)
 	task.ContextPackRefs = cloneStrings(task.ContextPackRefs)
+	task.FilesToRead = cloneStrings(task.FilesToRead)
+	task.FilesToEdit = cloneStrings(task.FilesToEdit)
 	task.LikelyFilesAffected = cloneStrings(task.LikelyFilesAffected)
 	task.DependencyTaskIDs = cloneStrings(task.DependencyTaskIDs)
 	task.BlockedByTaskIDs = cloneStrings(task.BlockedByTaskIDs)

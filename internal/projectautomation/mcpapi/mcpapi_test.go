@@ -1,6 +1,8 @@
 package mcpapi
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -50,4 +52,55 @@ func TestIsAutomationToolAcceptsUnderscoreAlias(t *testing.T) {
 	if !IsAutomationTool("projects_automation_runs_claim_next") {
 		t.Fatal("expected external runner alias to be accepted")
 	}
+}
+
+func TestCallToolAcceptsProjectIDAlias(t *testing.T) {
+	api := &captureAutomationAPI{}
+	_, err := CallTool(context.Background(), api, "projects.automations.list", json.RawMessage(`{"project_id":"example-service"}`))
+	if err != nil {
+		t.Fatalf("CallTool returned error: %v", err)
+	}
+	if api.name != "projects.automations.list" {
+		t.Fatalf("unexpected tool name: %q", api.name)
+	}
+	var arguments map[string]string
+	if err := json.Unmarshal(api.arguments, &arguments); err != nil {
+		t.Fatalf("unmarshal normalized arguments: %v", err)
+	}
+	if arguments["id"] != "example-service" {
+		t.Fatalf("project_id alias was not normalized to id: %#v", arguments)
+	}
+	if _, ok := arguments["project_id"]; ok {
+		t.Fatalf("project_id should be stripped before strict service decoding: %#v", arguments)
+	}
+}
+
+func TestToolDefinitionsAllowIDOrProjectID(t *testing.T) {
+	for _, definition := range ToolDefinitions() {
+		schema, ok := definition["inputSchema"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing schema for %v", definition["name"])
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing schema properties for %v", definition["name"])
+		}
+		if _, ok := properties["project_id"]; !ok {
+			t.Fatalf("%v schema does not expose project_id", definition["name"])
+		}
+		if _, ok := schema["anyOf"]; !ok {
+			t.Fatalf("%v schema does not allow id/project_id alternatives", definition["name"])
+		}
+	}
+}
+
+type captureAutomationAPI struct {
+	name      string
+	arguments json.RawMessage
+}
+
+func (api *captureAutomationAPI) CallAutomationTool(_ context.Context, name string, arguments json.RawMessage) (any, error) {
+	api.name = name
+	api.arguments = append(json.RawMessage(nil), arguments...)
+	return map[string]string{"ok": "true"}, nil
 }

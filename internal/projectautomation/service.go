@@ -1074,7 +1074,7 @@ func validateAllowedTaskRef(automation Automation, task projectworkplan.WorkTask
 		return nil
 	}
 	for _, ref := range automation.AllowedTaskRefs {
-		if ref == task.TaskRef {
+		if ref == task.TaskRef || ref == task.ID {
 			return nil
 		}
 	}

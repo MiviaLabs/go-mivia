@@ -1639,21 +1639,48 @@ function workTaskDetail(projectID, task, emptyMessage) {
 
 function automationRunRows(runs) {
   if (!runs.length) return emptyText("No automation runs returned.");
-  return el("div", { class: "work-task-table", role: "table", "aria-label": "Automation run metadata" },
-    el("div", { class: "work-task-table__row work-task-table__head", role: "row" },
-      ["Run", "Status", "Task", "Runner", "Attempts", "Summary"].map((label) => el("span", { role: "columnheader", text: label })),
+  return el("div", { class: "work-task-table automation-run-table", role: "table", "aria-label": "Automation run metadata" },
+    el("div", { class: "work-task-table__row automation-run-table__row work-task-table__head", role: "row" },
+      ["Run Metadata", "Status", "Plan", "Task", "Runner", "Attempt", "Queue Time", "Summary"].map((label) => el("span", { role: "columnheader", text: label })),
     ),
-    runs.map((run) => el("div", { class: "work-task-table__row", role: "row" },
+    runs.map((run) => el("div", { class: "work-task-table__row automation-run-table__row", role: "row" },
       [
-        safeWorkText(run.id) || "unknown",
-        safeWorkText(run.status) || "unknown",
-        safeWorkText(run.task_id || run.task_ref) || "none",
+        automationRunMetadata(run),
+        automationRunStatus(run),
+        safeWorkText(run.plan_id || run.plan_ref || run.work_plan_id) || "none",
+        safeWorkText(run.task_id || run.task_ref || run.work_task_id) || "none",
         safeWorkText(run.runner_kind) || "unknown",
         String(run.attempt_count ?? 0),
+        automationRunQueueTime(run),
         safeWorkText(run.safe_summary || run.failure_category) || "none",
       ].map((value) => el("span", { role: "cell", text: value })),
     )),
   );
+}
+
+function automationRunMetadata(run) {
+  return compactJoin([
+    safeWorkText(run.id) || "unknown",
+    run.automation_id ? `automation ${run.automation_id}` : "",
+    run.orchestrator_run_id ? `orchestrator ${run.orchestrator_run_id}` : "",
+    run.parent_run_id ? `parent ${run.parent_run_id}` : "",
+  ]);
+}
+
+function automationRunStatus(run) {
+  return compactJoin([
+    safeWorkText(run.status) || "unknown",
+    run.work_task_status ? `task ${run.work_task_status}` : "",
+  ]);
+}
+
+function automationRunQueueTime(run) {
+  return compactJoin([
+    run.created_at ? `created ${formatDate(run.created_at)}` : "",
+    run.updated_at ? `updated ${formatDate(run.updated_at)}` : "",
+    run.started_at ? `started ${formatDate(run.started_at)}` : "",
+    run.finished_at ? `finished ${formatDate(run.finished_at)}` : "",
+  ]) || "unknown";
 }
 
 function workTaskGraph(projectID, tasks, state, detailNode) {

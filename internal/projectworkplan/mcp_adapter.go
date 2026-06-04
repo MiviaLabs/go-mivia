@@ -51,7 +51,7 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 		if input.FailureCriteria == "" {
 			input.FailureCriteria = input.FailureBlockCriteria
 		}
-		return svc.CreateWorkTask(ctx, CreateWorkTaskInput{ProjectID: input.projectID(), PlanID: input.PlanID, TaskRef: input.TaskRef, Title: input.Title, Description: input.Description, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, EvidenceNeeded: input.EvidenceNeeded, ContextPackRefs: input.ContextPackRefs, LikelyFilesAffected: input.LikelyFilesAffected, DependencyTaskIDs: input.DependencyTaskIDs, VerificationRequirement: input.VerificationRequirement, ExpectedOutput: input.ExpectedOutput, FailureCriteria: input.FailureCriteria, ResumeInstructions: input.ResumeInstructions, KnowledgeCandidateRefs: input.KnowledgeCandidateRefs})
+		return svc.CreateWorkTask(ctx, CreateWorkTaskInput{ProjectID: input.projectID(), PlanID: input.PlanID, TaskRef: input.TaskRef, Title: input.Title, Description: input.Description, Status: input.Status, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, EvidenceNeeded: input.EvidenceNeeded, ContextPackRefs: input.ContextPackRefs, FilesToRead: input.FilesToRead, FilesToEdit: input.FilesToEdit, LikelyFilesAffected: input.LikelyFilesAffected, DependencyTaskIDs: input.DependencyTaskIDs, VerificationRequirement: input.VerificationRequirement, ExpectedOutput: input.ExpectedOutput, FailureCriteria: input.FailureCriteria, ReviewGate: input.ReviewGate, ResumeInstructions: input.ResumeInstructions, KnowledgeCandidateRefs: input.KnowledgeCandidateRefs, DecompositionQuality: input.DecompositionQuality})
 	case "projects.work_tasks.get":
 		var input taskIDInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -100,7 +100,7 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
 		}
 		return svc.BlockWorkTask(ctx, input.action())
-	case "projects.work_tasks.list_open":
+	case "projects.work_tasks.list", "projects.work_tasks.list_open":
 		var input listTasksMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
@@ -123,7 +123,7 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid work task arguments", ErrInvalidInput)
 		}
-		return svc.GetNextWorkTask(ctx, GetNextWorkTaskInput{ProjectID: input.ID, PlanID: input.PlanID, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, IncludeClaimedByMe: input.IncludeClaimedByMe})
+		return svc.GetNextWorkTask(ctx, GetNextWorkTaskInput{ProjectID: input.projectID(), PlanID: input.PlanID, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, IncludeClaimedByMe: input.IncludeClaimedByMe})
 	case "projects.work_tasks.attach_evidence":
 		var input attachMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -235,19 +235,24 @@ type createTaskMCPInput struct {
 	TaskRef                 string   `json:"task_ref"`
 	Title                   string   `json:"title"`
 	Description             string   `json:"description,omitempty"`
+	Status                  string   `json:"status,omitempty"`
 	OwnerAgent              string   `json:"owner_agent,omitempty"`
 	TraceID                 string   `json:"trace_id,omitempty"`
 	EvidenceNeeded          []string `json:"evidence_needed,omitempty"`
 	ContextPackRefs         []string `json:"context_pack_refs,omitempty"`
+	FilesToRead             []string `json:"files_to_read,omitempty"`
+	FilesToEdit             []string `json:"files_to_edit,omitempty"`
 	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
 	DependencyTaskIDs       []string `json:"dependency_task_ids,omitempty"`
 	VerificationRequirement string   `json:"verification_requirement"`
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
 	FailureBlockCriteria    string   `json:"failure_block_criteria,omitempty"`
+	ReviewGate              string   `json:"review_gate,omitempty"`
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
 	KnowledgeCandidateRefs  []string `json:"knowledge_candidate_refs,omitempty"`
 	KnowledgeExpectation    string   `json:"knowledge_candidate_expectation,omitempty"`
+	DecompositionQuality    string   `json:"decomposition_quality,omitempty"`
 	RunID                   string   `json:"run_id,omitempty"`
 }
 
@@ -350,10 +355,10 @@ func (input getNextMCPInput) projectID() string    { return firstNonEmpty(input.
 func (input attachMCPInput) projectID() string     { return firstNonEmpty(input.ID, input.ProjectID) }
 
 func firstNonEmpty(primary, fallback string) string {
-	if strings.TrimSpace(primary) != "" {
-		return primary
+	if strings.TrimSpace(fallback) != "" {
+		return fallback
 	}
-	return fallback
+	return primary
 }
 
 func decodeMCP(raw json.RawMessage, dst any) error {

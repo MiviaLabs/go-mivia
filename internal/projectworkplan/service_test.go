@@ -71,10 +71,14 @@ func TestServiceCreateWorkTaskValidation(t *testing.T) {
 	}
 
 	rich := readyTaskInput(plan.ID, "task-rich")
-	rich.Description = "Metadata-only task; no raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, or PII."
+	rich.Description = "Read data/dashboard-operations-redesign-plan-2026-06-04.md before editing internal/dashboard/httpapi/assets/app.js."
 	rich.FailureCriteria = "Block if metadata would expose credentials, roots, paths, raw prompts, source dumps, or provider payloads."
 	rich.ContextPackRefs = []string{"context-pack:manifest:68c3ee2ad1556459"}
+	rich.FilesToRead = []string{"data/dashboard-operations-redesign-plan-2026-06-04.md"}
+	rich.FilesToEdit = []string{"internal/dashboard/httpapi/assets/app.js"}
 	rich.LikelyFilesAffected = []string{"tmp/mivia-workplan-smoke"}
+	rich.ReviewGate = "independent review required before completion"
+	rich.Status = projectworkplan.WorkTaskStatusReady
 	rich.RunID = "agent_run_1"
 	createdRich, err := svc.CreateWorkTask(ctx, rich)
 	if err != nil {
@@ -85,6 +89,21 @@ func TestServiceCreateWorkTaskValidation(t *testing.T) {
 	}
 	if len(createdRich.AgentRunIDs) != 1 || createdRich.AgentRunIDs[0] != "agent_run_1" {
 		t.Fatalf("expected run linkage on created task, got %+v", createdRich.AgentRunIDs)
+	}
+	if got := createdRich.FilesToRead; len(got) != 1 || got[0] != "data/dashboard-operations-redesign-plan-2026-06-04.md" {
+		t.Fatalf("expected files_to_read to persist, got %+v", got)
+	}
+	if got := createdRich.FilesToEdit; len(got) != 1 || got[0] != "internal/dashboard/httpapi/assets/app.js" {
+		t.Fatalf("expected files_to_edit to persist, got %+v", got)
+	}
+	if createdRich.ReviewGate != "independent review required before completion" {
+		t.Fatalf("expected review gate to persist, got %q", createdRich.ReviewGate)
+	}
+
+	terminal := readyTaskInput(plan.ID, "task-terminal")
+	terminal.Status = projectworkplan.WorkTaskStatusDone
+	if _, err := svc.CreateWorkTask(ctx, terminal); err == nil {
+		t.Fatal("expected terminal create status to fail")
 	}
 
 	absolute := readyTaskInput(plan.ID, "task-absolute")

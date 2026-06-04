@@ -79,11 +79,14 @@ type WorkTask struct {
 	TraceID                 string    `json:"trace_id,omitempty"`
 	EvidenceNeeded          []string  `json:"evidence_needed,omitempty"`
 	ContextPackRefs         []string  `json:"context_pack_refs,omitempty"`
+	FilesToRead             []string  `json:"files_to_read,omitempty"`
+	FilesToEdit             []string  `json:"files_to_edit,omitempty"`
 	LikelyFilesAffected     []string  `json:"likely_files_affected,omitempty"`
 	DependencyTaskIDs       []string  `json:"dependency_task_ids,omitempty"`
 	VerificationRequirement string    `json:"verification_requirement"`
 	ExpectedOutput          string    `json:"expected_output,omitempty"`
 	FailureCriteria         string    `json:"failure_criteria,omitempty"`
+	ReviewGate              string    `json:"review_gate,omitempty"`
 	Outcome                 string    `json:"outcome,omitempty"`
 	ResumeInstructions      string    `json:"resume_instructions,omitempty"`
 	BlockedReason           string    `json:"blocked_reason,omitempty"`
@@ -162,16 +165,20 @@ type CreateWorkTaskInput struct {
 	TaskRef                 string   `json:"task_ref"`
 	Title                   string   `json:"title"`
 	Description             string   `json:"description,omitempty"`
+	Status                  string   `json:"status,omitempty"`
 	OwnerAgent              string   `json:"owner_agent,omitempty"`
 	RunID                   string   `json:"run_id,omitempty"`
 	TraceID                 string   `json:"trace_id,omitempty"`
 	EvidenceNeeded          []string `json:"evidence_needed,omitempty"`
 	ContextPackRefs         []string `json:"context_pack_refs,omitempty"`
+	FilesToRead             []string `json:"files_to_read,omitempty"`
+	FilesToEdit             []string `json:"files_to_edit,omitempty"`
 	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
 	DependencyTaskIDs       []string `json:"dependency_task_ids,omitempty"`
 	VerificationRequirement string   `json:"verification_requirement"`
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
+	ReviewGate              string   `json:"review_gate,omitempty"`
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
 	KnowledgeCandidateRefs  []string `json:"knowledge_candidate_refs,omitempty"`
 	DecompositionQuality    string   `json:"decomposition_quality,omitempty"`
