@@ -207,7 +207,15 @@ func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) err
 	if workDir == "" || !filepath.IsAbs(workDir) || strings.ContainsAny(workDir, "\x00\r\n") {
 		return fmt.Errorf("%w: workdir must be absolute and safe", ErrInvalidInput)
 	}
-	_, err := svc.git(ctx, workDir, nil, "config", "--global", "--add", "safe.directory", workDir)
+	if _, err := svc.git(ctx, workDir, nil, "rev-parse", "--show-toplevel"); err == nil {
+		return nil
+	}
+	home := filepath.Join(os.TempDir(), "mivia-gitops-home-"+safeHash(workDir))
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return err
+	}
+	env := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config")}
+	_, err := svc.git(ctx, workDir, env, "config", "--global", "--add", "safe.directory", workDir)
 	return err
 }
 

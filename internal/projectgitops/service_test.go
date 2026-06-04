@@ -61,8 +61,8 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	if len(runner.commands) != 6 {
 		t.Fatalf("expected six git commands, got %d", len(runner.commands))
 	}
-	if got := strings.Join(runner.commands[0].Args, " "); !strings.Contains(got, "config --global --add safe.directory /tmp/worktree") {
-		t.Fatalf("expected safe.directory command, got %q", got)
+	if got := strings.Join(runner.commands[0].Args, " "); got != "rev-parse --show-toplevel" {
+		t.Fatalf("expected trust probe command, got %q", got)
 	}
 	if got := strings.Join(runner.commands[4].Args, " "); !strings.Contains(got, "commit -m") {
 		t.Fatalf("expected commit command, got %q", got)
@@ -87,7 +87,7 @@ func TestPostTaskFailsClosedWithoutSafePathspecs(t *testing.T) {
 		t.Fatalf("expected invalid input error, got %v", err)
 	}
 	if len(runner.commands) != 2 {
-		t.Fatalf("expected safe.directory and status commands, got %d", len(runner.commands))
+		t.Fatalf("expected trust probe and status commands, got %d", len(runner.commands))
 	}
 }
 
@@ -131,8 +131,37 @@ func TestPreTaskRejectsDirtyWorktreeWhenRequired(t *testing.T) {
 	if !errors.Is(err, ErrDirtyWorktree) {
 		t.Fatalf("expected dirty worktree error, got %v", err)
 	}
-	if got := strings.Join(runner.commands[0].Args, " "); !strings.Contains(got, "config --global --add safe.directory /tmp/worktree") {
-		t.Fatalf("expected safe.directory command, got %q", got)
+	if got := strings.Join(runner.commands[0].Args, " "); got != "rev-parse --show-toplevel" {
+		t.Fatalf("expected trust probe command, got %q", got)
+	}
+}
+
+func TestPreTaskUsesWritableHomeForSafeDirectoryFallback(t *testing.T) {
+	runner := &recordingRunner{
+		errs: []error{
+			ErrCommandFailed,
+			nil,
+			nil,
+		},
+		results: []CommandResult{
+			{},
+			{},
+			{Stdout: ""},
+		},
+	}
+	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RequireCleanBeforeTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)
+
+	if err := svc.PreTask(context.Background(), "/tmp/worktree"); err != nil {
+		t.Fatalf("expected pre task to succeed after safe.directory fallback: %v", err)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("expected trust probe, safe.directory, and status commands, got %d", len(runner.commands))
+	}
+	if got := strings.Join(runner.commands[1].Args, " "); !strings.Contains(got, "config --global --add safe.directory /tmp/worktree") {
+		t.Fatalf("expected safe.directory fallback command, got %q", got)
+	}
+	if !hasEnvPrefix(runner.commands[1].Env, "HOME=") || !hasEnvPrefix(runner.commands[1].Env, "XDG_CONFIG_HOME=") {
+		t.Fatalf("expected writable git config env, got %+v", runner.commands[1].Env)
 	}
 }
 
@@ -159,6 +188,15 @@ func TestGitHubEnvFallsBackToGhAuthWhenConfiguredEnvIsEmpty(t *testing.T) {
 func containsEnv(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEnvPrefix(values []string, prefix string) bool {
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
 			return true
 		}
 	}
