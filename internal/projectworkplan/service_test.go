@@ -192,6 +192,20 @@ func TestServiceTaskTransitions(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
+	plannedInput := readyTaskInput(plan.ID, "task-planned")
+	plannedInput.Status = projectworkplan.WorkTaskStatusPlanned
+	planned, err := svc.CreateWorkTask(ctx, plannedInput)
+	if err != nil {
+		t.Fatalf("create planned task: %v", err)
+	}
+	ready, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{ProjectID: "project-1", TaskID: planned.ID, Status: projectworkplan.WorkTaskStatusReady})
+	if err != nil {
+		t.Fatalf("planned to ready: %v", err)
+	}
+	if ready.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected ready, got %s", ready.Status)
+	}
+
 	claimed, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-1"})
 	if err != nil {
 		t.Fatalf("claim task: %v", err)

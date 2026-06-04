@@ -50,6 +50,10 @@ type WorkTaskAPI interface {
 	BlockWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
 }
 
+type workTaskStatusUpdater interface {
+	UpdateWorkTaskStatus(context.Context, projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error)
+}
+
 type Service struct {
 	store          Store
 	workTasks      WorkTaskAPI
@@ -263,10 +267,10 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 		}
 		taskID = task.ID
 	}
-	if err := svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID); err != nil {
+	if err := svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID, owner); err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
 	}
-	if err := svc.validateRequiredAutomationReviews(ctx, automation); err != nil {
+	if err := svc.ensureRequiredAutomationReviewRuns(ctx, automation, runnerKind, input); err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, err.Error())
 	}
 	orchestratorRunID, err := safeOptionalRef(input.OrchestratorRunID, "orchestrator_run_id")
@@ -537,6 +541,9 @@ func (svc *Service) hasReadyAutomaticTask(ctx context.Context, automation Automa
 	if svc.workTasks == nil {
 		return false
 	}
+	if svc.hasPendingAutomationReviewTask(ctx, automation) {
+		return true
+	}
 	if svc.validateRequiredAutomationReviews(ctx, automation) != nil {
 		return false
 	}
@@ -546,6 +553,22 @@ func (svc *Service) hasReadyAutomaticTask(ctx context.Context, automation Automa
 	}
 	for _, task := range tasks {
 		if validateAllowedTaskRef(automation, task) == nil && validateExecutableTask(task) == nil && svc.dependenciesDone(ctx, task) {
+			return true
+		}
+	}
+	return false
+}
+
+func (svc *Service) hasPendingAutomationReviewTask(ctx context.Context, automation Automation) bool {
+	for _, taskID := range automation.RequiredReviewTaskIDs {
+		task, err := svc.workTasks.GetWorkTask(ctx, automation.ProjectID, taskID)
+		if err != nil || task.Status == projectworkplan.WorkTaskStatusDone {
+			continue
+		}
+		if task.Status == projectworkplan.WorkTaskStatusPlanned && task.DecompositionQuality == projectworkplan.DecompositionReady {
+			return true
+		}
+		if validateExecutableTask(task) == nil && svc.dependenciesDone(ctx, task) {
 			return true
 		}
 	}
@@ -758,13 +781,15 @@ func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRu
 		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "automation_unavailable")
 		return updated, projectworkplan.WorkTask{}, err
 	}
-	if err := svc.validateAutomationPolicy(ctx, automation, run.RunnerKind, run.TaskID); err != nil {
+	if err := svc.validateAutomationPolicy(ctx, automation, run.RunnerKind, run.TaskID, run.AgentID); err != nil {
 		updated, _ := svc.failRun(ctx, run, RunStatusPolicyDenied, err.Error())
 		return updated, projectworkplan.WorkTask{}, err
 	}
-	if err := svc.validateRequiredAutomationReviews(ctx, automation); err != nil {
-		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "automation_review_gate_open")
-		return updated, projectworkplan.WorkTask{}, err
+	if !svc.isAutomationReviewTask(automation, run.TaskID) {
+		if err := svc.validateRequiredAutomationReviews(ctx, automation); err != nil {
+			updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "automation_review_gate_open")
+			return updated, projectworkplan.WorkTask{}, err
+		}
 	}
 	task, err := svc.resolveTask(ctx, run, automation)
 	if err != nil {
@@ -1091,8 +1116,10 @@ func (svc *Service) resolveTask(ctx context.Context, run AutomationRun, automati
 		if err != nil {
 			return projectworkplan.WorkTask{}, err
 		}
-		if err := validateAllowedTaskRef(automation, task); err != nil {
-			return projectworkplan.WorkTask{}, err
+		if !svc.isAutomationReviewTask(automation, task.ID) && !svc.isAutomationReviewTask(automation, task.TaskRef) {
+			if err := validateAllowedTaskRef(automation, task); err != nil {
+				return projectworkplan.WorkTask{}, err
+			}
 		}
 		return task, nil
 	}
@@ -1111,7 +1138,10 @@ func (svc *Service) resolveTask(ctx context.Context, run AutomationRun, automati
 	return projectworkplan.WorkTask{}, fmt.Errorf("%w: no ready task", ErrInvalidInput)
 }
 
-func (svc *Service) validateAutomationPolicy(ctx context.Context, automation Automation, runnerKind string, taskID string) error {
+func (svc *Service) validateAutomationPolicy(ctx context.Context, automation Automation, runnerKind string, taskID string, effectiveAgentID string) error {
+	if strings.TrimSpace(effectiveAgentID) == "" {
+		effectiveAgentID = automation.AgentID
+	}
 	if automation.SourceKind == AutomationSourceWorkflow {
 		if err := validatePermissionSnapshotRef(automation.PermissionRef); err != nil {
 			return err
@@ -1125,7 +1155,7 @@ func (svc *Service) validateAutomationPolicy(ctx context.Context, automation Aut
 			ProjectID:       automation.ProjectID,
 			AutomationID:    automation.ID,
 			AutomationRef:   automation.AutomationRef,
-			AgentID:         automation.AgentID,
+			AgentID:         effectiveAgentID,
 			PermissionRef:   automation.PermissionRef,
 			RunnerKind:      runnerKind,
 			RunnerExecution: svc.options.RunnerExecution,
@@ -1133,23 +1163,101 @@ func (svc *Service) validateAutomationPolicy(ctx context.Context, automation Aut
 		if err != nil {
 			return err
 		}
-		if metadata.AgentID != automation.AgentID {
+		if metadata.AgentID != effectiveAgentID {
 			return fmt.Errorf("%w: permission_agent_mismatch", ErrInvalidInput)
 		}
 		if !permissionAllowsRunner(metadata, runnerKind) {
 			return fmt.Errorf("%w: permission_runner_denied", ErrInvalidInput)
 		}
 	}
-	if taskID != "" && len(automation.AllowedTaskRefs) > 0 && svc.workTasks != nil {
+	if taskID != "" && len(automation.AllowedTaskRefs) > 0 && svc.workTasks != nil && !svc.isAutomationReviewTask(automation, taskID) {
 		task, err := svc.workTasks.GetWorkTask(ctx, automation.ProjectID, taskID)
 		if err != nil {
 			return fmt.Errorf("%w: task_unavailable", ErrInvalidInput)
 		}
-		if err := validateAllowedTaskRef(automation, task); err != nil {
+		if !svc.isAutomationReviewTask(automation, task.ID) && !svc.isAutomationReviewTask(automation, task.TaskRef) {
+			if err := validateAllowedTaskRef(automation, task); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, automation Automation, runnerKind string, input SubmitRunInput) error {
+	if len(automation.RequiredReviewTaskIDs) == 0 {
+		return nil
+	}
+	if svc.workTasks == nil {
+		return fmt.Errorf("%w: automation_review_gate_unavailable", ErrInvalidInput)
+	}
+	for _, taskID := range automation.RequiredReviewTaskIDs {
+		task, err := svc.workTasks.GetWorkTask(ctx, automation.ProjectID, taskID)
+		if err != nil {
+			return fmt.Errorf("%w: automation_review_gate_open", ErrInvalidInput)
+		}
+		if task.Status == projectworkplan.WorkTaskStatusDone {
+			continue
+		}
+		if task.Status == projectworkplan.WorkTaskStatusPlanned {
+			updater, ok := svc.workTasks.(workTaskStatusUpdater)
+			if !ok {
+				return fmt.Errorf("%w: automation_review_gate_open", ErrInvalidInput)
+			}
+			updated, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+				ProjectID:      automation.ProjectID,
+				TaskID:         task.ID,
+				Status:         projectworkplan.WorkTaskStatusReady,
+				SafeNextAction: "automation_review_gate",
+				RunID:          input.OrchestratorRunID,
+				TraceID:        input.OrchestratorRunID,
+			})
+			if err != nil {
+				return err
+			}
+			task = updated
+		}
+		if task.Status != projectworkplan.WorkTaskStatusReady {
+			continue
+		}
+		existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: automation.PlanID})
+		if err != nil {
+			return err
+		}
+		alreadyQueued := false
+		for _, run := range existing {
+			if run.TaskID == task.ID && (run.Status == RunStatusQueued || run.Status == RunStatusClaiming || run.Status == RunStatusStarting || run.Status == RunStatusRunning || run.Status == RunStatusVerifying) {
+				alreadyQueued = true
+				break
+			}
+		}
+		if alreadyQueued {
+			continue
+		}
+		now := svc.now()
+		reviewRun := AutomationRun{
+			ID: svc.newID("automation_run"), ProjectID: automation.ProjectID, AutomationID: automation.ID,
+			AgentID: firstNonEmpty(task.OwnerAgent, automation.AgentID), PlanID: task.PlanID, TaskID: task.ID,
+			Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: input.OrchestratorRunID,
+			ParentRunID: input.ParentRunID, SafeSummary: "automation_review_gate_queued", CreatedAt: now, UpdatedAt: now,
+		}
+		if _, err := svc.store.CreateRun(ctx, reviewRun); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (svc *Service) isAutomationReviewTask(automation Automation, taskIDOrRef string) bool {
+	if taskIDOrRef == "" {
+		return false
+	}
+	for _, reviewTaskID := range automation.RequiredReviewTaskIDs {
+		if reviewTaskID == taskIDOrRef {
+			return true
+		}
+	}
+	return false
 }
 
 func validateAllowedTaskRef(automation Automation, task projectworkplan.WorkTask) error {
