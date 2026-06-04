@@ -60,6 +60,12 @@ Rules:
 7. Permission snapshots are immutable metadata for allowed skills/tools/commands, denied commands, workspace mode, network policy, secret policy, log policy, runtime, retry policy, content hash, and run/trace refs. They are not OS sandbox proof or execution approval.
 8. Reusable conclusions must follow the order: Evidence Graph refs and outcomes, verifier refs, independent review refs, confidence score when reusable, Knowledge Promotion candidate, validation, project promotion, optional org review/promotion. Knowledge never auto-promotes from TOML, automation, or confidence alone.
 
+Checked-in workflow definitions:
+
+- `workflow-decomposition-planning`: turns a user objective into a governed Work Plan and isolated Work Tasks.
+- `workflow-workplan-implementation`: executes reviewed ready Work Tasks through bounded workers, independent review, and orchestrator verification.
+- `workflow-code-review-bug-planning`: automatic code review workflow that can queue bounded scanner, independent-review, and bug Work Plan creation tasks. It creates bug Work Plans only for independently confirmed, evidence-backed bugs and must not auto-implement speculative or unreviewed findings.
+
 REST mirrors the same metadata surface at:
 
 ```text
@@ -144,7 +150,7 @@ Project Automation is an executor layer over Work Plans and Work Tasks. It is no
 Mandatory rules:
 
 1. Automation runs must target existing project Work Plans and ready Work Tasks. Do not submit raw prompts or broad goals as automation work.
-2. In-process execution uses Codex CLI from the server runtime. External execution queues `codex_cli` work and MUST be claimed only by `mivia-automation-runner` running in the user's logged-in local Codex environment.
+2. In-process execution uses Codex CLI from the server runtime. External execution queues `codex_cli` work and MUST be claimed only by `mivia-automation-runner` running in the user's logged-in local Codex environment. For automatic external workflows, keep a supervised local runner active with `mivia-automation-runner --server http://127.0.0.1:8080 --project <project-id> --watch --poll-interval 5s --codex-cd <repo-root>`. Linux, macOS, and native WSL use the default direct launcher; on WSL with the Windows Codex install, add `--codex-launcher windows-cmd --codex codex`.
 3. Do not silently fall back from Codex CLI to manual/dry-run execution. A missing or denied runner is a policy/result state, not permission to improvise.
 4. External runners MUST call `projects.automation_runs.claim_next`, execute only the returned metadata-only Codex input, then call `projects.automation_runs.complete_attempt` with status metadata only.
 5. Do not call `projects.automations.create`, `projects.automations.run`, or `projects.automations.run_parallel_batch` until `projects.work_plans.*` and `projects.work_tasks.*` have created the execution structure.

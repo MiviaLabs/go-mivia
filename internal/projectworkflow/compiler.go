@@ -69,9 +69,10 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 	}
 
 	title := firstNonEmpty(titleOverride, workflow.Title)
+	planRef := compilePlanRef(workflow.WorkflowRef, runID, svc.newID)
 	plan, err := svc.workPlans.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
 		ProjectID:      workflow.ProjectID,
-		PlanRef:        workflow.WorkflowRef,
+		PlanRef:        planRef,
 		UserRequestRef: userRequestRef,
 		Title:          title,
 		GoalSummary:    workflow.Purpose,
@@ -113,32 +114,38 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 			result.ReviewerTaskIDs = append(result.ReviewerTaskIDs, reviewer.ID)
 		}
 	}
+	reviewTaskIDsByAutomationStep := map[string][]string{}
 	for _, step := range graph.automationSteps {
 		for _, gate := range graph.gatesByStep[step.ID] {
 			reviewer, err := svc.workPlans.CreateWorkTask(ctx, svc.reviewAutomationTaskInput(workflow, plan.ID, step, gate, taskByStep, runID, traceID))
 			if err != nil {
 				return result, fmt.Errorf("create compiled automation review task %s/%s: %w", step.ID, gate.ID, err)
 			}
+			reviewTaskIDsByAutomationStep[step.ID] = append(reviewTaskIDsByAutomationStep[step.ID], reviewer.ID)
 			result.ReviewerTaskIDs = append(result.ReviewerTaskIDs, reviewer.ID)
 		}
 	}
 	for _, step := range graph.automationSteps {
 		snapshot := snapshotByAgent[step.Agent]
 		automation, err := svc.automations.CreateAutomation(ctx, projectautomation.CreateAutomationInput{
-			ProjectID:       workflow.ProjectID,
-			AutomationRef:   workflow.WorkflowRef + ":" + step.ID,
-			Title:           step.Title,
-			Purpose:         firstNonEmpty(step.Description, "Run workflow automation step "+step.ID),
-			AgentID:         step.Agent,
-			PlanID:          plan.ID,
-			AllowedTaskRefs: allowedTaskRefs(step, taskByStep),
-			PermissionRef:   "permission_snapshot:" + snapshot.ID,
-			SourceKind:      projectautomation.AutomationSourceWorkflow,
-			CreatedByRunID:  firstNonEmpty(runID, workflow.CreatedByRunID),
-			TraceID:         firstNonEmpty(traceID, workflow.TraceID),
+			ProjectID:             workflow.ProjectID,
+			AutomationRef:         compileAutomationRef(plan.PlanRef, step.ID),
+			Title:                 step.Title,
+			Purpose:               firstNonEmpty(step.Description, "Run workflow automation step "+step.ID),
+			Status:                firstNonEmpty(step.AutomationStatus, projectautomation.AutomationStatusDraft),
+			AgentID:               step.Agent,
+			PlanID:                plan.ID,
+			AllowedTaskRefs:       allowedTaskRefs(step, taskByStep),
+			RequiredReviewTaskIDs: reviewTaskIDsByAutomationStep[step.ID],
+			TriggerKind:           firstNonEmpty(step.TriggerKind, projectautomation.TriggerKindManual),
+			SchedulePolicy:        step.SchedulePolicy,
+			PermissionRef:         "permission_snapshot:" + snapshot.ID,
+			SourceKind:            projectautomation.AutomationSourceWorkflow,
+			CreatedByRunID:        firstNonEmpty(runID, workflow.CreatedByRunID),
+			TraceID:               firstNonEmpty(traceID, workflow.TraceID),
 		})
 		if err != nil {
-			return result, err
+			return result, fmt.Errorf("%w: create compiled automation %s: %v", ErrInvalidInput, step.ID, err)
 		}
 		result.AutomationIDs = append(result.AutomationIDs, automation.ID)
 	}
@@ -364,6 +371,46 @@ func allowedTaskRefs(step WorkflowStep, taskByStep map[string]projectworkplan.Wo
 		}
 	}
 	return out
+}
+
+func compilePlanRef(workflowRef string, runID string, newID func(string) string) string {
+	suffix := newID("compile")
+	base := strings.TrimSpace(workflowRef)
+	if strings.TrimSpace(runID) != "" {
+		base = base + ":" + strings.TrimSpace(runID)
+	}
+	return refWithSuffix(base, suffix)
+}
+
+func compileAutomationRef(planRef string, stepID string) string {
+	return refWithSuffix(planRef, stepID)
+}
+
+func refWithSuffix(base string, suffix string) string {
+	base = strings.TrimSpace(base)
+	suffix = strings.TrimSpace(suffix)
+	if suffix == "" {
+		return truncateRef(base)
+	}
+	maxBase := 200 - len(suffix) - 1
+	if maxBase < 1 {
+		return truncateRef(suffix)
+	}
+	if len(base) > maxBase {
+		base = strings.TrimRight(base[:maxBase], ".:/@+-")
+	}
+	if base == "" {
+		return truncateRef(suffix)
+	}
+	return base + ":" + suffix
+}
+
+func truncateRef(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 200 {
+		return value
+	}
+	return strings.TrimRight(value[:200], ".:/@+-")
 }
 
 func hasTaskProducingDependency(step WorkflowStep, stepsByID map[string]WorkflowStep) bool {

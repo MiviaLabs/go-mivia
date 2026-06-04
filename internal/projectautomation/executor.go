@@ -93,8 +93,7 @@ func (executor *Executor) Stop(ctx context.Context) error {
 
 func (executor *Executor) shouldRun() bool {
 	return executor.options.Enabled &&
-		executor.options.RunnerEnabled &&
-		executor.options.RunnerExecution == RunnerExecutionInProcess
+		executor.options.RunnerEnabled
 }
 
 func (executor *Executor) loop(ctx context.Context) {
@@ -120,6 +119,10 @@ func (executor *Executor) pollOnce(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		executor.submitAutomaticRuns(ctx, projectID)
+		if executor.options.RunnerExecution != RunnerExecutionInProcess {
+			continue
+		}
 		runs, err := executor.service.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
 		if err != nil {
 			continue
@@ -133,6 +136,30 @@ func (executor *Executor) pollOnce(ctx context.Context) {
 				return
 			}
 		}
+	}
+}
+
+func (executor *Executor) submitAutomaticRuns(ctx context.Context, projectID string) {
+	automations, err := executor.service.ListAutomations(ctx, AutomationFilter{ProjectID: projectID, Status: AutomationStatusEnabled})
+	if err != nil {
+		return
+	}
+	for _, automation := range automations {
+		if ctx.Err() != nil {
+			return
+		}
+		if automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || !executor.service.hasReadyAutomaticTask(ctx, automation) || executor.service.hasAnyRun(ctx, automation) {
+			continue
+		}
+		_, _ = executor.service.SubmitRun(ctx, SubmitRunInput{
+			ProjectID:         automation.ProjectID,
+			AutomationID:      automation.ID,
+			PlanID:            automation.PlanID,
+			OwnerAgent:        automation.AgentID,
+			RunnerKind:        RunnerKindCodexCLI,
+			OrchestratorRunID: "automatic:" + automation.ID,
+			SafeNextAction:    "execute ready automatic workflow task",
+		})
 	}
 }
 

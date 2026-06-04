@@ -84,7 +84,9 @@ enabled = false
 # escape upward.
 enabled = false
 definition_paths = [
-  "configs/workflows/governed-feature.toml",
+  "configs/workflows/governed-decomposition-planning.toml",
+  "configs/workflows/governed-workplan-implementation.toml",
+  "configs/workflows/governed-code-review-bug-planning.toml",
 ]
 
 [automation]
@@ -93,6 +95,10 @@ enabled = false
 runner_enabled = false
 # in_process runs Codex inside mivia-server. external queues runs for
 # mivia-automation-runner, which should run in the user's logged-in local shell.
+# For external mode, supervise one local runner per project:
+# mivia-automation-runner --server http://127.0.0.1:8080 --project <project-id> --watch --poll-interval 5s --codex-cd <repo-root>
+# Linux, macOS, and native WSL use the default direct launcher. On WSL using
+# the Windows Codex install, add: --codex-launcher windows-cmd --codex codex
 runner_execution = "in_process"
 require_codex_when_available = true
 allow_manual_runner = false

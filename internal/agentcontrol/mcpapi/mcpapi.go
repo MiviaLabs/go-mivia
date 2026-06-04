@@ -663,11 +663,11 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		return
 	}
 	if errors.Is(err, automationmcpapi.ErrInvalidInput) {
-		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
 		return
 	}
 	if errors.Is(err, workflowmcpapi.ErrInvalidInput) {
-		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
 		return
 	}
 	if errors.Is(err, projectworkplan.ErrInvalidInput) || errors.Is(err, workplanstore.ErrDuplicate) {
@@ -675,11 +675,11 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		return
 	}
 	if errors.Is(err, projectautomation.ErrInvalidInput) || errors.Is(err, automationstore.ErrDuplicate) {
-		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
 		return
 	}
 	if errors.Is(err, projectworkflow.ErrInvalidInput) || errors.Is(err, workflowstore.ErrDuplicate) {
-		writeJSONRPCError(w, id, -32602, "invalid tool arguments")
+		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
 		return
 	}
 	if errors.Is(err, store.ErrNotFound) {

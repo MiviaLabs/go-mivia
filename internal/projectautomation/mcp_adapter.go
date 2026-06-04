@@ -15,7 +15,7 @@ func (svc *Service) CallAutomationTool(ctx context.Context, name string, argumen
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
 		}
-		return svc.CreateAutomation(ctx, CreateAutomationInput{ProjectID: input.ID, AutomationRef: input.AutomationRef, Title: input.Title, Purpose: input.Purpose, AgentID: input.AgentID, PlanID: input.PlanID, AllowedTaskRefs: input.AllowedTaskRefs, PermissionRef: input.PermissionRef, CreatedByRunID: input.CreatedByRunID, TraceID: input.TraceID})
+		return svc.CreateAutomation(ctx, CreateAutomationInput{ProjectID: input.ID, AutomationRef: input.AutomationRef, Title: input.Title, Purpose: input.Purpose, Status: input.Status, AgentID: input.AgentID, PlanID: input.PlanID, AllowedTaskRefs: input.AllowedTaskRefs, RequiredReviewTaskIDs: input.RequiredReviewTaskIDs, TriggerKind: input.TriggerKind, SchedulePolicy: input.SchedulePolicy, PermissionRef: input.PermissionRef, CreatedByRunID: input.CreatedByRunID, TraceID: input.TraceID})
 	case "projects.automations.get":
 		var input automationIDInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -78,16 +78,20 @@ func (svc *Service) CallAutomationTool(ctx context.Context, name string, argumen
 }
 
 type createAutomationMCPInput struct {
-	ID              string   `json:"id"`
-	AutomationRef   string   `json:"automation_ref"`
-	Title           string   `json:"title"`
-	Purpose         string   `json:"purpose"`
-	AgentID         string   `json:"agent_id"`
-	PlanID          string   `json:"plan_id,omitempty"`
-	AllowedTaskRefs []string `json:"allowed_task_refs,omitempty"`
-	PermissionRef   string   `json:"permission_ref"`
-	CreatedByRunID  string   `json:"created_by_run_id,omitempty"`
-	TraceID         string   `json:"trace_id,omitempty"`
+	ID                    string   `json:"id"`
+	AutomationRef         string   `json:"automation_ref"`
+	Title                 string   `json:"title"`
+	Purpose               string   `json:"purpose"`
+	Status                string   `json:"status,omitempty"`
+	AgentID               string   `json:"agent_id"`
+	PlanID                string   `json:"plan_id,omitempty"`
+	AllowedTaskRefs       []string `json:"allowed_task_refs,omitempty"`
+	RequiredReviewTaskIDs []string `json:"required_review_task_ids,omitempty"`
+	TriggerKind           string   `json:"trigger_kind,omitempty"`
+	SchedulePolicy        string   `json:"schedule_policy,omitempty"`
+	PermissionRef         string   `json:"permission_ref"`
+	CreatedByRunID        string   `json:"created_by_run_id,omitempty"`
+	TraceID               string   `json:"trace_id,omitempty"`
 }
 
 type automationIDInput struct {

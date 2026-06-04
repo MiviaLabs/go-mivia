@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,36 +28,62 @@ func run(args []string) int {
 	projectID := flags.String("project", "", "project id")
 	agentID := flags.String("agent", "", "optional agent id filter")
 	codexPath := flags.String("codex", "codex", "codex CLI binary path")
+	codexLauncher := flags.String("codex-launcher", "direct", "codex launcher: direct or windows-cmd")
+	codexCD := flags.String("codex-cd", "", "optional workspace directory passed to codex exec --cd")
 	once := flags.Bool("once", true, "claim and run one queued task, then exit")
+	watch := flags.Bool("watch", false, "continuously claim queued tasks until interrupted")
 	pollInterval := flags.Duration("poll-interval", 5*time.Second, "poll interval when once is false")
+	idleExitAfter := flags.Duration("idle-exit-after", 0, "optional idle duration after which watch mode exits; 0 disables idle exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() != 0 || strings.TrimSpace(*projectID) == "" {
-		fmt.Fprintln(os.Stderr, "usage: mivia-automation-runner --server http://127.0.0.1:8080 --project <project_id> [--agent <agent_id>] [--codex codex] [--once=false]")
+		fmt.Fprintln(os.Stderr, "usage: mivia-automation-runner --server http://127.0.0.1:8080 --project <project_id> [--agent <agent_id>] [--codex codex] [--once=false|--watch]")
 		return 2
 	}
+	if *watch {
+		*once = false
+	}
 	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: http.DefaultClient}
+	var idleSince time.Time
 	for {
-		status := claimRunExecuteAndReport(context.Background(), client, strings.TrimSpace(*projectID), strings.TrimSpace(*agentID), strings.TrimSpace(*codexPath))
-		if *once || status != 0 {
+		status, keepWatching, claimed := claimRunExecuteAndReport(context.Background(), client, strings.TrimSpace(*projectID), strings.TrimSpace(*agentID), codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD)})
+		if *once || !keepWatching {
 			return status
+		}
+		if !claimed && *idleExitAfter > 0 {
+			now := time.Now()
+			if idleSince.IsZero() {
+				idleSince = now
+			}
+			if now.Sub(idleSince) >= *idleExitAfter {
+				return 0
+			}
+		}
+		if claimed {
+			idleSince = time.Time{}
 		}
 		time.Sleep(*pollInterval)
 	}
 }
 
-func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, projectID string, agentID string, codexPath string) int {
+type codexLaunchOptions struct {
+	Path     string
+	Launcher string
+	WorkDir  string
+}
+
+func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, projectID string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
 	claimed, ok, err := client.claimNext(ctx, projectID, agentID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "claim failed: %v\n", err)
-		return 1
+		return 1, false, false
 	}
 	if !ok {
 		fmt.Fprintln(os.Stdout, "no queued automation run")
-		return 0
+		return 0, true, false
 	}
-	status, failureCategory, durationMS := runCodex(ctx, claimed, codexPath)
+	status, failureCategory, durationMS := runCodex(ctx, claimed, codexOptions)
 	result := projectautomation.CompleteAttemptInput{
 		Status:          status,
 		FailureCategory: failureCategory,
@@ -63,16 +91,16 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, project
 	}
 	if _, err := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); err != nil {
 		fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
-		return 1
+		return 1, false, true
 	}
 	fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, status)
 	if status == projectautomation.RunStatusCompleted {
-		return 0
+		return 0, true, true
 	}
-	return 1
+	return 1, true, true
 }
 
-func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexPath string) (string, string, int64) {
+func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexOptions codexLaunchOptions) (string, string, int64) {
 	inputPath, cleanup, err := writeCodexInput(claimed.CodexInput)
 	if err != nil {
 		return projectautomation.RunStatusFailed, "codex_input_create_failed", 0
@@ -82,12 +110,7 @@ func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexPa
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	command, err := projectautomation.BuildCodexCommand(projectautomation.CodexCommandInput{
-		BinaryPath: codexPath,
-		InputPath:  inputPath,
-		Timeout:    timeout,
-		EnvAllow:   map[string]string{},
-	})
+	command, err := buildRunnerCodexCommand(inputPath, timeout, codexOptions)
 	if err != nil {
 		return projectautomation.RunStatusFailed, "codex_command_denied", 0
 	}
@@ -100,6 +123,53 @@ func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexPa
 		return projectautomation.RunStatusTimeout, "codex_cli_timeout", durationMS
 	}
 	return projectautomation.RunStatusFailed, "codex_cli_failed", durationMS
+}
+
+func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptions codexLaunchOptions) (projectautomation.CodexCommand, error) {
+	launcher := strings.TrimSpace(codexOptions.Launcher)
+	if launcher == "" {
+		launcher = "direct"
+	}
+	binaryPath := strings.TrimSpace(codexOptions.Path)
+	if binaryPath == "" {
+		binaryPath = "codex"
+	}
+	if launcher == "windows-cmd" {
+		convertedInputPath, err := windowsPathForRunner(inputPath)
+		if err != nil {
+			return projectautomation.CodexCommand{}, err
+		}
+		args := []string{"/c", "type", convertedInputPath, "|", binaryPath, "exec"}
+		if strings.TrimSpace(codexOptions.WorkDir) != "" {
+			convertedWorkDir, err := windowsPathForRunner(strings.TrimSpace(codexOptions.WorkDir))
+			if err != nil {
+				return projectautomation.CodexCommand{}, err
+			}
+			args = append(args, "--cd", convertedWorkDir)
+		}
+		args = append(args, "-")
+		return projectautomation.CodexCommand{
+			Path:    "cmd.exe",
+			Args:    args,
+			Timeout: timeout,
+		}, nil
+	}
+	if launcher != "direct" {
+		return projectautomation.CodexCommand{}, fmt.Errorf("%w: unknown codex launcher", projectautomation.ErrInvalidInput)
+	}
+	command, err := projectautomation.BuildCodexCommand(projectautomation.CodexCommandInput{
+		BinaryPath: binaryPath,
+		InputPath:  inputPath,
+		Timeout:    timeout,
+		EnvAllow:   map[string]string{},
+	})
+	if err != nil {
+		return projectautomation.CodexCommand{}, err
+	}
+	if strings.TrimSpace(codexOptions.WorkDir) != "" {
+		command.Args = []string{"exec", "--cd", strings.TrimSpace(codexOptions.WorkDir), "-"}
+	}
+	return command, nil
 }
 
 func writeCodexInput(input projectautomation.CodexTaskInput) (string, func(), error) {
@@ -125,12 +195,32 @@ type runnerClient struct {
 	http    *http.Client
 }
 
+var errNoQueuedRun = errors.New("no queued automation run")
+
+var windowsPathForRunner = func(path string) (string, error) {
+	if strings.HasPrefix(path, `\\`) || (len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')) {
+		return path, nil
+	}
+	out, err := exec.Command("wslpath", "-w", path).Output()
+	if err != nil {
+		return "", err
+	}
+	converted := strings.TrimSpace(string(out))
+	if converted == "" || strings.ContainsAny(converted, "\x00\r\n") {
+		return "", fmt.Errorf("%w: unsafe converted input path", projectautomation.ErrInvalidInput)
+	}
+	return converted, nil
+}
+
 func (client *runnerClient) claimNext(ctx context.Context, projectID string, agentID string) (projectautomation.ClaimedRun, bool, error) {
 	input := projectautomation.ClaimNextRunInput{AgentID: agentID, RunnerKind: projectautomation.RunnerKindCodexCLI}
 	var claimed projectautomation.ClaimedRun
 	status, err := client.post(ctx, fmt.Sprintf("/api/v1/projects/%s/automation-runs/claim-next", url.PathEscape(projectID)), input, &claimed)
 	if status == http.StatusBadRequest {
-		return projectautomation.ClaimedRun{}, false, nil
+		if errors.Is(err, errNoQueuedRun) {
+			return projectautomation.ClaimedRun{}, false, nil
+		}
+		return projectautomation.ClaimedRun{}, false, err
 	}
 	if err != nil {
 		return projectautomation.ClaimedRun{}, false, err
@@ -162,7 +252,11 @@ func (client *runnerClient) post(ctx context.Context, path string, input any, ou
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var body bytes.Buffer
 		_, _ = body.ReadFrom(resp.Body)
-		return resp.StatusCode, fmt.Errorf("server returned %s: %s", resp.Status, strings.TrimSpace(body.String()))
+		bodyText := strings.TrimSpace(body.String())
+		if resp.StatusCode == http.StatusBadRequest && strings.Contains(bodyText, "no queued automation run") {
+			return resp.StatusCode, errNoQueuedRun
+		}
+		return resp.StatusCode, fmt.Errorf("server returned %s: %s", resp.Status, bodyText)
 	}
 	if output == nil {
 		return resp.StatusCode, nil

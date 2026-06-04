@@ -52,3 +52,46 @@ func TestConfigWorkflowDefinitionsDryRunCompile(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigWorkflowDefinitionsCompileCreatesGovernedObjects(t *testing.T) {
+	ctx := context.Background()
+	paths, err := filepath.Glob(filepath.Join("..", "..", "configs", "workflows", "*.toml"))
+	if err != nil {
+		t.Fatalf("glob workflow definitions: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("expected at least one workflow definition")
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read workflow definition: %v", err)
+			}
+			defs, _, err := projectworkflow.ParseWorkflowTOML(data)
+			if err != nil {
+				t.Fatalf("parse workflow definition: %v", err)
+			}
+			if len(defs) == 0 {
+				t.Fatal("expected at least one workflow")
+			}
+			workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+			automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
+			svc := projectworkflow.New(workflowstore.NewMemoryStore())
+			svc.SetCompilerDependencies(workPlans, automations)
+			imported, err := svc.ImportWorkflowTOML(ctx, projectworkflow.ImportWorkflowTOMLInput{ProjectID: defs[0].ProjectID, Data: data})
+			if err != nil {
+				t.Fatalf("import workflow definition: %v", err)
+			}
+			for _, workflow := range imported.Workflows {
+				result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: workflow.ProjectID, WorkflowID: workflow.ID, CreatedByRunID: "config-workflow-test-run"})
+				if err != nil {
+					t.Fatalf("compile workflow %s: %v", workflow.ID, err)
+				}
+				if result.WorkPlanID == "" || len(result.WorkTaskIDs) == 0 || len(result.PermissionSnapshotIDs) == 0 {
+					t.Fatalf("compile workflow %s returned incomplete refs: %#v", workflow.ID, result)
+				}
+			}
+		})
+	}
+}

@@ -13,10 +13,11 @@ import (
 )
 
 type CodexCommand struct {
-	Path    string
-	Args    []string
-	Env     []string
-	Timeout time.Duration
+	Path      string
+	Args      []string
+	Env       []string
+	StdinFile string
+	Timeout   time.Duration
 }
 
 type CodexCommandInput struct {
@@ -81,10 +82,11 @@ func BuildCodexCommand(input CodexCommandInput) (CodexCommand, error) {
 		env = append(env, key+"="+value)
 	}
 	return CodexCommand{
-		Path:    binaryPath,
-		Args:    []string{"exec", "--json", "--input-file", inputPath},
-		Env:     env,
-		Timeout: input.Timeout,
+		Path:      binaryPath,
+		Args:      []string{"exec", "-"},
+		Env:       env,
+		StdinFile: inputPath,
+		Timeout:   input.Timeout,
 	}, nil
 }
 
@@ -98,6 +100,14 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 	started := time.Now()
 	cmd := exec.CommandContext(runCtx, command.Path, command.Args...)
 	cmd.Env = append(os.Environ(), command.Env...)
+	if command.StdinFile != "" {
+		stdin, err := os.Open(command.StdinFile)
+		if err != nil {
+			return CodexRunResult{Duration: time.Since(started)}, err
+		}
+		defer stdin.Close()
+		cmd.Stdin = stdin
+	}
 	var output cappedBuffer
 	output.limit = maxOutputBytes
 	cmd.Stdout = &output

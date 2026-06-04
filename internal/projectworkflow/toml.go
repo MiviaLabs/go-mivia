@@ -69,6 +69,9 @@ type workflowStepTOML struct {
 	FailureCriteria         string   `toml:"failure_criteria"`
 	ResumeInstructions      string   `toml:"resume_instructions"`
 	MaxParallelTasks        *int     `toml:"max_parallel_tasks"`
+	AutomationStatus        string   `toml:"automation_status"`
+	TriggerKind             string   `toml:"trigger_kind"`
+	SchedulePolicy          string   `toml:"schedule_policy"`
 }
 
 type workflowReviewGateTOML struct {
@@ -183,7 +186,8 @@ func (w workflowTOML) toDefinition() WorkflowDefinition {
 			LikelyFilesAffected:     step.LikelyFilesAffected,
 			VerificationRequirement: step.VerificationRequirement, ExpectedOutput: step.ExpectedOutput,
 			FailureCriteria: step.FailureCriteria, ResumeInstructions: step.ResumeInstructions,
-			MaxParallelTasks: maxParallelTasks,
+			MaxParallelTasks: maxParallelTasks, AutomationStatus: step.AutomationStatus,
+			TriggerKind: step.TriggerKind, SchedulePolicy: step.SchedulePolicy,
 		})
 	}
 	for _, gate := range w.ReviewGatesRaw {

@@ -51,7 +51,8 @@ const (
 )
 
 const (
-	TriggerKindManual = "manual"
+	TriggerKindManual    = "manual"
+	TriggerKindAutomatic = "automatic"
 )
 
 const (
@@ -62,23 +63,24 @@ const (
 const PermissionSnapshotRefPrefix = "permission_snapshot:"
 
 type Automation struct {
-	ID              string    `json:"id"`
-	ProjectID       string    `json:"project_id"`
-	AutomationRef   string    `json:"automation_ref"`
-	Title           string    `json:"title"`
-	Purpose         string    `json:"purpose"`
-	Status          string    `json:"status"`
-	AgentID         string    `json:"agent_id"`
-	PlanID          string    `json:"plan_id,omitempty"`
-	AllowedTaskRefs []string  `json:"allowed_task_refs,omitempty"`
-	TriggerKind     string    `json:"trigger_kind"`
-	SourceKind      string    `json:"source_kind,omitempty"`
-	SchedulePolicy  string    `json:"schedule_policy,omitempty"`
-	PermissionRef   string    `json:"permission_ref"`
-	CreatedByRunID  string    `json:"created_by_run_id,omitempty"`
-	TraceID         string    `json:"trace_id,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                    string    `json:"id"`
+	ProjectID             string    `json:"project_id"`
+	AutomationRef         string    `json:"automation_ref"`
+	Title                 string    `json:"title"`
+	Purpose               string    `json:"purpose"`
+	Status                string    `json:"status"`
+	AgentID               string    `json:"agent_id"`
+	PlanID                string    `json:"plan_id,omitempty"`
+	AllowedTaskRefs       []string  `json:"allowed_task_refs,omitempty"`
+	RequiredReviewTaskIDs []string  `json:"required_review_task_ids,omitempty"`
+	TriggerKind           string    `json:"trigger_kind"`
+	SourceKind            string    `json:"source_kind,omitempty"`
+	SchedulePolicy        string    `json:"schedule_policy,omitempty"`
+	PermissionRef         string    `json:"permission_ref"`
+	CreatedByRunID        string    `json:"created_by_run_id,omitempty"`
+	TraceID               string    `json:"trace_id,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 type AutomationAgent struct {
@@ -188,17 +190,21 @@ type ExecutorOptions struct {
 }
 
 type CreateAutomationInput struct {
-	ProjectID       string   `json:"project_id,omitempty"`
-	AutomationRef   string   `json:"automation_ref"`
-	Title           string   `json:"title"`
-	Purpose         string   `json:"purpose"`
-	AgentID         string   `json:"agent_id"`
-	PlanID          string   `json:"plan_id,omitempty"`
-	AllowedTaskRefs []string `json:"allowed_task_refs,omitempty"`
-	PermissionRef   string   `json:"permission_ref"`
-	SourceKind      string   `json:"source_kind,omitempty"`
-	CreatedByRunID  string   `json:"created_by_run_id,omitempty"`
-	TraceID         string   `json:"trace_id,omitempty"`
+	ProjectID             string   `json:"project_id,omitempty"`
+	AutomationRef         string   `json:"automation_ref"`
+	Title                 string   `json:"title"`
+	Purpose               string   `json:"purpose"`
+	Status                string   `json:"status,omitempty"`
+	AgentID               string   `json:"agent_id"`
+	PlanID                string   `json:"plan_id,omitempty"`
+	AllowedTaskRefs       []string `json:"allowed_task_refs,omitempty"`
+	RequiredReviewTaskIDs []string `json:"required_review_task_ids,omitempty"`
+	TriggerKind           string   `json:"trigger_kind,omitempty"`
+	SchedulePolicy        string   `json:"schedule_policy,omitempty"`
+	PermissionRef         string   `json:"permission_ref"`
+	SourceKind            string   `json:"source_kind,omitempty"`
+	CreatedByRunID        string   `json:"created_by_run_id,omitempty"`
+	TraceID               string   `json:"trace_id,omitempty"`
 }
 
 type AutomationFilter struct {

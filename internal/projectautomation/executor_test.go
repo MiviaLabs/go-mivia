@@ -107,6 +107,109 @@ func TestExecuteQueuedRunManualEndsInVerifying(t *testing.T) {
 	}
 }
 
+func TestExecutorSubmitsAutomaticRunForReadyTaskOnce(t *testing.T) {
+	ctx := context.Background()
+	svc := newExecutorTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review",
+		Title:           "Automatic review",
+		Purpose:         "Run ready review task automatically",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "agent-a",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{"task-a"},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "on-ready-task",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	executor := NewExecutor(svc, ExecutorOptions{
+		Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionInProcess,
+		GlobalWorkerCount: 1, PerProjectWorkerLimit: 1, PerAgentWorkerLimit: 1,
+		ProjectIDs: []string{"project-1"},
+	})
+
+	executor.pollOnce(ctx)
+	waitForAutomationRuns(t, svc, automation.ID, 1)
+	executor.pollOnce(ctx)
+	waitForAutomationRuns(t, svc, automation.ID, 1)
+}
+
+func TestExecutorDoesNotSubmitAutomaticRunBeforeAutomationReviewDone(t *testing.T) {
+	ctx := context.Background()
+	svc := newExecutorTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:             "project-1",
+		AutomationRef:         "auto/review-gated",
+		Title:                 "Review gated automatic task",
+		Purpose:               "Wait for automation review before queueing",
+		Status:                AutomationStatusEnabled,
+		AgentID:               "agent-a",
+		PlanID:                "plan-1",
+		AllowedTaskRefs:       []string{"task-a"},
+		RequiredReviewTaskIDs: []string{"automation-review"},
+		TriggerKind:           TriggerKindAutomatic,
+		SchedulePolicy:        "on-ready-task",
+		PermissionRef:         "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	executor := NewExecutor(svc, ExecutorOptions{
+		Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal,
+		GlobalWorkerCount: 1, PerProjectWorkerLimit: 1, PerAgentWorkerLimit: 1,
+		ProjectIDs: []string{"project-1"},
+	})
+
+	executor.pollOnce(ctx)
+	waitForAutomationRuns(t, svc, automation.ID, 0)
+
+	review := readyTask("automation-review", "automation-review", []string{"internal/foo.go"})
+	review.Status = projectworkplan.WorkTaskStatusDone
+	svc.workTasks.(*fakeWorkTasks).tasks["automation-review"] = review
+
+	executor.pollOnce(ctx)
+	waitForAutomationRuns(t, svc, automation.ID, 1)
+}
+
+func TestExecutorExternalModeSubmitsAutomaticRunWithoutExecuting(t *testing.T) {
+	ctx := context.Background()
+	svc := newExecutorTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1, RunnerExecution: RunnerExecutionExternal})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/external-review",
+		Title:           "External automatic review",
+		Purpose:         "Queue ready review task for external runner",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "agent-a",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{"task-a"},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "on-ready-task",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	executor := NewExecutor(svc, ExecutorOptions{
+		Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal,
+		GlobalWorkerCount: 1, PerProjectWorkerLimit: 1, PerAgentWorkerLimit: 1,
+		ProjectIDs: []string{"project-1"},
+	})
+
+	executor.pollOnce(ctx)
+	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != RunStatusQueued {
+		t.Fatalf("expected one queued external run, got %#v", runs)
+	}
+}
+
 func TestExecutorRespectsGlobalWorkerLimit(t *testing.T) {
 	ctx := context.Background()
 	svc := newExecutorTestService(t, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 1})
@@ -199,10 +302,16 @@ func TestExecutorRespectsPerAgentLimit(t *testing.T) {
 
 func newExecutorTestService(t *testing.T, options Options) *Service {
 	t.Helper()
+	taskA := readyTask("task-a", "task-a", []string{"internal/foo.go"})
+	taskA.OwnerAgent = "agent-a"
+	taskB := readyTask("task-b", "task-b", []string{"internal/bar.go"})
+	taskB.OwnerAgent = "agent-b"
+	taskC := readyTask("task-c", "task-c", []string{"internal/baz.go"})
+	taskC.OwnerAgent = "agent-c"
 	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
-		"task-a": readyTask("task-a", "task-a", []string{"internal/foo.go"}),
-		"task-b": readyTask("task-b", "task-b", []string{"internal/bar.go"}),
-		"task-c": readyTask("task-c", "task-c", []string{"internal/baz.go"}),
+		"task-a": taskA,
+		"task-b": taskB,
+		"task-c": taskC,
 	}}
 	svc := New(newTestStore(), fake, options)
 	svc.now = func() time.Time { return time.Unix(100, 0).UTC() }
@@ -268,4 +377,21 @@ func waitForStarts(t *testing.T, started <-chan struct{}, count int) {
 		t.Fatalf("unexpected extra worker start")
 	case <-time.After(20 * time.Millisecond):
 	}
+}
+
+func waitForAutomationRuns(t *testing.T, svc *Service, automationID string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		runs, err := svc.ListRuns(context.Background(), RunFilter{ProjectID: "project-1", AutomationID: automationID})
+		if err != nil {
+			t.Fatalf("ListRuns returned error: %v", err)
+		}
+		if len(runs) == count {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	runs, _ := svc.ListRuns(context.Background(), RunFilter{ProjectID: "project-1", AutomationID: automationID})
+	t.Fatalf("timed out waiting for %d runs, got %d", count, len(runs))
 }

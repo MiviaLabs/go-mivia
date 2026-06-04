@@ -16,7 +16,7 @@ func TestBuildCodexCommandUsesFixedArgv(t *testing.T) {
 	if command.Path != "/usr/local/bin/codex" {
 		t.Fatalf("unexpected path: %q", command.Path)
 	}
-	want := []string{"exec", "--json", "--input-file", inputPath}
+	want := []string{"exec", "-"}
 	if len(command.Args) != len(want) {
 		t.Fatalf("unexpected args: %#v", command.Args)
 	}
@@ -24,6 +24,9 @@ func TestBuildCodexCommandUsesFixedArgv(t *testing.T) {
 		if command.Args[i] != want[i] {
 			t.Fatalf("arg %d = %q, want %q", i, command.Args[i], want[i])
 		}
+	}
+	if command.StdinFile != inputPath {
+		t.Fatalf("stdin file = %q, want %q", command.StdinFile, inputPath)
 	}
 }
 

@@ -96,6 +96,9 @@ type WorkflowStep struct {
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
 	MaxParallelTasks        int      `json:"max_parallel_tasks,omitempty"`
+	AutomationStatus        string   `json:"automation_status,omitempty"`
+	TriggerKind             string   `json:"trigger_kind,omitempty"`
+	SchedulePolicy          string   `json:"schedule_policy,omitempty"`
 }
 
 type WorkflowReviewGate struct {

@@ -89,6 +89,25 @@ func TestComputeParallelBatchSkipsNotReadyTasks(t *testing.T) {
 	}
 }
 
+func TestComputeParallelBatchSkipsTasksWithOpenDependencies(t *testing.T) {
+	ctx := context.Background()
+	dependent := readyTask("task-b", "b", []string{"internal/bar.go"})
+	dependent.DependencyTaskIDs = []string{"task-a"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "a", []string{"internal/foo.go"}),
+		"task-b": dependent,
+	}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 2})
+
+	batch, err := svc.ComputeParallelBatch(ctx, ComputeParallelBatchInput{ProjectID: "project-1", PlanID: "plan-1", OrchestratorRunID: "run-orchestrator"})
+	if err != nil {
+		t.Fatalf("ComputeParallelBatch returned error: %v", err)
+	}
+	if len(batch.TaskIDs) != 1 || batch.TaskIDs[0] != "task-a" {
+		t.Fatalf("expected only dependency-free task, got %#v", batch.TaskIDs)
+	}
+}
+
 func TestRunNowExecutesCodexCLIAndLeavesTaskForVerification(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
@@ -109,7 +128,7 @@ func TestRunNowExecutesCodexCLIAndLeavesTaskForVerification(t *testing.T) {
 		if maxOutputBytes != 64*1024 {
 			t.Fatalf("unexpected output cap: %d", maxOutputBytes)
 		}
-		inputPath := command.Args[len(command.Args)-1]
+		inputPath := command.StdinFile
 		data, err := os.ReadFile(inputPath)
 		if err != nil {
 			t.Fatalf("expected transient input file: %v", err)
@@ -208,6 +227,61 @@ func TestExternalClaimAndCompleteAttempt(t *testing.T) {
 	}
 	if len(svc.store.(*testStore).attempts) != 1 {
 		t.Fatalf("expected one attempt, got %d", len(svc.store.(*testStore).attempts))
+	}
+}
+
+func TestExternalClaimBlocksUntilRequiredAutomationReviewDone(t *testing.T) {
+	ctx := context.Background()
+	reviewTask := readyTask("automation-review", "automation-review", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a":            readyTask("task-a", "a", []string{"internal/foo.go"}),
+		"automation-review": reviewTask,
+	}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:             "project-1",
+		AutomationRef:         "auto/review-gated",
+		Title:                 "Review gated automation",
+		Purpose:               "Require review before external claim",
+		AgentID:               "agent-1",
+		PlanID:                "plan-1",
+		RequiredReviewTaskIDs: []string{"automation-review"},
+		PermissionRef:         "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	now := time.Unix(100, 0).UTC()
+	queued := AutomationRun{ID: "run-review-gated", ProjectID: "project-1", AutomationID: automation.ID, AgentID: "agent-1", PlanID: "plan-1", TaskID: "task-a", Status: RunStatusQueued, RunnerKind: RunnerKindCodexCLI, CreatedAt: now, UpdatedAt: now}
+	if _, err := svc.store.CreateRun(ctx, queued); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); err == nil {
+		t.Fatal("expected open automation review gate to block external claim")
+	}
+	blocked, err := svc.GetRun(ctx, "project-1", queued.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if blocked.Status != RunStatusBlocked || blocked.FailureCategory != "automation_review_gate_open" {
+		t.Fatalf("expected blocked review gate run, got %#v", blocked)
+	}
+
+	reviewTask.Status = projectworkplan.WorkTaskStatusDone
+	fake.tasks["automation-review"] = reviewTask
+	queued.ID = "run-review-done"
+	queued.Status = RunStatusQueued
+	if _, err := svc.store.CreateRun(ctx, queued); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error after review: %v", err)
+	}
+	if claimed.Run.ID != queued.ID || claimed.Run.Status != RunStatusRunning {
+		t.Fatalf("unexpected claimed run after review: %#v", claimed.Run)
 	}
 }
 

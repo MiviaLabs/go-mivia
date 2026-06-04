@@ -82,11 +82,14 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get automation: %v", err)
 	}
-	if createdAutomation.PlanID != result.WorkPlanID || createdAutomation.AutomationRef != "workflow-ref:automation-step" {
+	if createdAutomation.PlanID != result.WorkPlanID || !strings.HasPrefix(createdAutomation.AutomationRef, "workflow-ref:run-1:compile-") || !strings.HasSuffix(createdAutomation.AutomationRef, ":automation-step") {
 		t.Fatalf("unexpected automation refs: %#v", createdAutomation)
 	}
 	if len(createdAutomation.AllowedTaskRefs) != 1 || createdAutomation.AllowedTaskRefs[0] != "implement-step" {
 		t.Fatalf("automation allowed task refs must come from step dependencies: %#v", createdAutomation.AllowedTaskRefs)
+	}
+	if len(createdAutomation.RequiredReviewTaskIDs) != 1 || createdAutomation.RequiredReviewTaskIDs[0] != automationReviewer.ID {
+		t.Fatalf("automation must require its generated review task before execution: %#v", createdAutomation.RequiredReviewTaskIDs)
 	}
 	if !strings.HasPrefix(createdAutomation.PermissionRef, "permission_snapshot:") {
 		t.Fatalf("automation missing permission snapshot ref: %#v", createdAutomation)
@@ -118,6 +121,39 @@ func TestCompileWorkflowDryRunPersistsNothing(t *testing.T) {
 	}
 	if len(plans) != 0 || len(autos) != 0 || len(workflowStore.snapshots) != 0 {
 		t.Fatalf("dry run persisted plans=%#v automations=%#v snapshots=%#v", plans, autos, workflowStore.snapshots)
+	}
+}
+
+func TestCompileWorkflowAllowsRepeatedRuns(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, workPlans, automations := newCompileFixture()
+	workflowStore.seedWorkflow(baseCompileWorkflow())
+
+	first, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("first compile workflow: %v", err)
+	}
+	second, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("second compile workflow: %v", err)
+	}
+	if first.WorkPlanID == second.WorkPlanID {
+		t.Fatalf("expected distinct work plans: first=%s second=%s", first.WorkPlanID, second.WorkPlanID)
+	}
+
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list work plans: %v", err)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("expected two compiled plans, got %#v", plans)
+	}
+	autos, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list automations: %v", err)
+	}
+	if len(autos) != 2 {
+		t.Fatalf("expected two compiled automations, got %#v", autos)
 	}
 }
 
