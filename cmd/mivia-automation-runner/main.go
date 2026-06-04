@@ -147,7 +147,22 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, project
 		fmt.Fprintln(os.Stdout, "no queued automation run")
 		return 0, true, false
 	}
-	if err := gitOps.PreTask(ctx, strings.TrimSpace(codexOptions.WorkDir)); err != nil {
+	runWorkDir, err := client.resolveRunWorkDir(ctx, projectID, claimed.Run.PlanID, strings.TrimSpace(codexOptions.WorkDir))
+	if err != nil {
+		result := projectautomation.CompleteAttemptInput{
+			Status:          projectautomation.RunStatusFailed,
+			FailureCategory: "worktree_resolve_failed",
+		}
+		if _, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); reportErr != nil {
+			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
+			return 1, false, true
+		}
+		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, result.Status)
+		return 1, true, true
+	}
+	runCodexOptions := codexOptions
+	runCodexOptions.WorkDir = runWorkDir
+	if err := gitOps.PreTask(ctx, runWorkDir); err != nil {
 		result := projectautomation.CompleteAttemptInput{
 			Status:          projectautomation.RunStatusFailed,
 			FailureCategory: "gitops_pre_task_failed",
@@ -162,11 +177,11 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, project
 		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, result.Status)
 		return 1, true, true
 	}
-	status, failureCategory, durationMS := runCodex(ctx, claimed, codexOptions)
+	status, failureCategory, durationMS := runCodex(ctx, claimed, runCodexOptions)
 	var evidenceRefs []string
 	if status == projectautomation.RunStatusCompleted {
 		gitResult, err := gitOps.PostTask(ctx, projectgitops.PostTaskInput{
-			WorkDir:          strings.TrimSpace(codexOptions.WorkDir),
+			WorkDir:          runWorkDir,
 			PlanID:           claimed.Run.PlanID,
 			TaskID:           claimed.Run.TaskID,
 			AutomationRunID:  claimed.Run.ID,
@@ -356,6 +371,13 @@ type projectListItem struct {
 	Enabled bool   `json:"enabled"`
 }
 
+type runnerWorkPlan struct {
+	ID             string `json:"id"`
+	ProjectID      string `json:"project_id"`
+	IsolationMode  string `json:"isolation_mode"`
+	GitWorktreeRef string `json:"git_worktree_ref"`
+}
+
 var errNoQueuedRun = errors.New("no queued automation run")
 
 var windowsPathForRunner = func(path string) (string, error) {
@@ -395,6 +417,28 @@ func (client *runnerClient) completeAttempt(ctx context.Context, projectID strin
 	return run, err
 }
 
+func (client *runnerClient) resolveRunWorkDir(ctx context.Context, projectID string, planID string, baseWorkDir string) (string, error) {
+	baseWorkDir = strings.TrimSpace(baseWorkDir)
+	planID = strings.TrimSpace(planID)
+	if planID == "" {
+		return baseWorkDir, nil
+	}
+	plan, err := client.getWorkPlan(ctx, projectID, planID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(plan.IsolationMode) != "dedicated_worktree" || strings.TrimSpace(plan.GitWorktreeRef) == "" {
+		return baseWorkDir, nil
+	}
+	return dedicatedWorktreePath(baseWorkDir, projectID, plan.GitWorktreeRef)
+}
+
+func (client *runnerClient) getWorkPlan(ctx context.Context, projectID string, planID string) (runnerWorkPlan, error) {
+	var plan runnerWorkPlan
+	_, err := client.get(ctx, fmt.Sprintf("/api/v1/projects/%s/work-plans/%s", url.PathEscape(projectID), url.PathEscape(planID)), &plan)
+	return plan, err
+}
+
 func (client *runnerClient) listProjectIDs(ctx context.Context) ([]string, error) {
 	var output projectListResponse
 	if _, err := client.get(ctx, "/api/v1/projects", &output); err != nil {
@@ -408,6 +452,77 @@ func (client *runnerClient) listProjectIDs(ctx context.Context) ([]string, error
 		projectIDs = append(projectIDs, project.ID)
 	}
 	return projectIDs, nil
+}
+
+func dedicatedWorktreePath(baseWorkDir string, projectID string, worktreeRef string) (string, error) {
+	baseWorkDir = strings.TrimSpace(baseWorkDir)
+	if baseWorkDir == "" || !filepath.IsAbs(baseWorkDir) {
+		return "", fmt.Errorf("%w: dedicated worktree requires an absolute base workdir", projectautomation.ErrInvalidInput)
+	}
+	projectSegment, err := safeProjectWorktreeSegment(projectID)
+	if err != nil {
+		return "", fmt.Errorf("invalid project id for worktree path: %w", err)
+	}
+	if err := validateWorktreeRef(worktreeRef); err != nil {
+		return "", fmt.Errorf("invalid worktree ref for worktree path: %w", err)
+	}
+	worktreeSegment := safeWorktreeDirName(projectID + "-" + worktreeRef)
+	if worktreeSegment == "" {
+		return "", fmt.Errorf("invalid worktree ref for worktree path: %w", projectautomation.ErrInvalidInput)
+	}
+	root := filepath.Clean(filepath.Join(baseWorkDir, ".mivia-worktrees", projectSegment))
+	target := filepath.Clean(filepath.Join(root, worktreeSegment))
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("%w: worktree path escapes project worktree root", projectautomation.ErrInvalidInput)
+	}
+	return target, nil
+}
+
+func safeProjectWorktreeSegment(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", projectautomation.ErrInvalidInput
+	}
+	if strings.Contains(value, "..") || strings.ContainsAny(value, `/\`) {
+		return "", projectautomation.ErrInvalidInput
+	}
+	if len(value) >= 2 && value[1] == ':' {
+		return "", projectautomation.ErrInvalidInput
+	}
+	return value, nil
+}
+
+func validateWorktreeRef(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "..") || strings.Contains(value, "\\") || strings.HasPrefix(value, "/") || filepath.IsAbs(value) {
+		return projectautomation.ErrInvalidInput
+	}
+	if len(value) >= 2 && value[1] == ':' {
+		return projectautomation.ErrInvalidInput
+	}
+	return nil
+}
+
+func safeWorktreeDirName(value string) string {
+	value = strings.TrimSpace(value)
+	var builder strings.Builder
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			builder.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '.', '_', '-':
+			builder.WriteRune(r)
+		case '/', ':', '@', '+':
+			builder.WriteRune('-')
+		}
+	}
+	return strings.Trim(builder.String(), ".-")
 }
 
 func (client *runnerClient) get(ctx context.Context, path string, output any) (int, error) {

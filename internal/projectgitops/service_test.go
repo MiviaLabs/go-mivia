@@ -27,6 +27,7 @@ func (runner *recordingRunner) Run(_ context.Context, command Command) (CommandR
 
 func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
+		{},
 		{Stdout: " M internal/projectgitops/service.go\n"},
 		{},
 		{},
@@ -57,19 +58,22 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	if result.CommitRef != "git-commit-abc123def456" {
 		t.Fatalf("unexpected commit ref: %+v", result)
 	}
-	if len(runner.commands) != 5 {
-		t.Fatalf("expected five git commands, got %d", len(runner.commands))
+	if len(runner.commands) != 6 {
+		t.Fatalf("expected six git commands, got %d", len(runner.commands))
 	}
-	if got := strings.Join(runner.commands[3].Args, " "); !strings.Contains(got, "commit -m") {
+	if got := strings.Join(runner.commands[0].Args, " "); !strings.Contains(got, "config --global --add safe.directory /tmp/worktree") {
+		t.Fatalf("expected safe.directory command, got %q", got)
+	}
+	if got := strings.Join(runner.commands[4].Args, " "); !strings.Contains(got, "commit -m") {
 		t.Fatalf("expected commit command, got %q", got)
 	}
-	if !containsEnv(runner.commands[3].Env, "GIT_AUTHOR_EMAIL=automation@example.test") {
-		t.Fatalf("expected author email env, got %+v", runner.commands[3].Env)
+	if !containsEnv(runner.commands[4].Env, "GIT_AUTHOR_EMAIL=automation@example.test") {
+		t.Fatalf("expected author email env, got %+v", runner.commands[4].Env)
 	}
 }
 
 func TestPostTaskFailsClosedWithoutSafePathspecs(t *testing.T) {
-	runner := &recordingRunner{results: []CommandResult{{Stdout: " M README.md\n"}}}
+	runner := &recordingRunner{results: []CommandResult{{}, {Stdout: " M README.md\n"}}}
 	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)
 
 	_, err := svc.PostTask(context.Background(), PostTaskInput{
@@ -82,13 +86,13 @@ func TestPostTaskFailsClosedWithoutSafePathspecs(t *testing.T) {
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected invalid input error, got %v", err)
 	}
-	if len(runner.commands) != 1 {
-		t.Fatalf("expected only status command, got %d", len(runner.commands))
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected safe.directory and status commands, got %d", len(runner.commands))
 	}
 }
 
 func TestPostTaskReturnsNoChanges(t *testing.T) {
-	runner := &recordingRunner{results: []CommandResult{{Stdout: ""}}}
+	runner := &recordingRunner{results: []CommandResult{{}, {Stdout: ""}}}
 	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
@@ -100,7 +104,7 @@ func TestPostTaskReturnsNoChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no changes result: %v", err)
 	}
-	if !result.NoChanges || len(runner.commands) != 1 {
+	if !result.NoChanges || len(runner.commands) != 2 {
 		t.Fatalf("unexpected result or command count: %+v commands=%d", result, len(runner.commands))
 	}
 }
@@ -120,12 +124,15 @@ func TestPostTaskPushRequiresSSHConfig(t *testing.T) {
 }
 
 func TestPreTaskRejectsDirtyWorktreeWhenRequired(t *testing.T) {
-	runner := &recordingRunner{results: []CommandResult{{Stdout: " M README.md\n"}}}
+	runner := &recordingRunner{results: []CommandResult{{}, {Stdout: " M README.md\n"}}}
 	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RequireCleanBeforeTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)
 
 	err := svc.PreTask(context.Background(), "/tmp/worktree")
 	if !errors.Is(err, ErrDirtyWorktree) {
 		t.Fatalf("expected dirty worktree error, got %v", err)
+	}
+	if got := strings.Join(runner.commands[0].Args, " "); !strings.Contains(got, "config --global --add safe.directory /tmp/worktree") {
+		t.Fatalf("expected safe.directory command, got %q", got)
 	}
 }
 
@@ -138,6 +145,14 @@ func TestPreTaskSkipsWhenCleanCheckDisabled(t *testing.T) {
 	}
 	if len(runner.commands) != 0 {
 		t.Fatalf("expected no commands, got %d", len(runner.commands))
+	}
+}
+
+func TestGitHubEnvFallsBackToGhAuthWhenConfiguredEnvIsEmpty(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	svc := NewWithRunner(Options{GitHubTokenEnv: "GH_TOKEN"}, &recordingRunner{})
+	if env := svc.githubEnv(); env != nil {
+		t.Fatalf("expected empty token env to fall back to gh auth, got %+v", env)
 	}
 }
 

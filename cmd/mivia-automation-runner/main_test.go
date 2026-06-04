@@ -14,6 +14,85 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
 )
 
+func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans/plan-1":
+			writeJSON(t, w, runnerWorkPlan{
+				ID:             "plan-1",
+				ProjectID:      "project-1",
+				IsolationMode:  "dedicated_worktree",
+				GitWorktreeRef: "worktree-docs-smoke",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	resolved, err := client.resolveRunWorkDir(t.Context(), "project-1", "plan-1", baseWorkDir)
+	if err != nil {
+		t.Fatalf("resolveRunWorkDir returned error: %v", err)
+	}
+	want := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-worktree-docs-smoke")
+	if resolved != want {
+		t.Fatalf("expected %q, got %q", want, resolved)
+	}
+}
+
+func TestResolveRunWorkDirFallsBackForSharedPlan(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans/plan-1":
+			writeJSON(t, w, runnerWorkPlan{
+				ID:            "plan-1",
+				ProjectID:     "project-1",
+				IsolationMode: "shared",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	resolved, err := client.resolveRunWorkDir(t.Context(), "project-1", "plan-1", baseWorkDir)
+	if err != nil {
+		t.Fatalf("resolveRunWorkDir returned error: %v", err)
+	}
+	if resolved != baseWorkDir {
+		t.Fatalf("expected fallback workdir %q, got %q", baseWorkDir, resolved)
+	}
+}
+
+func TestDedicatedWorktreePathRequiresAbsoluteBase(t *testing.T) {
+	if _, err := dedicatedWorktreePath("relative/repo", "project-1", "worktree-1"); err == nil {
+		t.Fatal("expected relative base workdir to be rejected")
+	}
+}
+
+func TestDedicatedWorktreePathRejectsTraversalRefs(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	if _, err := dedicatedWorktreePath(baseWorkDir, "Project_1", "../Worktree/Docs"); err == nil {
+		t.Fatal("expected traversal-looking worktree ref to be rejected")
+	}
+}
+
+func TestDedicatedWorktreePathMatchesWorkspaceWorktreeNaming(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	resolved, err := dedicatedWorktreePath(baseWorkDir, "Project_1", "worktree/Docs_v1.2")
+	if err != nil {
+		t.Fatalf("dedicatedWorktreePath returned error: %v", err)
+	}
+	want := filepath.Join(baseWorkDir, ".mivia-worktrees", "Project_1", "Project_1-worktree-Docs_v1.2")
+	if resolved != want {
+		t.Fatalf("expected %q, got %q", want, resolved)
+	}
+}
+
 func TestRunOnceReportsCompletedAttempt(t *testing.T) {
 	var completed atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

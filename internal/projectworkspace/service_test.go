@@ -57,6 +57,38 @@ func TestWorkspaceService_ReadEditAndQueueIngestion(t *testing.T) {
 	}
 }
 
+func TestMakeWorktreeGitdirPortableWritesRelativePointers(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, ".mivia-worktrees", "example-service", "example-service-worktree-docs")
+	metadataName := "example-service-worktree-docs"
+	metadataDir := filepath.Join(root, ".git", "worktrees", metadataName)
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+		t.Fatalf("create metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: "+filepath.Join(metadataDir)+"\n"), 0o644); err != nil {
+		t.Fatalf("write worktree git file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(metadataDir, "gitdir"), []byte(filepath.Join(target, ".git")+"\n"), 0o644); err != nil {
+		t.Fatalf("write metadata gitdir: %v", err)
+	}
+
+	if err := makeWorktreeGitdirPortable(root, target, metadataName); err != nil {
+		t.Fatalf("makeWorktreeGitdirPortable returned error: %v", err)
+	}
+
+	worktreeGit := readFixture(t, target, ".git")
+	if !strings.HasPrefix(worktreeGit, "gitdir: ") || strings.Contains(worktreeGit, root) {
+		t.Fatalf("expected relative worktree gitdir pointer, got %q", worktreeGit)
+	}
+	metadataGitdir := readFixture(t, metadataDir, "gitdir")
+	if filepath.IsAbs(strings.TrimSpace(metadataGitdir)) || strings.Contains(metadataGitdir, root) {
+		t.Fatalf("expected relative metadata gitdir pointer, got %q", metadataGitdir)
+	}
+}
+
 func TestWorkspaceService_ReadFileReturnsFullTextUnlessCallerCaps(t *testing.T) {
 	root := t.TempDir()
 	content := strings.Repeat("line content\n", 6000)
@@ -815,6 +847,17 @@ func (runner *recordingGitRunner) Run(_ context.Context, root string, _ int, arg
 	}
 	if runner.createWorktreeTarget && len(args) >= 5 && args[0] == "worktree" && args[1] == "add" {
 		if err := os.MkdirAll(args[4], 0o700); err != nil {
+			return nil, false, err
+		}
+		metadataName := filepath.Base(args[4])
+		metadataDir := filepath.Join(root, ".git", "worktrees", metadataName)
+		if err := os.MkdirAll(metadataDir, 0o700); err != nil {
+			return nil, false, err
+		}
+		if err := os.WriteFile(filepath.Join(args[4], ".git"), []byte("gitdir: "+metadataDir+"\n"), 0o644); err != nil {
+			return nil, false, err
+		}
+		if err := os.WriteFile(filepath.Join(metadataDir, "gitdir"), []byte(filepath.Join(args[4], ".git")+"\n"), 0o644); err != nil {
 			return nil, false, err
 		}
 	}

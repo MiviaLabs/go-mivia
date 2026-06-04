@@ -262,6 +262,10 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 		return GitCreateWorktreeResult{}, ErrGitUnavailable
 	}
 	metadataName := safeWorktreeDirName(project.ID + "-" + worktreeRef)
+	if err := makeWorktreeGitdirPortable(project.CanonicalRootPath, target, metadataName); err != nil {
+		_, _, _ = svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now")
+		return GitCreateWorktreeResult{}, ErrGitUnavailable
+	}
 	if err := restoreWorktreeOwnership(project.CanonicalRootPath, target, metadataName, branchRef); err != nil {
 		return GitCreateWorktreeResult{}, ErrGitUnavailable
 	}
@@ -270,6 +274,38 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 		return GitCreateWorktreeResult{}, err
 	}
 	return result, nil
+}
+
+func makeWorktreeGitdirPortable(root string, target string, metadataName string) error {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	metadataDir := filepath.Join(root, ".git", "worktrees", metadataName)
+	worktreeGitFile := filepath.Join(target, ".git")
+	metadataGitdirFile := filepath.Join(metadataDir, "gitdir")
+	if _, err := os.Stat(metadataDir); err != nil {
+		return err
+	}
+	relativeMetadataDir, err := filepath.Rel(target, metadataDir)
+	if err != nil {
+		return err
+	}
+	if relativeMetadataDir == "." || filepath.IsAbs(relativeMetadataDir) {
+		return ErrInvalidInput
+	}
+	relativeWorktreeGitFile, err := filepath.Rel(metadataDir, worktreeGitFile)
+	if err != nil {
+		return err
+	}
+	if relativeWorktreeGitFile == "." || filepath.IsAbs(relativeWorktreeGitFile) {
+		return ErrInvalidInput
+	}
+	if err := os.WriteFile(worktreeGitFile, []byte("gitdir: "+filepath.ToSlash(relativeMetadataDir)+"\n"), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(metadataGitdirFile, []byte(filepath.ToSlash(relativeWorktreeGitFile)+"\n"), 0o644); err != nil {
+		return err
+	}
+	return nil
 }
 
 func restoreWorktreeOwnership(root string, target string, metadataName string, branchRef string) error {

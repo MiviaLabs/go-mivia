@@ -51,6 +51,9 @@ func (svc *Service) PreTask(ctx context.Context, workDir string) error {
 	if workDir == "" || !filepath.IsAbs(workDir) {
 		return fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
 	}
+	if err := svc.ensureSafeDirectory(ctx, workDir); err != nil {
+		return err
+	}
 	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
 	if err != nil {
 		return err
@@ -82,6 +85,9 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		return PostTaskResult{}, err
 	}
 
+	if err := svc.ensureSafeDirectory(ctx, workDir); err != nil {
+		return PostTaskResult{}, err
+	}
 	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
 	if err != nil {
 		return PostTaskResult{}, err
@@ -196,6 +202,15 @@ func (svc *Service) git(ctx context.Context, dir string, env []string, args ...s
 	return svc.run(ctx, Command{Path: "git", Args: args, Dir: dir, Env: env})
 }
 
+func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) error {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" || !filepath.IsAbs(workDir) || strings.ContainsAny(workDir, "\x00\r\n") {
+		return fmt.Errorf("%w: workdir must be absolute and safe", ErrInvalidInput)
+	}
+	_, err := svc.git(ctx, workDir, nil, "config", "--global", "--add", "safe.directory", workDir)
+	return err
+}
+
 func (svc *Service) run(ctx context.Context, command Command) (CommandResult, error) {
 	result, err := svc.runner.Run(ctx, command)
 	if err != nil {
@@ -225,7 +240,10 @@ func (svc *Service) gitSSHEnv() []string {
 
 func (svc *Service) githubEnv() []string {
 	if envName := strings.TrimSpace(svc.options.GitHubTokenEnv); envName != "" {
-		return []string{"GH_TOKEN=" + os.Getenv(envName)}
+		if token := strings.TrimSpace(os.Getenv(envName)); token != "" {
+			return []string{"GH_TOKEN=" + token}
+		}
+		return nil
 	}
 	if path := strings.TrimSpace(svc.options.GitHubTokenFile); path != "" {
 		data, err := os.ReadFile(path)

@@ -17,7 +17,7 @@ RUN npm install -g @openai/codex@latest \
 FROM debian:bookworm-20260518-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gh git socat \
+    && apt-get install -y --no-install-recommends ca-certificates curl gh git openssh-client socat \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin mivia \
