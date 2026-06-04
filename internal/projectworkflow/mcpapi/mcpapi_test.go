@@ -3,6 +3,7 @@ package mcpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,6 +95,86 @@ func TestCallToolValidateCheckedInWorkflowTOML(t *testing.T) {
 	}
 }
 
+func TestCallToolImportMutatedCheckedInWorkflowTOML(t *testing.T) {
+	ctx := context.Background()
+	for _, path := range checkedInWorkflowTOMLPaths(t) {
+		svc := projectworkflow.New(workflowstore.NewMemoryStore())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read workflow fixture %s: %v", path, err)
+		}
+		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		toml := mutateTopLevelWorkflowRefs(string(data), "workflow-import-"+name, "import-"+name)
+
+		validated, err := CallTool(ctx, svc, "projects.workflows.validate_toml", mustArgs(t, map[string]any{"id": "mivialabs-agents-monorepo", "toml": toml}))
+		if err != nil {
+			t.Fatalf("validate mutated checked-in TOML %s: %v", path, err)
+		}
+		validation := validated["structuredContent"].(projectworkflow.ValidateWorkflowTOMLResult)
+		if len(validation.Workflows) != 1 || len(validation.Issues) != 0 {
+			t.Fatalf("unexpected validation result for %s: %#v", path, validation)
+		}
+
+		imported, err := CallTool(ctx, svc, "projects.workflows.import_toml", mustArgs(t, map[string]any{"id": "mivialabs-agents-monorepo", "toml": toml, "created_by_run_id": "run-import"}))
+		if err != nil {
+			t.Fatalf("import mutated checked-in TOML %s: %v", path, err)
+		}
+		result := imported["structuredContent"].(projectworkflow.ImportWorkflowTOMLResult)
+		if len(result.Workflows) != 1 || len(result.PermissionSnapshotIDs) == 0 {
+			t.Fatalf("unexpected import result for %s: %#v", path, result)
+		}
+	}
+}
+
+func TestCallToolImportValidationFailureReturnsStructuredToolError(t *testing.T) {
+	ctx := context.Background()
+	svc := projectworkflow.New(workflowstore.NewMemoryStore())
+	bad := strings.Replace(workflowMCPValidTOML(), `reviewer_agent = "reviewer"`, `reviewer_agent = "missing-reviewer"`, 1)
+
+	result, err := CallTool(ctx, svc, "projects.workflows.import_toml", mustArgs(t, map[string]any{"id": "project-1", "toml": bad}))
+	if err != nil {
+		t.Fatalf("expected structured tool error result, got transport error: %v", err)
+	}
+	if result["isError"] != true {
+		t.Fatalf("expected isError result: %#v", result)
+	}
+	structured := result["structuredContent"].(projectworkflow.ImportWorkflowTOMLResult)
+	if !hasWorkflowIssue(structured.ValidationIssues, "unknown_reviewer_agent") {
+		t.Fatalf("expected validation issues in structured content: %#v", structured.ValidationIssues)
+	}
+	content := result["content"].([]map[string]string)[0]["text"]
+	if !strings.Contains(content, "unknown_reviewer_agent") || strings.Contains(content, "token=") {
+		t.Fatalf("unexpected error content: %s", content)
+	}
+}
+
+func TestCallToolCompileValidationFailureReturnsStructuredToolError(t *testing.T) {
+	api := workflowValidationFailureAPI{
+		value: projectworkflow.WorkflowCompileResult{
+			WorkflowID: "workflow-1",
+			ValidationIssues: []projectworkflow.WorkflowValidationIssue{{
+				Code:      "missing_review_gate",
+				Severity:  "error",
+				FieldPath: "review_gates",
+				Message:   "workflow requires review gate",
+			}},
+		},
+		err: errors.New("invalid project workflow input: workflow validation failed"),
+	}
+
+	result, err := CallTool(context.Background(), api, "projects.workflows.compile_to_work_plan", mustArgs(t, map[string]any{"id": "project-1", "workflow_id": "workflow-1"}))
+	if err != nil {
+		t.Fatalf("expected structured tool error result, got transport error: %v", err)
+	}
+	if result["isError"] != true {
+		t.Fatalf("expected isError result: %#v", result)
+	}
+	structured := result["structuredContent"].(projectworkflow.WorkflowCompileResult)
+	if !hasWorkflowIssue(structured.ValidationIssues, "missing_review_gate") {
+		t.Fatalf("expected validation issues in structured content: %#v", structured.ValidationIssues)
+	}
+}
+
 func TestCallToolValidateTOMLDropsUnsafeParsedWorkflow(t *testing.T) {
 	ctx := context.Background()
 	svc := projectworkflow.New(workflowstore.NewMemoryStore())
@@ -122,6 +203,41 @@ func checkedInWorkflowTOMLPaths(t *testing.T) []string {
 		t.Fatal("expected checked-in workflow TOML fixtures")
 	}
 	return paths
+}
+
+func mutateTopLevelWorkflowRefs(toml, id, workflowRef string) string {
+	lines := strings.Split(toml, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "id = ") {
+			lines[i] = `id = "` + id + `"`
+			break
+		}
+	}
+	for i, line := range lines {
+		if strings.HasPrefix(line, "workflow_ref = ") {
+			lines[i] = `workflow_ref = "` + workflowRef + `"`
+			break
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func hasWorkflowIssue(issues []projectworkflow.WorkflowValidationIssue, code string) bool {
+	for _, issue := range issues {
+		if issue.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+type workflowValidationFailureAPI struct {
+	value any
+	err   error
+}
+
+func (api workflowValidationFailureAPI) CallWorkflowTool(context.Context, string, json.RawMessage) (any, error) {
+	return api.value, api.err
 }
 
 func TestCallToolImportGetListAndPermissionSnapshots(t *testing.T) {

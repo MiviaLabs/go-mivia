@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 )
 
 var (
@@ -71,9 +73,25 @@ func CallTool(ctx context.Context, api API, name string, arguments json.RawMessa
 	}
 	value, err := api.CallWorkflowTool(ctx, canonical, arguments)
 	if err != nil {
+		if result, ok := workflowValidationToolResult(canonical, value); ok {
+			return toolErrorResult(result), nil
+		}
 		return nil, err
 	}
 	return toolResult(value), nil
+}
+
+func workflowValidationToolResult(name string, value any) (any, bool) {
+	switch name {
+	case "projects.workflows.import_toml":
+		result, ok := value.(projectworkflow.ImportWorkflowTOMLResult)
+		return result, ok && len(result.ValidationIssues) > 0
+	case "projects.workflows.compile_to_work_plan":
+		result, ok := value.(projectworkflow.WorkflowCompileResult)
+		return result, ok && len(result.ValidationIssues) > 0
+	default:
+		return nil, false
+	}
 }
 
 func validateArguments(name string, arguments json.RawMessage) error {
@@ -192,6 +210,15 @@ func toolResult(value any) map[string]any {
 		"content":           []map[string]string{{"type": "text", "text": string(encoded)}},
 		"structuredContent": value,
 		"isError":           false,
+	}
+}
+
+func toolErrorResult(value any) map[string]any {
+	encoded, _ := json.Marshal(value)
+	return map[string]any{
+		"content":           []map[string]string{{"type": "text", "text": string(encoded)}},
+		"structuredContent": value,
+		"isError":           true,
 	}
 }
 
