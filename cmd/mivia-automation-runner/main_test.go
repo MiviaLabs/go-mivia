@@ -18,6 +18,7 @@ import (
 )
 
 func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/projects/project-1/work-plans/plan-1":
@@ -25,8 +26,30 @@ func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
 				ID:             "plan-1",
 				ProjectID:      "project-1",
 				IsolationMode:  "dedicated_worktree",
+				GitBaseRef:     "master",
+				GitBranchRef:   "mivia/worktree-docs-smoke",
 				GitWorktreeRef: "worktree-docs-smoke",
 			})
+		case "/api/v1/projects/project-1/workspace/git/worktrees":
+			var input struct {
+				WorktreeRef string `json:"worktree_ref"`
+				BranchRef   string `json:"branch_ref"`
+				BaseRef     string `json:"base_ref"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode worktree create input: %v", err)
+			}
+			if input.WorktreeRef != "worktree-docs-smoke" || input.BranchRef != "mivia/worktree-docs-smoke" || input.BaseRef != "master" {
+				t.Fatalf("unexpected worktree create input: %+v", input)
+			}
+			target := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-worktree-docs-smoke")
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				t.Fatalf("create worktree target: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: ../metadata\n"), 0o644); err != nil {
+				t.Fatalf("write worktree git file: %v", err)
+			}
+			writeJSON(t, w, map[string]any{"applied": true})
 		default:
 			http.NotFound(w, r)
 		}
@@ -34,7 +57,6 @@ func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
 	defer server.Close()
 
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
-	baseWorkDir := filepath.Join(t.TempDir(), "repo")
 	resolved, err := client.resolveRunWorkDir(t.Context(), "project-1", "plan-1", baseWorkDir)
 	if err != nil {
 		t.Fatalf("resolveRunWorkDir returned error: %v", err)

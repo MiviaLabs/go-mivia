@@ -460,6 +460,8 @@ type runnerWorkPlan struct {
 	ID             string `json:"id"`
 	ProjectID      string `json:"project_id"`
 	IsolationMode  string `json:"isolation_mode"`
+	GitBaseRef     string `json:"git_base_ref"`
+	GitBranchRef   string `json:"git_branch_ref"`
 	GitWorktreeRef string `json:"git_worktree_ref"`
 }
 
@@ -523,7 +525,48 @@ func (client *runnerClient) resolveRunWorkDir(ctx context.Context, projectID str
 	if strings.TrimSpace(plan.IsolationMode) != "dedicated_worktree" || strings.TrimSpace(plan.GitWorktreeRef) == "" {
 		return baseWorkDir, nil
 	}
-	return dedicatedWorktreePath(baseWorkDir, projectID, plan.GitWorktreeRef)
+	target, err := dedicatedWorktreePath(baseWorkDir, projectID, plan.GitWorktreeRef)
+	if err != nil {
+		return "", err
+	}
+	if worktreePathReady(target) {
+		return target, nil
+	}
+	if strings.TrimSpace(plan.GitBranchRef) == "" {
+		return "", fmt.Errorf("%w: dedicated worktree plan requires git_branch_ref", projectautomation.ErrInvalidInput)
+	}
+	if err := client.createDedicatedWorktree(ctx, projectID, plan); err != nil {
+		return "", err
+	}
+	if !worktreePathReady(target) {
+		return "", fmt.Errorf("%w: dedicated worktree was not created", projectautomation.ErrInvalidInput)
+	}
+	return target, nil
+}
+
+func (client *runnerClient) createDedicatedWorktree(ctx context.Context, projectID string, plan runnerWorkPlan) error {
+	input := struct {
+		WorktreeRef string `json:"worktree_ref"`
+		BranchRef   string `json:"branch_ref"`
+		BaseRef     string `json:"base_ref,omitempty"`
+	}{
+		WorktreeRef: strings.TrimSpace(plan.GitWorktreeRef),
+		BranchRef:   strings.TrimSpace(plan.GitBranchRef),
+		BaseRef:     strings.TrimSpace(plan.GitBaseRef),
+	}
+	_, err := client.post(ctx, fmt.Sprintf("/api/v1/projects/%s/workspace/git/worktrees", url.PathEscape(projectID)), input, nil)
+	return err
+}
+
+func worktreePathReady(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+		return false
+	}
+	return true
 }
 
 func (client *runnerClient) getWorkPlan(ctx context.Context, projectID string, planID string) (runnerWorkPlan, error) {

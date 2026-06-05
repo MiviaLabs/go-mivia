@@ -661,6 +661,30 @@ func TestWorkspaceService_GitCreateWorktreePrunesAndRetriesStaleMetadata(t *test
 	}
 }
 
+func TestWorkspaceService_GitCreateWorktreeUsesExistingBranchAfterCreateRetryFails(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	runner := &recordingGitRunner{createWorktreeTarget: true, failWorktreeAddCount: 2}
+	svc.SetGitRunner(runner)
+
+	result, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
+		WorktreeRef: "worktree/plan-1",
+		BranchRef:   "codex/plan-1",
+		BaseRef:     "main",
+	})
+	if err != nil {
+		t.Fatalf("create worktree with existing branch fallback: %v", err)
+	}
+	if !result.Applied || runner.worktreeAddCalls != 3 || !runner.sawWorktreePrune() {
+		t.Fatalf("expected prune and existing branch fallback, result=%#v calls=%#v", result, runner.calls)
+	}
+	fallbackAdd := runner.calls[len(runner.calls)-3]
+	if len(fallbackAdd) != 4 || fallbackAdd[0] != "worktree" || fallbackAdd[1] != "add" || fallbackAdd[3] != "codex/plan-1" {
+		t.Fatalf("expected existing branch worktree add before verification, got %#v", fallbackAdd)
+	}
+}
+
 func TestWorkspaceService_GitCreateWorktreeRejectsReadOnlyAndUnsafeRefs(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package main\n")
@@ -833,6 +857,7 @@ type recordingGitRunner struct {
 	out                  []byte
 	createWorktreeTarget bool
 	failFirstWorktreeAdd bool
+	failWorktreeAddCount int
 	failWorktreeVerify   bool
 	worktreeBranch       string
 	worktreeAddCalls     int
@@ -845,23 +870,27 @@ func (runner *recordingGitRunner) Run(_ context.Context, root string, _ int, arg
 	runner.calls = append(runner.calls, append([]string(nil), args...))
 	if len(args) >= 2 && args[0] == "worktree" && args[1] == "add" {
 		runner.worktreeAddCalls++
-		if runner.failFirstWorktreeAdd && runner.worktreeAddCalls == 1 {
+		if runner.failFirstWorktreeAdd && runner.worktreeAddCalls == 1 || runner.failWorktreeAddCount > 0 && runner.worktreeAddCalls <= runner.failWorktreeAddCount {
 			return nil, false, errors.New("stale worktree metadata")
 		}
 	}
-	if runner.createWorktreeTarget && len(args) >= 5 && args[0] == "worktree" && args[1] == "add" {
-		if err := os.MkdirAll(args[4], 0o700); err != nil {
+	if runner.createWorktreeTarget && len(args) >= 4 && args[0] == "worktree" && args[1] == "add" {
+		targetArg := args[2]
+		if len(args) >= 5 && args[2] == "-b" {
+			targetArg = args[4]
+		}
+		if err := os.MkdirAll(targetArg, 0o700); err != nil {
 			return nil, false, err
 		}
-		metadataName := filepath.Base(args[4])
+		metadataName := filepath.Base(targetArg)
 		metadataDir := filepath.Join(root, ".git", "worktrees", metadataName)
 		if err := os.MkdirAll(metadataDir, 0o700); err != nil {
 			return nil, false, err
 		}
-		if err := os.WriteFile(filepath.Join(args[4], ".git"), []byte("gitdir: "+metadataDir+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(targetArg, ".git"), []byte("gitdir: "+metadataDir+"\n"), 0o644); err != nil {
 			return nil, false, err
 		}
-		if err := os.WriteFile(filepath.Join(metadataDir, "gitdir"), []byte(filepath.Join(args[4], ".git")+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(metadataDir, "gitdir"), []byte(filepath.Join(targetArg, ".git")+"\n"), 0o644); err != nil {
 			return nil, false, err
 		}
 	}

@@ -243,19 +243,8 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return GitCreateWorktreeResult{}, ErrInvalidInput
 	}
-	if _, _, err := svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "add", "-b", branchRef, target, baseRef); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return GitCreateWorktreeResult{}, err
-		}
-		if _, _, pruneErr := svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now"); pruneErr != nil {
-			return GitCreateWorktreeResult{}, ErrGitUnavailable
-		}
-		if _, _, retryErr := svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "add", "-b", branchRef, target, baseRef); retryErr != nil {
-			if errors.Is(retryErr, context.Canceled) || errors.Is(retryErr, context.DeadlineExceeded) {
-				return GitCreateWorktreeResult{}, retryErr
-			}
-			return GitCreateWorktreeResult{}, ErrGitUnavailable
-		}
+	if err := svc.gitCreateWorktreeTarget(ctx, project.CanonicalRootPath, target, branchRef, baseRef); err != nil {
+		return GitCreateWorktreeResult{}, err
 	}
 	if info, err := os.Stat(target); err != nil || !info.IsDir() {
 		_, _, _ = svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now")
@@ -274,6 +263,28 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 		return GitCreateWorktreeResult{}, err
 	}
 	return result, nil
+}
+
+func (svc *Service) gitCreateWorktreeTarget(ctx context.Context, root string, target string, branchRef string, baseRef string) error {
+	if _, _, err := svc.git.Run(ctx, root, 1024, "worktree", "add", "-b", branchRef, target, baseRef); err == nil {
+		return nil
+	} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if _, _, pruneErr := svc.git.Run(ctx, root, 1024, "worktree", "prune", "--expire", "now"); pruneErr != nil {
+		return ErrGitUnavailable
+	}
+	if _, _, retryErr := svc.git.Run(ctx, root, 1024, "worktree", "add", "-b", branchRef, target, baseRef); retryErr == nil {
+		return nil
+	} else if errors.Is(retryErr, context.Canceled) || errors.Is(retryErr, context.DeadlineExceeded) {
+		return retryErr
+	}
+	if _, _, existingBranchErr := svc.git.Run(ctx, root, 1024, "worktree", "add", target, branchRef); existingBranchErr == nil {
+		return nil
+	} else if errors.Is(existingBranchErr, context.Canceled) || errors.Is(existingBranchErr, context.DeadlineExceeded) {
+		return existingBranchErr
+	}
+	return ErrGitUnavailable
 }
 
 func makeWorktreeGitdirPortable(root string, target string, metadataName string) error {
