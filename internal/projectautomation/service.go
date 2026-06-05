@@ -1107,7 +1107,7 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if status == RunStatusCompleted && run.Status == RunStatusCompleted {
 			return run, nil
 		}
-		if !(status == RunStatusCompleted && run.Status == RunStatusVerifying) {
+		if !(status == RunStatusCompleted && (run.Status == RunStatusVerifying || svc.completedAttemptMatchesRecoveredTask(ctx, run))) {
 			return AutomationRun{}, fmt.Errorf("%w: automation run is not externally claimed", ErrInvalidInput)
 		}
 	}
@@ -1192,6 +1192,28 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		return svc.reconcileVerifyingRun(ctx, updated)
 	}
 	return updated, nil
+}
+
+func (svc *Service) completedAttemptMatchesRecoveredTask(ctx context.Context, run AutomationRun) bool {
+	if run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return false
+	}
+	if run.Status != RunStatusBlocked || !isRecoverablePreExecutionFailure(run.FailureCategory) {
+		return false
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return false
+	}
+	if strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+		return false
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying, projectworkplan.WorkTaskStatusDone:
+		return true
+	default:
+		return false
+	}
 }
 
 func (svc *Service) reconcileVerifyingRuns(ctx context.Context, projectID string) error {

@@ -2107,6 +2107,37 @@ func TestCompleteAttemptAcceptsAlreadyReconcilingVerifyingRun(t *testing.T) {
 	}
 }
 
+func TestCompleteAttemptAcceptsRecoveredBlockedStartRunWhenTaskProgressed(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "scan-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.EvidenceRefs = []string{"evidence-a"}
+	task.ClaimRefs = []string{"claim-a"}
+	task.VerifierResultRefs = []string{"verifier-a"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-a", ProjectID: "project-1", AutomationID: "automation-a", AgentID: "code-review-scanner",
+		PlanID: task.PlanID, TaskID: task.ID, Status: RunStatusBlocked, RunnerKind: RunnerKindCodexCLI, AttemptCount: 1,
+		FailureCategory: "start_failed", CreatedAt: time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(101, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: "project-1", RunID: "run-a", Status: RunStatusCompleted, DurationMS: 1234})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error for recovered blocked run: %v", err)
+	}
+	if len(store.attempts) != 1 {
+		t.Fatalf("expected completed attempt to be recorded, got %d", len(store.attempts))
+	}
+	if run.Status != RunStatusCompleted || run.FailureCategory != "" || fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected recovered blocked run to close out cleanly, run=%#v task=%#v", run, fake.tasks[task.ID])
+	}
+}
+
 func TestClaimNextRunReclaimsGitOpsPostTaskFailure(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
