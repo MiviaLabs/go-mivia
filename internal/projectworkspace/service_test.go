@@ -599,6 +599,26 @@ func TestWorkspaceService_GitCreateWorktreeUsesSafeRefsAndDoesNotReturnPath(t *t
 	if strings.Contains(encoded, root) || strings.Contains(encoded, addArgs[4]) {
 		t.Fatalf("metadata result leaked filesystem target: result=%#v target=%q", result, addArgs[4])
 	}
+	exclude := readFixture(t, root, ".git/info/exclude")
+	if !strings.Contains(exclude, ".mivia-worktrees/\n") {
+		t.Fatalf("expected worktree storage to be excluded from project status, got %q", exclude)
+	}
+}
+
+func TestEnsureWorktreeStorageExcludedIsIdempotent(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, ".git/info/exclude", "# local excludes\n.mivia-worktrees/\n")
+
+	if err := ensureWorktreeStorageExcluded(root); err != nil {
+		t.Fatalf("ensure exclude: %v", err)
+	}
+	if err := ensureWorktreeStorageExcluded(root); err != nil {
+		t.Fatalf("ensure exclude again: %v", err)
+	}
+	exclude := readFixture(t, root, ".git/info/exclude")
+	if strings.Count(exclude, ".mivia-worktrees/") != 1 {
+		t.Fatalf("expected one exclude entry, got %q", exclude)
+	}
 }
 
 func TestWorkspaceService_GitCreateWorktreeRejectsMissingTargetAfterGitSuccess(t *testing.T) {

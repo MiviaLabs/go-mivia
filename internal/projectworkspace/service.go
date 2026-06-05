@@ -243,6 +243,9 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return GitCreateWorktreeResult{}, ErrInvalidInput
 	}
+	if err := ensureWorktreeStorageExcluded(project.CanonicalRootPath); err != nil {
+		return GitCreateWorktreeResult{}, ErrGitUnavailable
+	}
 	if err := svc.gitCreateWorktreeTarget(ctx, project.CanonicalRootPath, target, branchRef, baseRef); err != nil {
 		return GitCreateWorktreeResult{}, err
 	}
@@ -285,6 +288,33 @@ func (svc *Service) gitCreateWorktreeTarget(ctx context.Context, root string, ta
 		return existingBranchErr
 	}
 	return ErrGitUnavailable
+}
+
+func ensureWorktreeStorageExcluded(root string) error {
+	excludePath := filepath.Join(filepath.Clean(root), ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o700); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(excludePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == ".mivia-worktrees/" {
+			return nil
+		}
+	}
+	prefix := ""
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		prefix = "\n"
+	}
+	file, err := os.OpenFile(excludePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.WriteString(prefix + ".mivia-worktrees/\n")
+	return err
 }
 
 func makeWorktreeGitdirPortable(root string, target string, metadataName string) error {
