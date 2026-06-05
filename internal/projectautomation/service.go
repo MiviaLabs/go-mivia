@@ -1205,6 +1205,11 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 	if svc.runStartedBeforeService(run) && (task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
 		return svc.requeueAbandonedRunningRun(ctx, run, task)
 	}
+	if run.WorkTaskStatus != task.Status {
+		run.WorkTaskStatus = task.Status
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
 	if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
 		return run, nil
 	}
@@ -1987,20 +1992,26 @@ func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRu
 	if run, err = svc.store.UpdateRun(ctx, run); err != nil {
 		return run, projectworkplan.WorkTask{}, err
 	}
-	if _, err := svc.workTasks.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: run.ProjectID, TaskID: task.ID, OwnerAgent: run.AgentID, RunID: run.ID, TraceID: run.TraceID}); err != nil {
+	claimedTask, err := svc.workTasks.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: run.ProjectID, TaskID: task.ID, OwnerAgent: run.AgentID, RunID: run.ID, TraceID: run.TraceID})
+	if err != nil {
 		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "claim_failed")
 		return updated, projectworkplan.WorkTask{}, err
 	}
+	task = claimedTask
 	run.Status = RunStatusStarting
+	run.WorkTaskStatus = task.Status
 	run.UpdatedAt = svc.now()
 	if run, err = svc.store.UpdateRun(ctx, run); err != nil {
 		return run, projectworkplan.WorkTask{}, err
 	}
-	if _, err := svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: run.ProjectID, TaskID: task.ID, OwnerAgent: run.AgentID, RunID: run.ID, TraceID: run.TraceID}); err != nil {
+	startedTask, err := svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: run.ProjectID, TaskID: task.ID, OwnerAgent: run.AgentID, RunID: run.ID, TraceID: run.TraceID})
+	if err != nil {
 		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "start_failed")
 		return updated, projectworkplan.WorkTask{}, err
 	}
+	task = startedTask
 	run.Status = RunStatusRunning
+	run.WorkTaskStatus = task.Status
 	run.AttemptCount++
 	run.StartedAt = svc.now()
 	run.UpdatedAt = run.StartedAt

@@ -901,6 +901,9 @@ func TestExternalClaimAndCompleteAttempt(t *testing.T) {
 	if claimed.Run.ID != queued.ID || claimed.Run.Status != RunStatusRunning {
 		t.Fatalf("unexpected claimed run: %+v", claimed.Run)
 	}
+	if claimed.Run.WorkTaskStatus != projectworkplan.WorkTaskStatusInProgress {
+		t.Fatalf("expected claimed run work task status in_progress, got %q", claimed.Run.WorkTaskStatus)
+	}
 	if claimed.CodexInput.TaskID != "task-a" || claimed.CodexInput.AutomationRunID != queued.ID {
 		t.Fatalf("unexpected codex input: %+v", claimed.CodexInput)
 	}
@@ -1096,8 +1099,8 @@ func TestClaimNextRunQueuesPostImplementationReviewForVerifyingTask(t *testing.T
 	if err != nil {
 		t.Fatalf("ClaimNextRun returned error: %v", err)
 	}
-	if fake.tasks[reviewTask.ID].Status != projectworkplan.WorkTaskStatusReady {
-		t.Fatalf("expected review task ready, got %#v", fake.tasks[reviewTask.ID])
+	if fake.tasks[reviewTask.ID].Status != projectworkplan.WorkTaskStatusInProgress {
+		t.Fatalf("expected review task in progress after claim, got %#v", fake.tasks[reviewTask.ID])
 	}
 	if claimed.Run.TaskID != reviewTask.ID || claimed.Run.ParentRunID != parentRun.ID || claimed.Run.SafeSummary != RunSafeSummaryPostImplementationReviewQueued {
 		t.Fatalf("unexpected claimed review run: %#v", claimed.Run)
@@ -1248,8 +1251,8 @@ func TestClaimNextRunRecoversPlannedDependentTaskAfterRestart(t *testing.T) {
 	if claimed.Run.AutomationID != automation.ID || claimed.Run.TaskID != next.ID || claimed.Run.Status != RunStatusRunning {
 		t.Fatalf("expected recovered dependent task run, got %#v", claimed.Run)
 	}
-	if got := fake.tasks[next.ID].Status; got != projectworkplan.WorkTaskStatusReady {
-		t.Fatalf("expected dependent task readied before claim, got %q", got)
+	if got := fake.tasks[next.ID].Status; got != projectworkplan.WorkTaskStatusInProgress {
+		t.Fatalf("expected dependent task in progress after claim, got %q", got)
 	}
 }
 
@@ -1313,8 +1316,8 @@ func TestClaimNextRunRequeuesAbandonedRunningRunAfterRestart(t *testing.T) {
 	if updatedOld.Status != RunStatusTimeout || updatedOld.FailureCategory != "external_runner_interrupted" {
 		t.Fatalf("expected old run timed out as interrupted, got %#v", updatedOld)
 	}
-	if fake.tasks[task.ID].ClaimedByRunID != "" || fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusReady {
-		t.Fatalf("expected task released before replacement claim, got %#v", fake.tasks[task.ID])
+	if fake.tasks[task.ID].ClaimedByRunID != claimed.Run.ID || fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusInProgress {
+		t.Fatalf("expected task claimed by replacement run, got %#v", fake.tasks[task.ID])
 	}
 }
 
@@ -1352,8 +1355,8 @@ func TestClaimNextRunRecoversMissingPostImplementationReview(t *testing.T) {
 		t.Fatalf("expected review task input, got %#v", claimed.CodexInput)
 	}
 	reviewTask := fake.tasks[claimed.Run.TaskID]
-	if reviewTask.Status != projectworkplan.WorkTaskStatusReady || reviewTask.OwnerAgent == "" || reviewTask.OwnerAgent == implementationTask.OwnerAgent {
-		t.Fatalf("expected independent ready review task, got %#v", reviewTask)
+	if reviewTask.Status != projectworkplan.WorkTaskStatusInProgress || reviewTask.OwnerAgent == "" || reviewTask.OwnerAgent == implementationTask.OwnerAgent {
+		t.Fatalf("expected independent in-progress review task, got %#v", reviewTask)
 	}
 }
 
@@ -1581,8 +1584,8 @@ func TestGetRunReturnsPersistedAutomationMetadataWithoutWorkTaskProjection(t *te
 	if err != nil {
 		t.Fatalf("CompleteAttempt returned error: %v", err)
 	}
-	if run.Status != RunStatusVerifying || run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
-		t.Fatalf("expected pre-verifier run to retain ready/verifying, got %#v", run)
+	if run.Status != RunStatusVerifying || run.WorkTaskStatus != projectworkplan.WorkTaskStatusInProgress {
+		t.Fatalf("expected pre-verifier run to retain in_progress/verifying, got %#v", run)
 	}
 
 	task.Status = projectworkplan.WorkTaskStatusDone
@@ -1594,11 +1597,46 @@ func TestGetRunReturnsPersistedAutomationMetadataWithoutWorkTaskProjection(t *te
 	if persisted.Status != RunStatusVerifying {
 		t.Fatalf("expected persisted verifying status, got %q", persisted.Status)
 	}
-	if persisted.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+	if persisted.WorkTaskStatus != projectworkplan.WorkTaskStatusInProgress {
 		t.Fatalf("expected persisted work task status, got %q", persisted.WorkTaskStatus)
 	}
 	if persisted.SafeSummary != "external_codex_cli_completed_verification_required" {
 		t.Fatalf("unexpected summary: %q", persisted.SafeSummary)
+	}
+}
+
+func TestListRunsReconcilesRunningWorkTaskStatusSnapshot(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.startedAt = time.Unix(100, 0).UTC()
+	svc.now = func() time.Time { return time.Unix(210, 0).UTC() }
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-a",
+		ProjectID:      "project-1",
+		AutomationID:   "automation-a",
+		AgentID:        "agent-a",
+		PlanID:         "plan-1",
+		TaskID:         "task-a",
+		WorkTaskStatus: projectworkplan.WorkTaskStatusReady,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		StartedAt:      time.Unix(200, 0).UTC(),
+		UpdatedAt:      time.Unix(200, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].WorkTaskStatus != projectworkplan.WorkTaskStatusInProgress {
+		t.Fatalf("expected reconciled in_progress run snapshot, got %#v", runs)
 	}
 }
 
@@ -2479,12 +2517,26 @@ func (fake *fakeWorkTasks) ListOpenWorkTasks(_ context.Context, filter projectwo
 	return out, nil
 }
 
-func (fake *fakeWorkTasks) ClaimWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
-	return projectworkplan.WorkTask{}, nil
+func (fake *fakeWorkTasks) ClaimWorkTask(_ context.Context, input projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
+	task, ok := fake.tasks[input.TaskID]
+	if !ok {
+		return projectworkplan.WorkTask{}, errors.New("not found")
+	}
+	task.Status = projectworkplan.WorkTaskStatusClaimed
+	task.ClaimedByRunID = input.RunID
+	fake.tasks[input.TaskID] = task
+	return task, nil
 }
 
-func (fake *fakeWorkTasks) StartWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
-	return projectworkplan.WorkTask{}, nil
+func (fake *fakeWorkTasks) StartWorkTask(_ context.Context, input projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
+	task, ok := fake.tasks[input.TaskID]
+	if !ok {
+		return projectworkplan.WorkTask{}, errors.New("not found")
+	}
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = input.RunID
+	fake.tasks[input.TaskID] = task
+	return task, nil
 }
 
 func (fake *fakeWorkTasks) UpdateWorkTaskStatus(_ context.Context, input projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error) {
