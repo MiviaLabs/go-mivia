@@ -24,8 +24,6 @@ var (
 	phonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
 )
 
-const projectRunStatusProjectionTimeout = 250 * time.Millisecond
-
 type Store interface {
 	CreateAutomation(context.Context, Automation) (Automation, error)
 	GetAutomation(context.Context, string, string) (Automation, error)
@@ -492,11 +490,7 @@ func (svc *Service) GetRun(ctx context.Context, projectID, runID string) (Automa
 	if err != nil {
 		return AutomationRun{}, err
 	}
-	run, err := svc.store.GetRun(ctx, projectID, runID)
-	if err != nil {
-		return AutomationRun{}, err
-	}
-	return svc.projectRunWorkTaskStatus(ctx, run)
+	return svc.store.GetRun(ctx, projectID, runID)
 }
 
 func (svc *Service) ListRuns(ctx context.Context, filter RunFilter) ([]AutomationRun, error) {
@@ -528,14 +522,10 @@ func (svc *Service) ListRuns(ctx context.Context, filter RunFilter) ([]Automatio
 	}
 	out := runs[:0]
 	for _, run := range runs {
-		projected, err := svc.projectRunWorkTaskStatus(ctx, run)
-		if err != nil {
-			return nil, err
-		}
-		if statusFilter != "" && projected.Status != statusFilter {
+		if statusFilter != "" && run.Status != statusFilter {
 			continue
 		}
-		out = append(out, projected)
+		out = append(out, run)
 	}
 	return out, nil
 }
@@ -878,29 +868,6 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		run.Status = status
 	}
 	return svc.store.UpdateRun(ctx, run)
-}
-
-func (svc *Service) projectRunWorkTaskStatus(ctx context.Context, run AutomationRun) (AutomationRun, error) {
-	if svc.workTasks == nil || run.TaskID == "" {
-		return run, nil
-	}
-	projectionCtx, cancel := context.WithTimeout(ctx, projectRunStatusProjectionTimeout)
-	defer cancel()
-	task, err := svc.workTasks.GetWorkTask(projectionCtx, run.ProjectID, run.TaskID)
-	if err != nil {
-		return run, nil
-	}
-	if run.WorkTaskStatus != task.Status {
-		run.WorkTaskStatus = task.Status
-	}
-	if run.Status == RunStatusVerifying && task.Status == projectworkplan.WorkTaskStatusDone {
-		run.Status = RunStatusCompleted
-		run.SafeSummary = "work_task_verified_completed"
-		if run.FinishedAt.IsZero() {
-			run.FinishedAt = svc.now()
-		}
-	}
-	return run, nil
 }
 
 func (svc *Service) ComputeParallelBatch(ctx context.Context, input ComputeParallelBatchInput) (AutomationParallelBatch, error) {

@@ -583,7 +583,7 @@ func TestExternalClaimAndCompleteAttempt(t *testing.T) {
 	}
 }
 
-func TestGetRunProjectsCompletedWorkTaskStatus(t *testing.T) {
+func TestGetRunReturnsPersistedAutomationMetadataWithoutWorkTaskProjection(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
 	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
@@ -608,22 +608,22 @@ func TestGetRunProjectsCompletedWorkTaskStatus(t *testing.T) {
 
 	task.Status = projectworkplan.WorkTaskStatusDone
 	fake.tasks["task-a"] = task
-	projected, err := svc.GetRun(ctx, automation.ProjectID, queued.ID)
+	persisted, err := svc.GetRun(ctx, automation.ProjectID, queued.ID)
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if projected.Status != RunStatusCompleted {
-		t.Fatalf("expected completed run after linked task done, got %q", projected.Status)
+	if persisted.Status != RunStatusVerifying {
+		t.Fatalf("expected persisted verifying status, got %q", persisted.Status)
 	}
-	if projected.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
-		t.Fatalf("expected current work task status, got %q", projected.WorkTaskStatus)
+	if persisted.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected persisted work task status, got %q", persisted.WorkTaskStatus)
 	}
-	if projected.SafeSummary != "work_task_verified_completed" {
-		t.Fatalf("unexpected summary: %q", projected.SafeSummary)
+	if persisted.SafeSummary != "external_codex_cli_completed_verification_required" {
+		t.Fatalf("unexpected summary: %q", persisted.SafeSummary)
 	}
 }
 
-func TestListRunsProjectsCompletedWorkTaskStatusBeforeStatusFilter(t *testing.T) {
+func TestListRunsFiltersPersistedAutomationMetadataOnly(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
 	task.Status = projectworkplan.WorkTaskStatusDone
@@ -652,15 +652,19 @@ func TestListRunsProjectsCompletedWorkTaskStatusBeforeStatusFilter(t *testing.T)
 	if err != nil {
 		t.Fatalf("ListRuns returned error: %v", err)
 	}
-	if len(runs) != 1 {
-		t.Fatalf("expected projected completed run in filtered list, got %d", len(runs))
+	if len(runs) != 0 {
+		t.Fatalf("expected no completed persisted runs, got %#v", runs)
 	}
-	if runs[0].Status != RunStatusCompleted || runs[0].WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
-		t.Fatalf("expected projected completed/done run, got %#v", runs[0])
+	runs, err = svc.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, Status: RunStatusVerifying})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != RunStatusVerifying || runs[0].WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected persisted verifying/ready run, got %#v", runs)
 	}
 }
 
-func TestGetRunDoesNotBlockOnSlowWorkTaskProjection(t *testing.T) {
+func TestGetRunDoesNotCallWorkTaskProjection(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeWorkTasks{
 		tasks:                map[string]projectworkplan.WorkTask{"task-a": readyTask("task-a", "a", []string{"internal/foo.go"})},
@@ -691,7 +695,7 @@ func TestGetRunDoesNotBlockOnSlowWorkTaskProjection(t *testing.T) {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("GetRun blocked on work task projection for %s", elapsed)
+		t.Fatalf("GetRun blocked unexpectedly for %s", elapsed)
 	}
 	if got.ID != run.ID || got.Status != RunStatusVerifying {
 		t.Fatalf("expected persisted run when projection is unavailable, got %#v", got)

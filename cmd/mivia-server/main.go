@@ -229,7 +229,7 @@ func run() error {
 	projectEvidenceService := projectevidence.New(evidencestore.NewLadybugStore(projectGraph))
 	projectConfidenceService := projectconfidence.New(confidencestore.NewLadybugStore(projectGraph))
 	projectKnowledgeService := projectknowledge.New(knowledgestore.NewLadybugStore(projectGraph))
-	projectWorkPlanService := projectworkplan.New(workplanstore.NewLadybugStore(projectGraph))
+	projectWorkPlanService := projectworkplan.New(workplanstore.NewLadybugStore(metadataPersistentGraph))
 	projectWorkflowService := projectworkflow.New(workflowstore.NewMemoryStore())
 	projectAutomationService := projectautomation.New(automationstore.NewLadybugStore(metadataPersistentGraph), projectWorkPlanService, projectautomation.Options{
 		Enabled:                   cfg.Automation.Enabled,
