@@ -1064,12 +1064,20 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	if err != nil {
 		return AutomationRun{}, err
 	}
-	if run.Status != RunStatusRunning || run.RunnerKind != RunnerKindCodexCLI {
-		return AutomationRun{}, fmt.Errorf("%w: automation run is not externally claimed", ErrInvalidInput)
-	}
 	status, err := safeAttemptStatus(input.Status)
 	if err != nil {
 		return AutomationRun{}, err
+	}
+	if run.RunnerKind != RunnerKindCodexCLI {
+		return AutomationRun{}, fmt.Errorf("%w: automation run is not externally claimed", ErrInvalidInput)
+	}
+	if run.Status != RunStatusRunning {
+		if status == RunStatusCompleted && run.Status == RunStatusCompleted {
+			return run, nil
+		}
+		if !(status == RunStatusCompleted && run.Status == RunStatusVerifying) {
+			return AutomationRun{}, fmt.Errorf("%w: automation run is not externally claimed", ErrInvalidInput)
+		}
 	}
 	failureCategory, err := safeText(input.FailureCategory, "failure_category", 200)
 	if err != nil {
