@@ -51,6 +51,7 @@ func defaultExcludePatterns(projectRoot string, storagePaths ...string) []string
 		".hg/**",
 		".svn/**",
 		".claude/worktrees/**",
+		".mivia-worktrees/**",
 		"data/**",
 		"node_modules/**",
 		"vendor/**",
