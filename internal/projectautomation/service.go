@@ -713,7 +713,52 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
 		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, nil
 	}
+	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID); err != nil || ok {
+		return claimed, err
+	}
 	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
+}
+
+func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID string, agentID string) (ClaimedRun, bool, error) {
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
+	if err != nil {
+		return ClaimedRun{}, false, err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || !isRecoverableGitOpsPostTaskFailure(run.FailureCategory) {
+			continue
+		}
+		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
+			continue
+		}
+		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+		if err != nil {
+			continue
+		}
+		if err := svc.validateAutomationPolicy(ctx, automation, run.RunnerKind, run.TaskID, run.AgentID); err != nil {
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || !taskHasGitOpsRecoveryCloseout(task) {
+			continue
+		}
+		now := svc.now()
+		run.Status = RunStatusRunning
+		run.WorkTaskStatus = task.Status
+		run.AttemptCount++
+		run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
+		run.StartedAt = now
+		run.FinishedAt = time.Time{}
+		run.UpdatedAt = now
+		claimed, err := svc.store.UpdateRun(ctx, run)
+		if err != nil {
+			return ClaimedRun{}, false, err
+		}
+		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
+		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+	}
+	return ClaimedRun{}, false, nil
 }
 
 func (svc *Service) hasAnyRun(ctx context.Context, automation Automation) bool {
@@ -1543,6 +1588,24 @@ func validateExecutableTask(task projectworkplan.WorkTask) error {
 		return fmt.Errorf("%w: missing_verification", ErrInvalidInput)
 	}
 	return nil
+}
+
+func isRecoverableGitOpsPostTaskFailure(category string) bool {
+	switch strings.TrimSpace(category) {
+	case "gitops_post_task_failed", "gitops_branch_policy_failed", "gitops_command_failed", "gitops_invalid_input":
+		return true
+	default:
+		return false
+	}
+}
+
+func taskHasGitOpsRecoveryCloseout(task projectworkplan.WorkTask) bool {
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying, projectworkplan.WorkTaskStatusDone:
+	default:
+		return false
+	}
+	return len(task.EvidenceRefs) > 0 || len(task.ClaimRefs) > 0 || len(task.VerifierResultRefs) > 0 || len(task.ReviewResultRefs) > 0
 }
 
 func firstFileConflict(task projectworkplan.WorkTask, used map[string]string) string {

@@ -33,6 +33,8 @@ const (
 	RunStatusTimeout           = "timeout"
 )
 
+const RunSafeSummaryGitOpsPostTaskRecovery = "gitops_post_task_recovery"
+
 const (
 	BatchStatusPlanned   = "planned"
 	BatchStatusRunning   = "running"

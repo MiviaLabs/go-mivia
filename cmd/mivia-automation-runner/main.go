@@ -209,6 +209,24 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	runCodexOptions.WorkDir = runWorkDir
 	claimed.CodexInput.MCPServerURL = client.baseURL
 	gitOps := projectgitops.New(gitOpsOptionsForProject(cfg, projectID))
+	if isGitOpsPostTaskRecoveryRun(claimed.Run) {
+		status, failureCategory, durationMS, evidenceRefs := runGitOpsPostTaskRecovery(ctx, client, gitOps, projectID, runWorkDir, agentID, claimed)
+		result := projectautomation.CompleteAttemptInput{
+			Status:          status,
+			FailureCategory: failureCategory,
+			DurationMS:      durationMS,
+			EvidenceRefs:    evidenceRefs,
+		}
+		if _, err := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); err != nil {
+			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
+			return 1, false, true
+		}
+		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, status)
+		if status == projectautomation.RunStatusCompleted {
+			return 0, true, true
+		}
+		return 1, true, true
+	}
 	if err := gitOps.PreTask(ctx, runWorkDir); err != nil {
 		result := projectautomation.CompleteAttemptInput{
 			Status:          projectautomation.RunStatusFailed,
@@ -236,7 +254,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 			if err != nil {
 				status = projectautomation.RunStatusFailed
-				failureCategory = "gitops_post_task_failed"
+				failureCategory = projectgitops.FailureCategory(err)
 			} else {
 				evidenceRefs = append(evidenceRefs, gitResult.EvidenceRefs...)
 				for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
@@ -262,6 +280,32 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		return 0, true, true
 	}
 	return 1, true, true
+}
+
+func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps *projectgitops.Service, projectID string, runWorkDir string, agentID string, claimed projectautomation.ClaimedRun) (string, string, int64, []string) {
+	started := time.Now()
+	taskMetadata, err := client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+	if err != nil {
+		return projectautomation.RunStatusFailed, "automation_task_metadata_unavailable", time.Since(started).Milliseconds(), nil
+	}
+	if !taskHasGovernedCloseout(taskMetadata) {
+		return projectautomation.RunStatusFailed, "automation_task_closeout_missing", time.Since(started).Milliseconds(), nil
+	}
+	gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
+	if err != nil {
+		return projectautomation.RunStatusFailed, projectgitops.FailureCategory(err), time.Since(started).Milliseconds(), nil
+	}
+	evidenceRefs := append([]string(nil), gitResult.EvidenceRefs...)
+	for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
+		if strings.TrimSpace(ref) != "" {
+			evidenceRefs = append(evidenceRefs, ref)
+		}
+	}
+	return projectautomation.RunStatusCompleted, "", time.Since(started).Milliseconds(), evidenceRefs
+}
+
+func isGitOpsPostTaskRecoveryRun(run projectautomation.AutomationRun) bool {
+	return strings.TrimSpace(run.SafeSummary) == projectautomation.RunSafeSummaryGitOpsPostTaskRecovery
 }
 
 func claimProjectRunsExecuteAndReport(ctx context.Context, client *runnerClient, cfg config.Config, projectIDs []string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {

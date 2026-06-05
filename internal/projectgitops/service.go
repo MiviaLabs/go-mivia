@@ -15,6 +15,7 @@ import (
 
 var (
 	ErrInvalidInput  = errors.New("invalid git operations input")
+	ErrBranchPolicy  = errors.New("git operations branch policy failed")
 	ErrCommandFailed = errors.New("git operations command failed")
 	ErrDirtyWorktree = errors.New("git operations dirty worktree")
 )
@@ -97,6 +98,11 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 			input.BranchName = branch
 		}
 	}
+	branch, err := svc.normalizeBranchForPolicy(ctx, workDir, input)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	input.BranchName = branch
 	rendered, err := Render(input, svc.options.Conventions)
 	if err != nil {
 		return PostTaskResult{}, err
@@ -159,6 +165,23 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	return result, nil
 }
 
+func FailureCategory(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrDirtyWorktree):
+		return "gitops_dirty_worktree"
+	case errors.Is(err, ErrBranchPolicy):
+		return "gitops_branch_policy_failed"
+	case errors.Is(err, ErrInvalidInput):
+		return "gitops_invalid_input"
+	case errors.Is(err, ErrCommandFailed):
+		return "gitops_command_failed"
+	default:
+		return "gitops_post_task_failed"
+	}
+}
+
 func (svc *Service) validatePushConfig() error {
 	if !svc.options.PushAfterTask {
 		return nil
@@ -195,7 +218,7 @@ func (svc *Service) currentBranch(ctx context.Context, workDir string) (string, 
 func (svc *Service) validateBranchPolicy(branch string) error {
 	prefix := strings.TrimSpace(svc.options.BranchPrefix)
 	if prefix != "" && !strings.HasPrefix(branch, prefix) {
-		return fmt.Errorf("%w: branch %q does not match required prefix %q", ErrInvalidInput, branch, prefix)
+		return fmt.Errorf("%w: %w: branch %q does not match required prefix %q", ErrInvalidInput, ErrBranchPolicy, branch, prefix)
 	}
 	pattern := strings.TrimSpace(svc.options.BranchNamePattern)
 	if pattern == "" {
@@ -206,9 +229,115 @@ func (svc *Service) validateBranchPolicy(branch string) error {
 		return fmt.Errorf("%w: invalid branch pattern", ErrInvalidInput)
 	}
 	if !compiled.MatchString(branch) {
-		return fmt.Errorf("%w: branch %q does not match required pattern", ErrInvalidInput, branch)
+		return fmt.Errorf("%w: %w: branch %q does not match required pattern", ErrInvalidInput, ErrBranchPolicy, branch)
 	}
 	return nil
+}
+
+func (svc *Service) normalizeBranchForPolicy(ctx context.Context, workDir string, input PostTaskInput) (string, error) {
+	branch := strings.TrimSpace(input.BranchName)
+	if branch == "" {
+		var err error
+		branch, err = svc.currentBranch(ctx, workDir)
+		if err != nil {
+			return "", err
+		}
+	}
+	if svc.validateBranchPolicy(branch) == nil {
+		return branch, nil
+	}
+	derived := svc.derivePolicyBranch(input)
+	if derived == "" || derived == branch {
+		return branch, svc.validateBranchPolicy(branch)
+	}
+	if err := svc.validateBranchPolicy(derived); err != nil {
+		return branch, svc.validateBranchPolicy(branch)
+	}
+	if _, err := svc.git(ctx, workDir, nil, "checkout", "-B", derived); err != nil {
+		return "", err
+	}
+	return derived, nil
+}
+
+func (svc *Service) derivePolicyBranch(input PostTaskInput) string {
+	projectKey := branchPatternProjectKey(svc.options.BranchNamePattern)
+	if projectKey == "" {
+		projectKey = ticketProjectKey(input.TaskRef, input.TaskTitle, input.BranchName)
+	}
+	if projectKey == "" {
+		return ""
+	}
+	kind := branchKind(svc.options.BranchNamePattern, svc.options.Conventions.CommitType)
+	slug := safeBranchToken(firstNonEmpty(input.TaskRef, input.TaskTitle, input.AutomationRunID))
+	if slug == "" {
+		slug = "automation-task"
+	}
+	return kind + "-" + projectKey + "-0000-" + slug
+}
+
+func branchKind(pattern string, preferred string) string {
+	preferred = strings.ToLower(strings.TrimSpace(preferred))
+	if preferred != "" && strings.Contains(pattern, preferred) {
+		return preferred
+	}
+	if strings.Contains(pattern, "fix") {
+		return "fix"
+	}
+	for _, candidate := range []string{"chore", "docs", "feat", "refactor"} {
+		if strings.Contains(pattern, candidate) {
+			return candidate
+		}
+	}
+	if preferred != "" {
+		return preferred
+	}
+	return "chore"
+}
+
+func branchPatternProjectKey(pattern string) string {
+	match := regexp.MustCompile(`[A-Z][A-Z0-9]+-\[0-9\]`).FindString(pattern)
+	if match == "" {
+		return ""
+	}
+	return strings.TrimSuffix(match, "-[0-9]")
+}
+
+func ticketProjectKey(values ...string) string {
+	for _, value := range values {
+		match := regexp.MustCompile(`\b([A-Z][A-Z0-9]+)-[0-9]+\b`).FindStringSubmatch(strings.TrimSpace(value))
+		if len(match) == 2 {
+			return match[1]
+		}
+	}
+	return ""
+}
+
+func safeBranchToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		allowed := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if allowed {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (svc *Service) ensureDraftPR(ctx context.Context, workDir string, rendered RenderedOutput) (string, error) {

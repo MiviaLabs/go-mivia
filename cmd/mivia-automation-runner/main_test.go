@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 )
 
 func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
@@ -169,6 +171,63 @@ func TestGitOpsOptionsFromConfigMapsConventions(t *testing.T) {
 	})
 	if options.Conventions.CommitType != "feat" || options.Conventions.CommitScope != "gitops" || options.Conventions.WhatChangedTemplate != "Changed {{project_id}}." {
 		t.Fatalf("expected convention mapping, got %+v", options.Conventions)
+	}
+}
+
+func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
+	runner := &gitOpsRecordingRunner{results: []projectgitops.CommandResult{
+		{},
+		{Stdout: " M README.md\n"},
+		{Stdout: "mivia/recovery\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:                 "task-1",
+				TaskRef:            "task/ref",
+				Title:              "Recover GitOps",
+				Status:             "needs_review",
+				EvidenceRefs:       []string{"implementation/evidence"},
+				VerifierResultRefs: []string{"verifier/focused"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "project-1", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:           "run-1",
+			ProjectID:    "project-1",
+			AutomationID: "automation-1",
+			AgentID:      "agent-1",
+			PlanID:       "plan-1",
+			TaskID:       "task-1",
+			SafeSummary:  projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+		},
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{"README.md"}},
+	})
+	if status != projectautomation.RunStatusCompleted || failure != "" {
+		t.Fatalf("expected recovery completion, got status=%q failure=%q", status, failure)
+	}
+	if strings.Join(evidenceRefs, ",") != "git-commit-created,git-commit-abc123def456" {
+		t.Fatalf("unexpected evidence refs: %+v", evidenceRefs)
+	}
+	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit --no-verify -m") {
+		t.Fatalf("expected commit command, got %q", got)
 	}
 }
 
@@ -581,6 +640,24 @@ func setReadableCodexHome(t *testing.T) {
 	}
 	t.Setenv("CODEX_HOME", codexHome)
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+}
+
+type gitOpsRecordingRunner struct {
+	commands []projectgitops.Command
+	results  []projectgitops.CommandResult
+	errs     []error
+}
+
+func (runner *gitOpsRecordingRunner) Run(_ context.Context, command projectgitops.Command) (projectgitops.CommandResult, error) {
+	runner.commands = append(runner.commands, command)
+	idx := len(runner.commands) - 1
+	if idx < len(runner.errs) && runner.errs[idx] != nil {
+		return projectgitops.CommandResult{}, runner.errs[idx]
+	}
+	if idx < len(runner.results) {
+		return runner.results[idx], nil
+	}
+	return projectgitops.CommandResult{}, nil
 }
 
 func fakeCodex(t *testing.T, execStatus int) string {

@@ -954,6 +954,43 @@ func TestCompleteAttemptRejectsUnclaimedQueuedRun(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunReclaimsGitOpsPostTaskFailure(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createTestAutomation(t, ctx, svc)
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: "task-a"})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: queued.ID, Status: RunStatusFailed, FailureCategory: "gitops_post_task_failed"}); err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.EvidenceRefs = []string{"implementation/evidence"}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	fake.tasks["task-a"] = task
+
+	reclaimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun recovery returned error: %v", err)
+	}
+	if reclaimed.Run.ID != queued.ID || reclaimed.Run.Status != RunStatusRunning {
+		t.Fatalf("expected failed run to be reclaimed as running, got %+v", reclaimed.Run)
+	}
+	if reclaimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
+		t.Fatalf("expected gitops recovery summary, got %q", reclaimed.Run.SafeSummary)
+	}
+	if reclaimed.Run.AttemptCount != 2 || reclaimed.Run.WorkTaskStatus != projectworkplan.WorkTaskStatusNeedsReview {
+		t.Fatalf("expected second recovery attempt with current task status, got %+v", reclaimed.Run)
+	}
+}
+
 func TestCreateWorkflowAutomationRequiresPermissionSnapshotRef(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t, Options{AllowManualRunner: true})

@@ -3,6 +3,7 @@ package projectgitops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -132,7 +133,7 @@ func TestPostTaskPushRequiresSSHConfig(t *testing.T) {
 	}
 }
 
-func TestPostTaskRejectsPushFromBranchOutsidePolicy(t *testing.T) {
+func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M README.md\n"},
@@ -140,7 +141,9 @@ func TestPostTaskRejectsPushFromBranchOutsidePolicy(t *testing.T) {
 		{},
 		{},
 		{},
+		{},
 		{Stdout: "abc123def456\n"},
+		{},
 	}}
 	svc := NewWithRunner(Options{
 		Enabled:              true,
@@ -167,11 +170,35 @@ func TestPostTaskRejectsPushFromBranchOutsidePolicy(t *testing.T) {
 		OperatorID:       "operator_1",
 		AllowedPathspecs: []string{"README.md"},
 	})
-	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "required pattern") {
-		t.Fatalf("expected branch policy error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected derived branch to pass policy: %v", err)
 	}
-	if len(runner.commands) != 7 {
-		t.Fatalf("expected no push after branch policy failure, got %d commands", len(runner.commands))
+	if got := strings.Join(runner.commands[3].Args, " "); got != "checkout -B fix-MASS-0000-automation-run-1" {
+		t.Fatalf("expected derived branch checkout, got %q", got)
+	}
+	if got := strings.Join(runner.commands[8].Args, " "); got != "push --no-verify origin HEAD:fix-MASS-0000-automation-run-1" {
+		t.Fatalf("expected push to derived branch, got %q", got)
+	}
+}
+
+func TestFailureCategoryUsesBranchPolicyError(t *testing.T) {
+	err := fmt.Errorf("%w: %w: branch mismatch", ErrInvalidInput, ErrBranchPolicy)
+	if got := FailureCategory(err); got != "gitops_branch_policy_failed" {
+		t.Fatalf("expected branch policy failure category, got %q", got)
+	}
+}
+
+func TestDerivePolicyBranchPrefersConfiguredCommitType(t *testing.T) {
+	svc := NewWithRunner(Options{
+		BranchNamePattern: `^(feat|fix|docs|chore|refactor)-ABC-[0-9]+(-[a-z0-9-]+)*$`,
+		Conventions:       Conventions{CommitType: "chore"},
+	}, &recordingRunner{})
+	got := svc.derivePolicyBranch(PostTaskInput{
+		TaskTitle:       "Update generated docs",
+		AutomationRunID: "automation_run_1",
+	})
+	if got != "chore-ABC-0000-update-generated-docs" {
+		t.Fatalf("expected configured commit type branch, got %q", got)
 	}
 }
 
