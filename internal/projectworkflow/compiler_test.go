@@ -45,6 +45,9 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if len(plans) != 1 || plans[0].ID != result.WorkPlanID || plans[0].UserRequestRef != "request-1" {
 		t.Fatalf("unexpected compiled plan: %#v", plans)
 	}
+	if plans[0].IsolationMode != projectworkplan.WorkPlanIsolationDedicatedWorktree || plans[0].GitBaseRef != "main" || !strings.HasPrefix(plans[0].GitBranchRef, "mivia/workflow-ref-run-1-compile-") || !strings.HasPrefix(plans[0].GitWorktreeRef, "workflow/workflow-ref-run-1-compile-") {
+		t.Fatalf("compiled workflow plan must use dedicated worktree isolation, got %#v", plans[0])
+	}
 
 	tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: result.WorkPlanID})
 	if err != nil {

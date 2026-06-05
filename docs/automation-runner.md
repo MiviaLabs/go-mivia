@@ -73,6 +73,8 @@ Use `bootstrap_commands` for deterministic setup, `always_before_pr` for require
 
 The container image includes Node.js, `pnpm`, Python 3, `pip`, `venv`, and Semgrep so project profiles can enforce common repository gates without relying on prompt text. Keep heavyweight or repository-specific commands in config, not in the image; the image should provide the tool runtime, while `[projects.verification]` decides which gates run for that project.
 
+Automated Work Plans use dedicated worktrees by default, including read-only audits. This keeps scanner/reviewer agents on fresh default-branch code instead of a dirty live checkout. When `cleanup_worktree_after_plan_done = true`, the runner removes the dedicated `.mivia-worktrees/<project>/...` checkout after the owning Work Plan reaches a terminal status.
+
 Example:
 
 ```toml

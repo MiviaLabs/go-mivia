@@ -220,7 +220,8 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	runCodexOptions.WorkDir = runWorkDir
 	claimed.CodexInput.MCPServerURL = client.baseURL
 	claimed.CodexInput.RunnerInstructions = append(claimed.CodexInput.RunnerInstructions, verificationInstructionsForProject(cfg, projectID)...)
-	gitOps := projectgitops.New(gitOpsOptionsForProject(cfg, projectID))
+	gitOpsOptions := gitOpsOptionsForProject(cfg, projectID)
+	gitOps := projectgitops.New(gitOpsOptions)
 	readOnlyReviewRun := isReadOnlyReviewRun(claimed)
 	taskMetadata, taskMetadataErr := runnerWorkTaskMetadata{}, error(nil)
 	if strings.TrimSpace(claimed.Run.TaskID) != "" {
@@ -235,10 +236,12 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			DurationMS:      durationMS,
 			EvidenceRefs:    evidenceRefs,
 		}
-		if _, err := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); err != nil {
+		completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run.ID, result)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
 			return 1, false, true
 		}
+		cleanupTerminalPlanWorktree(ctx, client, gitOpsOptions, projectID, firstNonEmpty(completedRun.PlanID, claimed.Run.PlanID), strings.TrimSpace(codexOptions.WorkDir), runWorkDir)
 		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, status)
 		if status == projectautomation.RunStatusCompleted {
 			return 0, true, true
@@ -291,10 +294,12 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		DurationMS:      durationMS,
 		EvidenceRefs:    evidenceRefs,
 	}
-	if _, err := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); err != nil {
+	completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run.ID, result)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
 		return 1, false, true
 	}
+	cleanupTerminalPlanWorktree(ctx, client, gitOpsOptions, projectID, firstNonEmpty(completedRun.PlanID, claimed.Run.PlanID), strings.TrimSpace(codexOptions.WorkDir), runWorkDir)
 	fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, status)
 	if status == projectautomation.RunStatusCompleted {
 		return 0, true, true
@@ -706,6 +711,7 @@ type projectListItem struct {
 type runnerWorkPlan struct {
 	ID             string `json:"id"`
 	ProjectID      string `json:"project_id"`
+	Status         string `json:"status"`
 	IsolationMode  string `json:"isolation_mode"`
 	GitBaseRef     string `json:"git_base_ref"`
 	GitBranchRef   string `json:"git_branch_ref"`
@@ -824,6 +830,74 @@ func (client *runnerClient) getWorkPlan(ctx context.Context, projectID string, p
 	var plan runnerWorkPlan
 	_, err := client.get(ctx, fmt.Sprintf("/api/v1/projects/%s/work-plans/%s", url.PathEscape(projectID), url.PathEscape(planID)), &plan)
 	return plan, err
+}
+
+func cleanupTerminalPlanWorktree(ctx context.Context, client *runnerClient, options projectgitops.Options, projectID string, planID string, baseWorkDir string, runWorkDir string) {
+	if !options.CleanupWorktreeAfterPlanDone {
+		return
+	}
+	if strings.TrimSpace(planID) == "" || strings.TrimSpace(baseWorkDir) == "" || strings.TrimSpace(runWorkDir) == "" {
+		return
+	}
+	plan, err := client.getWorkPlan(ctx, projectID, planID)
+	if err != nil || !isTerminalPlanStatus(plan.Status) {
+		return
+	}
+	if strings.TrimSpace(plan.IsolationMode) != "dedicated_worktree" || strings.TrimSpace(plan.GitWorktreeRef) == "" {
+		return
+	}
+	expected, err := dedicatedWorktreePath(baseWorkDir, projectID, plan.GitWorktreeRef)
+	if err != nil {
+		return
+	}
+	if filepath.Clean(expected) != filepath.Clean(runWorkDir) {
+		return
+	}
+	if err := removeDedicatedWorktree(ctx, baseWorkDir, runWorkDir); err != nil {
+		fmt.Fprintf(os.Stderr, "worktree cleanup skipped for plan %s: %v\n", plan.ID, err)
+	}
+}
+
+func isTerminalPlanStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "done", "failed", "cancelled", "superseded":
+		return true
+	default:
+		return false
+	}
+}
+
+func removeDedicatedWorktree(ctx context.Context, baseWorkDir string, runWorkDir string) error {
+	baseWorkDir = filepath.Clean(strings.TrimSpace(baseWorkDir))
+	runWorkDir = filepath.Clean(strings.TrimSpace(runWorkDir))
+	if baseWorkDir == "" || runWorkDir == "" || !filepath.IsAbs(baseWorkDir) || !filepath.IsAbs(runWorkDir) {
+		return fmt.Errorf("%w: cleanup requires absolute worktree paths", projectautomation.ErrInvalidInput)
+	}
+	root := filepath.Clean(filepath.Join(baseWorkDir, ".mivia-worktrees"))
+	rel, err := filepath.Rel(root, runWorkDir)
+	if err != nil {
+		return err
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("%w: cleanup path escapes mivia worktree root", projectautomation.ErrInvalidInput)
+	}
+	if _, err := os.Stat(runWorkDir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	remove := exec.CommandContext(ctx, "git", "-C", baseWorkDir, "worktree", "remove", "--force", runWorkDir)
+	if err := remove.Run(); err != nil {
+		if _, statErr := os.Stat(filepath.Join(runWorkDir, ".git")); statErr == nil {
+			return fmt.Errorf("git worktree remove failed: %w", err)
+		}
+		if err := os.RemoveAll(runWorkDir); err != nil {
+			return err
+		}
+	}
+	prune := exec.CommandContext(ctx, "git", "-C", baseWorkDir, "worktree", "prune", "--expire", "now")
+	_ = prune.Run()
+	return nil
 }
 
 func (client *runnerClient) getWorkTaskMetadata(ctx context.Context, projectID string, taskID string) (runnerWorkTaskMetadata, error) {

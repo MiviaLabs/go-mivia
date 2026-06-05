@@ -95,6 +95,43 @@ func TestResolveRunWorkDirFallsBackForSharedPlan(t *testing.T) {
 	}
 }
 
+func TestCleanupTerminalPlanWorktreeRemovesDedicatedWorktree(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	runWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-workflow-audit")
+	if err := os.MkdirAll(runWorkDir, 0o700); err != nil {
+		t.Fatalf("create worktree dir: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans/plan-1":
+			writeJSON(t, w, runnerWorkPlan{
+				ID:             "plan-1",
+				ProjectID:      "project-1",
+				Status:         "done",
+				IsolationMode:  "dedicated_worktree",
+				GitWorktreeRef: "workflow/audit",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	cleanupTerminalPlanWorktree(t.Context(), client, projectgitops.Options{CleanupWorktreeAfterPlanDone: true}, "project-1", "plan-1", baseWorkDir, runWorkDir)
+	if _, err := os.Stat(runWorkDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected dedicated worktree cleanup, stat err=%v", err)
+	}
+}
+
+func TestRemoveDedicatedWorktreeRejectsPathOutsideMiviaWorktrees(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	outside := filepath.Join(baseWorkDir, "not-a-worktree")
+	if err := removeDedicatedWorktree(t.Context(), baseWorkDir, outside); err == nil {
+		t.Fatal("expected cleanup outside .mivia-worktrees to fail")
+	}
+}
+
 func TestGetWorkTaskMetadataReadsReviewAndVerifierRefs(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
