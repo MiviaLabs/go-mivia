@@ -66,6 +66,7 @@ type Service struct {
 	store          Store
 	workTasks      WorkTaskAPI
 	options        Options
+	startedAt      time.Time
 	now            func() time.Time
 	newID          func(string) string
 	codexAvailable func() bool
@@ -359,10 +360,12 @@ func New(store Store, workTasks WorkTaskAPI, options Options) *Service {
 	}
 	agents := append([]AutomationAgent(nil), options.Agents...)
 	options.Agents = agents
+	startedAt := time.Now().UTC()
 	return &Service{
 		store:     store,
 		workTasks: workTasks,
 		options:   options,
+		startedAt: startedAt,
 		now:       func() time.Time { return time.Now().UTC() },
 		newID:     newID,
 		codexRunner: func(ctx context.Context, command CodexCommand, maxOutputBytes int64) (CodexRunResult, error) {
@@ -795,6 +798,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
 	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
 	if err != nil {
 		return ClaimedRun{}, err
@@ -830,6 +836,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		return ClaimedRun{}, err
 	}
 	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
 	runs, err = svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
@@ -1193,6 +1202,9 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 	if isTerminalIncompleteTaskStatus(task.Status) {
 		return svc.finishRunAfterTaskTerminal(ctx, run, task)
 	}
+	if svc.runStartedBeforeService(run) && (task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
+		return svc.requeueAbandonedRunningRun(ctx, run, task)
+	}
 	if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
 		return run, nil
 	}
@@ -1235,6 +1247,62 @@ func (svc *Service) failRunningAuditWithoutRemediation(ctx context.Context, run 
 	return svc.failRun(ctx, run, RunStatusFailed, "confirmed_finding_remediation_missing")
 }
 
+func (svc *Service) runStartedBeforeService(run AutomationRun) bool {
+	if svc == nil || svc.startedAt.IsZero() {
+		return false
+	}
+	marker := run.UpdatedAt
+	if marker.IsZero() {
+		marker = run.StartedAt
+	}
+	return !marker.IsZero() && marker.Before(svc.startedAt)
+}
+
+func (svc *Service) requeueAbandonedRunningRun(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok {
+		return run, nil
+	}
+	now := svc.now()
+	run.Status = RunStatusTimeout
+	run.WorkTaskStatus = task.Status
+	run.SafeSummary = "external_codex_cli_abandoned_after_restart"
+	run.FailureCategory = "external_runner_interrupted"
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "external_runner_restart_requeue",
+			RunID:              run.ID,
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			ResumeInstructions: task.ResumeInstructions,
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return updated, nil
+	}
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil {
+		return updated, nil
+	}
+	if automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+		return updated, nil
+	}
+	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+		return updated, nil
+	}
+	return updated, nil
+}
+
 func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun) (AutomationRun, error) {
 	if svc == nil || svc.store == nil || svc.workTasks == nil || run.Status != RunStatusVerifying || run.ProjectID == "" || run.TaskID == "" {
 		return run, nil
@@ -1267,6 +1335,8 @@ func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun
 	}
 	if len(action.ReviewResultRefs) == 0 && isReviewTask(task) {
 		action.ReviewExemptReason = "independent review task; secondary review not required"
+	} else if len(action.ReviewResultRefs) == 0 && isReadOnlyScannerTask(task) {
+		action.ReviewExemptReason = "read-only automation task; downstream review remains dependency-gated"
 	}
 	completed, err := svc.workTasks.CompleteWorkTask(ctx, action)
 	if err != nil {
@@ -1305,15 +1375,15 @@ func (svc *Service) ensureReviewRefsAttachedForCloseout(ctx context.Context, run
 }
 
 func auditTaskHasConfirmedFindingWithoutRemediation(task projectworkplan.WorkTask) bool {
-	if !isAuditTask(task) || !taskHasConfirmedFinding(task) {
+	if !isRemediationPlanningTask(task) || !taskHasConfirmedFinding(task) {
 		return false
 	}
 	return !taskHasRemediationHandoff(task)
 }
 
-func isAuditTask(task projectworkplan.WorkTask) bool {
+func isRemediationPlanningTask(task projectworkplan.WorkTask) bool {
 	text := strings.ToLower(strings.Join([]string{task.TaskRef, task.Title, task.Description}, " "))
-	return strings.Contains(text, "audit") || strings.Contains(text, "review") || strings.Contains(text, "scan")
+	return strings.Contains(text, "create-confirmed-bug") || strings.Contains(text, "remediation planning") || strings.Contains(text, "create remediation")
 }
 
 func taskHasConfirmedFinding(task projectworkplan.WorkTask) bool {
@@ -1422,10 +1492,39 @@ func (svc *Service) reconcileReadyDependentAutomations(ctx context.Context, proj
 	if svc == nil || svc.store == nil || svc.workTasks == nil || projectID == "" || planID == "" {
 		return nil
 	}
+	return svc.reconcileReadyAutomationsForPlan(ctx, projectID, planID, completedTaskID)
+}
+
+func (svc *Service) reconcileReadyAutomationsForProject(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" {
+		return nil
+	}
+	workPlans, ok := svc.workTasks.(remediationWorkPlanAPI)
+	if !ok || workPlans == nil {
+		return nil
+	}
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: projectID, Status: projectworkplan.WorkPlanStatusActive})
+	if err != nil {
+		return err
+	}
+	for _, plan := range plans {
+		if err := svc.reconcileReadyAutomationsForPlan(ctx, projectID, plan.ID, ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) reconcileReadyAutomationsForPlan(ctx context.Context, projectID string, planID string, completedTaskID string) error {
 	readyTasks, err := svc.readyPlannedDependentTasks(ctx, projectID, planID, completedTaskID)
 	if err != nil {
 		return err
 	}
+	existingReadyTasks, err := svc.readyOpenTasks(ctx, projectID, planID)
+	if err != nil {
+		return err
+	}
+	readyTasks = appendUniqueTasks(readyTasks, existingReadyTasks...)
 	if len(readyTasks) == 0 {
 		return nil
 	}
@@ -1447,6 +1546,53 @@ func (svc *Service) reconcileReadyDependentAutomations(ctx context.Context, proj
 		}
 	}
 	return nil
+}
+
+func (svc *Service) readyOpenTasks(ctx context.Context, projectID string, planID string) ([]projectworkplan.WorkTask, error) {
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return nil, err
+	}
+	ready := make([]projectworkplan.WorkTask, 0)
+	for _, task := range tasks {
+		if task.Status != projectworkplan.WorkTaskStatusReady {
+			continue
+		}
+		if task.DecompositionQuality != projectworkplan.DecompositionReady || strings.TrimSpace(task.VerificationRequirement) == "" {
+			continue
+		}
+		if !svc.dependenciesDone(ctx, task) {
+			continue
+		}
+		ready = append(ready, task)
+	}
+	return ready, nil
+}
+
+func appendUniqueTasks(tasks []projectworkplan.WorkTask, additions ...projectworkplan.WorkTask) []projectworkplan.WorkTask {
+	seen := make(map[string]struct{}, len(tasks)+len(additions))
+	out := make([]projectworkplan.WorkTask, 0, len(tasks)+len(additions))
+	for _, task := range tasks {
+		if task.ID == "" {
+			continue
+		}
+		if _, ok := seen[task.ID]; ok {
+			continue
+		}
+		seen[task.ID] = struct{}{}
+		out = append(out, task)
+	}
+	for _, task := range additions {
+		if task.ID == "" {
+			continue
+		}
+		if _, ok := seen[task.ID]; ok {
+			continue
+		}
+		seen[task.ID] = struct{}{}
+		out = append(out, task)
+	}
+	return out
 }
 
 func (svc *Service) readyPlannedDependentTasks(ctx context.Context, projectID string, planID string, completedTaskID string) ([]projectworkplan.WorkTask, error) {
@@ -1496,7 +1642,7 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 		return err
 	}
 	for _, run := range existing {
-		if run.TaskID == task.ID {
+		if run.TaskID == task.ID && isActiveAutomationRunStatus(run.Status) {
 			return nil
 		}
 	}
@@ -1518,6 +1664,15 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 	}
 	_, err = svc.store.CreateRun(ctx, run)
 	return err
+}
+
+func isActiveAutomationRunStatus(status string) bool {
+	switch status {
+	case RunStatusQueued, RunStatusClaiming, RunStatusStarting, RunStatusRunning, RunStatusVerifying:
+		return true
+	default:
+		return false
+	}
 }
 
 func dependencyReadyRunID(task projectworkplan.WorkTask, automation Automation) string {
@@ -1655,6 +1810,9 @@ func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent
 }
 
 func taskNeedsPostImplementationReview(task projectworkplan.WorkTask) bool {
+	if isReviewTask(task) || len(task.FilesToEdit) == 0 {
+		return false
+	}
 	if len(task.ReviewResultRefs) > 0 {
 		return false
 	}
@@ -2478,16 +2636,28 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 	if len(task.VerifierResultRefs) == 0 {
 		return false
 	}
-	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" || isReviewTask(task)
+	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" || isReviewTask(task) || isReadOnlyScannerTask(task)
 }
 
 func isReviewTask(task projectworkplan.WorkTask) bool {
 	return strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-") || strings.Contains(strings.ToLower(task.ReviewGate), "independent-reviewer")
 }
 
+func isReadOnlyScannerTask(task projectworkplan.WorkTask) bool {
+	if len(task.FilesToEdit) > 0 {
+		return false
+	}
+	ref := strings.ToLower(strings.TrimSpace(task.TaskRef))
+	owner := strings.ToLower(strings.TrimSpace(task.OwnerAgent))
+	return owner == "code-review-scanner" || strings.HasPrefix(ref, "scan-") || strings.HasPrefix(ref, "collect-review-scope") || strings.HasPrefix(ref, "research-")
+}
+
 func automationCloseoutOutcome(task projectworkplan.WorkTask) string {
 	if isReviewTask(task) {
 		return "automation closeout completed independent review task; no secondary review required"
+	}
+	if isReadOnlyScannerTask(task) && len(task.ReviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" {
+		return "automation closeout completed read-only task after verifier refs; downstream review remains gated"
 	}
 	return "automation closeout completed after required verifier and independent review refs were attached"
 }

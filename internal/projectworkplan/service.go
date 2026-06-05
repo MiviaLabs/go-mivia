@@ -565,7 +565,7 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 			return WorkTask{}, fmt.Errorf("%w: task is claimed by another run", ErrInvalidInput)
 		}
 	}
-	if next == WorkTaskStatusReady && task.Status != WorkTaskStatusPlanned && task.Status != WorkTaskStatusClaimed && task.Status != WorkTaskStatusBlocked && task.Status != WorkTaskStatusNeedsReview {
+	if next == WorkTaskStatusReady && task.Status != WorkTaskStatusPlanned && task.Status != WorkTaskStatusClaimed && task.Status != WorkTaskStatusInProgress && task.Status != WorkTaskStatusBlocked && task.Status != WorkTaskStatusNeedsReview {
 		return WorkTask{}, fmt.Errorf("%w: release requires claimed status", ErrInvalidInput)
 	}
 	if next == WorkTaskStatusInProgress && task.Status != WorkTaskStatusClaimed {
@@ -889,7 +889,7 @@ func validateTaskTransition(from, to string) error {
 		WorkTaskStatusPlanned:     {WorkTaskStatusReady, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusReady:       {WorkTaskStatusClaimed, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusClaimed:     {WorkTaskStatusInProgress, WorkTaskStatusReady, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
-		WorkTaskStatusInProgress:  {WorkTaskStatusBlocked, WorkTaskStatusNeedsReview, WorkTaskStatusVerifying, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
+		WorkTaskStatusInProgress:  {WorkTaskStatusReady, WorkTaskStatusBlocked, WorkTaskStatusNeedsReview, WorkTaskStatusVerifying, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusBlocked:     {WorkTaskStatusReady, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusNeedsReview: {WorkTaskStatusReady, WorkTaskStatusVerifying, WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusVerifying:   {WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},

@@ -225,6 +225,13 @@ func TestServiceTaskTransitions(t *testing.T) {
 	if _, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, VerifierResultRefs: []string{"verifier-1"}}); err == nil {
 		t.Fatal("expected in_progress -> done to fail")
 	}
+	released, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-1"})
+	if err != nil {
+		t.Fatalf("release in-progress task: %v", err)
+	}
+	if released.Status != projectworkplan.WorkTaskStatusReady || released.ClaimedByRunID != "" {
+		t.Fatalf("expected released in-progress task to be ready and unclaimed, got %#v", released)
+	}
 
 	releaseTarget, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-release"))
 	if err != nil {
