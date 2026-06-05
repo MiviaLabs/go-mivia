@@ -72,7 +72,11 @@ func run(args []string) int {
 		projectIDs, err := runnerProjectIDs(context.Background(), client, strings.TrimSpace(*projectID))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "project discovery failed: %v\n", err)
-			return 1
+			if *once {
+				return 1
+			}
+			time.Sleep(*pollInterval)
+			continue
 		}
 		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, cfg, projectIDs, strings.TrimSpace(*agentID), codexOptions)
 		if *once || !keepWatching {
@@ -182,7 +186,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	claimed, ok, err := client.claimNext(ctx, projectID, agentID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "claim failed: %v\n", err)
-		return 1, false, false
+		return 1, true, false
 	}
 	if !ok {
 		fmt.Fprintln(os.Stdout, "no queued automation run")

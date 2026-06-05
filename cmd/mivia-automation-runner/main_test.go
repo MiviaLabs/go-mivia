@@ -358,6 +358,57 @@ func TestWatchContinuesAfterReportedTaskFailure(t *testing.T) {
 	}
 }
 
+func TestWatchRetriesProjectDiscoveryFailure(t *testing.T) {
+	setReadableCodexHome(t)
+	var listCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/projects" {
+			http.NotFound(w, r)
+			return
+		}
+		if listCount.Add(1) == 1 {
+			http.Error(w, "warming up", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(t, w, map[string]any{"projects": []map[string]any{}})
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--codex", "/bin/true", "--watch", "--poll-interval", "1ms", "--idle-exit-after", "5ms"})
+	if status != 0 {
+		t.Fatalf("watch should retry project discovery failure and exit idle with 0, got %d", status)
+	}
+	if listCount.Load() < 2 {
+		t.Fatalf("expected project discovery retry, got %d", listCount.Load())
+	}
+}
+
+func TestWatchRetriesClaimFailure(t *testing.T) {
+	setReadableCodexHome(t)
+	var claimCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			if claimCount.Add(1) == 1 {
+				http.Error(w, "warming up", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, `{"error":{"code":"invalid_input","message":"no queued automation run"}}`, http.StatusBadRequest)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", "/bin/true", "--watch", "--poll-interval", "1ms", "--idle-exit-after", "5ms"})
+	if status != 0 {
+		t.Fatalf("watch should retry claim failure and exit idle with 0, got %d", status)
+	}
+	if claimCount.Load() < 2 {
+		t.Fatalf("expected claim retry, got %d", claimCount.Load())
+	}
+}
+
 func TestClaimNextTreatsPolicyBadRequestAsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"code":"invalid_input","message":"task_dependencies_not_done"}}`, http.StatusBadRequest)
