@@ -231,7 +231,7 @@ func run() error {
 	projectKnowledgeService := projectknowledge.New(knowledgestore.NewLadybugStore(projectGraph))
 	projectWorkPlanService := projectworkplan.New(workplanstore.NewLadybugStore(projectGraph))
 	projectWorkflowService := projectworkflow.New(workflowstore.NewMemoryStore())
-	projectAutomationService := projectautomation.New(automationstore.NewMemoryStore(), projectWorkPlanService, projectautomation.Options{
+	projectAutomationService := projectautomation.New(automationstore.NewLadybugStore(projectGraph), projectWorkPlanService, projectautomation.Options{
 		Enabled:                   cfg.Automation.Enabled,
 		RunnerEnabled:             cfg.Automation.RunnerEnabled,
 		RequireCodexWhenAvailable: cfg.Automation.RequireCodexWhenAvailable,
