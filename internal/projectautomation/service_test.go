@@ -345,6 +345,72 @@ func TestClaimNextRunRecoversBlockedStartFailureForClaimedTask(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunReconcilesRecoveredBlockedStartBeforeQueuedWork(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	recoveredTask := readyTask("task-recovered", "scan-recovered", []string{"internal/foo.go"})
+	recoveredTask.Status = projectworkplan.WorkTaskStatusVerifying
+	recoveredTask.OwnerAgent = "code-review-scanner"
+	recoveredTask.ClaimedByRunID = "run-recovered"
+	recoveredTask.EvidenceRefs = []string{"evidence-recovered"}
+	recoveredTask.ClaimRefs = []string{"claim-recovered"}
+	recoveredTask.VerifierResultRefs = []string{"verifier-recovered"}
+	queuedTask := readyTask("task-queued", "scan-queued", []string{"internal/bar.go"})
+	queuedTask.OwnerAgent = "code-review-scanner"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		recoveredTask.ID: recoveredTask,
+		queuedTask.ID:    queuedTask,
+	}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	recoveredAutomation := createAutomaticTriggerAutomation(t, ctx, svc)
+	queuedAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/queued-scan",
+		Title:           "Queued scan",
+		Purpose:         "Run queued scan.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "code-review-scanner",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{queuedTask.ID, queuedTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-recovered", ProjectID: "project-1", AutomationID: recoveredAutomation.ID, AgentID: recoveredAutomation.AgentID,
+		PlanID: "plan-1", TaskID: recoveredTask.ID, Status: RunStatusBlocked, RunnerKind: RunnerKindCodexCLI,
+		FailureCategory: "start_failed",
+		CreatedAt:       time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-queued", ProjectID: "project-1", AutomationID: queuedAutomation.ID, AgentID: queuedAutomation.AgentID,
+		PlanID: "plan-1", TaskID: queuedTask.ID, Status: RunStatusQueued, RunnerKind: RunnerKindCodexCLI,
+		CreatedAt: time.Unix(150, 0).UTC(), UpdatedAt: time.Unix(150, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != "run-queued" {
+		t.Fatalf("expected queued run to be claimed after stale recovery closeout, got %#v", claimed.Run)
+	}
+	recoveredRun, err := store.GetRun(ctx, "project-1", "run-recovered")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if recoveredRun.Status != RunStatusCompleted || recoveredRun.FailureCategory != "" || fake.tasks[recoveredTask.ID].Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected stale recovered run to close before queued claim, run=%#v task=%#v", recoveredRun, fake.tasks[recoveredTask.ID])
+	}
+}
+
 func TestClaimNextRunDoesNotRecoverOrdinaryBlockedRun(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()

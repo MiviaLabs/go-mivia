@@ -798,6 +798,18 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID); err != nil || ok {
+		return claimed, err
+	}
+	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID); err != nil || ok {
+		return claimed, err
+	}
+	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID); err != nil || ok {
+		return claimed, err
+	}
 	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
@@ -820,19 +832,13 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
 		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, nil
 	}
-	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID); err != nil || ok {
-		return claimed, err
-	}
-	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID); err != nil || ok {
-		return claimed, err
-	}
-	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID); err != nil || ok {
-		return claimed, err
-	}
 	if err := svc.reconcileRunningRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
 	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
@@ -920,6 +926,55 @@ func (svc *Service) recoverablePreExecutionRuns(ctx context.Context, projectID s
 		return nil, err
 	}
 	return append(failed, blocked...), nil
+}
+
+func (svc *Service) reconcileRecoverablePreExecutionRuns(ctx context.Context, projectID string) error {
+	runs, err := svc.recoverablePreExecutionRuns(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || !isRecoverablePreExecutionFailure(run.FailureCategory) || run.TaskID == "" {
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+			continue
+		}
+		if task.Status == projectworkplan.WorkTaskStatusDone {
+			if _, err := svc.completeRunAfterTaskDone(ctx, run, task); err != nil {
+				return err
+			}
+			continue
+		}
+		if isTerminalIncompleteTaskStatus(task.Status) {
+			if _, err := svc.finishRunAfterTaskTerminal(ctx, run, task); err != nil {
+				return err
+			}
+			continue
+		}
+		if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
+			continue
+		}
+		now := svc.now()
+		run.Status = RunStatusVerifying
+		run.WorkTaskStatus = task.Status
+		run.SafeSummary = "pre_execution_recovery_progressed_task_verifying"
+		run.FailureCategory = ""
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		updated, err := svc.store.UpdateRun(ctx, run)
+		if err != nil {
+			return err
+		}
+		if _, err := svc.reconcileVerifyingRun(ctx, updated); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (svc *Service) prepareTaskForPreExecutionRecovery(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (projectworkplan.WorkTask, error) {
