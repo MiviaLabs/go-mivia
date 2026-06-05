@@ -89,9 +89,13 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		return PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}, nil
 	}
 
-	pathspecs := sanitizePathspecs(input.AllowedPathspecs)
-	if len(pathspecs) == 0 {
+	allowedPathspecs := sanitizePathspecs(input.AllowedPathspecs)
+	if len(allowedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
+	}
+	changedPathspecs := changedPathspecsWithinAllowed(status.Stdout, allowedPathspecs)
+	if len(changedPathspecs) == 0 {
+		return PostTaskResult{}, fmt.Errorf("%w: no changed files matched safe task pathspecs", ErrInvalidInput)
 	}
 	if strings.TrimSpace(input.BranchName) == "" {
 		if branch, err := svc.currentBranch(ctx, workDir); err == nil {
@@ -107,7 +111,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if err != nil {
 		return PostTaskResult{}, err
 	}
-	addArgs := append([]string{"add", "--"}, pathspecs...)
+	addArgs := append([]string{"add", "--"}, changedPathspecs...)
 	if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
 		return PostTaskResult{}, err
 	}
@@ -430,6 +434,61 @@ func sanitizePathspecs(values []string) []string {
 		out = append(out, trimmed)
 	}
 	return out
+}
+
+func changedPathspecsWithinAllowed(status string, allowed []string) []string {
+	changed := changedPathsFromStatus(status)
+	out := make([]string, 0, len(changed))
+	seen := make(map[string]struct{}, len(changed))
+	for _, path := range changed {
+		if !isSafeRelativePathspec(path) {
+			continue
+		}
+		for _, allow := range allowed {
+			if pathMatchesAllowedPathspec(path, allow) {
+				if _, ok := seen[path]; !ok {
+					seen[path] = struct{}{}
+					out = append(out, path)
+				}
+				break
+			}
+		}
+	}
+	return out
+}
+
+func changedPathsFromStatus(status string) []string {
+	lines := strings.Split(strings.ReplaceAll(status, "\x00", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if len(line) < 4 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
+			path = strings.TrimSpace(path[idx+4:])
+		}
+		if path != "" {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func pathMatchesAllowedPathspec(path, allow string) bool {
+	allow = strings.TrimSuffix(strings.TrimSpace(allow), "/")
+	if allow == "" {
+		return false
+	}
+	return path == allow || strings.HasPrefix(path, allow+"/")
+}
+
+func isSafeRelativePathspec(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || strings.HasPrefix(path, "/") || strings.Contains(path, "..") || strings.ContainsAny(path, "\x00\r\n") {
+		return false
+	}
+	return true
 }
 
 func validateSafeRef(name, value string) error {

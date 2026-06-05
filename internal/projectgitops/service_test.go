@@ -79,6 +79,52 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	}
 }
 
+func TestPostTaskStagesOnlyChangedFilesInsideAllowedScopes(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n?? apps/domain-inventory/src/trpc/__tests__/family-pricing-user-context.spec.ts\n M README.md\n"},
+		{Stdout: "fix-MASS-0000-family-pricing\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+		GitHubCLIPath:        "gh",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"apps", "libs", "packages", "services", "src"},
+	})
+	if err != nil {
+		t.Fatalf("expected post task commit to ignore absent allowed scopes and stage changed files: %v", err)
+	}
+	if len(runner.commands) != 7 {
+		t.Fatalf("expected seven git commands, got %d", len(runner.commands))
+	}
+	addArgs := strings.Join(runner.commands[3].Args, "\n")
+	if strings.Contains(addArgs, "\nservices") || strings.Contains(addArgs, "\npackages") || strings.Contains(addArgs, "\nREADME.md") {
+		t.Fatalf("unexpected add args: %q", addArgs)
+	}
+	if !strings.Contains(addArgs, "apps/domain-inventory/src/trpc/trpc.router.ts") ||
+		!strings.Contains(addArgs, "apps/domain-inventory/src/trpc/__tests__/family-pricing-user-context.spec.ts") {
+		t.Fatalf("expected changed app files to be staged, got %q", addArgs)
+	}
+}
+
 func TestPostTaskFailsClosedWithoutSafePathspecs(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{{}, {Stdout: " M README.md\n"}}}
 	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)

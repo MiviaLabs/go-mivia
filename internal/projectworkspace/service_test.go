@@ -705,6 +705,34 @@ func TestWorkspaceService_GitCreateWorktreeUsesExistingBranchAfterCreateRetryFai
 	}
 }
 
+func TestWorkspaceService_GitCreateWorktreeReusesExistingMatchingWorktree(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	project := projectregistry.Project{ID: "example-service", CanonicalRootPath: filepath.Clean(root)}
+	target, err := worktreeTargetPath(project, "worktree/plan-1")
+	if err != nil {
+		t.Fatalf("target path: %v", err)
+	}
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	runner := &recordingGitRunner{worktreeBranch: "codex/plan-1"}
+	svc.SetGitRunner(runner)
+
+	result, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
+		WorktreeRef: "worktree/plan-1",
+		BranchRef:   "codex/plan-1",
+		BaseRef:     "main",
+	})
+	if err != nil {
+		t.Fatalf("reuse existing worktree: %v", err)
+	}
+	if !result.Applied || runner.worktreeAddCalls != 0 {
+		t.Fatalf("expected existing matching worktree reuse without add, result=%#v calls=%#v", result, runner.calls)
+	}
+}
+
 func TestWorkspaceService_GitCreateWorktreeRejectsReadOnlyAndUnsafeRefs(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package main\n")
