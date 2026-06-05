@@ -893,6 +893,8 @@ func validateGitOpsTemplate(name, value string) error {
 		"work_task_id":      true,
 		"work_task_ref":     true,
 		"work_task_title":   true,
+		"branch_name":       true,
+		"ticket_ref":        true,
 		"automation_id":     true,
 		"automation_run_id": true,
 		"operator_id":       true,

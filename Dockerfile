@@ -11,13 +11,13 @@ RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-server ./cmd
 
 FROM node:24-bookworm-slim AS codex-cli
 
-RUN npm install -g @openai/codex@latest \
+RUN npm install -g @openai/codex@latest pnpm@latest \
     && codex --version
 
 FROM debian:bookworm-20260518-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gh git openssh-client socat \
+    && apt-get install -y --no-install-recommends ca-certificates curl gh git openssh-client python3 ripgrep socat \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin mivia \
@@ -29,9 +29,16 @@ COPY --from=build /out/mivia-automation-runner /usr/local/bin/mivia-automation-r
 COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY docker/entrypoint.sh /usr/local/bin/mivia-entrypoint
+COPY docker/automation-runner-entrypoint.sh /usr/local/bin/mivia-runner-entrypoint
 RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
-    && chmod 0755 /usr/local/bin/mivia-entrypoint \
-    && codex --version
+	&& ln -s ../lib/node_modules/pnpm/bin/pnpm.cjs /usr/local/bin/pnpm \
+	&& ln -s ../lib/node_modules/pnpm/bin/pnpx.cjs /usr/local/bin/pnpx \
+	&& chmod 0755 /usr/local/lib/node_modules/pnpm/bin/pnpm.cjs \
+	&& chmod 0755 /usr/local/lib/node_modules/pnpm/bin/pnpx.cjs \
+	&& chmod 0755 /usr/local/bin/mivia-entrypoint \
+	&& chmod 0755 /usr/local/bin/mivia-runner-entrypoint \
+	&& pnpm --version \
+	&& codex --version
 
 USER mivia
 WORKDIR /app

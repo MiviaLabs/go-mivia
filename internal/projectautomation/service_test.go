@@ -98,7 +98,10 @@ func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
 		"Create smoke marker",
 		"automation-smoke.txt",
 		"Do not run full test suites",
-		"commit, push, or draft pull request",
+		"Do not call projects.automation_runs.complete_attempt",
+		"runner commits, pushes, and opens draft PRs",
+		"Implementation workers must not self-review.",
+		"Do not use colons, slashes, paths, commands, raw logs, or source snippets as refs.",
 		"Leave verifier execution and task completion to the orchestrator.",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -244,6 +247,9 @@ func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *te
 		Summary:                 "Repair the confirmed review finding.",
 		Severity:                "high",
 		ImplementationAgentID:   "worker-a",
+		GitBaseRef:              "main",
+		GitBranchRef:            "fix-MASS-0000-readme-structure-entry",
+		GitWorktreeRef:          "fix-MASS-0000-readme-structure-entry",
 		FilesToRead:             []string{"internal/projectautomation/service.go"},
 		FilesToEdit:             []string{"internal/projectautomation/service.go"},
 		EvidenceRefs:            []string{"review:confirmed"},
@@ -262,8 +268,12 @@ func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *te
 	if result.Automation.TriggerKind != TriggerKindAutomatic || result.Automation.Status != AutomationStatusEnabled {
 		t.Fatalf("unexpected remediation automation: %#v", result.Automation)
 	}
-	if result.WorkPlan.GitBranchRef != "mivia/remediate-finding-review-1" {
-		t.Fatalf("expected sanitized branch ref, got %q", result.WorkPlan.GitBranchRef)
+	if result.WorkPlan.GitBaseRef != "main" || result.WorkPlan.GitBranchRef != "fix-MASS-0000-readme-structure-entry" || result.WorkPlan.GitWorktreeRef != "fix-MASS-0000-readme-structure-entry" {
+		t.Fatalf("expected project-specific git refs, got base=%q branch=%q worktree=%q", result.WorkPlan.GitBaseRef, result.WorkPlan.GitBranchRef, result.WorkPlan.GitWorktreeRef)
+	}
+	wantEvidence := []string{"confirmed-finding-finding-review-1", "review-confirmed"}
+	if strings.Join(result.WorkTask.EvidenceNeeded, ",") != strings.Join(wantEvidence, ",") {
+		t.Fatalf("expected worker-safe evidence refs %v, got %v", wantEvidence, result.WorkTask.EvidenceNeeded)
 	}
 }
 

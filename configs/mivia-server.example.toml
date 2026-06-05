@@ -141,8 +141,12 @@ commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
 github_cli_path = "gh"
 
 [git_operations.conventions]
-# All templates use fixed safe placeholders only. Commit subjects and PR titles
-# must render as Conventional Commits. PR bodies always use the required
+# All templates use fixed safe placeholders only. Available placeholders:
+# project_id, work_plan_id, work_task_id, work_task_ref, work_task_title,
+# branch_name, ticket_ref, automation_id, automation_run_id, operator_id,
+# review_refs, verifier_refs, test_results, and commit_subject. ticket_ref is
+# derived from branch/task metadata such as ABC-123. Commit subjects and PR
+# titles must render as Conventional Commits. PR bodies always use the required
 # sections: What changed, How verified, Tests.
 commit_type = "chore"
 commit_scope = ""
@@ -199,9 +203,9 @@ sensitive_marker_policy = "skip_file"
 # commit_type = "docs"
 # commit_scope = ""
 # commit_summary_template = "complete {{work_task_ref}}"
-# pull_request_title_template = "{{commit_subject}}"
-# what_changed_template = "Completed {{work_task_title}} for {{project_id}}."
-# how_verified_template = "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
+# pull_request_title_template = "docs({{ticket_ref}}): complete {{work_task_ref}}"
+# what_changed_template = "Jira: https://example.atlassian.net/browse/{{ticket_ref}}\n\nCompleted {{work_task_title}} for {{project_id}}."
+# how_verified_template = "Agent workflow:\n- plan-task: yes (https://example.atlassian.net/browse/{{ticket_ref}})\n- pr-audit: N/A\n\nProject ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 # tests_template = "{{test_results}}"
 
 # Optional Atlassian Cloud project integrations. Credentials are references only:

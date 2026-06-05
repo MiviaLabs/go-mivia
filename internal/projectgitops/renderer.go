@@ -27,6 +27,8 @@ var allowedTemplatePlaceholders = map[string]bool{
 	"work_task_id":      true,
 	"work_task_ref":     true,
 	"work_task_title":   true,
+	"branch_name":       true,
+	"ticket_ref":        true,
 	"automation_id":     true,
 	"automation_run_id": true,
 	"operator_id":       true,
@@ -192,8 +194,9 @@ func validateRenderInput(input PostTaskInput) error {
 		}
 	}
 	for name, value := range map[string]string{
-		"task ref":   input.TaskRef,
-		"task title": input.TaskTitle,
+		"task ref":    input.TaskRef,
+		"task title":  input.TaskTitle,
+		"branch name": input.BranchName,
 	} {
 		if strings.TrimSpace(value) == "" {
 			continue
@@ -228,6 +231,8 @@ func templateValues(input PostTaskInput) map[string]string {
 	testResults, _ := safeMetadataLines("test results", input.TestResults, 300)
 	taskRef, _ := safeMetadataLine("task ref", input.TaskRef, 200)
 	taskTitle, _ := safeMetadataLine("task title", input.TaskTitle, 200)
+	branchName, _ := safeMetadataLine("branch name", input.BranchName, 200)
+	ticketRef := extractTicketRef(branchName, taskRef, taskTitle)
 
 	return map[string]string{
 		"project_id":        strings.TrimSpace(input.ProjectID),
@@ -235,6 +240,8 @@ func templateValues(input PostTaskInput) map[string]string {
 		"work_task_id":      strings.TrimSpace(input.TaskID),
 		"work_task_ref":     valueOrUnavailable(taskRef),
 		"work_task_title":   valueOrUnavailable(taskTitle),
+		"branch_name":       valueOrUnavailable(branchName),
+		"ticket_ref":        valueOrUnavailable(ticketRef),
 		"automation_id":     strings.TrimSpace(input.AutomationID),
 		"automation_run_id": strings.TrimSpace(input.AutomationRunID),
 		"operator_id":       strings.TrimSpace(input.OperatorID),
@@ -242,6 +249,17 @@ func templateValues(input PostTaskInput) map[string]string {
 		"verifier_refs":     refsValue(verifierRefs),
 		"test_results":      testsValue(testResults),
 	}
+}
+
+var ticketRefPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
+
+func extractTicketRef(values ...string) string {
+	for _, value := range values {
+		if match := ticketRefPattern.FindString(strings.TrimSpace(value)); match != "" {
+			return match
+		}
+	}
+	return ""
 }
 
 func renderSingleLineTemplate(name, template string, values map[string]string) (string, error) {
@@ -308,7 +326,7 @@ func commitBody(input PostTaskInput, values map[string]string, whatChanged, howV
 	builder.WriteString("\n\nTests:\n")
 	builder.WriteString(tests)
 	builder.WriteString("\n\nGitOps metadata:\n")
-	for _, key := range []string{"project_id", "work_plan_id", "work_task_id", "automation_id", "automation_run_id", "operator_id", "review_refs", "verifier_refs"} {
+	for _, key := range []string{"project_id", "work_plan_id", "work_task_id", "branch_name", "ticket_ref", "automation_id", "automation_run_id", "operator_id", "review_refs", "verifier_refs"} {
 		builder.WriteString(metadataLabel(key))
 		builder.WriteString(": ")
 		builder.WriteString(values[key])
@@ -329,6 +347,10 @@ func metadataLabel(key string) string {
 		return "Work Plan ID"
 	case "work_task_id":
 		return "Work Task ID"
+	case "branch_name":
+		return "Branch"
+	case "ticket_ref":
+		return "Ticket"
 	case "automation_id":
 		return "Automation ID"
 	case "automation_run_id":

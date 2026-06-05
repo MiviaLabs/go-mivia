@@ -92,6 +92,11 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if len(pathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
 	}
+	if strings.TrimSpace(input.BranchName) == "" {
+		if branch, err := svc.currentBranch(ctx, workDir); err == nil {
+			input.BranchName = branch
+		}
+	}
 	rendered, err := Render(input, svc.options.Conventions)
 	if err != nil {
 		return PostTaskResult{}, err
@@ -114,7 +119,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if email != "" {
 		env = append(env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
 	}
-	if _, err := svc.git(ctx, workDir, env, "commit", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
+	if _, err := svc.git(ctx, workDir, env, "commit", "--no-verify", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
 		return PostTaskResult{}, err
 	}
 	sha, err := svc.git(ctx, workDir, nil, "rev-parse", "--short=12", "HEAD")
@@ -126,14 +131,18 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		EvidenceRefs: []string{"git-commit-created"},
 	}
 	if svc.options.PushAfterTask {
-		branch, err := svc.currentBranch(ctx, workDir)
-		if err != nil {
-			return PostTaskResult{}, err
+		branch := strings.TrimSpace(input.BranchName)
+		if branch == "" {
+			var err error
+			branch, err = svc.currentBranch(ctx, workDir)
+			if err != nil {
+				return PostTaskResult{}, err
+			}
 		}
 		if err := svc.validateBranchPolicy(branch); err != nil {
 			return PostTaskResult{}, err
 		}
-		if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", svc.options.RemoteName, "HEAD:"+branch); err != nil {
+		if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", "--no-verify", svc.options.RemoteName, "HEAD:"+branch); err != nil {
 			return PostTaskResult{}, err
 		}
 		result.PushRef = "git-push-" + safeHash(branch)

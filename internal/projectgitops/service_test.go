@@ -29,6 +29,7 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M internal/projectgitops/service.go\n"},
+		{Stdout: "mivia/generic-gitops-conventions\n"},
 		{},
 		{},
 		{},
@@ -60,20 +61,20 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	if result.CommitRef != "git-commit-abc123def456" {
 		t.Fatalf("unexpected commit ref: %+v", result)
 	}
-	if len(runner.commands) != 6 {
-		t.Fatalf("expected six git commands, got %d", len(runner.commands))
+	if len(runner.commands) != 7 {
+		t.Fatalf("expected seven git commands, got %d", len(runner.commands))
 	}
 	if got := strings.Join(runner.commands[0].Args, " "); got != "rev-parse --show-toplevel" {
 		t.Fatalf("expected trust probe command, got %q", got)
 	}
-	if got := strings.Join(runner.commands[4].Args, " "); !strings.Contains(got, "commit -m") {
+	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit --no-verify -m") {
 		t.Fatalf("expected commit command, got %q", got)
 	}
-	if message := runner.commands[4].Args[2]; !strings.Contains(message, "Project ID: project-1") || !strings.Contains(message, "Automation ID: automation_1") {
+	if message := runner.commands[5].Args[3]; !strings.Contains(message, "Project ID: project-1") || !strings.Contains(message, "Automation ID: automation_1") {
 		t.Fatalf("expected rendered metadata in commit message, got %q", message)
 	}
-	if !containsEnv(runner.commands[4].Env, "GIT_AUTHOR_EMAIL=automation@example.test") {
-		t.Fatalf("expected author email env, got %+v", runner.commands[4].Env)
+	if !containsEnv(runner.commands[5].Env, "GIT_AUTHOR_EMAIL=automation@example.test") {
+		t.Fatalf("expected author email env, got %+v", runner.commands[5].Env)
 	}
 }
 
@@ -135,11 +136,11 @@ func TestPostTaskRejectsPushFromBranchOutsidePolicy(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M README.md\n"},
+		{Stdout: "feature/MASS-123-docs\n"},
 		{},
 		{},
 		{},
 		{Stdout: "abc123def456\n"},
-		{Stdout: "feature/MASS-123-docs\n"},
 	}}
 	svc := NewWithRunner(Options{
 		Enabled:              true,
@@ -178,11 +179,11 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M README.md\n"},
+		{Stdout: "docs-MASS-123-docs\n"},
 		{},
 		{},
 		{},
 		{Stdout: "abc123def456\n"},
-		{Stdout: "docs-MASS-123-docs\n"},
 		{},
 	}}
 	svc := NewWithRunner(Options{
@@ -216,7 +217,7 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 	if result.PushRef == "" {
 		t.Fatalf("expected push ref, got %+v", result)
 	}
-	if got := strings.Join(runner.commands[7].Args, " "); got != "push origin HEAD:docs-MASS-123-docs" {
+	if got := strings.Join(runner.commands[7].Args, " "); got != "push --no-verify origin HEAD:docs-MASS-123-docs" {
 		t.Fatalf("expected push to matching branch, got %q", got)
 	}
 }
@@ -290,6 +291,7 @@ func TestRenderUsesConfiguredConventionsAndMetadata(t *testing.T) {
 		TaskID:          "work_task_1",
 		TaskRef:         "task/ref",
 		TaskTitle:       "Generic GitOps conventions",
+		BranchName:      "docs-ABC-123-generic-gitops-conventions",
 		AutomationID:    "automation_1",
 		AutomationRunID: "automation_run_1",
 		OperatorID:      "operator_1",
@@ -311,6 +313,9 @@ func TestRenderUsesConfiguredConventionsAndMetadata(t *testing.T) {
 	if rendered.CommitSubject != "feat(gitops): finish task/ref" {
 		t.Fatalf("unexpected commit subject %q", rendered.CommitSubject)
 	}
+	if !strings.Contains(rendered.CommitBody, "Ticket: ABC-123") {
+		t.Fatalf("commit body missing derived ticket metadata:\n%s", rendered.CommitBody)
+	}
 	for _, want := range []string{
 		"## What changed",
 		"Implemented Generic GitOps conventions for project-1.",
@@ -319,6 +324,44 @@ func TestRenderUsesConfiguredConventionsAndMetadata(t *testing.T) {
 		"Verifier refs: verifier:focused-tests",
 		"## Tests",
 		"go test ./internal/projectgitops/...: passed",
+	} {
+		if !strings.Contains(rendered.PullRequestBody, want) {
+			t.Fatalf("PR body missing %q:\n%s", want, rendered.PullRequestBody)
+		}
+	}
+}
+
+func TestRenderDerivesTicketRefFromBranchForProjectPRTemplates(t *testing.T) {
+	rendered, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "fix-readme-structure",
+		TaskTitle:       "Fix README structure entry",
+		BranchName:      "fix-MASS-0000-readme-structure-entry",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+		VerifierRefs:    []string{"worker-verifier"},
+	}, Conventions{
+		CommitType:               "chore",
+		CommitSummaryTemplate:    "complete {{work_task_ref}}",
+		PullRequestTitleTemplate: "chore({{ticket_ref}}): complete {{work_task_ref}}",
+		WhatChangedTemplate:      "Jira: https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}\n\nSummary:\n- Completed {{work_task_title}}.",
+		HowVerifiedTemplate:      "- plan-task: yes (https://rimthan-lab.atlassian.net/browse/{{ticket_ref}})\n- pr-audit: N/A\n\nAgent workflow:\nProject ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}",
+		TestsTemplate:            "{{test_results}}",
+	})
+	if err != nil {
+		t.Fatalf("expected render to succeed: %v", err)
+	}
+	if rendered.PullRequestTitle != "chore(MASS-0000): complete fix-readme-structure" {
+		t.Fatalf("unexpected PR title %q", rendered.PullRequestTitle)
+	}
+	for _, want := range []string{
+		"https://rimthan-lab.atlassian.net/browse/MASS-0000",
+		"- plan-task: yes (https://rimthan-lab.atlassian.net/browse/MASS-0000)",
+		"- pr-audit: N/A",
+		"Automation Run ID: automation_run_1",
 	} {
 		if !strings.Contains(rendered.PullRequestBody, want) {
 			t.Fatalf("PR body missing %q:\n%s", want, rendered.PullRequestBody)
@@ -345,12 +388,11 @@ func TestPostTaskCreatesDraftPRWithRenderedMetadata(t *testing.T) {
 		results: []CommandResult{
 			{},
 			{Stdout: " M internal/projectgitops/service.go\n"},
+			{Stdout: "mivia/generic-gitops-conventions\n"},
 			{},
 			{},
 			{},
 			{Stdout: "abc123def456\n"},
-			{Stdout: "mivia/generic-gitops-conventions\n"},
-			{},
 			{},
 			{Stdout: "https://github.example/pull/1\n"},
 		},

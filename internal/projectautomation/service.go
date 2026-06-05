@@ -124,6 +124,18 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
 	}
+	gitBaseRef, err := safeOptionalRef(input.GitBaseRef, "git_base_ref")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	gitBranchRef, err := safeOptionalRef(input.GitBranchRef, "git_branch_ref")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	gitWorktreeRef, err := safeOptionalRef(input.GitWorktreeRef, "git_worktree_ref")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
 	verification, err := safeRequiredText(input.VerificationRequirement, "verification_requirement", 500)
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
@@ -152,9 +164,16 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		return CreateRemediationFromFindingResult{}, err
 	}
 	findingToken := safeBranchToken(findingRef)
+	workerEvidenceRefs := safeWorkerEvidenceRefs(append([]string{"confirmed-finding-" + findingToken}, evidenceRefs...))
 	planRef := "remediate-" + findingRef
 	taskRef := "fix-" + findingRef
 	automationRef := "auto-remediate-" + findingRef
+	if gitBranchRef == "" {
+		gitBranchRef = "mivia/remediate-" + findingToken
+	}
+	if gitWorktreeRef == "" {
+		gitWorktreeRef = "wt-remediate-" + findingToken
+	}
 	goal := "Fix confirmed finding " + findingRef + ": " + summary
 	if severity != "" {
 		goal = "Fix " + severity + " confirmed finding " + findingRef + ": " + summary
@@ -171,8 +190,9 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		ResumeSummary:    "Use the ready remediation task generated from confirmed finding metadata.",
 		IsolationMode:    projectworkplan.WorkPlanIsolationDedicatedWorktree,
 		ParallelGroupRef: "finding-" + findingRef,
-		GitBranchRef:     "mivia/remediate-" + findingToken,
-		GitWorktreeRef:   "wt-remediate-" + findingToken,
+		GitBaseRef:       gitBaseRef,
+		GitBranchRef:     gitBranchRef,
+		GitWorktreeRef:   gitWorktreeRef,
 	})
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
@@ -187,7 +207,7 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		OwnerAgent:              implementationAgentID,
 		RunID:                   runID,
 		TraceID:                 traceID,
-		EvidenceNeeded:          append([]string{"confirmed-finding:" + findingRef}, evidenceRefs...),
+		EvidenceNeeded:          workerEvidenceRefs,
 		FilesToRead:             filesToRead,
 		FilesToEdit:             filesToEdit,
 		LikelyFilesAffected:     likelyFiles,
@@ -1144,6 +1164,7 @@ func (svc *Service) runCodexTask(ctx context.Context, run AutomationRun, task pr
 type CodexTaskInput struct {
 	SchemaVersion           int      `json:"schema_version"`
 	ProjectID               string   `json:"project_id"`
+	MCPServerURL            string   `json:"mcp_server_url,omitempty"`
 	AutomationRunID         string   `json:"automation_run_id"`
 	TraceID                 string   `json:"trace_id,omitempty"`
 	PlanID                  string   `json:"plan_id"`
@@ -1180,9 +1201,10 @@ func (svc *Service) writeCodexInput(run AutomationRun, task projectworkplan.Work
 func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	var builder strings.Builder
 	builder.WriteString("You are a Mivia automation worker executing one governed Work Task.\n\n")
-	builder.WriteString("Perform the task now in the current repository workspace. Keep the change limited to the likely affected files. Do not run full test suites. Do not complete the Work Task; the orchestrator will verify and complete it.\n\n")
+	builder.WriteString("Perform the task now in the current repository workspace. Keep the change limited to the likely affected files. Do not run full test suites. Do not mark the Work Task done; the orchestrator will verify and complete it.\n\n")
 	builder.WriteString("Identifiers:\n")
 	writePromptLine(&builder, "- Project ID", input.ProjectID)
+	writePromptLine(&builder, "- Mivia MCP server URL", input.MCPServerURL)
 	writePromptLine(&builder, "- Automation run ID", input.AutomationRunID)
 	writePromptLine(&builder, "- Trace ID", input.TraceID)
 	writePromptLine(&builder, "- Work Plan ID", input.PlanID)
@@ -1199,7 +1221,14 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	writePromptLine(&builder, "- Failure criteria", input.FailureCriteria)
 	writePromptLine(&builder, "- Resume instructions", input.ResumeInstructions)
 	builder.WriteString("\nRules:\n")
-	builder.WriteString("- If the task expected output or resume instructions explicitly require a commit, push, or draft pull request, perform those git operations within the task scope.\n")
+	builder.WriteString("- Do not call projects.automation_runs.complete_attempt. The external runner owns automation run attempt reporting after your process exits.\n")
+	builder.WriteString("- Do not commit, push, or create pull requests when supervised runner GitOps is enabled. Modify task files only; the runner commits, pushes, and opens draft PRs after governed task closeout.\n")
+	builder.WriteString("- When attaching MCP evidence, claim, verifier, and knowledge refs, use short safe refs with only letters, numbers, dots, underscores, and hyphens. Do not use colons, slashes, paths, commands, raw logs, or source snippets as refs.\n")
+	builder.WriteString("- Do not attach review_result refs unless this task explicitly says you are the independent reviewer. Implementation workers must not self-review.\n")
+	builder.WriteString("- Before exiting successfully, record governed MCP closeout: attach bounded evidence and verifier refs, then move this Work Task out of in_progress, normally to needs_review. If blocked, use projects.work_tasks.block or fail.\n")
+	builder.WriteString("- If you confirm a real bug and the task asks for automatic remediation, call projects.automations.create_remediation_from_finding with finding_status=confirmed and activate_plan=true. Do not call projects.automations.run.\n")
+	builder.WriteString("- If no bug is confirmed, attach a no-confirmed-bug evidence ref and move this Work Task to needs_review with that outcome.\n")
+	builder.WriteString("- If native MCP tools are unavailable and the Mivia MCP server URL is present, call the MCP endpoint with JSON-RPC tools/call, Content-Type application/json, Accept application/json, text/event-stream, and MCP-Protocol-Version 2025-06-18.\n")
 	for _, instruction := range input.RunnerInstructions {
 		writePromptLine(&builder, "-", instruction)
 	}
@@ -1261,6 +1290,29 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 			"Leave verifier execution and task completion to the orchestrator.",
 		},
 	}
+}
+
+func safeWorkerEvidenceRefs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		ref := safeBranchToken(value)
+		if ref == "" {
+			continue
+		}
+		if len(ref) > 160 {
+			ref = strings.Trim(ref[:160], "-")
+		}
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	return out
 }
 
 func automationMaxRuntime(agents []AutomationAgent, agentID string, fallback time.Duration) time.Duration {

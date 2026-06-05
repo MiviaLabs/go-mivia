@@ -57,6 +57,7 @@ type PostTaskInput struct {
 	TaskID           string
 	TaskRef          string
 	TaskTitle        string
+	BranchName       string
 	AutomationID     string
 	AutomationRunID  string
 	OperatorID       string

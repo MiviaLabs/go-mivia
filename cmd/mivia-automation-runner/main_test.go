@@ -233,6 +233,44 @@ func TestRunOnceReportsCompletedAttempt(t *testing.T) {
 	}
 }
 
+func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
+	setReadableCodexHome(t)
+	var completed atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", TaskID: "task-1"},
+				CodexInput: testCodexInput("run-1"),
+				TimeoutMS:  1000,
+			})
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "in_progress"})
+		case "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			var input projectautomation.CompleteAttemptInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode attempt: %v", err)
+			}
+			if input.Status != projectautomation.RunStatusFailed || input.FailureCategory != "automation_task_closeout_missing" {
+				t.Fatalf("expected closeout failure, got %+v", input)
+			}
+			completed.Add(1)
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", Status: projectautomation.RunStatusFailed})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", "/bin/true"})
+	if status == 0 {
+		t.Fatal("expected exit failure when task closeout is missing")
+	}
+	if completed.Load() != 1 {
+		t.Fatalf("expected one attempt report, got %d", completed.Load())
+	}
+}
+
 func TestRunOnceDiscoversProjectsWhenProjectOmitted(t *testing.T) {
 	setReadableCodexHome(t)
 	var completed atomic.Int32
@@ -270,7 +308,9 @@ func TestRunOnceDiscoversProjectsWhenProjectOmitted(t *testing.T) {
 }
 
 func TestWriteCodexInputWritesRenderedPrompt(t *testing.T) {
-	path, cleanup, err := writeCodexInput(testCodexInput("run-1"))
+	input := testCodexInput("run-1")
+	input.MCPServerURL = "http://mivia-server:8080"
+	path, cleanup, err := writeCodexInput(input)
 	if err != nil {
 		t.Fatalf("writeCodexInput returned error: %v", err)
 	}
@@ -288,6 +328,12 @@ func TestWriteCodexInputWritesRenderedPrompt(t *testing.T) {
 		"Automation run ID: run-1",
 		"Task",
 		"Do not run full test suites",
+		"Mivia MCP server URL: http://mivia-server:8080",
+		"Do not call projects.automation_runs.complete_attempt",
+		"runner commits, pushes, and opens draft PRs",
+		"projects.automations.create_remediation_from_finding",
+		"Do not call projects.automations.run",
+		"move this Work Task out of in_progress",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("rendered prompt missing %q:\n%s", want, prompt)

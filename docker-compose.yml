@@ -42,13 +42,10 @@ services:
     image: mivia-server:local
     pull_policy: build
     init: true
-    entrypoint: []
-    # For writable bind-mounted repositories, run scripts/mivia-compose-up or
-    # set this to the host checkout owner, for example:
-    # MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)".
-    # Do not run the automation runner as root unless you intentionally want
-    # root-owned commits, refs, and worktree metadata on the host.
-    user: "${MIVIA_AUTOMATION_CONTAINER_USER:-10001:10001}"
+    entrypoint: ["mivia-runner-entrypoint"]
+    # The runner starts as root only to create passwd/group entries for the
+    # target UID/GID, then drops privileges before executing work.
+    user: "0:0"
     healthcheck:
       disable: true
     command:
@@ -65,6 +62,10 @@ services:
       - --codex-sandbox
       - "${MIVIA_AUTOMATION_CODEX_SANDBOX:-workspace-write}"
       - "--codex-bypass-approvals-and-sandbox=${MIVIA_AUTOMATION_CODEX_BYPASS:-false}"
+    environment:
+      MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-10001}"
+      MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-10001}"
+      MIVIA_RUNTIME_HOME: "${MIVIA_AUTOMATION_HOME:-/home/mivia}"
     volumes:
       - mivia-data:/var/lib/mivia
       # Mount a project workspace to /workspace and Codex auth to the runner
@@ -99,4 +100,7 @@ volumes:
 #   mivia-automation-runner:
 #     # Match the host user that owns the writable checkout. The helper
 #     # scripts/mivia-compose-up infers this automatically.
-#     user: "${MIVIA_AUTOMATION_CONTAINER_USER:-1000:1000}"
+#     environment:
+#       MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-1000}"
+#       MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-1000}"
+#       MIVIA_RUNTIME_HOME: /home/example

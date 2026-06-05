@@ -207,6 +207,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	}
 	runCodexOptions := codexOptions
 	runCodexOptions.WorkDir = runWorkDir
+	claimed.CodexInput.MCPServerURL = client.baseURL
 	gitOps := projectgitops.New(gitOpsOptionsForProject(cfg, projectID))
 	if err := gitOps.PreTask(ctx, runWorkDir); err != nil {
 		result := projectautomation.CompleteAttemptInput{
@@ -226,16 +227,22 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	status, failureCategory, durationMS := runCodex(ctx, claimed, runCodexOptions)
 	var evidenceRefs []string
 	if status == projectautomation.RunStatusCompleted {
-		taskMetadata, _ := client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
-		gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
-		if err != nil {
+		taskMetadata, taskMetadataErr := client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+		if strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && !taskHasGovernedCloseout(taskMetadata) {
 			status = projectautomation.RunStatusFailed
-			failureCategory = "gitops_post_task_failed"
-		} else {
-			evidenceRefs = append(evidenceRefs, gitResult.EvidenceRefs...)
-			for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
-				if strings.TrimSpace(ref) != "" {
-					evidenceRefs = append(evidenceRefs, ref)
+			failureCategory = "automation_task_closeout_missing"
+		}
+		if status == projectautomation.RunStatusCompleted {
+			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
+			if err != nil {
+				status = projectautomation.RunStatusFailed
+				failureCategory = "gitops_post_task_failed"
+			} else {
+				evidenceRefs = append(evidenceRefs, gitResult.EvidenceRefs...)
+				for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
+					if strings.TrimSpace(ref) != "" {
+						evidenceRefs = append(evidenceRefs, ref)
+					}
 				}
 			}
 		}
@@ -336,6 +343,17 @@ func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID st
 		AllowedPathspecs: claimed.CodexInput.LikelyFilesAffected,
 		ReviewRefs:       append([]string(nil), taskMetadata.ReviewResultRefs...),
 		VerifierRefs:     append([]string(nil), taskMetadata.VerifierResultRefs...),
+	}
+}
+
+func taskHasGovernedCloseout(task runnerWorkTaskMetadata) bool {
+	switch strings.TrimSpace(task.Status) {
+	case "needs_review", "verifying", "done", "blocked", "failed", "cancelled", "superseded":
+		return true
+	case "":
+		return len(task.EvidenceRefs) > 0 || len(task.ClaimRefs) > 0 || len(task.ReviewResultRefs) > 0 || len(task.VerifierResultRefs) > 0
+	default:
+		return false
 	}
 }
 
@@ -473,6 +491,9 @@ type runnerWorkTaskMetadata struct {
 	ID                 string   `json:"id"`
 	TaskRef            string   `json:"task_ref,omitempty"`
 	Title              string   `json:"title,omitempty"`
+	Status             string   `json:"status,omitempty"`
+	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
+	ClaimRefs          []string `json:"claim_refs,omitempty"`
 	ReviewResultRefs   []string `json:"review_result_refs,omitempty"`
 	VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
 }
