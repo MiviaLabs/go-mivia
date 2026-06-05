@@ -676,6 +676,7 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 		if err != nil {
 			return WorkTask{}, err
 		}
+		task.ReviewResultRefs = nil
 	}
 	now := svc.now()
 	task.Status = next

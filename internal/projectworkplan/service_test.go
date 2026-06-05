@@ -461,6 +461,35 @@ func TestServiceCompletionRequiresIndependentReviewOrExemption(t *testing.T) {
 	if exempt.ReviewExemptReason == "" {
 		t.Fatalf("expected review exemption reason, got %+v", exempt)
 	}
+
+	staleReviewTask, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-stale-review-exempt"))
+	if err != nil {
+		t.Fatalf("create stale review exempt task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: staleReviewTask.ID, RunID: "run-stale-exempt"}); err != nil {
+		t.Fatalf("claim stale review exempt task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: staleReviewTask.ID, RunID: "run-stale-exempt"}); err != nil {
+		t.Fatalf("start stale review exempt task: %v", err)
+	}
+	if _, err := svc.AttachVerifierResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: staleReviewTask.ID, Ref: "verifier:stale-exempt", AttachedByRunID: "run-stale-exempt"}); err != nil {
+		t.Fatalf("attach stale exempt verifier: %v", err)
+	}
+	staleExempt, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             staleReviewTask.ID,
+		Outcome:            "metadata-only closeout with stale review ref ignored",
+		SafeNextAction:     "get next task",
+		VerifierResultRefs: []string{"verifier:stale-exempt"},
+		ReviewResultRefs:   []string{"review:not-attached"},
+		ReviewExemptReason: "metadata-only automation task; no repository writes require secondary review",
+	})
+	if err != nil {
+		t.Fatalf("complete with exemption and stale review ref: %v", err)
+	}
+	if len(staleExempt.ReviewResultRefs) != 0 || staleExempt.ReviewExemptReason == "" {
+		t.Fatalf("expected exemption to clear stale review refs, got %+v", staleExempt)
+	}
 }
 
 func TestServiceGetNextWorkTask(t *testing.T) {

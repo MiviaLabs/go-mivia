@@ -3449,6 +3449,7 @@ func (fake *fakeWorkTasks) CompleteWorkTask(_ context.Context, input projectwork
 	}
 	if input.ReviewExemptReason != "" {
 		task.ReviewExemptReason = input.ReviewExemptReason
+		task.ReviewResultRefs = nil
 	}
 	if len(input.ClaimRefs) > 0 {
 		task.ClaimRefs = append([]string(nil), input.ClaimRefs...)
