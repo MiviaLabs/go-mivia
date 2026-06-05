@@ -1163,6 +1163,54 @@ func TestReconcileReadyDependentAutomationsReadiesAndQueuesNextTask(t *testing.T
 	}
 }
 
+func TestReconcileReadyDependentAutomationsDoesNotDuplicateAfterTerminalRun(t *testing.T) {
+	ctx := context.Background()
+	dependency := readyTask("task-a", "collect-scope", []string{"apps"})
+	dependency.Status = projectworkplan.WorkTaskStatusDone
+	next := readyTask("task-b", "scan-bugs", []string{"apps"})
+	next.Status = projectworkplan.WorkTaskStatusReady
+	next.DependencyTaskIDs = []string{dependency.ID}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		dependency.ID: dependency,
+		next.ID:       next,
+	}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 6})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/scan-bugs",
+		Title:           "Scan bugs",
+		Purpose:         "Run scan after scope collection",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "code-review-scanner",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{next.ID, next.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-blocked", ProjectID: "project-1", AutomationID: automation.ID, AgentID: "code-review-scanner",
+		PlanID: "plan-1", TaskID: next.ID, Status: RunStatusBlocked, RunnerKind: RunnerKindCodexCLI,
+		FailureCategory: "automation_review_gate_open", CreatedAt: time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.reconcileReadyDependentAutomations(ctx, "project-1", "plan-1", dependency.ID); err != nil {
+		t.Fatalf("reconcileReadyDependentAutomations returned error: %v", err)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].ID != "run-blocked" {
+		t.Fatalf("expected stale terminal run to prevent duplicate queueing, got %#v", runs)
+	}
+}
+
 func TestReconcileReadyDependentAutomationsWaitsForAllDependencies(t *testing.T) {
 	ctx := context.Background()
 	doneDependency := readyTask("task-a", "collect-scope", []string{"apps"})

@@ -37,6 +37,7 @@ func run(args []string) int {
 	once := flags.Bool("once", true, "claim and run one queued task, then exit")
 	watch := flags.Bool("watch", false, "continuously claim queued tasks until interrupted")
 	pollInterval := flags.Duration("poll-interval", 5*time.Second, "poll interval when once is false")
+	requestTimeout := flags.Duration("request-timeout", 30*time.Second, "HTTP timeout for server discovery, claim, and report requests")
 	idleExitAfter := flags.Duration("idle-exit-after", 0, "optional idle duration after which watch mode exits; 0 disables idle exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -66,7 +67,7 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "codex runtime config unavailable: %v\n", err)
 		return 1
 	}
-	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: http.DefaultClient}
+	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: &http.Client{Timeout: normalizedRequestTimeout(*requestTimeout)}}
 	var idleSince time.Time
 	for {
 		projectIDs, err := runnerProjectIDs(context.Background(), client, strings.TrimSpace(*projectID))
@@ -96,6 +97,16 @@ func run(args []string) int {
 		}
 		time.Sleep(*pollInterval)
 	}
+}
+
+func normalizedRequestTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return 30 * time.Second
+	}
+	if timeout < time.Second {
+		return time.Second
+	}
+	return timeout
 }
 
 func checkCodexLauncher(ctx context.Context, codexOptions codexLaunchOptions) error {

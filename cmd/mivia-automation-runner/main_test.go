@@ -544,6 +544,23 @@ func TestClaimNextTreatsPolicyBadRequestAsError(t *testing.T) {
 	}
 }
 
+func TestClaimNextHTTPTimeoutPreventsStuckWorker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		writeJSON(t, w, projectautomation.ClaimedRun{})
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: &http.Client{Timeout: 5 * time.Millisecond}}
+	started := time.Now()
+	if _, ok, err := client.claimNext(t.Context(), "project-1", ""); err == nil || ok {
+		t.Fatalf("expected timeout error, ok=%v err=%v", ok, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("claim timeout took too long: %s", elapsed)
+	}
+}
+
 func TestRunPreflightFailsBeforeClaim(t *testing.T) {
 	setReadableCodexHome(t)
 	var claims atomic.Int32

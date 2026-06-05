@@ -1647,9 +1647,13 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 		return err
 	}
 	for _, run := range existing {
-		if run.TaskID == task.ID && isActiveAutomationRunStatus(run.Status) {
-			return nil
+		if run.TaskID != task.ID {
+			continue
 		}
+		if shouldQueueReplacementRun(run) {
+			continue
+		}
+		return nil
 	}
 	now := svc.now()
 	run := AutomationRun{
@@ -1675,6 +1679,19 @@ func isActiveAutomationRunStatus(status string) bool {
 	switch status {
 	case RunStatusQueued, RunStatusClaiming, RunStatusStarting, RunStatusRunning, RunStatusVerifying:
 		return true
+	default:
+		return false
+	}
+}
+
+func shouldQueueReplacementRun(run AutomationRun) bool {
+	switch run.Status {
+	case RunStatusFailed:
+		return isRecoverablePreExecutionFailure(run.FailureCategory) ||
+			isRecoverableGitOpsPostTaskFailure(run.FailureCategory) ||
+			isRecoverableReviewGitOpsFailure(run.FailureCategory)
+	case RunStatusTimeout:
+		return strings.TrimSpace(run.FailureCategory) == "external_runner_interrupted"
 	default:
 		return false
 	}
