@@ -139,6 +139,9 @@ func run() error {
 	if err := metadataPersistentGraph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
 		return err
 	}
+	if err := workplanstore.MigrateLadybugMetadata(ctx, projectGraph, metadataPersistentGraph, automationProjectIDs(projectRegistry.List())); err != nil {
+		return err
+	}
 	agentStore := store.NewLadybugStore(metadataPersistentGraph)
 	researchService := research.NewService(researchstore.NewLadybugMetadataStore(metadataPersistentGraph))
 	projectDigestService := projectregistry.NewDigestService(projectRegistry, projectGraph)
