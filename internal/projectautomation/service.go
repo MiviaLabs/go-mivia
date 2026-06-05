@@ -2849,7 +2849,7 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 	if len(task.VerifierResultRefs) == 0 {
 		return false
 	}
-	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" || isReviewTask(task) || isReadOnlyScannerTask(task) || isNoConfirmedBugPlannerTask(task)
+	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" || automationReviewExemptReason(task) != ""
 }
 
 func isReviewTask(task projectworkplan.WorkTask) bool {
@@ -2873,9 +2873,19 @@ func automationReviewExemptReason(task projectworkplan.WorkTask) string {
 		return "read-only automation task; downstream review remains dependency-gated"
 	case isNoConfirmedBugPlannerTask(task):
 		return "no confirmed bug remediation planner; upstream independent review found no bug"
+	case len(task.FilesToEdit) == 0 && metadataOnlyTaskHasCloseoutEvidence(task):
+		return "metadata-only automation task; no repository writes require secondary review"
 	default:
 		return ""
 	}
+}
+
+func metadataOnlyTaskHasCloseoutEvidence(task projectworkplan.WorkTask) bool {
+	return len(task.EvidenceRefs) > 0 ||
+		len(task.ClaimRefs) > 0 ||
+		len(task.ArtifactRefs) > 0 ||
+		len(task.KnowledgeCandidateRefs) > 0 ||
+		strings.TrimSpace(task.Outcome) != ""
 }
 
 func automationCloseoutOutcome(task projectworkplan.WorkTask) string {
