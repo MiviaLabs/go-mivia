@@ -17,8 +17,14 @@ RUN npm install -g @openai/codex@latest pnpm@latest \
 FROM debian:bookworm-20260518-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gh git openssh-client python3 ripgrep socat \
+    && apt-get install -y --no-install-recommends ca-certificates curl gh git openssh-client python3 python3-pip python3-venv ripgrep socat \
     && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/mivia-python-tools \
+    && /opt/mivia-python-tools/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/mivia-python-tools/bin/pip install --no-cache-dir 'semgrep>=1.108.0' \
+    && ln -s /opt/mivia-python-tools/bin/semgrep /usr/local/bin/semgrep \
+    && semgrep --version
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin mivia \
     && mkdir -p /var/lib/mivia/projects /app \

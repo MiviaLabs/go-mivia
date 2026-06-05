@@ -71,6 +71,8 @@ Runner GitOps also supports global `[verification]` defaults and per-project `[p
 
 Use `bootstrap_commands` for deterministic setup, `always_before_pr` for required lint/typecheck/test gates, and `generated_artifacts` for checked-in generated outputs. When a generated-artifact verifier is `required_before_pr = true`, its `paths` are automatically added to the safe staging pathspecs so regenerated files can be committed with the task.
 
+The container image includes Node.js, `pnpm`, Python 3, `pip`, `venv`, and Semgrep so project profiles can enforce common repository gates without relying on prompt text. Keep heavyweight or repository-specific commands in config, not in the image; the image should provide the tool runtime, while `[projects.verification]` decides which gates run for that project.
+
 Example:
 
 ```toml
@@ -79,6 +81,7 @@ bootstrap_commands = ["pnpm install --frozen-lockfile --prefer-offline --ignore-
 always_before_pr = [
   "pnpm -s nx affected -t lint --base=origin/main --head=HEAD --parallel=4",
   "pnpm -s nx affected -t typecheck --base=origin/main --head=HEAD --parallel=4",
+  "test ! -d policies/semgrep/rules || semgrep scan --config policies/semgrep/rules/ --error apps/ libs/ packages/",
 ]
 
 [[projects.verification.generated_artifacts]]

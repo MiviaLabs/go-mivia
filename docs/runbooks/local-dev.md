@@ -76,6 +76,7 @@ Defaults:
 - Container data paths: `MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug` and `MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite`; persistent project graph/search stores live under `/var/lib/mivia/projects/<project-id>/`, with search SQLite filenames tied to the Pebble graph storage epoch.
 - Container storage: named Compose volume `mivia-data`
 - Config file: `configs/mivia-server.compose.toml`
+- Automation verifier tools: the runtime image includes Node.js, `pnpm`, Python 3, `pip`, `venv`, and Semgrep. Put repository-specific gates in `[verification]` or `[projects.verification]`; for example, `semgrep scan --config policies/semgrep/rules/ --error apps/ libs/ packages/` can run before GitOps commits, pushes, or draft PR creation.
 
 Change the published host address or port from the host environment:
 
