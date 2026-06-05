@@ -39,6 +39,7 @@ type VerificationProfile struct {
 	BootstrapCommands  []string
 	AlwaysBeforePR     []string
 	GeneratedArtifacts []GeneratedArtifactVerifier
+	Env                map[string]string
 }
 
 type GeneratedArtifactVerifier struct {

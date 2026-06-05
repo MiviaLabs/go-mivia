@@ -184,6 +184,7 @@ type fileVerificationConfig struct {
 	BootstrapCommands  []string                            `toml:"bootstrap_commands"`
 	AlwaysBeforePR     []string                            `toml:"always_before_pr"`
 	GeneratedArtifacts []fileGeneratedArtifactVerification `toml:"generated_artifacts"`
+	Env                map[string]string                   `toml:"env"`
 }
 
 type fileGeneratedArtifactVerification struct {
@@ -870,6 +871,7 @@ func (cfg fileVerificationConfig) toVerification() Verification {
 		BootstrapCommands:  trimStringSlice(cfg.BootstrapCommands),
 		AlwaysBeforePR:     trimStringSlice(cfg.AlwaysBeforePR),
 		GeneratedArtifacts: generated,
+		Env:                trimStringMap(cfg.Env),
 	}
 }
 
@@ -887,6 +889,24 @@ func trimStringSlice(values []string) []string {
 		if trimmed != "" {
 			out = append(out, trimmed)
 		}
+	}
+	return out
+}
+
+func trimStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		out[trimmedKey] = strings.TrimSpace(value)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

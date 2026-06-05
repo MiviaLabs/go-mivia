@@ -157,6 +157,7 @@ type Verification struct {
 	BootstrapCommands  []string
 	AlwaysBeforePR     []string
 	GeneratedArtifacts []GeneratedArtifactVerification
+	Env                map[string]string
 }
 
 type GeneratedArtifactVerification struct {
@@ -715,6 +716,11 @@ func (verification Verification) Validate(prefix string) error {
 			return err
 		}
 	}
+	for key, value := range verification.Env {
+		if err := validateSafeVerifierEnv(fmt.Sprintf("%s_ENV[%s]", prefix, key), key, value); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -736,6 +742,23 @@ func validateSafeVerifierPath(name string, value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, "..") || strings.ContainsAny(value, "\x00\r\n") {
 		return fmt.Errorf("%s must be a safe project-relative path or glob", name)
+	}
+	return nil
+}
+
+func validateSafeVerifierEnv(name, key, value string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("%s key must not be empty", name)
+	}
+	if !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(key) {
+		return fmt.Errorf("%s key must be a valid environment variable name", name)
+	}
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("%s value must not contain control characters", name)
+	}
+	if len(value) > 2000 {
+		return fmt.Errorf("%s value must be <= 2000 characters", name)
 	}
 	return nil
 }

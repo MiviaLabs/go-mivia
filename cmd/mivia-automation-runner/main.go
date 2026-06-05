@@ -222,6 +222,11 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	claimed.CodexInput.RunnerInstructions = append(claimed.CodexInput.RunnerInstructions, verificationInstructionsForProject(cfg, projectID)...)
 	gitOps := projectgitops.New(gitOpsOptionsForProject(cfg, projectID))
 	readOnlyReviewRun := isReadOnlyReviewRun(claimed)
+	taskMetadata, taskMetadataErr := runnerWorkTaskMetadata{}, error(nil)
+	if strings.TrimSpace(claimed.Run.TaskID) != "" {
+		taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+	}
+	runGitOps := !readOnlyReviewRun && (taskMetadataErr != nil || shouldRunGitOpsForTask(taskMetadata))
 	if isGitOpsPostTaskRecoveryRun(claimed.Run) {
 		status, failureCategory, durationMS, evidenceRefs := runGitOpsPostTaskRecovery(ctx, client, gitOps, projectID, runWorkDir, agentID, claimed)
 		result := projectautomation.CompleteAttemptInput{
@@ -240,7 +245,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		}
 		return 1, true, true
 	}
-	if !readOnlyReviewRun {
+	if runGitOps {
 		if err := gitOps.PreTask(ctx, runWorkDir); err != nil {
 			result := projectautomation.CompleteAttemptInput{
 				Status:          projectautomation.RunStatusFailed,
@@ -260,12 +265,12 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	status, failureCategory, durationMS := runCodex(ctx, claimed, runCodexOptions)
 	var evidenceRefs []string
 	if status == projectautomation.RunStatusCompleted {
-		taskMetadata, taskMetadataErr := client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+		taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
 		if strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && !taskHasGovernedCloseout(taskMetadata) {
 			status = projectautomation.RunStatusFailed
 			failureCategory = "automation_task_closeout_missing"
 		}
-		if status == projectautomation.RunStatusCompleted && !readOnlyReviewRun {
+		if status == projectautomation.RunStatusCompleted && !readOnlyReviewRun && shouldRunGitOpsForTask(taskMetadata) {
 			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 			if err != nil {
 				status = projectautomation.RunStatusFailed
@@ -295,6 +300,10 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		return 0, true, true
 	}
 	return 1, true, true
+}
+
+func shouldRunGitOpsForTask(task runnerWorkTaskMetadata) bool {
+	return len(task.FilesToEdit) > 0
 }
 
 func isReadOnlyReviewRun(claimed projectautomation.ClaimedRun) bool {
@@ -352,7 +361,7 @@ func gitOpsOptionsForProject(cfg config.Config, projectID string) projectgitops.
 			continue
 		}
 		if project.GitOperations != nil {
-			gitops = *project.GitOperations
+			gitops = mergeGitOperations(gitops, *project.GitOperations)
 		}
 		if project.Verification != nil {
 			verification = *project.Verification
@@ -362,6 +371,92 @@ func gitOpsOptionsForProject(cfg config.Config, projectID string) projectgitops.
 	options := gitOpsOptionsFromConfig(gitops)
 	options.Verification = gitOpsVerificationFromConfig(verification)
 	return options
+}
+
+func mergeGitOperations(base config.GitOperations, override config.GitOperations) config.GitOperations {
+	merged := base
+	if override.Enabled {
+		merged.Enabled = true
+	}
+	if override.CommitAfterTask {
+		merged.CommitAfterTask = true
+	}
+	if override.PushAfterTask {
+		merged.PushAfterTask = true
+	}
+	if override.DraftPRAfterPush {
+		merged.DraftPRAfterPush = true
+	}
+	if override.RequireCleanBeforeTask {
+		merged.RequireCleanBeforeTask = true
+	}
+	if override.CleanupWorktreeAfterPlanDone {
+		merged.CleanupWorktreeAfterPlanDone = true
+	}
+	if strings.TrimSpace(override.RemoteName) != "" {
+		merged.RemoteName = override.RemoteName
+	}
+	if strings.TrimSpace(override.BranchNamePattern) != "" {
+		merged.BranchPrefix = override.BranchPrefix
+		merged.BranchNamePattern = override.BranchNamePattern
+	} else if strings.TrimSpace(override.BranchPrefix) != "" {
+		merged.BranchPrefix = override.BranchPrefix
+	}
+	if strings.TrimSpace(override.CommitAuthorName) != "" {
+		merged.CommitAuthorName = override.CommitAuthorName
+	}
+	if strings.TrimSpace(override.CommitAuthorEmailEnv) != "" {
+		merged.CommitAuthorEmailEnv = override.CommitAuthorEmailEnv
+	}
+	if strings.TrimSpace(override.CommitAuthorEmailFile) != "" {
+		merged.CommitAuthorEmailFile = override.CommitAuthorEmailFile
+	}
+	if strings.TrimSpace(override.SSHPrivateKeyPath) != "" {
+		merged.SSHPrivateKeyPath = override.SSHPrivateKeyPath
+	}
+	if strings.TrimSpace(override.SSHPublicKeyPath) != "" {
+		merged.SSHPublicKeyPath = override.SSHPublicKeyPath
+	}
+	if strings.TrimSpace(override.SSHKnownHostsPath) != "" {
+		merged.SSHKnownHostsPath = override.SSHKnownHostsPath
+	}
+	if strings.TrimSpace(override.GitHubTokenEnv) != "" {
+		merged.GitHubTokenEnv = override.GitHubTokenEnv
+	}
+	if strings.TrimSpace(override.GitHubTokenFile) != "" {
+		merged.GitHubTokenFile = override.GitHubTokenFile
+	}
+	if strings.TrimSpace(override.GitHubCLIPath) != "" {
+		merged.GitHubCLIPath = override.GitHubCLIPath
+	}
+	merged.Conventions = mergeGitOpsConventions(merged.Conventions, override.Conventions)
+	return merged
+}
+
+func mergeGitOpsConventions(base config.GitOpsConventions, override config.GitOpsConventions) config.GitOpsConventions {
+	merged := base
+	if strings.TrimSpace(override.CommitType) != "" {
+		merged.CommitType = override.CommitType
+	}
+	if strings.TrimSpace(override.CommitScope) != "" {
+		merged.CommitScope = override.CommitScope
+	}
+	if strings.TrimSpace(override.CommitSummaryTemplate) != "" {
+		merged.CommitSummaryTemplate = override.CommitSummaryTemplate
+	}
+	if strings.TrimSpace(override.PullRequestTitleTemplate) != "" {
+		merged.PullRequestTitleTemplate = override.PullRequestTitleTemplate
+	}
+	if strings.TrimSpace(override.WhatChangedTemplate) != "" {
+		merged.WhatChangedTemplate = override.WhatChangedTemplate
+	}
+	if strings.TrimSpace(override.HowVerifiedTemplate) != "" {
+		merged.HowVerifiedTemplate = override.HowVerifiedTemplate
+	}
+	if strings.TrimSpace(override.TestsTemplate) != "" {
+		merged.TestsTemplate = override.TestsTemplate
+	}
+	return merged
 }
 
 func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
@@ -409,7 +504,19 @@ func gitOpsVerificationFromConfig(cfg config.Verification) projectgitops.Verific
 		BootstrapCommands:  append([]string(nil), cfg.BootstrapCommands...),
 		AlwaysBeforePR:     append([]string(nil), cfg.AlwaysBeforePR...),
 		GeneratedArtifacts: generated,
+		Env:                cloneStringMap(cfg.Env),
 	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func verificationInstructionsForProject(cfg config.Config, projectID string) []string {
@@ -610,6 +717,7 @@ type runnerWorkTaskMetadata struct {
 	TaskRef            string   `json:"task_ref,omitempty"`
 	Title              string   `json:"title,omitempty"`
 	Status             string   `json:"status,omitempty"`
+	FilesToEdit        []string `json:"files_to_edit,omitempty"`
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 	ClaimRefs          []string `json:"claim_refs,omitempty"`
 	ReviewResultRefs   []string `json:"review_result_refs,omitempty"`

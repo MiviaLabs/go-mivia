@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -251,10 +252,26 @@ func (svc *Service) runVerifierCommand(ctx context.Context, workDir string, comm
 	if command == "" || strings.ContainsAny(command, "\x00\r\n") {
 		return fmt.Errorf("%w: unsafe verifier command", ErrInvalidInput)
 	}
-	if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir}); err != nil {
+	if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: verifierEnv(svc.options.Verification.Env)}); err != nil {
 		return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
 	}
 	return nil
+}
+
+func verifierEnv(values map[string]string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(keys))
+	for _, key := range keys {
+		env = append(env, key+"="+values[key])
+	}
+	return env
 }
 
 func (svc *Service) generatedArtifactPathspecs() []string {
@@ -451,6 +468,9 @@ func (svc *Service) ensureDraftPR(ctx context.Context, workDir string, rendered 
 }
 
 func (svc *Service) git(ctx context.Context, dir string, env []string, args ...string) (CommandResult, error) {
+	if safeDir := safeGitDirectoryArg(dir); safeDir != "" {
+		args = append([]string{"-c", "safe.directory=" + safeDir}, args...)
+	}
 	return svc.run(ctx, Command{Path: "git", Args: args, Dir: dir, Env: env})
 }
 
@@ -469,6 +489,14 @@ func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) err
 	env := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config")}
 	_, err := svc.git(ctx, workDir, env, "config", "--global", "--add", "safe.directory", workDir)
 	return err
+}
+
+func safeGitDirectoryArg(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || !filepath.IsAbs(dir) || strings.ContainsAny(dir, "\x00\r\n") {
+		return ""
+	}
+	return dir
 }
 
 func (svc *Service) run(ctx context.Context, command Command) (CommandResult, error) {

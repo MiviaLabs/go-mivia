@@ -173,6 +173,15 @@ func TestReadOnlyReviewRunSkipsGitOpsMutationGuards(t *testing.T) {
 	}
 }
 
+func TestShouldRunGitOpsForTaskRequiresEditScope(t *testing.T) {
+	if shouldRunGitOpsForTask(runnerWorkTaskMetadata{TaskRef: "create-confirmed-bug-work-plans"}) {
+		t.Fatal("metadata-only planner tasks must not run GitOps mutation guards")
+	}
+	if !shouldRunGitOpsForTask(runnerWorkTaskMetadata{TaskRef: "fix-bug", FilesToEdit: []string{"internal/foo.go"}}) {
+		t.Fatal("write-capable tasks should run GitOps mutation guards")
+	}
+}
+
 func TestGitOpsOptionsFromConfigMapsConventions(t *testing.T) {
 	options := gitOpsOptionsFromConfig(config.GitOperations{
 		Enabled:         true,
@@ -189,6 +198,56 @@ func TestGitOpsOptionsFromConfigMapsConventions(t *testing.T) {
 	})
 	if options.Conventions.CommitType != "feat" || options.Conventions.CommitScope != "gitops" || options.Conventions.WhatChangedTemplate != "Changed {{project_id}}." {
 		t.Fatalf("expected convention mapping, got %+v", options.Conventions)
+	}
+}
+
+func TestGitOpsOptionsForProjectInheritsSparseOverride(t *testing.T) {
+	cfg := config.Config{
+		GitOperations: config.GitOperations{
+			Enabled:                true,
+			CommitAfterTask:        true,
+			PushAfterTask:          true,
+			DraftPRAfterPush:       true,
+			RequireCleanBeforeTask: true,
+			RemoteName:             "origin",
+			BranchPrefix:           "mivia/",
+			CommitAuthorName:       "Mivia Automation",
+			CommitAuthorEmailEnv:   "MIVIA_GIT_AUTHOR_EMAIL",
+			SSHPrivateKeyPath:      "/keys/id_ed25519",
+			SSHKnownHostsPath:      "/keys/known_hosts",
+			GitHubTokenEnv:         "GH_TOKEN",
+			GitHubCLIPath:          "gh",
+			Conventions: config.GitOpsConventions{
+				CommitType:               "fix",
+				CommitSummaryTemplate:    "finish {{work_task_ref}}",
+				PullRequestTitleTemplate: "{{commit_subject}}",
+			},
+		},
+		Projects: []config.Project{{
+			ID: "mass-monorepo",
+			GitOperations: &config.GitOperations{
+				BranchPrefix:      "",
+				BranchNamePattern: "^(feat|fix)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+				Conventions: config.GitOpsConventions{
+					CommitType:          "chore",
+					WhatChangedTemplate: "Project-specific summary",
+				},
+			},
+		}},
+	}
+
+	options := gitOpsOptionsForProject(cfg, "mass-monorepo")
+	if !options.Enabled || !options.CommitAfterTask || !options.PushAfterTask || !options.DraftPRAfterPush || !options.RequireCleanBeforeTask {
+		t.Fatalf("expected sparse project override to inherit enabled GitOps booleans, got %+v", options)
+	}
+	if options.BranchPrefix != "" || options.BranchNamePattern == "" {
+		t.Fatalf("expected project branch convention override, got prefix=%q pattern=%q", options.BranchPrefix, options.BranchNamePattern)
+	}
+	if options.CommitAuthorEmailEnv != "MIVIA_GIT_AUTHOR_EMAIL" || options.SSHPrivateKeyPath == "" || options.GitHubTokenEnv != "GH_TOKEN" {
+		t.Fatalf("expected global credential refs to be inherited, got %+v", options)
+	}
+	if options.Conventions.CommitType != "chore" || options.Conventions.CommitSummaryTemplate == "" || options.Conventions.WhatChangedTemplate != "Project-specific summary" {
+		t.Fatalf("expected sparse conventions to merge, got %+v", options.Conventions)
 	}
 }
 

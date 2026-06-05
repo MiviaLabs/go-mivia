@@ -65,13 +65,20 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	if len(runner.commands) != 7 {
 		t.Fatalf("expected seven git commands, got %d", len(runner.commands))
 	}
-	if got := strings.Join(runner.commands[0].Args, " "); got != "rev-parse --show-toplevel" {
+	if got := strings.Join(runner.commands[0].Args, " "); got != "-c safe.directory=/tmp/worktree rev-parse --show-toplevel" {
 		t.Fatalf("expected trust probe command, got %q", got)
 	}
 	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit --no-verify -m") {
 		t.Fatalf("expected commit command, got %q", got)
 	}
-	if message := runner.commands[5].Args[3]; !strings.Contains(message, "Project ID: project-1") || !strings.Contains(message, "Automation ID: automation_1") {
+	messageArg := ""
+	for i, arg := range runner.commands[5].Args {
+		if arg == "-m" && i+1 < len(runner.commands[5].Args) {
+			messageArg = runner.commands[5].Args[i+1]
+			break
+		}
+	}
+	if message := messageArg; !strings.Contains(message, "Project ID: project-1") || !strings.Contains(message, "Automation ID: automation_1") {
 		t.Fatalf("expected rendered metadata in commit message, got %q", message)
 	}
 	if !containsEnv(runner.commands[5].Env, "GIT_AUTHOR_EMAIL=automation@example.test") {
@@ -219,10 +226,10 @@ func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing
 	if err != nil {
 		t.Fatalf("expected derived branch to pass policy: %v", err)
 	}
-	if got := strings.Join(runner.commands[3].Args, " "); got != "checkout -B fix-MASS-0000-automation-run-1" {
+	if got := strings.Join(runner.commands[3].Args, " "); got != "-c safe.directory=/tmp/worktree checkout -B fix-MASS-0000-automation-run-1" {
 		t.Fatalf("expected derived branch checkout, got %q", got)
 	}
-	if got := strings.Join(runner.commands[8].Args, " "); got != "push --no-verify origin HEAD:fix-MASS-0000-automation-run-1" {
+	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:fix-MASS-0000-automation-run-1" {
 		t.Fatalf("expected push to derived branch, got %q", got)
 	}
 }
@@ -263,6 +270,7 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 		GitHubCLIPath:        "gh",
 		Verification: VerificationProfile{
 			AlwaysBeforePR: []string{"pnpm -s nx affected -t lint --base=origin/main --head=HEAD"},
+			Env:            map[string]string{"SESSION_PASSWORD": "test-secret", "BFF_ADMIN_URL": "http://localhost:3000"},
 			GeneratedArtifacts: []GeneratedArtifactVerifier{{
 				Paths:            []string{"packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"},
 				Command:          "pnpm -s nx run contracts:verify-openapi",
@@ -290,6 +298,9 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 	}
 	if got := strings.Join(runner.commands[2].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
 		t.Fatalf("expected lint verifier command, got %q", got)
+	}
+	if got := strings.Join(runner.commands[2].Env, "\n"); got != "BFF_ADMIN_URL=http://localhost:3000\nSESSION_PASSWORD=test-secret" {
+		t.Fatalf("expected sorted verifier env, got %q", got)
 	}
 	if got := strings.Join(runner.commands[3].Args, " "); got != "-lc pnpm -s nx run contracts:verify-openapi" {
 		t.Fatalf("expected openapi verifier command, got %q", got)
@@ -398,7 +409,7 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 	if result.PushRef == "" {
 		t.Fatalf("expected push ref, got %+v", result)
 	}
-	if got := strings.Join(runner.commands[7].Args, " "); got != "push --no-verify origin HEAD:docs-MASS-123-docs" {
+	if got := strings.Join(runner.commands[7].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:docs-MASS-123-docs" {
 		t.Fatalf("expected push to matching branch, got %q", got)
 	}
 }
@@ -411,7 +422,7 @@ func TestPreTaskRejectsDirtyWorktreeWhenRequired(t *testing.T) {
 	if !errors.Is(err, ErrDirtyWorktree) {
 		t.Fatalf("expected dirty worktree error, got %v", err)
 	}
-	if got := strings.Join(runner.commands[0].Args, " "); got != "rev-parse --show-toplevel" {
+	if got := strings.Join(runner.commands[0].Args, " "); got != "-c safe.directory=/tmp/worktree rev-parse --show-toplevel" {
 		t.Fatalf("expected trust probe command, got %q", got)
 	}
 }

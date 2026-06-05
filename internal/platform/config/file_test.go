@@ -288,6 +288,9 @@ version = 1
 [verification]
 always_before_pr = ["go test ./..."]
 
+[verification.env]
+GOFLAGS = "-count=1"
+
 [[verification.generated_artifacts]]
 paths = ["api/openapi.yaml"]
 command = "go generate ./api/..."
@@ -306,6 +309,10 @@ always_before_pr = [
   "pnpm -s nx affected -t lint --base=origin/main --head=HEAD",
   "pnpm -s nx affected -t typecheck --base=origin/main --head=HEAD",
 ]
+
+[projects.verification.env]
+BFF_ADMIN_URL = "http://localhost:3000"
+SESSION_PASSWORD = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [[projects.verification.generated_artifacts]]
 paths = ["packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"]
@@ -328,12 +335,18 @@ required_before_pr = true
 	if strings.Join(merged.Verification.AlwaysBeforePR, ",") != "go test ./..." {
 		t.Fatalf("expected global verification, got %+v", merged.Verification)
 	}
+	if merged.Verification.Env["GOFLAGS"] != "-count=1" {
+		t.Fatalf("expected global verification env, got %+v", merged.Verification.Env)
+	}
 	if len(merged.Projects) != 1 || merged.Projects[0].Verification == nil {
 		t.Fatalf("expected project verification override, got %+v", merged.Projects)
 	}
 	projectVerification := merged.Projects[0].Verification
 	if len(projectVerification.AlwaysBeforePR) != 2 || !strings.Contains(projectVerification.AlwaysBeforePR[0], "lint") {
 		t.Fatalf("unexpected project always-before-pr commands: %+v", projectVerification.AlwaysBeforePR)
+	}
+	if projectVerification.Env["BFF_ADMIN_URL"] != "http://localhost:3000" || projectVerification.Env["SESSION_PASSWORD"] == "" {
+		t.Fatalf("unexpected project verification env: %+v", projectVerification.Env)
 	}
 	if len(projectVerification.GeneratedArtifacts) != 1 || projectVerification.GeneratedArtifacts[0].Command != "pnpm -s nx run contracts:verify-openapi" || !projectVerification.GeneratedArtifacts[0].RequiredBeforePR {
 		t.Fatalf("unexpected generated artifact verifier: %+v", projectVerification.GeneratedArtifacts)
@@ -356,6 +369,12 @@ func TestVerificationValidateRejectsUnsafeValues(t *testing.T) {
 		},
 		"missing_generated_command": func(cfg *Config) {
 			cfg.Verification.GeneratedArtifacts = []GeneratedArtifactVerification{{Paths: []string{"api/openapi.yaml"}, RequiredBeforePR: true}}
+		},
+		"invalid_env_key": func(cfg *Config) {
+			cfg.Verification.Env = map[string]string{"BAD-KEY": "value"}
+		},
+		"invalid_env_value": func(cfg *Config) {
+			cfg.Verification.Env = map[string]string{"GOOD_KEY": "line\nbreak"}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
