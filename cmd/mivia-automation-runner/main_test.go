@@ -155,6 +155,24 @@ func TestGitOpsPostTaskInputCarriesRunAndTaskMetadata(t *testing.T) {
 	}
 }
 
+func TestReadOnlyReviewRunSkipsGitOpsMutationGuards(t *testing.T) {
+	if !isReadOnlyReviewRun(projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{SafeSummary: projectautomation.RunSafeSummaryPostImplementationReviewQueued},
+	}) {
+		t.Fatal("expected post-implementation review run to be read-only")
+	}
+	if !isReadOnlyReviewRun(projectautomation.ClaimedRun{
+		CodexInput: projectautomation.CodexTaskInput{TaskRef: "review-fix-finding"},
+	}) {
+		t.Fatal("expected review task ref to be read-only")
+	}
+	if isReadOnlyReviewRun(projectautomation.ClaimedRun{
+		CodexInput: projectautomation.CodexTaskInput{TaskRef: "fix-finding"},
+	}) {
+		t.Fatal("implementation task must not bypass GitOps mutation guards")
+	}
+}
+
 func TestGitOpsOptionsFromConfigMapsConventions(t *testing.T) {
 	options := gitOpsOptionsFromConfig(config.GitOperations{
 		Enabled:         true,

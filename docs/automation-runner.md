@@ -34,9 +34,13 @@ For ignored local overrides, use a runner-specific variable if the server still 
 
 ```yaml
 user: "${MIVIA_AUTOMATION_CONTAINER_USER:-1000:1000}"
+healthcheck:
+  disable: true
 ```
 
 Set `MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)"` for the automation sidecar. Avoid `0:0`; root-run sidecars create root-owned commits, refs, and worktree metadata on Linux and macOS bind mounts.
+
+Disable the image healthcheck on every runner service, including per-project runner services in `.docker-compose.local.yml`. The image healthcheck targets the server's internal `/readyz` endpoint; a runner container does not expose that endpoint and will be marked unhealthy even while it is correctly polling and executing queued runs.
 
 ## GitOps Conventions
 
@@ -106,7 +110,7 @@ flowchart LR
   GitOps --> PR
 ```
 
-`projects.automations.create_remediation_from_finding` creates the remediation Work Plan, a ready implementation Work Task, and an enabled automatic implementation automation. When `activate_plan=true` and `automation.work_plan_status_trigger.enabled=true`, moving the generated Work Plan to an active trigger status queues execution automatically. Normal operation should not call `projects.automations.run` manually.
+`projects.automations.create_remediation_from_finding` creates the remediation Work Plan, a ready implementation Work Task, and an enabled automatic implementation automation. Generated remediation tasks require a focused regression test when feasible, or a concrete not-feasible reason in the task outcome. When `activate_plan=true` and `automation.work_plan_status_trigger.enabled=true`, moving the generated Work Plan to an active trigger status queues execution automatically. Normal operation should not call `projects.automations.run` manually.
 
 The tool accepts only confirmed findings. It rejects speculative review notes, raw prompts, raw source dumps, raw stderr, secrets, roots, provider payloads, external URLs, and PII. The generated implementation still remains untrusted until independent review refs and orchestrator verifier refs are attached through the Work Task lifecycle.
 

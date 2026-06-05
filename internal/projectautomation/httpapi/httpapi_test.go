@@ -189,6 +189,10 @@ func (fake *fakeWorkTasks) AttachVerifierResult(context.Context, projectworkplan
 	return projectworkplan.Attachment{}, nil
 }
 
+func (fake *fakeWorkTasks) AttachReviewResult(context.Context, projectworkplan.AttachInput) (projectworkplan.Attachment, error) {
+	return projectworkplan.Attachment{}, nil
+}
+
 func (fake *fakeWorkTasks) CompleteWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
 	return projectworkplan.WorkTask{}, nil
 }

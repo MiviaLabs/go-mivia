@@ -103,6 +103,28 @@ func TestLadybugStorePersistsDependenciesAndAttachments(t *testing.T) {
 	if attachmentNode.Properties["evidence_ref"] != "evidence/ref/a" || attachmentNode.Properties["attached_by_run_id"] != "agent_run_a" {
 		t.Fatalf("unexpected attachment metadata: %#v", attachmentNode.Properties)
 	}
+	reviewAttachment, err := store.CreateAttachment(ctx, model.Attachment{
+		ID:              "attachment-review",
+		ProjectID:       task.ProjectID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		Kind:            "review_result_ref",
+		Ref:             "review/result/a",
+		AttachedByRunID: "agent_run_reviewer",
+		TraceID:         "trace_review",
+		Note:            "review metadata only",
+	})
+	if err != nil {
+		t.Fatalf("attach review result: %v", err)
+	}
+	assertRelationshipStored(t, ctx, graph, relWorkTaskHasReviewAttachment, nodeRef(labelWorkTask, graphID(task.ProjectID, task.ID)), nodeRef(labelWorkTaskReviewResultAttachment, graphID(task.ProjectID, reviewAttachment.ID)), task.ProjectID)
+	attachments, err := store.ListAttachments(ctx, task.ProjectID, task.ID)
+	if err != nil {
+		t.Fatalf("list attachments: %v", err)
+	}
+	if !containsAttachment(attachments, "review_result_ref", "review/result/a", "agent_run_reviewer") {
+		t.Fatalf("expected listed review attachment, got %#v", attachments)
+	}
 
 	gotTask, err := store.GetWorkTask(ctx, task.ProjectID, task.ID)
 	if err != nil {
@@ -113,6 +135,9 @@ func TestLadybugStorePersistsDependenciesAndAttachments(t *testing.T) {
 	}
 	if len(gotTask.EvidenceRefs) != 1 || gotTask.EvidenceRefs[0] != "evidence/ref/a" {
 		t.Fatalf("expected evidence ref aggregate, got %#v", gotTask.EvidenceRefs)
+	}
+	if len(gotTask.ReviewResultRefs) != 1 || gotTask.ReviewResultRefs[0] != "review/result/a" {
+		t.Fatalf("expected review ref aggregate, got %#v", gotTask.ReviewResultRefs)
 	}
 }
 
@@ -290,4 +315,13 @@ func assertRelationshipStored(t *testing.T, ctx context.Context, graph ladybug.G
 	if len(relationships) != 1 {
 		t.Fatalf("expected one %s relationship, got %#v", relationshipType, relationships)
 	}
+}
+
+func containsAttachment(attachments []model.Attachment, kind string, ref string, attachedByRunID string) bool {
+	for _, attachment := range attachments {
+		if attachment.Kind == kind && attachment.Ref == ref && attachment.AttachedByRunID == attachedByRunID {
+			return true
+		}
+	}
+	return false
 }

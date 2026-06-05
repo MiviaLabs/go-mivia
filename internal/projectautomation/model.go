@@ -34,6 +34,8 @@ const (
 )
 
 const RunSafeSummaryGitOpsPostTaskRecovery = "gitops_post_task_recovery"
+const RunSafeSummaryPostImplementationReviewQueued = "post_implementation_review_queued"
+const RunSafeSummaryVerifiedTaskDone = "external_codex_cli_verified_task_done"
 
 const (
 	BatchStatusPlanned   = "planned"
@@ -270,10 +272,12 @@ type CreateRemediationFromFindingInput struct {
 }
 
 type CreateRemediationFromFindingResult struct {
-	WorkPlan   projectworkplan.WorkPlan `json:"work_plan"`
-	WorkTask   projectworkplan.WorkTask `json:"work_task"`
-	Automation Automation               `json:"automation"`
-	Activated  bool                     `json:"activated"`
+	WorkPlan         projectworkplan.WorkPlan `json:"work_plan"`
+	WorkTask         projectworkplan.WorkTask `json:"work_task"`
+	ReviewTask       projectworkplan.WorkTask `json:"review_task,omitempty"`
+	Automation       Automation               `json:"automation"`
+	ReviewAutomation Automation               `json:"review_automation,omitempty"`
+	Activated        bool                     `json:"activated"`
 }
 
 type RunFilter struct {

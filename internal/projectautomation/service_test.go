@@ -265,8 +265,23 @@ func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *te
 	if result.WorkTask.Status != projectworkplan.WorkTaskStatusReady || result.WorkTask.OwnerAgent != "worker-a" {
 		t.Fatalf("unexpected remediation task: %#v", result.WorkTask)
 	}
+	if result.ReviewTask.ID == "" || result.ReviewTask.Status != projectworkplan.WorkTaskStatusPlanned {
+		t.Fatalf("expected planned review task, got %#v", result.ReviewTask)
+	}
+	if result.ReviewTask.TaskRef != "review-"+result.WorkTask.TaskRef {
+		t.Fatalf("expected review task ref for implementation task, got %q for %q", result.ReviewTask.TaskRef, result.WorkTask.TaskRef)
+	}
+	if result.ReviewTask.OwnerAgent == "" || result.ReviewTask.OwnerAgent == result.WorkTask.OwnerAgent {
+		t.Fatalf("expected independent reviewer agent, got review=%q implementation=%q", result.ReviewTask.OwnerAgent, result.WorkTask.OwnerAgent)
+	}
 	if result.Automation.TriggerKind != TriggerKindAutomatic || result.Automation.Status != AutomationStatusEnabled {
 		t.Fatalf("unexpected remediation automation: %#v", result.Automation)
+	}
+	if result.ReviewAutomation.TriggerKind != TriggerKindAutomatic || result.ReviewAutomation.Status != AutomationStatusEnabled || result.ReviewAutomation.SchedulePolicy != "post_implementation_review" {
+		t.Fatalf("unexpected review automation: %#v", result.ReviewAutomation)
+	}
+	if !contains(result.ReviewAutomation.AllowedTaskRefs, result.ReviewTask.ID) || !contains(result.ReviewAutomation.AllowedTaskRefs, result.ReviewTask.TaskRef) {
+		t.Fatalf("review automation must target review task id/ref, got %#v", result.ReviewAutomation.AllowedTaskRefs)
 	}
 	if result.WorkPlan.GitBaseRef != "main" || result.WorkPlan.GitBranchRef != "fix-MASS-0000-readme-structure-entry" || result.WorkPlan.GitWorktreeRef != "fix-MASS-0000-readme-structure-entry" {
 		t.Fatalf("expected project-specific git refs, got base=%q branch=%q worktree=%q", result.WorkPlan.GitBaseRef, result.WorkPlan.GitBranchRef, result.WorkPlan.GitWorktreeRef)
@@ -274,6 +289,15 @@ func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *te
 	wantEvidence := []string{"confirmed-finding-finding-review-1", "review-confirmed"}
 	if strings.Join(result.WorkTask.EvidenceNeeded, ",") != strings.Join(wantEvidence, ",") {
 		t.Fatalf("expected worker-safe evidence refs %v, got %v", wantEvidence, result.WorkTask.EvidenceNeeded)
+	}
+	if !strings.Contains(result.WorkTask.VerificationRequirement, "regression test") {
+		t.Fatalf("expected remediation task to require regression-test consideration, got %q", result.WorkTask.VerificationRequirement)
+	}
+	if !strings.Contains(result.WorkTask.ExpectedOutput, "regression test") {
+		t.Fatalf("expected remediation output to mention regression tests, got %q", result.WorkTask.ExpectedOutput)
+	}
+	if !strings.Contains(result.WorkTask.FailureCriteria, "regression test") {
+		t.Fatalf("expected remediation failure criteria to reject omitted feasible regression tests, got %q", result.WorkTask.FailureCriteria)
 	}
 }
 
@@ -583,6 +607,240 @@ func TestExternalClaimAndCompleteAttempt(t *testing.T) {
 	}
 }
 
+func TestCompleteAttemptQueuesPostImplementationReview(t *testing.T) {
+	ctx := context.Background()
+	implementationTask := readyTask("task-a", "fix-finding-a", []string{"internal/foo.go"})
+	reviewTask := readyTask("review-task-a", "review-fix-finding-a", []string{"internal/foo.go"})
+	reviewTask.Status = projectworkplan.WorkTaskStatusPlanned
+	reviewTask.OwnerAgent = "codex-reviewer"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		implementationTask.ID: implementationTask,
+		reviewTask.ID:         reviewTask,
+	}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	implementationAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/remediate",
+		Title:           "Remediate",
+		Purpose:         "Run implementation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{implementationTask.ID, implementationTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	reviewAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review-remediation",
+		Title:           "Review remediation",
+		Purpose:         "Review implementation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-reviewer",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "post_implementation_review",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: implementationAutomation.ProjectID, AutomationID: implementationAutomation.ID, TaskID: implementationTask.ID})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: implementationAutomation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	implementationTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	fake.tasks[implementationTask.ID] = implementationTask
+
+	done, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: implementationAutomation.ProjectID, RunID: queued.ID, Status: RunStatusCompleted})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if done.Status != RunStatusVerifying {
+		t.Fatalf("expected implementation run verifying, got %#v", done)
+	}
+	if fake.tasks[reviewTask.ID].Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected review task ready, got %#v", fake.tasks[reviewTask.ID])
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: reviewAutomation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected one queued review run, got %d: %#v", len(runs), runs)
+	}
+	if runs[0].Status != RunStatusQueued || runs[0].TaskID != reviewTask.ID || runs[0].ParentRunID != queued.ID || runs[0].SafeSummary != RunSafeSummaryPostImplementationReviewQueued {
+		t.Fatalf("unexpected review run: %#v", runs[0])
+	}
+}
+
+func TestClaimNextRunRecoversMissingPostImplementationReview(t *testing.T) {
+	ctx := context.Background()
+	implementationTask := readyTask("task-a", "fix-finding-a", []string{"internal/foo.go"})
+	implementationTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{implementationTask.ID: implementationTask}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	oldRun := AutomationRun{
+		ID:           "automation_run_old",
+		ProjectID:    "project-1",
+		AutomationID: "automation-old",
+		PlanID:       "plan-1",
+		TaskID:       implementationTask.ID,
+		Status:       RunStatusVerifying,
+		RunnerKind:   RunnerKindCodexCLI,
+		UpdatedAt:    time.Unix(100, 0).UTC(),
+	}
+	if _, err := store.CreateRun(ctx, oldRun); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ParentRunID != oldRun.ID || claimed.Run.SafeSummary != RunSafeSummaryPostImplementationReviewQueued {
+		t.Fatalf("expected recovered review run claimed, got %#v", claimed.Run)
+	}
+	if claimed.CodexInput.TaskRef != "review-"+implementationTask.TaskRef {
+		t.Fatalf("expected review task input, got %#v", claimed.CodexInput)
+	}
+	reviewTask := fake.tasks[claimed.Run.TaskID]
+	if reviewTask.Status != projectworkplan.WorkTaskStatusReady || reviewTask.OwnerAgent == "" || reviewTask.OwnerAgent == implementationTask.OwnerAgent {
+		t.Fatalf("expected independent ready review task, got %#v", reviewTask)
+	}
+}
+
+func TestClaimNextRunReclaimsFailedPostImplementationReviewGitOpsPreflight(t *testing.T) {
+	ctx := context.Background()
+	reviewTask := readyTask("review-task-a", "review-fix-finding-a", []string{"internal/foo.go"})
+	reviewTask.OwnerAgent = "codex-reviewer"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{reviewTask.ID: reviewTask}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review-remediation",
+		Title:           "Review remediation",
+		Purpose:         "Review implementation output",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-reviewer",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "post_implementation_review",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	failedRun := AutomationRun{
+		ID:              "automation_run_failed_review",
+		ProjectID:       "project-1",
+		AutomationID:    automation.ID,
+		AgentID:         "codex-reviewer",
+		PlanID:          "plan-1",
+		TaskID:          reviewTask.ID,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		FailureCategory: "gitops_dirty_worktree",
+		SafeSummary:     RunSafeSummaryPostImplementationReviewQueued,
+		UpdatedAt:       time.Unix(100, 0).UTC(),
+	}
+	if _, err := store.CreateRun(ctx, failedRun); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != failedRun.ID || claimed.Run.Status != RunStatusRunning || claimed.Run.FailureCategory != "" || claimed.Run.AttemptCount != 1 {
+		t.Fatalf("expected failed review run reclaimed, got %#v", claimed.Run)
+	}
+	if !contains(claimed.CodexInput.RunnerInstructions, "Attach a review_result_ref to the implementation task before completing this review task.") {
+		t.Fatalf("expected review closeout instruction, got %#v", claimed.CodexInput.RunnerInstructions)
+	}
+}
+
+func TestClaimNextRunReconcilesVerifyingTaskToDoneAndCompletesPlan(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-finding-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive}},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	run := AutomationRun{ID: "run-a", ProjectID: "project-1", PlanID: "plan-1", TaskID: task.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: "external_codex_cli_completed_verification_required"}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after reconciliation, got %v", err)
+	}
+	completed, err := svc.GetRun(ctx, "project-1", run.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if completed.Status != RunStatusCompleted || completed.SafeSummary != RunSafeSummaryVerifiedTaskDone {
+		t.Fatalf("expected completed run after reconciliation, got %#v", completed)
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected task done, got %#v", fake.tasks[task.ID])
+	}
+	if !contains(fake.reviewRefs, "review/approved") {
+		t.Fatalf("expected closeout to attach existing review ref, got %#v", fake.reviewRefs)
+	}
+	if fake.plans["plan-1"].Status != projectworkplan.WorkPlanStatusDone {
+		t.Fatalf("expected plan done, got %#v", fake.plans["plan-1"])
+	}
+}
+
+func TestClaimNextRunReconcilesReviewTaskWithoutSecondaryReview(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("review-task-a", "review-fix-finding-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.VerifierResultRefs = []string{"verifier/source-review"}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive}},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	run := AutomationRun{ID: "run-review", ProjectID: "project-1", PlanID: "plan-1", TaskID: task.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: RunSafeSummaryPostImplementationReviewQueued}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after review reconciliation, got %v", err)
+	}
+	completed, err := svc.GetRun(ctx, "project-1", run.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if completed.Status != RunStatusCompleted {
+		t.Fatalf("expected completed review run, got %#v", completed)
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusDone || fake.tasks[task.ID].ReviewExemptReason == "" {
+		t.Fatalf("expected review task done with exemption, got %#v", fake.tasks[task.ID])
+	}
+}
+
 func TestGetRunReturnsPersistedAutomationMetadataWithoutWorkTaskProjection(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
@@ -623,7 +881,7 @@ func TestGetRunReturnsPersistedAutomationMetadataWithoutWorkTaskProjection(t *te
 	}
 }
 
-func TestListRunsFiltersPersistedAutomationMetadataOnly(t *testing.T) {
+func TestListRunsReconcilesPersistedVerifyingRunsBeforeFiltering(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
 	task.Status = projectworkplan.WorkTaskStatusDone
@@ -652,15 +910,15 @@ func TestListRunsFiltersPersistedAutomationMetadataOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRuns returned error: %v", err)
 	}
-	if len(runs) != 0 {
-		t.Fatalf("expected no completed persisted runs, got %#v", runs)
+	if len(runs) != 1 || runs[0].Status != RunStatusCompleted || runs[0].WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected reconciled completed/done run, got %#v", runs)
 	}
 	runs, err = svc.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, Status: RunStatusVerifying})
 	if err != nil {
 		t.Fatalf("ListRuns returned error: %v", err)
 	}
-	if len(runs) != 1 || runs[0].Status != RunStatusVerifying || runs[0].WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
-		t.Fatalf("expected persisted verifying/ready run, got %#v", runs)
+	if len(runs) != 0 {
+		t.Fatalf("expected no stale verifying runs after reconciliation, got %#v", runs)
 	}
 }
 
@@ -1474,6 +1732,10 @@ func (fake *fakeWorkTasks) ListOpenWorkTasks(_ context.Context, filter projectwo
 		if filter.OwnerAgent != "" && task.OwnerAgent != filter.OwnerAgent {
 			continue
 		}
+		switch task.Status {
+		case projectworkplan.WorkTaskStatusDone, projectworkplan.WorkTaskStatusFailed, projectworkplan.WorkTaskStatusCancelled, projectworkplan.WorkTaskStatusSuperseded:
+			continue
+		}
 		out = append(out, task)
 	}
 	return out, nil
@@ -1517,8 +1779,24 @@ func (fake *fakeWorkTasks) AttachKnowledgeCandidate(_ context.Context, input pro
 	return projectworkplan.Attachment{}, nil
 }
 
-func (fake *fakeWorkTasks) CompleteWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
-	return projectworkplan.WorkTask{}, nil
+func (fake *fakeWorkTasks) CompleteWorkTask(_ context.Context, input projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
+	task, ok := fake.tasks[input.TaskID]
+	if !ok {
+		return projectworkplan.WorkTask{}, errors.New("not found")
+	}
+	if len(input.VerifierResultRefs) > 0 {
+		task.VerifierResultRefs = append([]string(nil), input.VerifierResultRefs...)
+	}
+	if len(input.ReviewResultRefs) > 0 {
+		task.ReviewResultRefs = append([]string(nil), input.ReviewResultRefs...)
+	}
+	if input.ReviewExemptReason != "" {
+		task.ReviewExemptReason = input.ReviewExemptReason
+	}
+	task.Outcome = input.Outcome
+	task.Status = projectworkplan.WorkTaskStatusDone
+	fake.tasks[input.TaskID] = task
+	return task, nil
 }
 
 func (fake *fakeWorkTasks) FailWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {

@@ -45,6 +45,7 @@ type WorkTaskAPI interface {
 	StartWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
 	AttachEvidence(context.Context, projectworkplan.AttachInput) (projectworkplan.Attachment, error)
 	AttachVerifierResult(context.Context, projectworkplan.AttachInput) (projectworkplan.Attachment, error)
+	AttachReviewResult(context.Context, projectworkplan.AttachInput) (projectworkplan.Attachment, error)
 	CompleteWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
 	FailWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
 	BlockWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
@@ -116,6 +117,7 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 	if implementationAgentID == "" {
 		implementationAgentID = "codex-worker"
 	}
+	reviewerAgentID := independentReviewerAgent(implementationAgentID)
 	runID, err := safeOptionalRef(input.CreatedByRunID, "created_by_run_id")
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
@@ -167,7 +169,9 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 	workerEvidenceRefs := safeWorkerEvidenceRefs(append([]string{"confirmed-finding-" + findingToken}, evidenceRefs...))
 	planRef := "remediate-" + findingRef
 	taskRef := "fix-" + findingRef
+	reviewTaskRef := "review-" + taskRef
 	automationRef := "auto-remediate-" + findingRef
+	reviewAutomationRef := "auto-review-remediation-" + findingRef
 	if gitBranchRef == "" {
 		gitBranchRef = "mivia/remediate-" + findingToken
 	}
@@ -211,11 +215,34 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		FilesToRead:             filesToRead,
 		FilesToEdit:             filesToEdit,
 		LikelyFilesAffected:     likelyFiles,
-		VerificationRequirement: verification,
-		ExpectedOutput:          "Implementation that fixes confirmed finding " + findingRef + " with safe review and verifier refs.",
-		FailureCriteria:         "Fail if the finding is not fixed, scope expands beyond the listed files without a new plan, or verification cannot be performed.",
+		VerificationRequirement: verification + " Include a focused regression test for the confirmed bug when feasible; if not feasible, record the concrete reason in the task outcome.",
+		ExpectedOutput:          "Implementation that fixes confirmed finding " + findingRef + ", includes a focused regression test when feasible, and records safe review and verifier refs.",
+		FailureCriteria:         "Fail if the finding is not fixed, scope expands beyond the listed files without a new plan, verification cannot be performed, or a feasible regression test is omitted.",
 		ReviewGate:              reviewGate,
 		ResumeInstructions:      "Resume from confirmed finding ref " + findingRef + " and the generated remediation Work Plan.",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	reviewTask, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               projectID,
+		PlanID:                  plan.ID,
+		TaskRef:                 reviewTaskRef,
+		Title:                   "Review remediation " + findingRef,
+		Description:             "Independently review implementation task " + task.ID + " for confirmed finding " + findingRef + ".",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		OwnerAgent:              reviewerAgentID,
+		RunID:                   runID,
+		TraceID:                 traceID,
+		EvidenceNeeded:          safeWorkerEvidenceRefs(append(append([]string{"review-target-" + task.ID, "implementation-task-" + task.ID}, workerEvidenceRefs...), "implementation-output-refs")),
+		FilesToRead:             uniqueRefs(append(append([]string{}, filesToRead...), filesToEdit...)),
+		LikelyFilesAffected:     likelyFiles,
+		VerificationRequirement: "Attach an independent review_result_ref to implementation task " + task.ID + " before completion.",
+		ExpectedOutput:          "Independent review decision for implementation task " + task.ID + " with review refs attached to the implementation task.",
+		FailureCriteria:         "Block on self-review, missing implementation evidence, missing verifier refs, unsafe payloads, or unclear approval decision.",
+		ReviewGate:              "independent-reviewer-must-not-be-" + implementationAgentID,
+		ResumeInstructions:      "Review implementation task " + task.ID + " only. Attach review_result_ref to that implementation task, then complete this review task.",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	})
 	if err != nil {
@@ -240,7 +267,26 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
 	}
-	result := CreateRemediationFromFindingResult{WorkPlan: plan, WorkTask: task, Automation: automation}
+	reviewAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       projectID,
+		AutomationRef:   reviewAutomationRef,
+		Title:           "Review remediation " + findingRef,
+		Purpose:         "Independently review remediation task " + task.ID + " through review task " + reviewTask.ID + ".",
+		Status:          AutomationStatusEnabled,
+		AgentID:         reviewerAgentID,
+		PlanID:          plan.ID,
+		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "post_implementation_review",
+		PermissionRef:   "permission-remediation-review-" + findingRef,
+		SourceKind:      AutomationSourceManual,
+		CreatedByRunID:  runID,
+		TraceID:         traceID,
+	})
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	result := CreateRemediationFromFindingResult{WorkPlan: plan, WorkTask: task, ReviewTask: reviewTask, Automation: automation, ReviewAutomation: reviewAutomation}
 	if input.ActivatePlan {
 		activated, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
 			ProjectID:     projectID,
@@ -514,6 +560,7 @@ func (svc *Service) ListRuns(ctx context.Context, filter RunFilter) ([]Automatio
 			return nil, err
 		}
 	}
+	_ = svc.reconcileVerifyingRuns(ctx, projectID)
 	statusFilter := strings.TrimSpace(filter.Status)
 	filter.Status = ""
 	runs, err := svc.store.ListRuns(ctx, filter)
@@ -694,6 +741,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if runnerKind != RunnerKindCodexCLI {
 		return ClaimedRun{}, fmt.Errorf("%w: external runner supports codex_cli only", ErrInvalidInput)
 	}
+	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
 	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
 	if err != nil {
 		return ClaimedRun{}, err
@@ -715,6 +765,34 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	}
 	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID); err != nil || ok {
 		return claimed, err
+	}
+	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID); err != nil || ok {
+		return claimed, err
+	}
+	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	runs, err = svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
+	if err != nil {
+		return ClaimedRun{}, err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.Before(runs[j].CreatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI {
+			continue
+		}
+		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
+			continue
+		}
+		claimed, task, err := svc.prepareRunForExecution(ctx, run)
+		if err != nil {
+			continue
+		}
+		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
+		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, nil
 	}
 	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
 }
@@ -750,6 +828,48 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 		run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
 		run.StartedAt = now
 		run.FinishedAt = time.Time{}
+		run.UpdatedAt = now
+		claimed, err := svc.store.UpdateRun(ctx, run)
+		if err != nil {
+			return ClaimedRun{}, false, err
+		}
+		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
+		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+	}
+	return ClaimedRun{}, false, nil
+}
+
+func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, projectID string, agentID string) (ClaimedRun, bool, error) {
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
+	if err != nil {
+		return ClaimedRun{}, false, err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.SafeSummary) != RunSafeSummaryPostImplementationReviewQueued || !isRecoverableReviewGitOpsFailure(run.FailureCategory) {
+			continue
+		}
+		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
+			continue
+		}
+		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+		if err != nil {
+			continue
+		}
+		if err := svc.validateAutomationPolicy(ctx, automation, run.RunnerKind, run.TaskID, run.AgentID); err != nil {
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || task.Status == projectworkplan.WorkTaskStatusDone {
+			continue
+		}
+		now := svc.now()
+		run.Status = RunStatusRunning
+		run.WorkTaskStatus = task.Status
+		run.AttemptCount++
+		run.StartedAt = now
+		run.FinishedAt = time.Time{}
+		run.FailureCategory = ""
 		run.UpdatedAt = now
 		claimed, err := svc.store.UpdateRun(ctx, run)
 		if err != nil {
@@ -905,6 +1025,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	case RunStatusCompleted:
 		run.Status = RunStatusVerifying
 		run.SafeSummary = "external_codex_cli_completed_verification_required"
+		if err := svc.queuePostImplementationReview(ctx, run); err != nil {
+			return svc.failRun(ctx, run, RunStatusFailed, "post_implementation_review_queue_failed")
+		}
 	case RunStatusTimeout:
 		run.Status = RunStatusTimeout
 	case RunStatusFailed:
@@ -912,7 +1035,313 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	default:
 		run.Status = status
 	}
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if status == RunStatusCompleted {
+		return svc.reconcileVerifyingRun(ctx, updated)
+	}
+	return updated, nil
+}
+
+func (svc *Service) reconcileVerifyingRuns(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" {
+		return nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusVerifying})
+	if err != nil {
+		return err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if _, err := svc.reconcileVerifyingRun(ctx, run); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun) (AutomationRun, error) {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || run.Status != RunStatusVerifying || run.ProjectID == "" || run.TaskID == "" {
+		return run, nil
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return run, nil
+	}
+	if task.Status == projectworkplan.WorkTaskStatusDone {
+		return svc.completeRunAfterTaskDone(ctx, run, task)
+	}
+	if !taskReadyForAutomationCloseout(task) {
+		return run, nil
+	}
+	if err := svc.ensureReviewRefsAttachedForCloseout(ctx, run, task); err != nil {
+		return run, err
+	}
+	action := projectworkplan.WorkTaskActionInput{
+		ProjectID:          run.ProjectID,
+		TaskID:             task.ID,
+		RunID:              firstNonEmpty(run.ID, task.ClaimedByRunID),
+		TraceID:            firstNonEmpty(run.TraceID, run.ID),
+		Outcome:            automationCloseoutOutcome(task),
+		SafeNextAction:     "automation_closeout",
+		VerifierResultRefs: append([]string(nil), task.VerifierResultRefs...),
+		ReviewResultRefs:   append([]string(nil), task.ReviewResultRefs...),
+	}
+	if len(action.ReviewResultRefs) == 0 && isReviewTask(task) {
+		action.ReviewExemptReason = "independent review task; secondary review not required"
+	}
+	completed, err := svc.workTasks.CompleteWorkTask(ctx, action)
+	if err != nil {
+		return run, err
+	}
+	updated, err := svc.completeRunAfterTaskDone(ctx, run, completed)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if err := svc.completePlanIfNoOpenTasks(ctx, completed.ProjectID, completed.PlanID, completed.ID); err != nil {
+		return updated, nil
+	}
+	return updated, nil
+}
+
+func (svc *Service) ensureReviewRefsAttachedForCloseout(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) error {
+	if len(task.ReviewResultRefs) == 0 {
+		return nil
+	}
+	for _, ref := range task.ReviewResultRefs {
+		if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+			ProjectID:       task.ProjectID,
+			TaskID:          task.ID,
+			Ref:             ref,
+			AttachedByRunID: firstNonEmpty(run.ParentRunID, run.OrchestratorRunID, "automation-closeout-reconciler"),
+			TraceID:         firstNonEmpty(run.TraceID, run.ID),
+			Note:            "automation_closeout_existing_review_ref",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) completeRunAfterTaskDone(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
+	run.Status = RunStatusCompleted
+	run.WorkTaskStatus = task.Status
+	run.SafeSummary = RunSafeSummaryVerifiedTaskDone
+	run.FailureCategory = ""
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
 	return svc.store.UpdateRun(ctx, run)
+}
+
+func (svc *Service) completePlanIfNoOpenTasks(ctx context.Context, projectID string, planID string, currentTaskID string) error {
+	if projectID == "" || planID == "" {
+		return nil
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return err
+	}
+	if len(tasks) > 0 {
+		return nil
+	}
+	workPlans, ok := svc.workTasks.(remediationWorkPlanAPI)
+	if !ok || workPlans == nil {
+		return nil
+	}
+	_, err = workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:     projectID,
+		PlanID:        planID,
+		Status:        projectworkplan.WorkPlanStatusDone,
+		Outcome:       "automation closeout completed all Work Tasks",
+		ResumeSummary: "automation closeout completed all Work Tasks",
+		CurrentTaskID: currentTaskID,
+	})
+	return nil
+}
+
+func (svc *Service) queuePostImplementationReview(ctx context.Context, run AutomationRun) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || run.ProjectID == "" || run.PlanID == "" || run.TaskID == "" {
+		return nil
+	}
+	target, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil || target.Status != projectworkplan.WorkTaskStatusNeedsReview || len(target.ReviewResultRefs) > 0 {
+		return nil
+	}
+	return svc.queueReviewForImplementationTask(ctx, run, target)
+}
+
+func (svc *Service) queueOutstandingPostImplementationReviews(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil {
+		return nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusVerifying})
+	if err != nil {
+		return err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" || run.PlanID == "" {
+			continue
+		}
+		target, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || target.Status != projectworkplan.WorkTaskStatusNeedsReview || len(target.ReviewResultRefs) > 0 {
+			continue
+		}
+		if err := svc.queueReviewForImplementationTask(ctx, run, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) queueReviewForImplementationTask(ctx context.Context, run AutomationRun, target projectworkplan.WorkTask) error {
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: run.ProjectID, PlanID: run.PlanID})
+	if err != nil {
+		return err
+	}
+	reviewTaskRef := "review-" + target.TaskRef
+	for _, task := range tasks {
+		if task.TaskRef != reviewTaskRef {
+			continue
+		}
+		if task.Status == projectworkplan.WorkTaskStatusDone {
+			return nil
+		}
+		if task.Status == projectworkplan.WorkTaskStatusPlanned {
+			updater, ok := svc.workTasks.(workTaskStatusUpdater)
+			if !ok {
+				return fmt.Errorf("%w: post_implementation_review_status_unavailable", ErrInvalidInput)
+			}
+			updated, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+				WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+					ProjectID:      run.ProjectID,
+					TaskID:         task.ID,
+					SafeNextAction: "post_implementation_review",
+					RunID:          run.ID,
+					TraceID:        firstNonEmpty(run.TraceID, run.ID),
+				},
+				Status: projectworkplan.WorkTaskStatusReady,
+			})
+			if err != nil {
+				return err
+			}
+			task = updated
+		}
+		if task.Status != projectworkplan.WorkTaskStatusReady {
+			return nil
+		}
+		return svc.queuePostImplementationReviewRun(ctx, run, task)
+	}
+	task, err := svc.createRecoveryPostImplementationReviewTask(ctx, run, target, reviewTaskRef)
+	if err != nil {
+		return err
+	}
+	return svc.queuePostImplementationReviewRun(ctx, run, task)
+}
+
+func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) error {
+	automations, err := svc.store.ListAutomations(ctx, AutomationFilter{ProjectID: parent.ProjectID, Status: AutomationStatusEnabled})
+	if err != nil {
+		return err
+	}
+	for _, automation := range automations {
+		if automation.PlanID != parent.PlanID || automation.TriggerKind != TriggerKindAutomatic || automation.SchedulePolicy != "post_implementation_review" {
+			continue
+		}
+		if validateAllowedTaskRef(automation, reviewTask) != nil {
+			continue
+		}
+		existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: parent.ProjectID, AutomationID: automation.ID, PlanID: parent.PlanID})
+		if err != nil {
+			return err
+		}
+		for _, run := range existing {
+			if run.TaskID == reviewTask.ID && (run.Status == RunStatusQueued || run.Status == RunStatusClaiming || run.Status == RunStatusStarting || run.Status == RunStatusRunning || run.Status == RunStatusVerifying) {
+				return nil
+			}
+		}
+		now := svc.now()
+		reviewRun := AutomationRun{
+			ID: svc.newID("automation_run"), ProjectID: parent.ProjectID, AutomationID: automation.ID,
+			AgentID: firstNonEmpty(reviewTask.OwnerAgent, automation.AgentID), PlanID: parent.PlanID, TaskID: reviewTask.ID,
+			Status: RunStatusQueued, RunnerKind: firstNonEmpty(parent.RunnerKind, RunnerKindCodexCLI), AttemptCount: 0,
+			OrchestratorRunID: "post-review:" + parent.ID, ParentRunID: parent.ID,
+			SafeSummary: RunSafeSummaryPostImplementationReviewQueued, CreatedAt: now, UpdatedAt: now,
+		}
+		_, err = svc.store.CreateRun(ctx, reviewRun)
+		return err
+	}
+	automation, err := svc.createRecoveryPostImplementationReviewAutomation(ctx, parent, reviewTask)
+	if err != nil {
+		return err
+	}
+	return svc.queuePostImplementationReviewRun(ctx, AutomationRun{
+		ID: parent.ID, ProjectID: parent.ProjectID, PlanID: parent.PlanID, RunnerKind: parent.RunnerKind,
+	}, reviewTaskForAutomation(reviewTask, automation))
+}
+
+func (svc *Service) createRecoveryPostImplementationReviewTask(ctx context.Context, run AutomationRun, target projectworkplan.WorkTask, reviewTaskRef string) (projectworkplan.WorkTask, error) {
+	workPlans, ok := svc.workTasks.(remediationWorkPlanAPI)
+	if !ok || workPlans == nil {
+		return projectworkplan.WorkTask{}, fmt.Errorf("%w: post_implementation_review_task_missing", ErrInvalidInput)
+	}
+	reviewerAgentID := independentReviewerAgent(target.OwnerAgent)
+	files := uniqueRefs(append(append(append([]string{}, target.FilesToRead...), target.FilesToEdit...), target.LikelyFilesAffected...))
+	return workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               run.ProjectID,
+		PlanID:                  run.PlanID,
+		TaskRef:                 reviewTaskRef,
+		Title:                   "Review remediation " + target.TaskRef,
+		Description:             "Independently review implementation task " + target.ID + " after automation runner completion.",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              reviewerAgentID,
+		RunID:                   run.ID,
+		TraceID:                 firstNonEmpty(run.TraceID, run.ID),
+		EvidenceNeeded:          safeWorkerEvidenceRefs([]string{"review-target-" + target.ID, "implementation-task-" + target.ID, "implementation-output-refs"}),
+		FilesToRead:             files,
+		LikelyFilesAffected:     files,
+		VerificationRequirement: "Attach an independent review_result_ref to implementation task " + target.ID + " before completion.",
+		ExpectedOutput:          "Independent review decision for implementation task " + target.ID + " with review refs attached to the implementation task.",
+		FailureCriteria:         "Block on self-review, missing implementation evidence, missing verifier refs, unsafe payloads, or unclear approval decision.",
+		ReviewGate:              "independent-reviewer-must-not-be-" + target.OwnerAgent,
+		ResumeInstructions:      "Review implementation task " + target.ID + " only. Attach review_result_ref to that implementation task, then complete this review task.",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+}
+
+func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) (Automation, error) {
+	automationRef := "auto-review-" + safeBranchToken(reviewTask.TaskRef)
+	if automationRef == "auto-review-" {
+		automationRef += reviewTask.ID
+	}
+	return svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       parent.ProjectID,
+		AutomationRef:   automationRef,
+		Title:           "Review remediation " + reviewTask.TaskRef,
+		Purpose:         "Independently review implementation output for task " + reviewTask.TaskRef + ".",
+		Status:          AutomationStatusEnabled,
+		AgentID:         firstNonEmpty(reviewTask.OwnerAgent, "codex-reviewer"),
+		PlanID:          parent.PlanID,
+		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "post_implementation_review",
+		PermissionRef:   "permission-remediation-review-" + safeBranchToken(reviewTask.TaskRef),
+		SourceKind:      AutomationSourceManual,
+		CreatedByRunID:  parent.ID,
+		TraceID:         firstNonEmpty(parent.TraceID, parent.ID),
+	})
+}
+
+func reviewTaskForAutomation(reviewTask projectworkplan.WorkTask, automation Automation) projectworkplan.WorkTask {
+	if reviewTask.OwnerAgent == "" {
+		reviewTask.OwnerAgent = automation.AgentID
+	}
+	return reviewTask
 }
 
 func (svc *Service) ComputeParallelBatch(ctx context.Context, input ComputeParallelBatchInput) (AutomationParallelBatch, error) {
@@ -1234,6 +1663,7 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	builder.WriteString("- Do not commit, push, or create pull requests when supervised runner GitOps is enabled. Modify task files only; the runner commits, pushes, and opens draft PRs after governed task closeout.\n")
 	builder.WriteString("- When attaching MCP evidence, claim, verifier, and knowledge refs, use short safe refs with only letters, numbers, dots, underscores, and hyphens. Do not use colons, slashes, paths, commands, raw logs, or source snippets as refs.\n")
 	builder.WriteString("- Do not attach review_result refs unless this task explicitly says you are the independent reviewer. Implementation workers must not self-review.\n")
+	builder.WriteString("- For confirmed bug fixes, add a focused regression test when feasible. If a regression test is not feasible in the task scope, record the concrete reason in the task outcome.\n")
 	builder.WriteString("- Before exiting successfully, record governed MCP closeout: attach bounded evidence and verifier refs, then move this Work Task out of in_progress, normally to needs_review. If blocked, use projects.work_tasks.block or fail.\n")
 	builder.WriteString("- If you confirm a real bug and the task asks for automatic remediation, call projects.automations.create_remediation_from_finding with finding_status=confirmed and activate_plan=true. Do not call projects.automations.run.\n")
 	builder.WriteString("- If no bug is confirmed, attach a no-confirmed-bug evidence ref and move this Work Task to needs_review with that outcome.\n")
@@ -1274,6 +1704,21 @@ func writePromptList(builder *strings.Builder, label string, values []string) {
 }
 
 func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTaskInput {
+	instructions := []string{
+		"Use the Mivia MCP project id from this input.",
+		"Do not store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or PII.",
+		"Use only the bounded task scope and likely affected files unless current source proves a narrower necessary change.",
+		"Do not run verifier commands unless this task explicitly allows worker verification.",
+	}
+	if strings.HasPrefix(task.TaskRef, "review-") {
+		instructions = append(instructions,
+			"This is an independent review task. Do not edit implementation files.",
+			"Review the implementation task named in the task description or evidence refs.",
+			"Attach a review_result_ref to the implementation task before completing this review task.",
+		)
+	} else {
+		instructions = append(instructions, "Leave verifier execution and task completion to the orchestrator.")
+	}
 	return CodexTaskInput{
 		SchemaVersion:           1,
 		ProjectID:               run.ProjectID,
@@ -1291,13 +1736,7 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		ExpectedOutput:          task.ExpectedOutput,
 		FailureCriteria:         task.FailureCriteria,
 		ResumeInstructions:      task.ResumeInstructions,
-		RunnerInstructions: []string{
-			"Use the Mivia MCP project id from this input.",
-			"Do not store raw prompts, completions, source dumps, raw stderr, secrets, roots, provider payloads, or PII.",
-			"Use only the bounded task scope and likely affected files unless current source proves a narrower necessary change.",
-			"Do not run verifier commands unless this task explicitly allows worker verification.",
-			"Leave verifier execution and task completion to the orchestrator.",
-		},
+		RunnerInstructions:      instructions,
 	}
 }
 
@@ -1322,6 +1761,15 @@ func safeWorkerEvidenceRefs(values []string) []string {
 		out = append(out, ref)
 	}
 	return out
+}
+
+func independentReviewerAgent(implementationAgentID string) string {
+	switch strings.TrimSpace(implementationAgentID) {
+	case "", "codex-reviewer":
+		return "codex-independent-reviewer"
+	default:
+		return "codex-reviewer"
+	}
 }
 
 func automationMaxRuntime(agents []AutomationAgent, agentID string, fallback time.Duration) time.Duration {
@@ -1599,6 +2047,15 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 	}
 }
 
+func isRecoverableReviewGitOpsFailure(category string) bool {
+	switch strings.TrimSpace(category) {
+	case "gitops_dirty_worktree", "gitops_pre_task_failed":
+		return true
+	default:
+		return false
+	}
+}
+
 func taskHasGitOpsRecoveryCloseout(task projectworkplan.WorkTask) bool {
 	switch task.Status {
 	case projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying, projectworkplan.WorkTaskStatusDone:
@@ -1606,6 +2063,29 @@ func taskHasGitOpsRecoveryCloseout(task projectworkplan.WorkTask) bool {
 		return false
 	}
 	return len(task.EvidenceRefs) > 0 || len(task.ClaimRefs) > 0 || len(task.VerifierResultRefs) > 0 || len(task.ReviewResultRefs) > 0
+}
+
+func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying:
+	default:
+		return false
+	}
+	if len(task.VerifierResultRefs) == 0 {
+		return false
+	}
+	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" || isReviewTask(task)
+}
+
+func isReviewTask(task projectworkplan.WorkTask) bool {
+	return strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-") || strings.Contains(strings.ToLower(task.ReviewGate), "independent-reviewer")
+}
+
+func automationCloseoutOutcome(task projectworkplan.WorkTask) string {
+	if isReviewTask(task) {
+		return "automation closeout completed independent review task; no secondary review required"
+	}
+	return "automation closeout completed after required verifier and independent review refs were attached"
 }
 
 func firstFileConflict(task projectworkplan.WorkTask, used map[string]string) string {

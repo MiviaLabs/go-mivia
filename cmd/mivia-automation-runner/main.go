@@ -209,6 +209,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	runCodexOptions.WorkDir = runWorkDir
 	claimed.CodexInput.MCPServerURL = client.baseURL
 	gitOps := projectgitops.New(gitOpsOptionsForProject(cfg, projectID))
+	readOnlyReviewRun := isReadOnlyReviewRun(claimed)
 	if isGitOpsPostTaskRecoveryRun(claimed.Run) {
 		status, failureCategory, durationMS, evidenceRefs := runGitOpsPostTaskRecovery(ctx, client, gitOps, projectID, runWorkDir, agentID, claimed)
 		result := projectautomation.CompleteAttemptInput{
@@ -227,20 +228,22 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		}
 		return 1, true, true
 	}
-	if err := gitOps.PreTask(ctx, runWorkDir); err != nil {
-		result := projectautomation.CompleteAttemptInput{
-			Status:          projectautomation.RunStatusFailed,
-			FailureCategory: "gitops_pre_task_failed",
+	if !readOnlyReviewRun {
+		if err := gitOps.PreTask(ctx, runWorkDir); err != nil {
+			result := projectautomation.CompleteAttemptInput{
+				Status:          projectautomation.RunStatusFailed,
+				FailureCategory: "gitops_pre_task_failed",
+			}
+			if errors.Is(err, projectgitops.ErrDirtyWorktree) {
+				result.FailureCategory = "gitops_dirty_worktree"
+			}
+			if _, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); reportErr != nil {
+				fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
+				return 1, false, true
+			}
+			fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, result.Status)
+			return 1, true, true
 		}
-		if errors.Is(err, projectgitops.ErrDirtyWorktree) {
-			result.FailureCategory = "gitops_dirty_worktree"
-		}
-		if _, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); reportErr != nil {
-			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
-			return 1, false, true
-		}
-		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, result.Status)
-		return 1, true, true
 	}
 	status, failureCategory, durationMS := runCodex(ctx, claimed, runCodexOptions)
 	var evidenceRefs []string
@@ -250,7 +253,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			status = projectautomation.RunStatusFailed
 			failureCategory = "automation_task_closeout_missing"
 		}
-		if status == projectautomation.RunStatusCompleted {
+		if status == projectautomation.RunStatusCompleted && !readOnlyReviewRun {
 			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 			if err != nil {
 				status = projectautomation.RunStatusFailed
@@ -280,6 +283,13 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		return 0, true, true
 	}
 	return 1, true, true
+}
+
+func isReadOnlyReviewRun(claimed projectautomation.ClaimedRun) bool {
+	if strings.TrimSpace(claimed.Run.SafeSummary) == projectautomation.RunSafeSummaryPostImplementationReviewQueued {
+		return true
+	}
+	return strings.HasPrefix(strings.TrimSpace(claimed.CodexInput.TaskRef), "review-")
 }
 
 func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps *projectgitops.Service, projectID string, runWorkDir string, agentID string, claimed projectautomation.ClaimedRun) (string, string, int64, []string) {

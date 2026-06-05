@@ -100,6 +100,11 @@ volumes:
 #   mivia-automation-runner:
 #     # Match the host user that owns the writable checkout. The helper
 #     # scripts/mivia-compose-up infers this automatically.
+#     # Any additional runner service in a local override must also disable the
+#     # image healthcheck; runners do not expose the server's internal readyz
+#     # endpoint.
+#     healthcheck:
+#       disable: true
 #     environment:
 #       MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-1000}"
 #       MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-1000}"

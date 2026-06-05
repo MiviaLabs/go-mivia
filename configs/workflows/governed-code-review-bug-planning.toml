@@ -170,12 +170,12 @@ kind = "work_task"
 title = "Create Confirmed Bug Work Plans"
 agent = "bug-plan-orchestrator"
 depends_on = ["review-candidate-bugs"]
-description = "Create one governed Work Plan per confirmed bug and decompose it into isolated bug-fix Work Tasks: reproduce or anchor evidence, implement fix, add regression test, independent review, and orchestrator verification."
+description = "Create one governed Work Plan per confirmed bug and decompose it into isolated bug-fix Work Tasks: reproduce or anchor evidence, implement fix, add a focused regression test when feasible, independent review, and orchestrator verification."
 evidence_needed = ["confirmed-bug-refs", "dedupe-key-refs", "review-result-ref", "bug-work-plan-refs"]
 likely_files_affected = []
-verification_requirement = "orchestrator confirms every created bug Work Plan has isolated tasks, verifier requirements, review gates, dependencies, and resume instructions"
-expected_output = "bug Work Plan refs with ready or planned Work Task refs"
-failure_criteria = "block if finding is not independently confirmed, duplicates an existing bug plan, lacks evidence refs, or cannot be decomposed without hidden context"
+verification_requirement = "orchestrator confirms every created bug Work Plan has isolated tasks, focused regression-test expectations where feasible, verifier requirements, review gates, dependencies, and resume instructions"
+expected_output = "bug Work Plan refs with ready or planned Work Task refs, including regression-test scope or a concrete not-feasible reason"
+failure_criteria = "block if finding is not independently confirmed, duplicates an existing bug plan, lacks evidence refs, omits feasible regression-test scope, or cannot be decomposed without hidden context"
 resume_instructions = "resume by listing confirmed-bug refs, dedupe-key refs, created Work Plan refs, and task readiness states"
 
 [[steps]]
