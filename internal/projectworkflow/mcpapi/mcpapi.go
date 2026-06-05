@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 )
@@ -16,6 +17,8 @@ var (
 	ErrInvalidInput = errors.New("invalid project workflow input")
 	ErrNotFound     = errors.New("project workflow resource not found")
 )
+
+var workflowTOMLToolTimeout = 15 * time.Second
 
 type API interface {
 	CallWorkflowTool(ctx context.Context, name string, arguments json.RawMessage) (any, error)
@@ -71,7 +74,7 @@ func CallTool(ctx context.Context, api API, name string, arguments json.RawMessa
 	if err := validateArguments(canonical, arguments); err != nil {
 		return nil, err
 	}
-	value, err := api.CallWorkflowTool(ctx, canonical, arguments)
+	value, err := callWorkflowToolWithGuard(ctx, api, canonical, arguments)
 	if err != nil {
 		if result, ok := workflowValidationToolResult(canonical, value); ok {
 			return toolErrorResult(result), nil
@@ -81,8 +84,36 @@ func CallTool(ctx context.Context, api API, name string, arguments json.RawMessa
 	return toolResult(value), nil
 }
 
+func callWorkflowToolWithGuard(ctx context.Context, api API, name string, arguments json.RawMessage) (any, error) {
+	switch name {
+	case "projects.workflows.validate_toml", "projects.workflows.import_toml":
+	default:
+		return api.CallWorkflowTool(ctx, name, arguments)
+	}
+	ctx, cancel := context.WithTimeout(ctx, workflowTOMLToolTimeout)
+	defer cancel()
+	type result struct {
+		value any
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		value, err := api.CallWorkflowTool(ctx, name, arguments)
+		done <- result{value: value, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.value, result.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: workflow TOML operation timed out", ErrInvalidInput)
+	}
+}
+
 func workflowValidationToolResult(name string, value any) (any, bool) {
 	switch name {
+	case "projects.workflows.validate_toml":
+		result, ok := value.(projectworkflow.ValidateWorkflowTOMLResult)
+		return result, ok && len(result.Issues) > 0
 	case "projects.workflows.import_toml":
 		result, ok := value.(projectworkflow.ImportWorkflowTOMLResult)
 		return result, ok && len(result.ValidationIssues) > 0

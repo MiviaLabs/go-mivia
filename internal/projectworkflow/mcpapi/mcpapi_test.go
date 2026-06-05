@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
 	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
@@ -190,6 +191,33 @@ func TestCallToolValidateTOMLDropsUnsafeParsedWorkflow(t *testing.T) {
 	if len(structured.Workflows) != 0 || len(structured.Issues) == 0 {
 		t.Fatalf("expected issues without parsed unsafe workflows: %#v", structured)
 	}
+}
+
+func TestCallToolValidateInvalidTOMLReturnsInvalidInput(t *testing.T) {
+	ctx := context.Background()
+	svc := projectworkflow.New(workflowstore.NewMemoryStore())
+	_, err := CallTool(ctx, svc, "projects.workflows.validate_toml", mustArgs(t, map[string]any{"id": "project-1", "toml": "id = ["}))
+	if !errors.Is(err, projectworkflow.ErrInvalidInput) {
+		t.Fatalf("expected invalid input for malformed TOML, got %v", err)
+	}
+}
+
+func TestCallToolWorkflowTOMLTimeoutReturnsInvalidInput(t *testing.T) {
+	previous := workflowTOMLToolTimeout
+	workflowTOMLToolTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { workflowTOMLToolTimeout = previous })
+
+	_, err := CallTool(context.Background(), blockingWorkflowAPI{}, "projects.workflows.validate_toml", mustArgs(t, map[string]any{"id": "project-1", "toml": workflowMCPValidTOML()}))
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected bounded timeout invalid input, got %v", err)
+	}
+}
+
+type blockingWorkflowAPI struct{}
+
+func (blockingWorkflowAPI) CallWorkflowTool(ctx context.Context, _ string, _ json.RawMessage) (any, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func checkedInWorkflowTOMLPaths(t *testing.T) []string {

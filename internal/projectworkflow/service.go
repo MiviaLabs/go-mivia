@@ -118,7 +118,7 @@ func (svc *Service) CreateWorkflow(ctx context.Context, input CreateWorkflowInpu
 func (svc *Service) ValidateWorkflowTOML(_ context.Context, input ValidateWorkflowTOMLInput) (ValidateWorkflowTOMLResult, error) {
 	defs, issues, err := ParseWorkflowTOML(input.Data)
 	if err != nil {
-		return ValidateWorkflowTOMLResult{}, err
+		return ValidateWorkflowTOMLResult{}, fmt.Errorf("%w: workflow TOML parse failed", ErrInvalidInput)
 	}
 	if hasErrorIssues(issues) {
 		return ValidateWorkflowTOMLResult{Issues: issues}, nil
@@ -136,7 +136,7 @@ func (svc *Service) ImportWorkflowTOML(ctx context.Context, input ImportWorkflow
 	}
 	defs, issues, err := ParseWorkflowTOML(input.Data)
 	if err != nil {
-		return ImportWorkflowTOMLResult{}, err
+		return ImportWorkflowTOMLResult{}, fmt.Errorf("%w: workflow TOML parse failed", ErrInvalidInput)
 	}
 	if hasErrorIssues(issues) {
 		return ImportWorkflowTOMLResult{ValidationIssues: issues}, fmt.Errorf("%w: workflow validation failed", ErrInvalidInput)
