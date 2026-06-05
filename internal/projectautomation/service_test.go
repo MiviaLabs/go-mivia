@@ -260,6 +260,62 @@ func TestClaimNextRunRecoversRunningRunWhenTaskMovedToVerifying(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunReconcilesRunningRunMovedToVerifyingBeforeClaimingQueuedRun(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	taskA := readyTask("task-a", "scan-a", []string{"internal/foo.go"})
+	taskA.Status = projectworkplan.WorkTaskStatusVerifying
+	taskA.FilesToEdit = []string{"internal/foo.go"}
+	taskA.VerifierResultRefs = []string{"verifier-a"}
+	taskA.ClaimedByRunID = "run-a"
+	taskB := readyTask("task-b", "scan-b", []string{"internal/bar.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		taskA.ID: taskA,
+		taskB.ID: taskB,
+	}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 10})
+	svc.codexAvailable = func() bool { return false }
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	automation := createTestAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-a",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         taskA.PlanID,
+		TaskID:         taskA.ID,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		CreatedAt:      time.Unix(100, 0).UTC(),
+		UpdatedAt:      time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	queued, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: taskB.ID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != queued.ID {
+		t.Fatalf("expected queued run to be claimed after stale run reconciliation, got %q", claimed.Run.ID)
+	}
+	recovered, err := store.GetRun(ctx, automation.ProjectID, "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if recovered.Status != RunStatusVerifying || recovered.WorkTaskStatus != projectworkplan.WorkTaskStatusVerifying {
+		t.Fatalf("expected stale running run to become verifying before queued claim, got %#v", recovered)
+	}
+	if recovered.SafeSummary != "external_codex_cli_completed_verification_required" {
+		t.Fatalf("unexpected recovered safe summary: %q", recovered.SafeSummary)
+	}
+}
+
 func TestClaimNextRunRecoversFailedWorktreeResolveForReadyTask(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()

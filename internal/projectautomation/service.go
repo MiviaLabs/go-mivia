@@ -1356,12 +1356,12 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 	if svc.runStartedBeforeService(run) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
 		return svc.requeueAbandonedRunningRun(ctx, run, task)
 	}
-	if run.WorkTaskStatus != task.Status {
-		run.WorkTaskStatus = task.Status
-		run.UpdatedAt = svc.now()
-		return svc.store.UpdateRun(ctx, run)
-	}
 	if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
+		if run.WorkTaskStatus != task.Status {
+			run.WorkTaskStatus = task.Status
+			run.UpdatedAt = svc.now()
+			return svc.store.UpdateRun(ctx, run)
+		}
 		return run, nil
 	}
 	if auditTaskHasConfirmedFindingWithoutRemediation(task) {
