@@ -605,6 +605,52 @@ func TestClaimNextRunDoesNotFailScannerWithConfirmedFindingRefs(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunAutoExemptCloseoutDropsStaleReviewRefs(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-review", "review-candidate-bugs-audit", nil)
+	task.OwnerAgent = "bug-finding-reviewer"
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.VerifierResultRefs = []string{"verifier-review"}
+	task.ReviewResultRefs = []string{"review-self"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-review",
+		ProjectID:      "project-1",
+		AutomationID:   "automation-review",
+		AgentID:        "bug-finding-reviewer",
+		PlanID:         task.PlanID,
+		TaskID:         task.ID,
+		Status:         RunStatusVerifying,
+		RunnerKind:     RunnerKindCodexCLI,
+		CreatedAt:      time.Unix(100, 0).UTC(),
+		UpdatedAt:      time.Unix(100, 0).UTC(),
+		WorkTaskStatus: task.Status,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after closeout, got %v", err)
+	}
+	if len(fake.completeActions) != 1 {
+		t.Fatalf("expected one completion action, got %d", len(fake.completeActions))
+	}
+	action := fake.completeActions[0]
+	if len(action.ReviewResultRefs) != 0 || action.ReviewExemptReason == "" {
+		t.Fatalf("expected stale review refs to be dropped with exemption, got %#v", action)
+	}
+	run, err := store.GetRun(ctx, "project-1", "run-review")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if run.Status != RunStatusCompleted {
+		t.Fatalf("expected run completed, got %#v", run)
+	}
+}
+
 func TestClaimNextRunFailsRemediationPlannerWithConfirmedFindingWithoutRemediation(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
@@ -2979,6 +3025,7 @@ type fakeWorkTasks struct {
 	reviewRefs           []string
 	knowledgeRefs        []string
 	attachReviewErr      error
+	completeActions      []projectworkplan.WorkTaskActionInput
 }
 
 func (fake *fakeWorkTasks) CreateWorkPlan(_ context.Context, input projectworkplan.CreateWorkPlanInput) (projectworkplan.WorkPlan, error) {
@@ -3340,6 +3387,7 @@ func (fake *fakeWorkTasks) AttachKnowledgeCandidate(_ context.Context, input pro
 func (fake *fakeWorkTasks) CompleteWorkTask(_ context.Context, input projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	fake.completeActions = append(fake.completeActions, input)
 	task, ok := fake.tasks[input.TaskID]
 	if !ok {
 		return projectworkplan.WorkTask{}, errors.New("not found")

@@ -10,6 +10,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/httpserver"
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
 	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
 
 var errInvalidJSON = errors.New("invalid json")
@@ -227,7 +228,7 @@ func statusCode(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, errInvalidJSON):
 		return http.StatusUnsupportedMediaType
-	case errors.Is(err, projectautomation.ErrInvalidInput):
+	case errors.Is(err, projectautomation.ErrInvalidInput), errors.Is(err, projectworkplan.ErrInvalidInput):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
@@ -242,7 +243,7 @@ func errorCode(err error) string {
 		return "conflict"
 	case errors.Is(err, errInvalidJSON):
 		return "invalid_json"
-	case errors.Is(err, projectautomation.ErrInvalidInput):
+	case errors.Is(err, projectautomation.ErrInvalidInput), errors.Is(err, projectworkplan.ErrInvalidInput):
 		return "invalid_input"
 	default:
 		return "internal_error"

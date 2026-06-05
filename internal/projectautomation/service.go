@@ -1495,12 +1495,9 @@ func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun
 		VerifierResultRefs: append([]string(nil), task.VerifierResultRefs...),
 		ReviewResultRefs:   append([]string(nil), task.ReviewResultRefs...),
 	}
-	if len(action.ReviewResultRefs) == 0 && isReviewTask(task) {
-		action.ReviewExemptReason = "independent review task; secondary review not required"
-	} else if len(action.ReviewResultRefs) == 0 && isReadOnlyScannerTask(task) {
-		action.ReviewExemptReason = "read-only automation task; downstream review remains dependency-gated"
-	} else if len(action.ReviewResultRefs) == 0 && isNoConfirmedBugPlannerTask(task) {
-		action.ReviewExemptReason = "no confirmed bug remediation planner; upstream independent review found no bug"
+	if reason := automationReviewExemptReason(task); reason != "" {
+		action.ReviewResultRefs = nil
+		action.ReviewExemptReason = reason
 	}
 	if isNoConfirmedBugPlannerTask(task) && len(action.ClaimRefs) == 0 {
 		action.ClaimRefs = []string{"claim.no-confirmed-bug-remediation-not-required"}
@@ -2866,6 +2863,19 @@ func isReadOnlyScannerTask(task projectworkplan.WorkTask) bool {
 	ref := strings.ToLower(strings.TrimSpace(task.TaskRef))
 	owner := strings.ToLower(strings.TrimSpace(task.OwnerAgent))
 	return owner == "code-review-scanner" || strings.HasPrefix(ref, "scan-") || strings.HasPrefix(ref, "collect-review-scope") || strings.HasPrefix(ref, "research-")
+}
+
+func automationReviewExemptReason(task projectworkplan.WorkTask) string {
+	switch {
+	case isReviewTask(task):
+		return "independent review task; secondary review not required"
+	case isReadOnlyScannerTask(task):
+		return "read-only automation task; downstream review remains dependency-gated"
+	case isNoConfirmedBugPlannerTask(task):
+		return "no confirmed bug remediation planner; upstream independent review found no bug"
+	default:
+		return ""
+	}
 }
 
 func automationCloseoutOutcome(task projectworkplan.WorkTask) string {
