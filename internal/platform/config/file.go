@@ -46,18 +46,19 @@ func parseAutoIntValue(value any) (int, error) {
 }
 
 type fileConfig struct {
-	Version    int                   `toml:"version"`
-	Server     *fileServerConfig     `toml:"server"`
-	Storage    *fileStorageConfig    `toml:"storage"`
-	SQLite     *fileSQLiteConfig     `toml:"sqlite"`
-	Debug      *fileDebugConfig      `toml:"debug"`
-	Logging    *fileLoggingConfig    `toml:"logging"`
-	Ingestion  *fileIngestionConfig  `toml:"ingestion"`
-	Workspace  *fileWorkspaceConfig  `toml:"workspace"`
-	Workflows  *fileWorkflowConfig   `toml:"workflows"`
-	Automation *fileAutomationConfig `toml:"automation"`
-	GitOps     *fileGitOpsConfig     `toml:"git_operations"`
-	Projects   []fileProjectConfig   `toml:"projects"`
+	Version      int                     `toml:"version"`
+	Server       *fileServerConfig       `toml:"server"`
+	Storage      *fileStorageConfig      `toml:"storage"`
+	SQLite       *fileSQLiteConfig       `toml:"sqlite"`
+	Debug        *fileDebugConfig        `toml:"debug"`
+	Logging      *fileLoggingConfig      `toml:"logging"`
+	Ingestion    *fileIngestionConfig    `toml:"ingestion"`
+	Workspace    *fileWorkspaceConfig    `toml:"workspace"`
+	Workflows    *fileWorkflowConfig     `toml:"workflows"`
+	Automation   *fileAutomationConfig   `toml:"automation"`
+	GitOps       *fileGitOpsConfig       `toml:"git_operations"`
+	Verification *fileVerificationConfig `toml:"verification"`
+	Projects     []fileProjectConfig     `toml:"projects"`
 }
 
 type fileServerConfig struct {
@@ -179,6 +180,18 @@ type fileGitOpsConventionsConfig struct {
 	TestsTemplate            *string `toml:"tests_template"`
 }
 
+type fileVerificationConfig struct {
+	BootstrapCommands  []string                            `toml:"bootstrap_commands"`
+	AlwaysBeforePR     []string                            `toml:"always_before_pr"`
+	GeneratedArtifacts []fileGeneratedArtifactVerification `toml:"generated_artifacts"`
+}
+
+type fileGeneratedArtifactVerification struct {
+	Paths            []string `toml:"paths"`
+	Command          string   `toml:"command"`
+	RequiredBeforePR bool     `toml:"required_before_pr"`
+}
+
 type fileIngestionConfig struct {
 	ContentGraphEnabled      *bool   `toml:"content_graph_enabled"`
 	LiveUpdatesEnabled       *bool   `toml:"live_updates_enabled"`
@@ -220,6 +233,7 @@ type fileProjectConfig struct {
 	SensitiveMarkerPolicy string                         `toml:"sensitive_marker_policy"`
 	Integrations          *fileProjectIntegrationsConfig `toml:"integrations"`
 	GitOps                *fileGitOpsConfig              `toml:"git_operations"`
+	Verification          *fileVerificationConfig        `toml:"verification"`
 }
 
 type fileProjectIntegrationsConfig struct {
@@ -752,10 +766,13 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 	if cfg.GitOps != nil {
 		applyFileGitOps(&base.GitOperations, cfg.GitOps)
 	}
+	if cfg.Verification != nil {
+		base.Verification = cfg.Verification.toVerification()
+	}
 
 	base.Projects = make([]Project, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
-		base.Projects = append(base.Projects, project.toProject(base.GitOperations))
+		base.Projects = append(base.Projects, project.toProject(base.GitOperations, base.Verification))
 	}
 	return base, nil
 }
@@ -840,6 +857,40 @@ func applyFileGitOps(base *GitOperations, cfg *fileGitOpsConfig) {
 	}
 }
 
+func (cfg fileVerificationConfig) toVerification() Verification {
+	generated := make([]GeneratedArtifactVerification, 0, len(cfg.GeneratedArtifacts))
+	for _, item := range cfg.GeneratedArtifacts {
+		generated = append(generated, GeneratedArtifactVerification{
+			Paths:            trimStringSlice(item.Paths),
+			Command:          strings.TrimSpace(item.Command),
+			RequiredBeforePR: item.RequiredBeforePR,
+		})
+	}
+	return Verification{
+		BootstrapCommands:  trimStringSlice(cfg.BootstrapCommands),
+		AlwaysBeforePR:     trimStringSlice(cfg.AlwaysBeforePR),
+		GeneratedArtifacts: generated,
+	}
+}
+
+func mergeVerification(base Verification, override *fileVerificationConfig) Verification {
+	if override == nil {
+		return base
+	}
+	return override.toVerification()
+}
+
+func trimStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 func (cfg fileAutomationAgentConfig) toAutomationAgent(defaultMaxRuntime time.Duration) (AutomationAgent, error) {
 	maxRuntime, err := applyDuration("automation.agents.max_runtime", cfg.MaxRuntime, defaultMaxRuntime)
 	if err != nil {
@@ -878,7 +929,7 @@ func applyDuration(name string, value *string, fallback time.Duration) (time.Dur
 	return parsed, nil
 }
 
-func (project fileProjectConfig) toProject(globalGitOps GitOperations) Project {
+func (project fileProjectConfig) toProject(globalGitOps GitOperations, globalVerification Verification) Project {
 	digestMode := project.DigestMode
 	if digestMode == "" {
 		digestMode = digestModeMetadataOnly
@@ -927,6 +978,10 @@ func (project fileProjectConfig) toProject(globalGitOps GitOperations) Project {
 		gitops := globalGitOps
 		applyFileGitOps(&gitops, project.GitOps)
 		cfgProject.GitOperations = &gitops
+	}
+	if project.Verification != nil {
+		verification := mergeVerification(globalVerification, project.Verification)
+		cfgProject.Verification = &verification
 	}
 	return cfgProject
 }

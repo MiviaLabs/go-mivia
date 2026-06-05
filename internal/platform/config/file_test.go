@@ -281,6 +281,94 @@ tests_template = "{{test_results}}"
 	}
 }
 
+func TestProjectVerificationOverrideGlobalDefaults(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[verification]
+always_before_pr = ["go test ./..."]
+
+[[verification.generated_artifacts]]
+paths = ["api/openapi.yaml"]
+command = "go generate ./api/..."
+required_before_pr = true
+
+[[projects]]
+id = "project-a"
+root_path = "/repo/project-a"
+enabled = true
+digest_mode = "content_graph"
+workspace_mode = "edit"
+
+[projects.verification]
+bootstrap_commands = ["pnpm install --frozen-lockfile --prefer-offline --ignore-scripts"]
+always_before_pr = [
+  "pnpm -s nx affected -t lint --base=origin/main --head=HEAD",
+  "pnpm -s nx affected -t typecheck --base=origin/main --head=HEAD",
+]
+
+[[projects.verification.generated_artifacts]]
+paths = ["packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"]
+command = "pnpm -s nx run contracts:verify-openapi"
+required_before_pr = true
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected verification config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected verification config to apply: %v", err)
+	}
+	merged.resolveAutoSettings(1)
+	if err := merged.Validate(); err != nil {
+		t.Fatalf("expected verification config to validate: %v", err)
+	}
+	if strings.Join(merged.Verification.AlwaysBeforePR, ",") != "go test ./..." {
+		t.Fatalf("expected global verification, got %+v", merged.Verification)
+	}
+	if len(merged.Projects) != 1 || merged.Projects[0].Verification == nil {
+		t.Fatalf("expected project verification override, got %+v", merged.Projects)
+	}
+	projectVerification := merged.Projects[0].Verification
+	if len(projectVerification.AlwaysBeforePR) != 2 || !strings.Contains(projectVerification.AlwaysBeforePR[0], "lint") {
+		t.Fatalf("unexpected project always-before-pr commands: %+v", projectVerification.AlwaysBeforePR)
+	}
+	if len(projectVerification.GeneratedArtifacts) != 1 || projectVerification.GeneratedArtifacts[0].Command != "pnpm -s nx run contracts:verify-openapi" || !projectVerification.GeneratedArtifacts[0].RequiredBeforePR {
+		t.Fatalf("unexpected generated artifact verifier: %+v", projectVerification.GeneratedArtifacts)
+	}
+}
+
+func TestVerificationValidateRejectsUnsafeValues(t *testing.T) {
+	for name, mutate := range map[string]func(*Config){
+		"empty_command": func(cfg *Config) {
+			cfg.Verification.AlwaysBeforePR = []string{""}
+		},
+		"control_command": func(cfg *Config) {
+			cfg.Verification.AlwaysBeforePR = []string{"go test ./...\nrm -rf /"}
+		},
+		"absolute_generated_path": func(cfg *Config) {
+			cfg.Verification.GeneratedArtifacts = []GeneratedArtifactVerification{{Paths: []string{"/tmp/openapi.yaml"}, Command: "go generate ./api", RequiredBeforePR: true}}
+		},
+		"traversal_generated_path": func(cfg *Config) {
+			cfg.Verification.GeneratedArtifacts = []GeneratedArtifactVerification{{Paths: []string{"../openapi.yaml"}, Command: "go generate ./api", RequiredBeforePR: true}}
+		},
+		"missing_generated_command": func(cfg *Config) {
+			cfg.Verification.GeneratedArtifacts = []GeneratedArtifactVerification{{Paths: []string{"api/openapi.yaml"}, RequiredBeforePR: true}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := defaultConfig("test.toml")
+			cfg.resolveAutoSettings(1)
+			mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected invalid verification config to fail")
+			}
+		})
+	}
+}
+
 func TestLoadFileConfig_RejectsInvalidAutomationSettings(t *testing.T) {
 	for name, body := range map[string]string{
 		"runner_without_enabled": `

@@ -234,6 +234,114 @@ func TestFailureCategoryUsesBranchPolicyError(t *testing.T) {
 	}
 }
 
+func TestFailureCategoryUsesVerificationError(t *testing.T) {
+	err := fmt.Errorf("%w: verifier failed", ErrVerificationFailed)
+	if got := FailureCategory(err); got != "gitops_verification_failed" {
+		t.Fatalf("expected verification failure category, got %q", got)
+	}
+}
+
+func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M packages/contracts/src/schemas/auth.ts\n"},
+		{},
+		{},
+		{Stdout: " M packages/contracts/src/schemas/auth.ts\n M packages/contracts/dist/openapi.json\n M packages/contracts/dist/openapi.yaml\n"},
+		{Stdout: "fix-MASS-0000-contracts\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+		GitHubCLIPath:        "gh",
+		Verification: VerificationProfile{
+			AlwaysBeforePR: []string{"pnpm -s nx affected -t lint --base=origin/main --head=HEAD"},
+			GeneratedArtifacts: []GeneratedArtifactVerifier{{
+				Paths:            []string{"packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"},
+				Command:          "pnpm -s nx run contracts:verify-openapi",
+				RequiredBeforePR: true,
+			}},
+		},
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"packages/contracts/src"},
+	})
+	if err != nil {
+		t.Fatalf("expected post task with verification to succeed: %v", err)
+	}
+	if !containsString(result.EvidenceRefs, "project-verification-passed") {
+		t.Fatalf("expected verification evidence ref, got %+v", result.EvidenceRefs)
+	}
+	if got := strings.Join(runner.commands[2].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
+		t.Fatalf("expected lint verifier command, got %q", got)
+	}
+	if got := strings.Join(runner.commands[3].Args, " "); got != "-lc pnpm -s nx run contracts:verify-openapi" {
+		t.Fatalf("expected openapi verifier command, got %q", got)
+	}
+	addArgs := strings.Join(runner.commands[6].Args, "\n")
+	for _, want := range []string{"packages/contracts/src/schemas/auth.ts", "packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"} {
+		if !strings.Contains(addArgs, want) {
+			t.Fatalf("expected staged generated artifact %q in add args %q", want, addArgs)
+		}
+	}
+}
+
+func TestPostTaskFailsBeforeCommitWhenVerificationFails(t *testing.T) {
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{Stdout: " M packages/contracts/src/schemas/auth.ts\n"},
+		},
+		errs: []error{
+			nil,
+			nil,
+			errors.New("lint failed"),
+		},
+	}
+	svc := NewWithRunner(Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+		RemoteName:      "origin",
+		GitHubCLIPath:   "gh",
+		Verification: VerificationProfile{
+			AlwaysBeforePR: []string{"pnpm -s nx affected -t lint --base=origin/main --head=HEAD"},
+		},
+	}, runner)
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"packages/contracts/src"},
+	})
+	if !errors.Is(err, ErrVerificationFailed) {
+		t.Fatalf("expected verification failure, got %v", err)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("expected no commands after failed verifier, got %d", len(runner.commands))
+	}
+}
+
 func TestDerivePolicyBranchPrefersConfiguredCommitType(t *testing.T) {
 	svc := NewWithRunner(Options{
 		BranchNamePattern: `^(feat|fix|docs|chore|refactor)-ABC-[0-9]+(-[a-z0-9-]+)*$`,
@@ -539,6 +647,15 @@ func containsEnv(values []string, expected string) bool {
 func hasEnvPrefix(values []string, prefix string) bool {
 	for _, value := range values {
 		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
 			return true
 		}
 	}

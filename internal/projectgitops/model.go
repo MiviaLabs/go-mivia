@@ -22,6 +22,7 @@ type Options struct {
 	GitHubTokenFile              string
 	GitHubCLIPath                string
 	Conventions                  Conventions
+	Verification                 VerificationProfile
 }
 
 type Conventions struct {
@@ -32,6 +33,18 @@ type Conventions struct {
 	WhatChangedTemplate      string
 	HowVerifiedTemplate      string
 	TestsTemplate            string
+}
+
+type VerificationProfile struct {
+	BootstrapCommands  []string
+	AlwaysBeforePR     []string
+	GeneratedArtifacts []GeneratedArtifactVerifier
+}
+
+type GeneratedArtifactVerifier struct {
+	Paths            []string
+	Command          string
+	RequiredBeforePR bool
 }
 
 type Command struct {

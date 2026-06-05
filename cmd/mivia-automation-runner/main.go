@@ -208,6 +208,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	runCodexOptions := codexOptions
 	runCodexOptions.WorkDir = runWorkDir
 	claimed.CodexInput.MCPServerURL = client.baseURL
+	claimed.CodexInput.RunnerInstructions = append(claimed.CodexInput.RunnerInstructions, verificationInstructionsForProject(cfg, projectID)...)
 	gitOps := projectgitops.New(gitOpsOptionsForProject(cfg, projectID))
 	readOnlyReviewRun := isReadOnlyReviewRun(claimed)
 	if isGitOpsPostTaskRecoveryRun(claimed.Run) {
@@ -334,13 +335,22 @@ func claimProjectRunsExecuteAndReport(ctx context.Context, client *runnerClient,
 
 func gitOpsOptionsForProject(cfg config.Config, projectID string) projectgitops.Options {
 	gitops := cfg.GitOperations
+	verification := cfg.Verification
 	for _, project := range cfg.Projects {
-		if project.ID == projectID && project.GitOperations != nil {
-			gitops = *project.GitOperations
-			break
+		if project.ID != projectID {
+			continue
 		}
+		if project.GitOperations != nil {
+			gitops = *project.GitOperations
+		}
+		if project.Verification != nil {
+			verification = *project.Verification
+		}
+		break
 	}
-	return gitOpsOptionsFromConfig(gitops)
+	options := gitOpsOptionsFromConfig(gitops)
+	options.Verification = gitOpsVerificationFromConfig(verification)
+	return options
 }
 
 func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
@@ -373,6 +383,49 @@ func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
 			TestsTemplate:            cfg.Conventions.TestsTemplate,
 		},
 	}
+}
+
+func gitOpsVerificationFromConfig(cfg config.Verification) projectgitops.VerificationProfile {
+	generated := make([]projectgitops.GeneratedArtifactVerifier, 0, len(cfg.GeneratedArtifacts))
+	for _, item := range cfg.GeneratedArtifacts {
+		generated = append(generated, projectgitops.GeneratedArtifactVerifier{
+			Paths:            append([]string(nil), item.Paths...),
+			Command:          item.Command,
+			RequiredBeforePR: item.RequiredBeforePR,
+		})
+	}
+	return projectgitops.VerificationProfile{
+		BootstrapCommands:  append([]string(nil), cfg.BootstrapCommands...),
+		AlwaysBeforePR:     append([]string(nil), cfg.AlwaysBeforePR...),
+		GeneratedArtifacts: generated,
+	}
+}
+
+func verificationInstructionsForProject(cfg config.Config, projectID string) []string {
+	verification := cfg.Verification
+	for _, project := range cfg.Projects {
+		if project.ID == projectID && project.Verification != nil {
+			verification = *project.Verification
+			break
+		}
+	}
+	instructions := make([]string, 0)
+	if len(verification.AlwaysBeforePR) > 0 {
+		instructions = append(instructions, "Project verification before PR is enforced by the runner; keep changes compatible with these commands:")
+		for _, command := range verification.AlwaysBeforePR {
+			instructions = append(instructions, command)
+		}
+	}
+	for _, generated := range verification.GeneratedArtifacts {
+		if !generated.RequiredBeforePR {
+			continue
+		}
+		instructions = append(instructions, "Generated artifact verification is required before PR; run or satisfy: "+generated.Command)
+		if len(generated.Paths) > 0 {
+			instructions = append(instructions, "Generated artifact paths that may need committing: "+strings.Join(generated.Paths, ", "))
+		}
+	}
+	return instructions
 }
 
 func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID string, claimed projectautomation.ClaimedRun, taskMetadata runnerWorkTaskMetadata) projectgitops.PostTaskInput {

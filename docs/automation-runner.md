@@ -65,6 +65,33 @@ Supported placeholders:
 
 Draft PR bodies always render exactly these sections: `What changed`, `How verified`, and `Tests`. The default `How verified` text includes project ID, Work Plan ID, Work Task ID, automation ID, automation run ID, operator ID, review refs, and verifier refs. Test results are included when a caller supplies safe summaries; otherwise the runner states that tests were not reported and orchestrator verification is pending.
 
+## Project Verification Profiles
+
+Runner GitOps also supports global `[verification]` defaults and per-project `[projects.verification]` overrides. Verification commands run inside the automation worktree after Codex finishes and before GitOps commits, pushes, or creates a draft PR. A failed verifier stops the post-task flow with `gitops_verification_failed`; the runner must not commit or open a PR from an unverified worktree.
+
+Use `bootstrap_commands` for deterministic setup, `always_before_pr` for required lint/typecheck/test gates, and `generated_artifacts` for checked-in generated outputs. When a generated-artifact verifier is `required_before_pr = true`, its `paths` are automatically added to the safe staging pathspecs so regenerated files can be committed with the task.
+
+Example:
+
+```toml
+[projects.verification]
+bootstrap_commands = ["pnpm install --frozen-lockfile --prefer-offline --ignore-scripts"]
+always_before_pr = [
+  "pnpm -s nx affected -t lint --base=origin/main --head=HEAD --parallel=4",
+  "pnpm -s nx affected -t typecheck --base=origin/main --head=HEAD --parallel=4",
+]
+
+[[projects.verification.generated_artifacts]]
+paths = [
+  "packages/contracts/dist/openapi.json",
+  "packages/contracts/dist/openapi.yaml",
+]
+command = "pnpm -s nx run contracts:verify-openapi"
+required_before_pr = true
+```
+
+Agents should still mention likely verifier impact in the Work Task, but the runner enforces the configured profile. Do not rely on prompt instructions alone for repository-specific CI gates or generated artifacts.
+
 Example:
 
 ```toml

@@ -14,10 +14,11 @@ import (
 )
 
 var (
-	ErrInvalidInput  = errors.New("invalid git operations input")
-	ErrBranchPolicy  = errors.New("git operations branch policy failed")
-	ErrCommandFailed = errors.New("git operations command failed")
-	ErrDirtyWorktree = errors.New("git operations dirty worktree")
+	ErrInvalidInput       = errors.New("invalid git operations input")
+	ErrBranchPolicy       = errors.New("git operations branch policy failed")
+	ErrCommandFailed      = errors.New("git operations command failed")
+	ErrDirtyWorktree      = errors.New("git operations dirty worktree")
+	ErrVerificationFailed = errors.New("git operations verification failed")
 )
 
 var safeRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
@@ -89,7 +90,26 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		return PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}, nil
 	}
 
-	allowedPathspecs := sanitizePathspecs(input.AllowedPathspecs)
+	verificationRefs, verificationTests, err := svc.runVerification(ctx, workDir)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	if len(verificationTests) > 0 {
+		input.TestResults = append(input.TestResults, verificationTests...)
+	}
+	if len(verificationRefs) > 0 {
+		status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
+		if err != nil {
+			return PostTaskResult{}, err
+		}
+		if strings.TrimSpace(status.Stdout) == "" {
+			result := PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}
+			result.EvidenceRefs = append(result.EvidenceRefs, verificationRefs...)
+			return result, nil
+		}
+	}
+
+	allowedPathspecs := sanitizePathspecs(append(input.AllowedPathspecs, svc.generatedArtifactPathspecs()...))
 	if len(allowedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
 	}
@@ -138,7 +158,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	}
 	result := PostTaskResult{
 		CommitRef:    "git-commit-" + strings.TrimSpace(sha.Stdout),
-		EvidenceRefs: []string{"git-commit-created"},
+		EvidenceRefs: append([]string{"git-commit-created"}, verificationRefs...),
 	}
 	if svc.options.PushAfterTask {
 		branch := strings.TrimSpace(input.BranchName)
@@ -175,6 +195,8 @@ func FailureCategory(err error) string {
 		return ""
 	case errors.Is(err, ErrDirtyWorktree):
 		return "gitops_dirty_worktree"
+	case errors.Is(err, ErrVerificationFailed):
+		return "gitops_verification_failed"
 	case errors.Is(err, ErrBranchPolicy):
 		return "gitops_branch_policy_failed"
 	case errors.Is(err, ErrInvalidInput):
@@ -184,6 +206,74 @@ func FailureCategory(err error) string {
 	default:
 		return "gitops_post_task_failed"
 	}
+}
+
+func (svc *Service) runVerification(ctx context.Context, workDir string) ([]string, []string, error) {
+	if len(svc.options.Verification.BootstrapCommands) == 0 &&
+		len(svc.options.Verification.AlwaysBeforePR) == 0 &&
+		len(svc.options.Verification.GeneratedArtifacts) == 0 {
+		return nil, nil, nil
+	}
+	refs := make([]string, 0)
+	tests := make([]string, 0)
+	for _, command := range svc.options.Verification.BootstrapCommands {
+		if err := svc.runVerifierCommand(ctx, workDir, command); err != nil {
+			return nil, nil, err
+		}
+		refs = append(refs, "verify-bootstrap-"+safeHash(command))
+		tests = append(tests, safeTestResult(command, "passed"))
+	}
+	for _, command := range svc.options.Verification.AlwaysBeforePR {
+		if err := svc.runVerifierCommand(ctx, workDir, command); err != nil {
+			return nil, nil, err
+		}
+		refs = append(refs, "verify-project-"+safeHash(command))
+		tests = append(tests, safeTestResult(command, "passed"))
+	}
+	for _, generated := range svc.options.Verification.GeneratedArtifacts {
+		if !generated.RequiredBeforePR {
+			continue
+		}
+		if err := svc.runVerifierCommand(ctx, workDir, generated.Command); err != nil {
+			return nil, nil, err
+		}
+		refs = append(refs, "verify-generated-"+safeHash(generated.Command))
+		tests = append(tests, safeTestResult(generated.Command, "passed"))
+	}
+	if len(refs) > 0 {
+		refs = append(refs, "project-verification-passed")
+	}
+	return refs, tests, nil
+}
+
+func (svc *Service) runVerifierCommand(ctx context.Context, workDir string, command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" || strings.ContainsAny(command, "\x00\r\n") {
+		return fmt.Errorf("%w: unsafe verifier command", ErrInvalidInput)
+	}
+	if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir}); err != nil {
+		return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
+	}
+	return nil
+}
+
+func (svc *Service) generatedArtifactPathspecs() []string {
+	out := make([]string, 0)
+	for _, generated := range svc.options.Verification.GeneratedArtifacts {
+		if !generated.RequiredBeforePR {
+			continue
+		}
+		out = append(out, generated.Paths...)
+	}
+	return out
+}
+
+func safeTestResult(command string, status string) string {
+	summary := strings.TrimSpace(command)
+	if len(summary) > 120 {
+		summary = summary[:120]
+	}
+	return summary + ": " + status
 }
 
 func (svc *Service) validatePushConfig() error {

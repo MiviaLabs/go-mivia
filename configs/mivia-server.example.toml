@@ -156,6 +156,31 @@ what_changed_template = "Completed automation work task {{work_task_id}} for pro
 how_verified_template = "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 tests_template = "{{test_results}}"
 
+[verification]
+# Optional global project verification profile. These commands run in the
+# automation worktree after Codex writes changes and before GitOps commits,
+# pushes, or creates a draft PR. Keep commands safe, deterministic, and
+# repository-local.
+bootstrap_commands = []
+always_before_pr = []
+
+# Per-project verification may override the global profile.
+#
+# [projects.verification]
+# bootstrap_commands = ["pnpm install --frozen-lockfile --prefer-offline --ignore-scripts"]
+# always_before_pr = [
+#   "pnpm -s nx affected -t lint --base=origin/main --head=HEAD --parallel=4",
+#   "pnpm -s nx affected -t typecheck --base=origin/main --head=HEAD --parallel=4",
+# ]
+#
+# [[projects.verification.generated_artifacts]]
+# paths = [
+#   "packages/contracts/dist/openapi.json",
+#   "packages/contracts/dist/openapi.yaml",
+# ]
+# command = "pnpm -s nx run contracts:verify-openapi"
+# required_before_pr = true
+
 [[projects]]
 id = "example-service"
 # Optional safe lookup IDs accepted anywhere a project id is accepted. Use this
