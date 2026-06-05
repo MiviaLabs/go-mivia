@@ -660,6 +660,45 @@ func TestListRunsProjectsCompletedWorkTaskStatusBeforeStatusFilter(t *testing.T)
 	}
 }
 
+func TestGetRunDoesNotBlockOnSlowWorkTaskProjection(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWorkTasks{
+		tasks:                map[string]projectworkplan.WorkTask{"task-a": readyTask("task-a", "a", []string{"internal/foo.go"})},
+		blockGetWorkTaskDone: make(chan struct{}),
+	}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation := createTestAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:             "run-a",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         automation.PlanID,
+		TaskID:         "task-a",
+		WorkTaskStatus: projectworkplan.WorkTaskStatusReady,
+		Status:         RunStatusVerifying,
+		RunnerKind:     RunnerKindCodexCLI,
+		CreatedAt:      time.Unix(100, 0).UTC(),
+		UpdatedAt:      time.Unix(100, 0).UTC(),
+	}
+	if _, err := svc.store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	started := time.Now()
+	got, err := svc.GetRun(ctx, automation.ProjectID, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("GetRun blocked on work task projection for %s", elapsed)
+	}
+	if got.ID != run.ID || got.Status != RunStatusVerifying {
+		t.Fatalf("expected persisted run when projection is unavailable, got %#v", got)
+	}
+	close(fake.blockGetWorkTaskDone)
+}
+
 func TestSubmitRunQueuesRequiredAutomationReviewBeforeImplementation(t *testing.T) {
 	ctx := context.Background()
 	reviewTask := readyTask("automation-review", "automation-review", []string{"internal/foo.go"})
@@ -1155,12 +1194,13 @@ func TestValidateAllowedTaskRefAcceptsTaskIDOrTaskRef(t *testing.T) {
 }
 
 type fakeWorkTasks struct {
-	plans         map[string]projectworkplan.WorkPlan
-	tasks         map[string]projectworkplan.WorkTask
-	evidenceRefs  []string
-	verifierRefs  []string
-	reviewRefs    []string
-	knowledgeRefs []string
+	plans                map[string]projectworkplan.WorkPlan
+	tasks                map[string]projectworkplan.WorkTask
+	blockGetWorkTaskDone chan struct{}
+	evidenceRefs         []string
+	verifierRefs         []string
+	reviewRefs           []string
+	knowledgeRefs        []string
 }
 
 func (fake *fakeWorkTasks) CreateWorkPlan(_ context.Context, input projectworkplan.CreateWorkPlanInput) (projectworkplan.WorkPlan, error) {
@@ -1363,7 +1403,14 @@ func (store *testStore) GetParallelBatch(_ context.Context, projectID string, ba
 	return value, nil
 }
 
-func (fake *fakeWorkTasks) GetWorkTask(_ context.Context, _ string, taskID string) (projectworkplan.WorkTask, error) {
+func (fake *fakeWorkTasks) GetWorkTask(ctx context.Context, _ string, taskID string) (projectworkplan.WorkTask, error) {
+	if fake.blockGetWorkTaskDone != nil {
+		select {
+		case <-fake.blockGetWorkTaskDone:
+		case <-ctx.Done():
+			return projectworkplan.WorkTask{}, ctx.Err()
+		}
+	}
 	if fake.tasks == nil {
 		return projectworkplan.WorkTask{}, errors.New("not found")
 	}

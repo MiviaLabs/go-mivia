@@ -24,6 +24,8 @@ var (
 	phonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
 )
 
+const projectRunStatusProjectionTimeout = 250 * time.Millisecond
+
 type Store interface {
 	CreateAutomation(context.Context, Automation) (Automation, error)
 	GetAutomation(context.Context, string, string) (Automation, error)
@@ -882,14 +884,14 @@ func (svc *Service) projectRunWorkTaskStatus(ctx context.Context, run Automation
 	if svc.workTasks == nil || run.TaskID == "" {
 		return run, nil
 	}
-	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	projectionCtx, cancel := context.WithTimeout(ctx, projectRunStatusProjectionTimeout)
+	defer cancel()
+	task, err := svc.workTasks.GetWorkTask(projectionCtx, run.ProjectID, run.TaskID)
 	if err != nil {
 		return run, nil
 	}
-	changed := false
 	if run.WorkTaskStatus != task.Status {
 		run.WorkTaskStatus = task.Status
-		changed = true
 	}
 	if run.Status == RunStatusVerifying && task.Status == projectworkplan.WorkTaskStatusDone {
 		run.Status = RunStatusCompleted
@@ -897,13 +899,8 @@ func (svc *Service) projectRunWorkTaskStatus(ctx context.Context, run Automation
 		if run.FinishedAt.IsZero() {
 			run.FinishedAt = svc.now()
 		}
-		changed = true
 	}
-	if !changed {
-		return run, nil
-	}
-	run.UpdatedAt = svc.now()
-	return svc.store.UpdateRun(ctx, run)
+	return run, nil
 }
 
 func (svc *Service) ComputeParallelBatch(ctx context.Context, input ComputeParallelBatchInput) (AutomationParallelBatch, error) {
