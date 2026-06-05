@@ -864,7 +864,7 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 }
 
 func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID string, agentID string) (ClaimedRun, bool, error) {
-	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
+	runs, err := svc.recoverablePreExecutionRuns(ctx, projectID)
 	if err != nil {
 		return ClaimedRun{}, false, err
 	}
@@ -887,6 +887,10 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 		if err != nil || !preExecutionRecoveryTaskMatchesRun(task, run) || !svc.dependenciesDone(ctx, task) {
 			continue
 		}
+		task, err = svc.prepareTaskForPreExecutionRecovery(ctx, run, task)
+		if err != nil {
+			continue
+		}
 		now := svc.now()
 		run.Status = RunStatusRunning
 		run.WorkTaskStatus = task.Status
@@ -904,6 +908,34 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
 	}
 	return ClaimedRun{}, false, nil
+}
+
+func (svc *Service) recoverablePreExecutionRuns(ctx context.Context, projectID string) ([]AutomationRun, error) {
+	failed, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
+	if err != nil {
+		return nil, err
+	}
+	blocked, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusBlocked})
+	if err != nil {
+		return nil, err
+	}
+	return append(failed, blocked...), nil
+}
+
+func (svc *Service) prepareTaskForPreExecutionRecovery(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (projectworkplan.WorkTask, error) {
+	if task.Status != projectworkplan.WorkTaskStatusClaimed {
+		return task, nil
+	}
+	if strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+		return projectworkplan.WorkTask{}, fmt.Errorf("%w: task_claimed_by_other_run", ErrInvalidInput)
+	}
+	return svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:  run.ProjectID,
+		TaskID:     task.ID,
+		OwnerAgent: run.AgentID,
+		RunID:      run.ID,
+		TraceID:    firstNonEmpty(run.TraceID, run.ID),
+	})
 }
 
 func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID string, agentID string) (ClaimedRun, bool, error) {
@@ -2626,7 +2658,7 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 
 func isRecoverablePreExecutionFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "worktree_resolve_failed":
+	case "worktree_resolve_failed", "claim_failed", "start_failed":
 		return true
 	default:
 		return false

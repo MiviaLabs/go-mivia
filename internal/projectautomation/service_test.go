@@ -314,6 +314,66 @@ func TestClaimNextRunRecoversFailedWorktreeResolveForInProgressTaskClaimedByRun(
 	}
 }
 
+func TestClaimNextRunRecoversBlockedStartFailureForClaimedTask(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "scan-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusClaimed
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-a", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusBlocked, RunnerKind: RunnerKindCodexCLI,
+		FailureCategory: "start_failed",
+		CreatedAt:       time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != "run-a" || claimed.Run.Status != RunStatusRunning || claimed.Run.AttemptCount != 1 || claimed.Run.FailureCategory != "" {
+		t.Fatalf("expected blocked start failure run to be reclaimed, got %#v", claimed.Run)
+	}
+	if got := fake.tasks["task-a"].Status; got != projectworkplan.WorkTaskStatusInProgress {
+		t.Fatalf("expected claimed task to be started during recovery, got %q", got)
+	}
+}
+
+func TestClaimNextRunDoesNotRecoverOrdinaryBlockedRun(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "scan-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusBlocked
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-a", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusBlocked, RunnerKind: RunnerKindCodexCLI,
+		FailureCategory: "work_task_blocked",
+		CreatedAt:       time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected ordinary blocked run to remain terminal, got %v", err)
+	}
+	run, err := store.GetRun(ctx, "project-1", "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if run.Status != RunStatusBlocked || run.FailureCategory != "work_task_blocked" {
+		t.Fatalf("ordinary blocked run should not be recovered: %#v", run)
+	}
+}
+
 func TestClaimNextRunDoesNotFailScannerWithConfirmedFindingRefs(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
