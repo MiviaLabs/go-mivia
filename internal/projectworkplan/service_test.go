@@ -420,6 +420,9 @@ func TestServiceCompletionRequiresIndependentReviewOrExemption(t *testing.T) {
 	if _, err := svc.AttachReviewResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "review:self", AttachedByRunID: "run-impl"}); err == nil {
 		t.Fatal("expected self-review to fail")
 	}
+	if _, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, Outcome: "attempted completion with unattached self-review ref", SafeNextAction: "get next task", VerifierResultRefs: []string{"verifier:review-gate"}, ReviewResultRefs: []string{"review:self"}}); err == nil {
+		t.Fatal("expected completion with unattached review ref to fail")
+	}
 	if _, err := svc.AttachReviewResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "review:independent", AttachedByRunID: "run-review"}); err != nil {
 		t.Fatalf("attach independent review: %v", err)
 	}

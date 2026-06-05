@@ -703,7 +703,45 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 	if next == WorkTaskStatusDone && len(task.ReviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" {
 		return WorkTask{}, fmt.Errorf("%w: review_result_refs or review_exempt_reason is required before done", ErrInvalidInput)
 	}
+	if next == WorkTaskStatusDone && len(task.ReviewResultRefs) > 0 {
+		if err := svc.validateIndependentReviewRefs(ctx, task); err != nil {
+			return WorkTask{}, err
+		}
+	}
 	return svc.store.UpdateWorkTask(ctx, task)
+}
+
+func (svc *Service) validateIndependentReviewRefs(ctx context.Context, task WorkTask) error {
+	attachments, err := svc.store.ListAttachments(ctx, task.ProjectID, task.ID)
+	if err != nil {
+		return err
+	}
+	attachedByRef := make(map[string][]Attachment)
+	for _, attachment := range attachments {
+		if attachment.Kind == "review_result_ref" {
+			attachedByRef[attachment.Ref] = append(attachedByRef[attachment.Ref], attachment)
+		}
+	}
+	for _, ref := range task.ReviewResultRefs {
+		reviews := attachedByRef[ref]
+		if len(reviews) == 0 {
+			return fmt.Errorf("%w: review_result_ref must be attached before completion", ErrInvalidInput)
+		}
+		if task.ClaimedByRunID == "" {
+			continue
+		}
+		independent := false
+		for _, review := range reviews {
+			if review.AttachedByRunID != "" && review.AttachedByRunID != task.ClaimedByRunID {
+				independent = true
+				break
+			}
+		}
+		if !independent {
+			return fmt.Errorf("%w: review_result_ref must be attached by an independent run", ErrInvalidInput)
+		}
+	}
+	return nil
 }
 
 func (svc *Service) AttachEvidence(ctx context.Context, input AttachInput) (Attachment, error) {
