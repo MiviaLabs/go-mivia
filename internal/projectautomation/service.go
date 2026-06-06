@@ -2191,6 +2191,17 @@ func (svc *Service) requeueAbandonedRunningRun(ctx context.Context, run Automati
 	if !ok {
 		return run, nil
 	}
+	current, err := svc.store.GetRun(ctx, run.ProjectID, run.ID)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if current.Status != run.Status || current.ClaimID != run.ClaimID || current.RunnerID != run.RunnerID || !current.LeaseExpiresAt.Equal(run.LeaseExpiresAt) {
+		return current, nil
+	}
+	if current.Status != RunStatusClaiming && current.Status != RunStatusStarting && current.Status != RunStatusRunning {
+		return current, nil
+	}
+	run = current
 	now := svc.now()
 	run.Status = RunStatusTimeout
 	run.WorkTaskStatus = task.Status

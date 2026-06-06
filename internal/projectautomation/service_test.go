@@ -3411,6 +3411,61 @@ func TestClaimNextRunRequeuesAbandonedRunningRunWithReadyTaskAfterRestart(t *tes
 	}
 }
 
+func TestRequeueAbandonedRunningRunSkipsStaleSnapshotAfterDurableFailure(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "review-candidate-bugs", []string{"libs/platform"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	oldRun := AutomationRun{
+		ID:             "run-a",
+		ProjectID:      "project-1",
+		AutomationID:   "automation-a",
+		AgentID:        "bug-finding-reviewer",
+		PlanID:         "plan-1",
+		TaskID:         task.ID,
+		WorkTaskStatus: task.Status,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		ClaimID:        "claim-a",
+		RunnerID:       "runner-a",
+		LeaseExpiresAt: time.Unix(200, 0).UTC(),
+		StartedAt:      time.Unix(100, 0).UTC(),
+		UpdatedAt:      time.Unix(100, 0).UTC(),
+	}
+	if _, err := store.CreateRun(ctx, oldRun); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	durableFailure := oldRun
+	durableFailure.Status = RunStatusFailed
+	durableFailure.FailureCategory = "gitops_post_task_failed"
+	durableFailure.FinishedAt = time.Unix(150, 0).UTC()
+	durableFailure.UpdatedAt = time.Unix(150, 0).UTC()
+	if _, err := store.UpdateRun(ctx, durableFailure); err != nil {
+		t.Fatalf("UpdateRun returned error: %v", err)
+	}
+
+	updated, err := svc.requeueAbandonedRunningRun(ctx, oldRun, task)
+	if err != nil {
+		t.Fatalf("requeueAbandonedRunningRun returned error: %v", err)
+	}
+	if updated.Status != RunStatusFailed || updated.FailureCategory != "gitops_post_task_failed" {
+		t.Fatalf("expected durable failure to be preserved, got %#v", updated)
+	}
+	persisted, err := store.GetRun(ctx, "project-1", "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if persisted.Status != RunStatusFailed || persisted.FailureCategory != "gitops_post_task_failed" {
+		t.Fatalf("expected persisted durable failure to be preserved, got %#v", persisted)
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusInProgress {
+		t.Fatalf("expected task status unchanged, got %#v", fake.tasks[task.ID])
+	}
+}
+
 func TestClaimNextRunRequeuesAbandonedClaimingRunAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "create-confirmed-bug-work-plans", []string{"packages/contracts"})
