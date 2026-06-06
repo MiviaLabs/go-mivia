@@ -38,11 +38,13 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin mivia \
 
 COPY --from=build /out/mivia-server /usr/local/bin/mivia-server
 COPY --from=build /out/mivia-automation-runner /usr/local/bin/mivia-automation-runner
+COPY --from=build /usr/local/go /usr/local/go
 COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY docker/entrypoint.sh /usr/local/bin/mivia-entrypoint
 COPY docker/automation-runner-entrypoint.sh /usr/local/bin/mivia-runner-entrypoint
 COPY docker/graphify /usr/local/bin/graphify
+ENV PATH="/opt/flutter/bin:/usr/local/go/bin:/usr/local/bin:${PATH}"
 RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
 	&& ln -s ../lib/node_modules/pnpm/bin/pnpm.cjs /usr/local/bin/pnpm \
 	&& ln -s ../lib/node_modules/pnpm/bin/pnpx.cjs /usr/local/bin/pnpx \
@@ -56,6 +58,7 @@ RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
 	&& pnpm --version \
 	&& flutter --version \
 	&& dart --version \
+	&& go version \
 	&& graphify --version \
 	&& codex --version
 
@@ -66,7 +69,6 @@ ENV MIVIA_INTERNAL_ADDR=127.0.0.1:18080
 ENV MIVIA_PUBLIC_PORT=8080
 ENV MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug
 ENV MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite
-ENV PATH="/opt/flutter/bin:/usr/local/bin:${PATH}"
 
 EXPOSE 8080
 

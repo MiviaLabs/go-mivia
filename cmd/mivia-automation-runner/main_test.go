@@ -70,6 +70,59 @@ func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
 	}
 }
 
+func TestPrepareRunWorktreeTrustsDedicatedWorktreeBeforeCodex(t *testing.T) {
+	baseWorkDir := initRunnerGitRepo(t)
+	runWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-worktree-docs-smoke")
+	runGit(t, baseWorkDir, "worktree", "add", "-B", "mivia/worktree-docs-smoke", runWorkDir, "main")
+
+	gitLog := filepath.Join(t.TempDir(), "git-log.txt")
+	fakeGit := fakeGitLoggingAndDelegating(t, gitLog)
+	withPrependedPath(t, filepath.Dir(fakeGit))
+
+	if err := prepareRunWorktree(t.Context(), runWorkDir); err != nil {
+		t.Fatalf("prepareRunWorktree returned error: %v", err)
+	}
+	logData, err := os.ReadFile(gitLog)
+	if err != nil {
+		t.Fatalf("read git log: %v", err)
+	}
+	logText := string(logData)
+	if !strings.Contains(logText, "-c safe.directory="+runWorkDir+" rev-parse --show-toplevel") {
+		t.Fatalf("expected safe-directory trust probe before Codex, log=%s", logText)
+	}
+	if !strings.Contains(logText, "config --global --add safe.directory "+runWorkDir) {
+		t.Fatalf("expected persistent safe.directory config before Codex, log=%s", logText)
+	}
+}
+
+func TestDedicatedWorktreeRunnerInstructionsBlockBaseWorkspaceEdits(t *testing.T) {
+	instructions := dedicatedWorktreeRunnerInstructions("/repo/.mivia-worktrees/project/project-wt", "/repo")
+	if len(instructions) == 0 {
+		t.Fatal("expected dedicated worktree instructions")
+	}
+	prompt := projectautomation.RenderCodexTaskPrompt(projectautomation.CodexTaskInput{
+		SchemaVersion:      1,
+		ProjectID:          "mass-monorepo",
+		AutomationRunID:    "run-1",
+		PlanID:             "plan-1",
+		TaskID:             "task-1",
+		RunnerInstructions: instructions,
+	})
+	for _, want := range []string{
+		"dedicated worktree",
+		"Do not use projects.workspace.file_edit",
+		"base checkout",
+		"current process workspace",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "/repo/.mivia-worktrees/project/project-wt") || strings.Contains(prompt, "/repo") {
+		t.Fatalf("dedicated worktree instructions must not expose absolute paths, got:\n%s", prompt)
+	}
+}
+
 func TestResolveRunWorkDirFallsBackForSharedPlan(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1312,6 +1365,32 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
+}
+
+func fakeGitLoggingAndDelegating(t *testing.T, logPath string) string {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "git")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(logPath) + "\nexec " + shellQuoteForTest(realGit) + " \"$@\"\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	return binary
+}
+
+func withPrependedPath(t *testing.T, dir string) {
+	t.Helper()
+	oldPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", oldPath)
+	})
 }
 
 func shellQuoteForTest(value string) string {

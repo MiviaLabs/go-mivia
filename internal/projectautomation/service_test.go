@@ -374,7 +374,7 @@ func TestClaimNextRunRecoversFailedWorktreeResolveForInProgressTaskClaimedByRun(
 }
 
 func TestClaimNextRunRecoversGitOpsPreTaskFailureForReadyTask(t *testing.T) {
-	for _, category := range []string{"gitops_pre_task_failed", "gitops_dirty_worktree"} {
+	for _, category := range []string{"worktree_prepare_failed", "gitops_pre_task_failed", "gitops_dirty_worktree"} {
 		t.Run(category, func(t *testing.T) {
 			ctx := context.Background()
 			store := newTestStore()
@@ -560,7 +560,7 @@ func TestClaimNextRunSkipsPreExecutionRecoveryClaimedByAnotherRun(t *testing.T) 
 }
 
 func TestClaimNextRunRequeuesExhaustedPreExecutionRecoveryClaimedByFailedRun(t *testing.T) {
-	for _, category := range []string{"gitops_dirty_worktree", "gitops_pre_task_failed"} {
+	for _, category := range []string{"worktree_prepare_failed", "gitops_dirty_worktree", "gitops_pre_task_failed"} {
 		for _, status := range []string{projectworkplan.WorkTaskStatusInProgress, projectworkplan.WorkTaskStatusClaimed, projectworkplan.WorkTaskStatusReady} {
 			t.Run(category+"_"+status, func(t *testing.T) {
 				ctx := context.Background()

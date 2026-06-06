@@ -75,6 +75,10 @@ The container image includes Node.js, `pnpm`, Python 3, `pip`, `venv`, and Semgr
 
 Automated Work Plans use dedicated worktrees by default, including read-only audits. This keeps scanner/reviewer agents on fresh default-branch code instead of a dirty live checkout. When `cleanup_worktree_after_plan_done = true`, the runner removes the dedicated `.mivia-worktrees/<project>/...` checkout after the owning Work Plan reaches a terminal status (`done`, `failed`, `cancelled`, or `superseded`). Blocked Work Plans are resumable, so their dedicated worktrees are preserved for recovery.
 
+Before launching Codex, the runner probes the resolved worktree with `git -c safe.directory=<worktree> rev-parse --show-toplevel` and adds the same path to global `safe.directory` for the runner user. A failure at this point is reported as `worktree_prepare_failed` before any worker edits or GitOps steps run.
+
+Dedicated-worktree workers must make source edits in the current process workspace passed by the runner. Governed MCP workspace edit tools address the canonical project checkout unless an explicit dedicated-worktree edit path is provided, so workers must not use `projects.workspace.file_edit`, `projects.workspace.file_create`, or `projects.workspace.file_delete` for source changes in dedicated-worktree automation. They may still use MCP for bounded evidence, claims, verifier refs, and task status updates.
+
 Example:
 
 ```toml

@@ -288,7 +288,11 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 				if scopedWorkDir, scopedErr := client.resolveTaskScopedRunWorkDir(ctx, projectID, claimed.Run.PlanID, claimed.Run.TaskID, strings.TrimSpace(codexOptions.WorkDir)); scopedErr == nil {
 					runWorkDir = scopedWorkDir
 					runCodexOptions.WorkDir = scopedWorkDir
-					preTaskErr = gitOps.PreTask(ctx, runWorkDir)
+					if prepareErr := prepareRunWorktree(ctx, runWorkDir); prepareErr != nil {
+						preTaskErr = prepareErr
+					} else {
+						preTaskErr = gitOps.PreTask(ctx, runWorkDir)
+					}
 				}
 			}
 		}
@@ -736,6 +740,49 @@ func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptio
 		command.Args = append(args, "-")
 	}
 	return command, nil
+}
+
+func prepareRunWorktree(ctx context.Context, workDir string) error {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return nil
+	}
+	if !filepath.IsAbs(workDir) || strings.ContainsAny(workDir, "\x00\r\n") {
+		return fmt.Errorf("%w: workdir must be absolute and safe", projectautomation.ErrInvalidInput)
+	}
+	if err := runGitForWorktreePrep(ctx, workDir, "-c", "safe.directory="+workDir, "rev-parse", "--show-toplevel"); err != nil {
+		return err
+	}
+	return runGitForWorktreePrep(ctx, workDir, "config", "--global", "--add", "safe.directory", workDir)
+}
+
+func runGitForWorktreePrep(ctx context.Context, workDir string, args ...string) error {
+	command := exec.CommandContext(ctx, "git", args...)
+	command.Dir = workDir
+	if output, err := command.CombinedOutput(); err != nil {
+		summary := strings.TrimSpace(string(output))
+		if summary == "" {
+			summary = err.Error()
+		}
+		return fmt.Errorf("%w: git worktree preparation failed: %s", projectautomation.ErrInvalidInput, summary)
+	}
+	return nil
+}
+
+func dedicatedWorktreeRunnerInstructions(runWorkDir string, baseWorkDir string) []string {
+	runWorkDir = filepath.Clean(strings.TrimSpace(runWorkDir))
+	baseWorkDir = filepath.Clean(strings.TrimSpace(baseWorkDir))
+	if runWorkDir == "" || baseWorkDir == "" || runWorkDir == "." || baseWorkDir == "." || runWorkDir == baseWorkDir {
+		return nil
+	}
+	separator := string(os.PathSeparator)
+	if !strings.Contains(runWorkDir, separator+".mivia-worktrees"+separator) {
+		return nil
+	}
+	return []string{
+		"dedicated worktree run: the runner launched you in the claimed worktree. Treat the current process workspace as the only writable repository checkout.",
+		"Do not use projects.workspace.file_edit, projects.workspace.file_create, or projects.workspace.file_delete for source changes in this run; those MCP workspace edit tools target the canonical base checkout unless an explicit dedicated-worktree edit path is provided. Use local file editing in the current process workspace, then use MCP only for bounded evidence and task status updates.",
+	}
 }
 
 func appendCodexExecutionOptions(args []string, codexOptions codexLaunchOptions) []string {

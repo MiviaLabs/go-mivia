@@ -3538,7 +3538,7 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 
 func isRecoverablePreExecutionFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "worktree_resolve_failed", "claim_failed", "start_failed", "gitops_pre_task_failed", "gitops_dirty_worktree":
+	case "worktree_resolve_failed", "worktree_prepare_failed", "claim_failed", "start_failed", "gitops_pre_task_failed", "gitops_dirty_worktree":
 		return true
 	default:
 		return false
