@@ -18,6 +18,7 @@ services:
     user: "${MIVIA_CONTAINER_USER:-10001:10001}"
     ports:
       - "${MIVIA_HOST_BIND:-127.0.0.1}:${MIVIA_HOST_PORT:-8080}:8080"
+      - "${MIVIA_DASHBOARD_HOST_BIND:-127.0.0.1}:${MIVIA_DASHBOARD_HOST_PORT:-8081}:8081"
     environment:
       MIVIA_CONFIG_PATH: "/app/configs/mivia-server.compose.toml"
       MIVIA_INTERNAL_ADDR: "127.0.0.1:18080"
@@ -36,6 +37,57 @@ services:
       timeout: 3s
       start_period: 5s
       retries: 6
+    restart: unless-stopped
+
+  mivia-dashboard:
+    image: mivia-server:local
+    pull_policy: build
+    init: true
+    network_mode: "service:mivia-server"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        internal_addr="$${MIVIA_DASHBOARD_HTTP_ADDR:-127.0.0.1:18081}"
+        public_port="$${MIVIA_DASHBOARD_PUBLIC_PORT:-8081}"
+        dashboard_pid=""
+        proxy_pid=""
+        shutdown() {
+          if [ "$${proxy_pid:-}" ]; then
+            kill "$${proxy_pid}" 2>/dev/null || true
+          fi
+          if [ "$${dashboard_pid:-}" ]; then
+            kill "$${dashboard_pid}" 2>/dev/null || true
+          fi
+          wait 2>/dev/null || true
+        }
+        trap shutdown INT TERM
+        mivia-dashboard &
+        dashboard_pid="$$!"
+        socat "TCP-LISTEN:$${public_port},fork,reuseaddr,bind=0.0.0.0" "TCP:$${internal_addr}" &
+        proxy_pid="$$!"
+        while :; do
+          if ! kill -0 "$${dashboard_pid}" 2>/dev/null; then
+            wait "$${dashboard_pid}"
+            exit "$$?"
+          fi
+          if ! kill -0 "$${proxy_pid}" 2>/dev/null; then
+            wait "$${proxy_pid}"
+            exit "$$?"
+          fi
+          sleep 1
+        done
+    environment:
+      MIVIA_DASHBOARD_HTTP_ADDR: "127.0.0.1:18081"
+      MIVIA_DASHBOARD_UPSTREAM_URL: "http://127.0.0.1:18080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18081/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 6
+    depends_on:
+      mivia-server:
+        condition: service_healthy
     restart: unless-stopped
 
   mivia-automation-runner:
