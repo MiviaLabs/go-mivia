@@ -2926,6 +2926,11 @@ func shouldQueueReplacementRunForTask(run AutomationRun, task projectworkplan.Wo
 		strings.Contains(strings.TrimSpace(run.FailureCategory), "task_not_ready") {
 		return true
 	}
+	if run.Status == RunStatusFailed &&
+		task.Status == projectworkplan.WorkTaskStatusReady &&
+		strings.TrimSpace(run.FailureCategory) == "gitops_dirty_worktree_scope_requires_plan" {
+		return true
+	}
 	return run.Status == RunStatusBlocked &&
 		strings.TrimSpace(run.FailureCategory) == "work_task_blocked" &&
 		task.Status == projectworkplan.WorkTaskStatusReady

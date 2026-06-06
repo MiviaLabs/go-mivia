@@ -1357,6 +1357,42 @@ func TestQueueReadyDependentAutomationReplacesStaleTaskNotReadyPolicyDeniedRun(t
 	}
 }
 
+func TestQueueReadyDependentAutomationReplacesResolvedDirtyScopePlanRun(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "fix-a", []string{"internal/foo.go"})
+	task.FilesToEdit = []string{"internal/foo.go", ".claude"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "dirty-scope-block-run",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  projectworkplan.WorkTaskStatusBlocked,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		FailureCategory: "gitops_dirty_worktree_scope_requires_plan",
+		SafeSummary:     "gitops_recovery_blocked_after_out_of_scope_dirty_paths",
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.queueReadyDependentAutomation(ctx, automation, task); err != nil {
+		t.Fatalf("queueReadyDependentAutomation returned error: %v", err)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected replacement run after resolved dirty-scope block, got %+v", runs)
+	}
+}
+
 func TestQueueReadyDependentAutomationAllowsReplacementBelowRetryLimit(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
