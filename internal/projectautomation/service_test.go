@@ -757,6 +757,61 @@ func TestClaimNextRunBlocksStaleQueuedReplacementAfterRetryLimit(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunBlocksStaleQueuedReplacementWhenTaskAlreadyBlockedAfterRetryLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "fix-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusBlocked
+	task.BlockedReason = "Automation replacement retry limit reached after repeated GitOps, pre-execution, or external-runner recovery failures."
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	for i := 0; i < defaultAutomationMaxReplacementRunsPerTask; i++ {
+		if _, err := store.CreateRun(ctx, AutomationRun{
+			ID:              fmt.Sprintf("failed-run-%d", i),
+			ProjectID:       automation.ProjectID,
+			AutomationID:    automation.ID,
+			AgentID:         automation.AgentID,
+			PlanID:          task.PlanID,
+			TaskID:          task.ID,
+			Status:          RunStatusFailed,
+			RunnerKind:      RunnerKindCodexCLI,
+			FailureCategory: "gitops_recovery_failed_requires_implementation",
+			SafeSummary:     "replacement_terminal_failure",
+		}); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:                "stale-queued-run",
+		ProjectID:         automation.ProjectID,
+		AutomationID:      automation.ID,
+		AgentID:           automation.AgentID,
+		PlanID:            task.PlanID,
+		TaskID:            task.ID,
+		Status:            RunStatusQueued,
+		RunnerKind:        RunnerKindCodexCLI,
+		OrchestratorRunID: dependencyReadyRunID(task, automation),
+		SafeSummary:       "dependency_ready_automation_queued",
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued automation run after stale replacement is blocked, got %v", err)
+	}
+	blockedRun, err := store.GetRun(ctx, automation.ProjectID, "stale-queued-run")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if blockedRun.Status != RunStatusBlocked || blockedRun.FailureCategory != automationReplacementRetryLimitCategory {
+		t.Fatalf("expected stale queued run blocked by retry limit, got %#v", blockedRun)
+	}
+	if blockedRun.Status == RunStatusPolicyDenied || strings.Contains(blockedRun.FailureCategory, "task_not_ready") {
+		t.Fatalf("stale queued retry-limit run must not become task_not_ready policy denial: %#v", blockedRun)
+	}
+}
+
 func TestClaimNextRunAllowsExplicitQueuedRunAfterReplacementRetryLimit(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()

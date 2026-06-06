@@ -2564,15 +2564,6 @@ func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRu
 		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "task_unavailable")
 		return updated, projectworkplan.WorkTask{}, err
 	}
-	if err := validateExecutableTask(task); err != nil {
-		updated, _ := svc.failRun(ctx, run, RunStatusPolicyDenied, err.Error())
-		return updated, projectworkplan.WorkTask{}, err
-	}
-	if !svc.dependenciesDone(ctx, task) {
-		err := fmt.Errorf("%w: task_dependencies_not_done", ErrInvalidInput)
-		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "task_dependencies_not_done")
-		return updated, projectworkplan.WorkTask{}, err
-	}
 	if reached, err := svc.replacementRetryLimitReached(ctx, run, task); err != nil {
 		return run, projectworkplan.WorkTask{}, err
 	} else if reached {
@@ -2581,6 +2572,15 @@ func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRu
 			return updated, projectworkplan.WorkTask{}, updateErr
 		}
 		return updated, projectworkplan.WorkTask{}, fmt.Errorf("%w: %s", ErrInvalidInput, automationReplacementRetryLimitCategory)
+	}
+	if err := validateExecutableTask(task); err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusPolicyDenied, err.Error())
+		return updated, projectworkplan.WorkTask{}, err
+	}
+	if !svc.dependenciesDone(ctx, task) {
+		err := fmt.Errorf("%w: task_dependencies_not_done", ErrInvalidInput)
+		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "task_dependencies_not_done")
+		return updated, projectworkplan.WorkTask{}, err
 	}
 	run.TaskID = task.ID
 	run.PlanID = task.PlanID
