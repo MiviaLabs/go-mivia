@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
 
 const (
@@ -118,7 +120,7 @@ func (v *workflowValidator) validateSteps(agents []WorkflowAgentDefinition, step
 		v.optionalText(step.VerificationRequirement, base+".verification_requirement", 500)
 		v.optionalText(step.ExpectedOutput, base+".expected_output", 500)
 		v.optionalText(step.FailureCriteria, base+".failure_criteria", 500)
-		v.optionalText(step.ResumeInstructions, base+".resume_instructions", 500)
+		v.optionalText(step.ResumeInstructions, base+".resume_instructions", projectworkplan.MaxResumeInstructionsLength)
 		v.optionalRef(step.AutomationStatus, base+".automation_status")
 		v.optionalRef(step.TriggerKind, base+".trigger_kind")
 		v.optionalRef(step.SchedulePolicy, base+".schedule_policy")

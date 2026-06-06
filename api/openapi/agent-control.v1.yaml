@@ -5037,7 +5037,7 @@ components:
         verification_requirement: {type: string, minLength: 1, maxLength: 500}
         expected_output: {type: string, maxLength: 500}
         failure_criteria: {type: string, maxLength: 500}
-        resume_instructions: {type: string, maxLength: 500}
+        resume_instructions: {type: string}
         knowledge_candidate_refs:
           type: array
           maxItems: 100
@@ -5062,7 +5062,7 @@ components:
           type: array
           maxItems: 100
           items: {type: string, maxLength: 200}
-        resume_instructions: {type: string, maxLength: 500}
+        resume_instructions: {type: string}
         verifier_result_refs:
           type: array
           maxItems: 100

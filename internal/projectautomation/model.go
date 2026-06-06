@@ -34,6 +34,7 @@ const (
 )
 
 const RunSafeSummaryGitOpsPostTaskRecovery = "gitops_post_task_recovery"
+const RunSafeSummaryGitOpsRecoveryRequeuedImplementation = "gitops_recovery_requeued_implementation"
 const RunSafeSummaryPostImplementationReviewQueued = "post_implementation_review_queued"
 const RunSafeSummaryVerifiedTaskDone = "external_codex_cli_verified_task_done"
 

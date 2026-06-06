@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -209,11 +211,12 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			Status:          projectautomation.RunStatusFailed,
 			FailureCategory: "worktree_resolve_failed",
 		}
-		if _, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); reportErr != nil {
+		completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result)
+		if reportErr != nil {
 			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
 			return 1, false, true
 		}
-		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, result.Status)
+		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, completedRun.Status)
 		return 1, true, true
 	}
 	runCodexOptions := codexOptions
@@ -242,26 +245,45 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			return 1, false, true
 		}
 		cleanupTerminalPlanWorktree(ctx, client, gitOpsOptions, projectID, firstNonEmpty(completedRun.PlanID, claimed.Run.PlanID), strings.TrimSpace(codexOptions.WorkDir), runWorkDir)
-		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, status)
+		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, completedRun.Status)
 		if status == projectautomation.RunStatusCompleted {
 			return 0, true, true
 		}
 		return 1, true, true
 	}
 	if runGitOps {
-		if err := gitOps.PreTask(ctx, runWorkDir); err != nil {
+		var preTaskErr error
+		if shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, taskMetadata) {
+			preTaskErr = gitOps.PreTaskWithinScope(ctx, runWorkDir, gitOpsTaskPathspecs(claimed, taskMetadata))
+		} else {
+			preTaskErr = gitOps.PreTask(ctx, runWorkDir)
+		}
+		if preTaskErr != nil {
+			if errors.Is(preTaskErr, projectgitops.ErrDirtyWorktreeScope) && shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, taskMetadata) {
+				if scopedWorkDir, scopedErr := client.resolveTaskScopedRunWorkDir(ctx, projectID, claimed.Run.PlanID, claimed.Run.TaskID, strings.TrimSpace(codexOptions.WorkDir)); scopedErr == nil {
+					runWorkDir = scopedWorkDir
+					runCodexOptions.WorkDir = scopedWorkDir
+					preTaskErr = gitOps.PreTask(ctx, runWorkDir)
+				}
+			}
+		}
+		if preTaskErr != nil {
 			result := projectautomation.CompleteAttemptInput{
 				Status:          projectautomation.RunStatusFailed,
 				FailureCategory: "gitops_pre_task_failed",
 			}
-			if errors.Is(err, projectgitops.ErrDirtyWorktree) {
+			switch {
+			case errors.Is(preTaskErr, projectgitops.ErrDirtyWorktreeScope):
+				result.FailureCategory = "gitops_dirty_worktree_scope"
+			case errors.Is(preTaskErr, projectgitops.ErrDirtyWorktree):
 				result.FailureCategory = "gitops_dirty_worktree"
 			}
-			if _, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result); reportErr != nil {
+			completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result)
+			if reportErr != nil {
 				fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
 				return 1, false, true
 			}
-			fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, result.Status)
+			fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, completedRun.Status)
 			return 1, true, true
 		}
 	}
@@ -300,7 +322,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		return 1, false, true
 	}
 	cleanupTerminalPlanWorktree(ctx, client, gitOpsOptions, projectID, firstNonEmpty(completedRun.PlanID, claimed.Run.PlanID), strings.TrimSpace(codexOptions.WorkDir), runWorkDir)
-	fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, status)
+	fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, completedRun.Status)
 	if status == projectautomation.RunStatusCompleted {
 		return 0, true, true
 	}
@@ -309,6 +331,28 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 
 func shouldRunGitOpsForTask(task runnerWorkTaskMetadata) bool {
 	return len(task.FilesToEdit) > 0
+}
+
+func shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed projectautomation.ClaimedRun, task runnerWorkTaskMetadata) bool {
+	switch strings.TrimSpace(claimed.Run.SafeSummary) {
+	case "dependency_ready_automation_queued", "pre_execution_recovery":
+	default:
+		return false
+	}
+	if len(task.FilesToEdit) == 0 {
+		return false
+	}
+	if strings.TrimSpace(task.BlockedReason) != "" && len(task.EvidenceRefs) > 0 {
+		return true
+	}
+	return len(task.EvidenceRefs) > 0 || len(task.ClaimRefs) > 0 || len(task.ReviewResultRefs) > 0 || len(task.VerifierResultRefs) > 0
+}
+
+func gitOpsTaskPathspecs(claimed projectautomation.ClaimedRun, task runnerWorkTaskMetadata) []string {
+	if len(task.FilesToEdit) > 0 {
+		return append([]string(nil), task.FilesToEdit...)
+	}
+	return append([]string(nil), claimed.CodexInput.LikelyFilesAffected...)
 }
 
 func isReadOnlyReviewRun(claimed projectautomation.ClaimedRun) bool {
@@ -570,7 +614,7 @@ func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID st
 		AutomationID:     claimed.Run.AutomationID,
 		AutomationRunID:  firstNonEmpty(claimed.Run.ID, claimed.CodexInput.AutomationRunID),
 		OperatorID:       firstNonEmpty(claimed.Run.AgentID, fallbackOperatorID),
-		AllowedPathspecs: claimed.CodexInput.LikelyFilesAffected,
+		AllowedPathspecs: gitOpsTaskPathspecs(claimed, taskMetadata),
 		ReviewRefs:       append([]string(nil), taskMetadata.ReviewResultRefs...),
 		VerifierRefs:     append([]string(nil), taskMetadata.VerifierResultRefs...),
 	}
@@ -723,6 +767,7 @@ type runnerWorkTaskMetadata struct {
 	TaskRef            string   `json:"task_ref,omitempty"`
 	Title              string   `json:"title,omitempty"`
 	Status             string   `json:"status,omitempty"`
+	BlockedReason      string   `json:"blocked_reason,omitempty"`
 	FilesToEdit        []string `json:"files_to_edit,omitempty"`
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 	ClaimRefs          []string `json:"claim_refs,omitempty"`
@@ -797,6 +842,48 @@ func (client *runnerClient) resolveRunWorkDir(ctx context.Context, projectID str
 	}
 	if !worktreePathReady(target) {
 		return "", fmt.Errorf("%w: dedicated worktree was not created", projectautomation.ErrInvalidInput)
+	}
+	return target, nil
+}
+
+func (client *runnerClient) resolveTaskScopedRunWorkDir(ctx context.Context, projectID string, planID string, taskID string, baseWorkDir string) (string, error) {
+	baseWorkDir = strings.TrimSpace(baseWorkDir)
+	planID = strings.TrimSpace(planID)
+	taskID = strings.TrimSpace(taskID)
+	if planID == "" || taskID == "" {
+		return "", fmt.Errorf("%w: task scoped worktree requires plan and task", projectautomation.ErrInvalidInput)
+	}
+	plan, err := client.getWorkPlan(ctx, projectID, planID)
+	if err != nil {
+		return "", err
+	}
+	switch strings.TrimSpace(plan.IsolationMode) {
+	case "dedicated_worktree", "shared":
+	default:
+		return "", fmt.Errorf("%w: task scoped worktree requires dedicated or legacy shared plan", projectautomation.ErrInvalidInput)
+	}
+	if strings.TrimSpace(plan.GitWorktreeRef) == "" {
+		return "", fmt.Errorf("%w: task scoped worktree requires git_worktree_ref", projectautomation.ErrInvalidInput)
+	}
+	taskToken := taskScopedRefToken(taskID)
+	if taskToken == "" {
+		return "", fmt.Errorf("%w: unsafe task scoped worktree token", projectautomation.ErrInvalidInput)
+	}
+	scopedPlan := plan
+	scopedPlan.GitWorktreeRef = appendRefToken(plan.GitWorktreeRef, taskToken)
+	scopedPlan.GitBranchRef = appendRefToken(firstNonEmpty(plan.GitBranchRef, "mivia/task"), taskToken)
+	target, err := dedicatedWorktreePath(baseWorkDir, projectID, scopedPlan.GitWorktreeRef)
+	if err != nil {
+		return "", err
+	}
+	if worktreePathReady(target) {
+		return target, nil
+	}
+	if err := client.createDedicatedWorktree(ctx, projectID, scopedPlan); err != nil {
+		return "", err
+	}
+	if !worktreePathReady(target) {
+		return "", fmt.Errorf("%w: task scoped worktree was not created", projectautomation.ErrInvalidInput)
 	}
 	return target, nil
 }
@@ -993,6 +1080,60 @@ func safeWorktreeDirName(value string) string {
 		}
 	}
 	return strings.Trim(builder.String(), ".-")
+}
+
+func appendRefToken(ref string, token string) string {
+	ref = strings.TrimSpace(ref)
+	token = safeWorktreeDirName(token)
+	if ref == "" || token == "" {
+		return ref
+	}
+	if strings.Contains(ref, token) {
+		return ref
+	}
+	suffix := "-" + token
+	maxBase := 200 - len(suffix)
+	if maxBase < 1 {
+		if len(token) > 200 {
+			return token[:200]
+		}
+		return token
+	}
+	if len(ref) > maxBase {
+		ref = ref[:maxBase]
+	}
+	ref = strings.TrimRight(ref, ".:/@+-")
+	if ref == "" {
+		return token
+	}
+	return ref + suffix
+}
+
+func taskScopedRefToken(taskID string) string {
+	safe := safeWorktreeDirName(taskID)
+	if safe == "" {
+		return ""
+	}
+	for strings.Contains(safe, "..") {
+		safe = strings.ReplaceAll(safe, "..", ".")
+	}
+	safe = strings.Trim(safe, ".-_")
+	if safe == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(taskID)))
+	hash := hex.EncodeToString(sum[:])[:12]
+	maxSafe := 80 - len(hash) - 1
+	if maxSafe < 1 {
+		return hash
+	}
+	if len(safe) > maxSafe {
+		safe = strings.TrimRight(safe[:maxSafe], ".-_")
+	}
+	if safe == "" {
+		return hash
+	}
+	return safe + "-" + hash
 }
 
 func firstNonEmpty(values ...string) string {

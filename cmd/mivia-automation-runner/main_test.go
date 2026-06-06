@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -92,6 +93,244 @@ func TestResolveRunWorkDirFallsBackForSharedPlan(t *testing.T) {
 	}
 	if resolved != baseWorkDir {
 		t.Fatalf("expected fallback workdir %q, got %q", baseWorkDir, resolved)
+	}
+}
+
+func TestResolveTaskScopedRunWorkDirCreatesSuffixedDedicatedWorktree(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	taskToken := taskScopedRefToken("work_task_0529")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans/plan-1":
+			writeJSON(t, w, runnerWorkPlan{
+				ID:             "plan-1",
+				ProjectID:      "project-1",
+				IsolationMode:  "dedicated_worktree",
+				GitBaseRef:     "main",
+				GitBranchRef:   "mivia.audit-0606031743-domain-realtime-ops",
+				GitWorktreeRef: "audit.0606031743-domain-realtime-ops",
+			})
+		case "/api/v1/projects/project-1/workspace/git/worktrees":
+			var input struct {
+				WorktreeRef string `json:"worktree_ref"`
+				BranchRef   string `json:"branch_ref"`
+				BaseRef     string `json:"base_ref"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode worktree create input: %v", err)
+			}
+			if input.WorktreeRef != "audit.0606031743-domain-realtime-ops-"+taskToken {
+				t.Fatalf("expected task-scoped worktree ref, got %+v", input)
+			}
+			if input.BranchRef != "mivia.audit-0606031743-domain-realtime-ops-"+taskToken || input.BaseRef != "main" {
+				t.Fatalf("unexpected task-scoped branch/base refs: %+v", input)
+			}
+			target := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-audit.0606031743-domain-realtime-ops-"+taskToken)
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				t.Fatalf("create task-scoped worktree target: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: ../metadata\n"), 0o644); err != nil {
+				t.Fatalf("write task-scoped worktree git file: %v", err)
+			}
+			writeJSON(t, w, map[string]any{"applied": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	resolved, err := client.resolveTaskScopedRunWorkDir(t.Context(), "project-1", "plan-1", "work_task_0529", baseWorkDir)
+	if err != nil {
+		t.Fatalf("resolveTaskScopedRunWorkDir returned error: %v", err)
+	}
+	want := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-audit.0606031743-domain-realtime-ops-"+taskToken)
+	if resolved != want {
+		t.Fatalf("expected %q, got %q", want, resolved)
+	}
+}
+
+func TestResolveTaskScopedRunWorkDirSupportsLegacySharedRefsSafely(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	taskID := "MASS/../../old task\nunsafe"
+	taskToken := taskScopedRefToken(taskID)
+	if taskToken == "" || strings.Contains(taskToken, "..") || strings.ContainsAny(taskToken, "/\\\r\n") || taskToken == taskID {
+		t.Fatalf("expected deterministic safe task token, got %q", taskToken)
+	}
+	var observedWorktreeRef string
+	var observedBranchRef string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/mass/work-plans/legacy-plan":
+			writeJSON(t, w, runnerWorkPlan{
+				ID:             "legacy-plan",
+				ProjectID:      "mass",
+				IsolationMode:  "shared",
+				GitBaseRef:     "main",
+				GitBranchRef:   "fix-MASS-0000-shared-audit",
+				GitWorktreeRef: "audit/0606031743-domain-realtime-ops",
+			})
+		case "/api/v1/projects/mass/workspace/git/worktrees":
+			var input struct {
+				WorktreeRef string `json:"worktree_ref"`
+				BranchRef   string `json:"branch_ref"`
+				BaseRef     string `json:"base_ref"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode worktree create input: %v", err)
+			}
+			observedWorktreeRef = input.WorktreeRef
+			observedBranchRef = input.BranchRef
+			wantWorktreeRef := "audit/0606031743-domain-realtime-ops-" + taskToken
+			if input.WorktreeRef != wantWorktreeRef {
+				t.Fatalf("expected scoped legacy worktree ref %q, got %+v", wantWorktreeRef, input)
+			}
+			wantBranchRef := "fix-MASS-0000-shared-audit-" + taskToken
+			if input.BranchRef != wantBranchRef || input.BaseRef != "main" {
+				t.Fatalf("unexpected scoped legacy branch/base refs: %+v", input)
+			}
+			target, err := dedicatedWorktreePath(baseWorkDir, "mass", input.WorktreeRef)
+			if err != nil {
+				t.Fatalf("dedicated worktree path: %v", err)
+			}
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				t.Fatalf("create task-scoped worktree target: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: ../metadata\n"), 0o644); err != nil {
+				t.Fatalf("write task-scoped worktree git file: %v", err)
+			}
+			writeJSON(t, w, map[string]any{"applied": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	resolved, err := client.resolveTaskScopedRunWorkDir(t.Context(), "mass", "legacy-plan", taskID, baseWorkDir)
+	if err != nil {
+		t.Fatalf("resolveTaskScopedRunWorkDir returned error: %v", err)
+	}
+	if observedWorktreeRef == "" || observedBranchRef == "" {
+		t.Fatal("expected task-scoped worktree creation")
+	}
+	if strings.Contains(observedWorktreeRef, taskID) || strings.Contains(observedBranchRef, taskID) {
+		t.Fatalf("scoped refs must not contain raw unsafe task ID: worktree=%q branch=%q", observedWorktreeRef, observedBranchRef)
+	}
+	want, err := dedicatedWorktreePath(baseWorkDir, "mass", observedWorktreeRef)
+	if err != nil {
+		t.Fatalf("dedicated worktree path: %v", err)
+	}
+	if resolved != want {
+		t.Fatalf("expected %q, got %q", want, resolved)
+	}
+}
+
+func TestRunnerFallsBackToTaskScopedWorktreeForLegacySharedRefs(t *testing.T) {
+	baseWorkDir := initRunnerGitRepo(t)
+	if err := os.WriteFile(filepath.Join(baseWorkDir, "README.md"), []byte("shared dirty state\n"), 0o644); err != nil {
+		t.Fatalf("dirty shared worktree: %v", err)
+	}
+	taskID := "work_task/unsafe legacy"
+	taskToken := taskScopedRefToken(taskID)
+	var createdWorktreeRef string
+	var createdTarget string
+	argsPath := filepath.Join(t.TempDir(), "codex-args.txt")
+	codexPath := fakeCodexRecordingArgs(t, argsPath, 1)
+	var completed projectautomation.CompleteAttemptInput
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/projects/mass/work-tasks/") {
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:           taskID,
+				Status:       "needs_review",
+				FilesToEdit:  []string{"internal/task.go"},
+				EvidenceRefs: []string{"evidence.previous-implementation"},
+			})
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v1/projects/mass/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run: projectautomation.AutomationRun{
+					ID:          "run-1",
+					ProjectID:   "mass",
+					PlanID:      "legacy-plan",
+					TaskID:      taskID,
+					SafeSummary: "pre_execution_recovery",
+				},
+				CodexInput: projectautomation.CodexTaskInput{
+					SchemaVersion:           1,
+					ProjectID:               "mass",
+					AutomationRunID:         "run-1",
+					PlanID:                  "legacy-plan",
+					TaskID:                  taskID,
+					TaskRef:                 "task/ref",
+					Title:                   "Recover shared audit",
+					LikelyFilesAffected:     []string{"internal/task.go"},
+					VerificationRequirement: "orchestrator verifies",
+				},
+				TimeoutMS: 1000,
+			})
+		case "/api/v1/projects/mass/work-plans/legacy-plan":
+			writeJSON(t, w, runnerWorkPlan{
+				ID:             "legacy-plan",
+				ProjectID:      "mass",
+				IsolationMode:  "shared",
+				GitBaseRef:     "main",
+				GitBranchRef:   "mivia/shared-audit",
+				GitWorktreeRef: "shared/audit",
+			})
+		case "/api/v1/projects/mass/workspace/git/worktrees":
+			var input struct {
+				WorktreeRef string `json:"worktree_ref"`
+				BranchRef   string `json:"branch_ref"`
+				BaseRef     string `json:"base_ref"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode worktree create input: %v", err)
+			}
+			createdWorktreeRef = input.WorktreeRef
+			if input.WorktreeRef != "shared/audit-"+taskToken {
+				t.Fatalf("expected task-scoped legacy worktree ref, got %+v", input)
+			}
+			target, err := dedicatedWorktreePath(baseWorkDir, "mass", input.WorktreeRef)
+			if err != nil {
+				t.Fatalf("dedicated worktree path: %v", err)
+			}
+			createdTarget = target
+			runGit(t, baseWorkDir, "worktree", "add", "-B", input.BranchRef, target, input.BaseRef)
+			writeJSON(t, w, map[string]any{"applied": true})
+		case "/api/v1/projects/mass/automation-runs/run-1/attempt-result":
+			if err := json.NewDecoder(r.Body).Decode(&completed); err != nil {
+				t.Fatalf("decode attempt result: %v", err)
+			}
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", Status: completed.Status})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := config.Config{GitOperations: config.GitOperations{Enabled: true, CommitAfterTask: true, RequireCleanBeforeTask: true}}
+	status, _, claimed := claimRunExecuteAndReport(t.Context(), &runnerClient{baseURL: server.URL, http: server.Client()}, cfg, "mass", "agent-1", codexLaunchOptions{Path: codexPath, WorkDir: baseWorkDir, Sandbox: "workspace-write"})
+	if !claimed || status == 0 {
+		t.Fatalf("expected claimed failed codex run after fallback, claimed=%v status=%d", claimed, status)
+	}
+	if createdWorktreeRef == "" || createdTarget == "" {
+		t.Fatal("expected legacy shared run to create task-scoped fallback worktree")
+	}
+	if completed.FailureCategory != "codex_cli_failed" {
+		t.Fatalf("expected codex failure after pre-task fallback, got %+v", completed)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read fake codex args: %v", err)
+	}
+	if !strings.Contains(string(args), "--cd "+createdTarget) {
+		t.Fatalf("expected codex to run in fallback worktree %q, args=%s", createdTarget, string(args))
+	}
+	if strings.Contains(createdWorktreeRef, taskID) {
+		t.Fatalf("fallback worktree ref must not include raw unsafe task ID: %q", createdWorktreeRef)
 	}
 }
 
@@ -216,6 +455,61 @@ func TestShouldRunGitOpsForTaskRequiresEditScope(t *testing.T) {
 	}
 	if !shouldRunGitOpsForTask(runnerWorkTaskMetadata{TaskRef: "fix-bug", FilesToEdit: []string{"internal/foo.go"}}) {
 		t.Fatal("write-capable tasks should run GitOps mutation guards")
+	}
+}
+
+func TestShouldAllowScopedDirtyWorktreeForExistingImplementation(t *testing.T) {
+	claimed := projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{SafeSummary: "dependency_ready_automation_queued"},
+	}
+	task := runnerWorkTaskMetadata{
+		BlockedReason: "toolchain unavailable",
+		FilesToEdit:   []string{"apps/frontend-mobile/lib/foo.dart"},
+		EvidenceRefs:  []string{"evidence.previous-implementation"},
+	}
+	if !shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
+		t.Fatal("expected blocked retry with implementation evidence to allow scoped dirty pre-task")
+	}
+	claimed.Run.SafeSummary = "pre_execution_recovery"
+	if !shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
+		t.Fatal("expected recovered blocked retry with implementation evidence to allow scoped dirty pre-task")
+	}
+	if shouldAllowScopedDirtyWorktreeForExistingImplementation(projectautomation.ClaimedRun{}, task) {
+		t.Fatal("fresh or non-replacement runs must require clean pre-task")
+	}
+	task.BlockedReason = ""
+	if !shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
+		t.Fatal("replacement runs with implementation refs should allow scoped dirty pre-task")
+	}
+	task.EvidenceRefs = nil
+	task.ClaimRefs = []string{"claim.existing-implementation"}
+	if !shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
+		t.Fatal("replacement runs with claim refs should allow scoped dirty pre-task")
+	}
+	task.ClaimRefs = nil
+	if shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
+		t.Fatal("replacement runs without implementation refs must require clean pre-task")
+	}
+	task.FilesToEdit = nil
+	task.EvidenceRefs = []string{"evidence.previous-implementation"}
+	if shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
+		t.Fatal("metadata-only replacement runs must require clean pre-task")
+	}
+}
+
+func TestGitOpsTaskPathspecsPreferFilesToEditOverBroadLikelyFiles(t *testing.T) {
+	claimed := projectautomation.ClaimedRun{
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{"apps"}},
+	}
+	got := gitOpsTaskPathspecs(claimed, runnerWorkTaskMetadata{
+		FilesToEdit: []string{"apps/domain-inventory/src/trpc/trpc.router.ts"},
+	})
+	if strings.Join(got, ",") != "apps/domain-inventory/src/trpc/trpc.router.ts" {
+		t.Fatalf("expected files_to_edit to define write scope, got %+v", got)
+	}
+	got = gitOpsTaskPathspecs(claimed, runnerWorkTaskMetadata{})
+	if strings.Join(got, ",") != "apps" {
+		t.Fatalf("expected likely files fallback, got %+v", got)
 	}
 }
 
@@ -800,6 +1094,49 @@ func fakeCodex(t *testing.T, execStatus int) string {
 		t.Fatalf("write fake codex: %v", err)
 	}
 	return binary
+}
+
+func fakeCodexRecordingArgs(t *testing.T, argsPath string, execStatus int) string {
+	t.Helper()
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-test; exit 0; fi\nprintf '%s' \"$*\" > " + shellQuoteForTest(argsPath) + "\nexit " + string(rune('0'+execStatus)) + "\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	return binary
+}
+
+func initRunnerGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(dir, "internal"), 0o700); err != nil {
+		t.Fatalf("create repo dirs: %v", err)
+	}
+	runGit(t, dir, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("clean\n"), 0o644); err != nil {
+		t.Fatalf("write readme: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "internal", "task.go"), []byte("package internal\n"), 0o644); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "-c", "user.name=Mivia Test", "-c", "user.email=mivia@example.test", "commit", "-m", "initial")
+	return dir
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+}
+
+func shellQuoteForTest(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func TestBuildRunnerCodexCommandSupportsWindowsLauncher(t *testing.T) {

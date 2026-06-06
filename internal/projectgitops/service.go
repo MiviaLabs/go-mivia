@@ -19,6 +19,7 @@ var (
 	ErrBranchPolicy       = errors.New("git operations branch policy failed")
 	ErrCommandFailed      = errors.New("git operations command failed")
 	ErrDirtyWorktree      = errors.New("git operations dirty worktree")
+	ErrDirtyWorktreeScope = errors.New("git operations dirty worktree outside task scope")
 	ErrVerificationFailed = errors.New("git operations verification failed")
 )
 
@@ -51,21 +52,47 @@ func (svc *Service) PreTask(ctx context.Context, workDir string) error {
 	if !svc.options.Enabled || !svc.options.CommitAfterTask || !svc.options.RequireCleanBeforeTask {
 		return nil
 	}
-	workDir = strings.TrimSpace(workDir)
-	if workDir == "" || !filepath.IsAbs(workDir) {
-		return fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
-	}
-	if err := svc.ensureSafeDirectory(ctx, workDir); err != nil {
-		return err
-	}
-	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
+	status, err := svc.preTaskStatus(ctx, workDir)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(status.Stdout) != "" {
+	if strings.TrimSpace(status) != "" {
 		return ErrDirtyWorktree
 	}
 	return nil
+}
+
+func (svc *Service) PreTaskWithinScope(ctx context.Context, workDir string, allowedPathspecs []string) error {
+	if !svc.options.Enabled || !svc.options.CommitAfterTask || !svc.options.RequireCleanBeforeTask {
+		return nil
+	}
+	status, err := svc.preTaskStatus(ctx, workDir)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) == "" {
+		return nil
+	}
+	allowed := sanitizePathspecs(append(allowedPathspecs, svc.generatedArtifactPathspecs()...))
+	if len(allowed) == 0 || changedPathspecsOutsideAllowed(status, allowed) {
+		return ErrDirtyWorktreeScope
+	}
+	return nil
+}
+
+func (svc *Service) preTaskStatus(ctx context.Context, workDir string) (string, error) {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" || !filepath.IsAbs(workDir) {
+		return "", fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
+	}
+	if err := svc.ensureSafeDirectory(ctx, workDir); err != nil {
+		return "", err
+	}
+	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	return status.Stdout, nil
 }
 
 func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTaskResult, error) {
@@ -113,6 +140,9 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	allowedPathspecs := sanitizePathspecs(append(input.AllowedPathspecs, svc.generatedArtifactPathspecs()...))
 	if len(allowedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
+	}
+	if changedPathspecsOutsideAllowed(status.Stdout, allowedPathspecs) {
+		return PostTaskResult{}, ErrDirtyWorktreeScope
 	}
 	changedPathspecs := changedPathspecsWithinAllowed(status.Stdout, allowedPathspecs)
 	if len(changedPathspecs) == 0 {
@@ -196,6 +226,8 @@ func FailureCategory(err error) string {
 		return ""
 	case errors.Is(err, ErrDirtyWorktree):
 		return "gitops_dirty_worktree"
+	case errors.Is(err, ErrDirtyWorktreeScope):
+		return "gitops_dirty_worktree_scope"
 	case errors.Is(err, ErrVerificationFailed):
 		return "gitops_verification_failed"
 	case errors.Is(err, ErrBranchPolicy):
@@ -575,6 +607,25 @@ func changedPathspecsWithinAllowed(status string, allowed []string) []string {
 	return out
 }
 
+func changedPathspecsOutsideAllowed(status string, allowed []string) bool {
+	for _, path := range changedPathsFromStatus(status) {
+		if !isSafeRelativePathspec(path) {
+			return true
+		}
+		matched := false
+		for _, allow := range allowed {
+			if pathMatchesAllowedPathspec(path, allow) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return true
+		}
+	}
+	return false
+}
+
 func changedPathsFromStatus(status string) []string {
 	lines := strings.Split(strings.ReplaceAll(status, "\x00", "\n"), "\n")
 	out := make([]string, 0, len(lines))
@@ -584,7 +635,15 @@ func changedPathsFromStatus(status string) []string {
 		}
 		path := strings.TrimSpace(line[3:])
 		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
-			path = strings.TrimSpace(path[idx+4:])
+			source := strings.TrimSpace(path[:idx])
+			destination := strings.TrimSpace(path[idx+4:])
+			if source != "" {
+				out = append(out, source)
+			}
+			if destination != "" {
+				out = append(out, destination)
+			}
+			continue
 		}
 		if path != "" {
 			out = append(out, path)

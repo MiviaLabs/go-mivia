@@ -19,6 +19,8 @@ import (
 
 var ErrInvalidInput = errors.New("invalid project automation input")
 
+const defaultAutomationMaxRetries = 3
+
 var (
 	refPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
 	emailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
@@ -177,12 +179,8 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 	reviewTaskRef := "review-" + taskRef
 	automationRef := "auto-remediate-" + findingRef
 	reviewAutomationRef := "auto-review-remediation-" + findingRef
-	if gitBranchRef == "" {
-		gitBranchRef = "mivia/remediate-" + findingToken
-	}
-	if gitWorktreeRef == "" {
-		gitWorktreeRef = "wt-remediate-" + findingToken
-	}
+	gitBranchRef = remediationFindingScopedGitRef(gitBranchRef, "mivia/remediate-", findingToken)
+	gitWorktreeRef = remediationFindingScopedGitRef(gitWorktreeRef, "wt-remediate-", findingToken)
 	goal := "Fix confirmed finding " + findingDisplay + ": " + summary
 	if severity != "" {
 		goal = "Fix " + severity + " confirmed finding " + findingDisplay + ": " + summary
@@ -805,6 +803,12 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileExhaustedPreExecutionRecoveryRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
 	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID); err != nil || ok {
 		return claimed, err
 	}
@@ -845,6 +849,12 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileExhaustedPreExecutionRecoveryRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
 	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
@@ -883,7 +893,7 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 		if run.RunnerKind != RunnerKindCodexCLI || !isRecoverablePreExecutionFailure(run.FailureCategory) {
 			continue
 		}
-		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
+		if !svc.canRetryRun(run) {
 			continue
 		}
 		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
@@ -985,11 +995,24 @@ func (svc *Service) reconcileRecoverablePreExecutionRuns(ctx context.Context, pr
 }
 
 func (svc *Service) prepareTaskForPreExecutionRecovery(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (projectworkplan.WorkTask, error) {
-	if task.Status != projectworkplan.WorkTaskStatusClaimed {
-		return task, nil
-	}
 	if strings.TrimSpace(task.ClaimedByRunID) != run.ID {
-		return projectworkplan.WorkTask{}, fmt.Errorf("%w: task_claimed_by_other_run", ErrInvalidInput)
+		if strings.TrimSpace(task.ClaimedByRunID) != "" {
+			return projectworkplan.WorkTask{}, fmt.Errorf("%w: task_claimed_by_other_run", ErrInvalidInput)
+		}
+		claimed, err := svc.workTasks.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+			ProjectID:  run.ProjectID,
+			TaskID:     task.ID,
+			OwnerAgent: run.AgentID,
+			RunID:      run.ID,
+			TraceID:    firstNonEmpty(run.TraceID, run.ID),
+		})
+		if err != nil {
+			return projectworkplan.WorkTask{}, err
+		}
+		task = claimed
+	}
+	if task.Status == projectworkplan.WorkTaskStatusInProgress {
+		return task, nil
 	}
 	return svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{
 		ProjectID:  run.ProjectID,
@@ -1010,7 +1033,7 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 		if run.RunnerKind != RunnerKindCodexCLI || !isRecoverableGitOpsPostTaskFailure(run.FailureCategory) {
 			continue
 		}
-		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
+		if !svc.canRetryRun(run) {
 			continue
 		}
 		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
@@ -1022,6 +1045,9 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
 		if err != nil || !taskHasGitOpsRecoveryCloseout(task) {
+			continue
+		}
+		if !taskOwnsGitOpsRecoveryRun(task, run) {
 			continue
 		}
 		now := svc.now()
@@ -1045,6 +1071,68 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 	return ClaimedRun{}, false, nil
 }
 
+func (svc *Service) reconcileExhaustedGitOpsRecoveryRuns(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil {
+		return nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
+	if err != nil {
+		return err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || !isRecoverableGitOpsPostTaskFailure(run.FailureCategory) {
+			continue
+		}
+		if svc.canRetryRun(run) {
+			continue
+		}
+		if strings.TrimSpace(run.SafeSummary) != RunSafeSummaryGitOpsPostTaskRecovery {
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || !taskHasGitOpsRecoveryCloseout(task) {
+			continue
+		}
+		if !taskOwnsGitOpsRecoveryRun(task, run) {
+			continue
+		}
+		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) reconcileExhaustedPreExecutionRecoveryRuns(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil {
+		return nil
+	}
+	runs, err := svc.recoverablePreExecutionRuns(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || !isRecoverablePreExecutionFailure(run.FailureCategory) || svc.canRetryRun(run) {
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+			continue
+		}
+		switch task.Status {
+		case projectworkplan.WorkTaskStatusReady, projectworkplan.WorkTaskStatusClaimed, projectworkplan.WorkTaskStatusInProgress:
+		default:
+			continue
+		}
+		if _, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, projectID string, agentID string) (ClaimedRun, bool, error) {
 	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
 	if err != nil {
@@ -1053,6 +1141,9 @@ func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, p
 	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
 	for _, run := range runs {
 		if run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.SafeSummary) != RunSafeSummaryPostImplementationReviewQueued || !isRecoverableReviewGitOpsFailure(run.FailureCategory) {
+			continue
+		}
+		if !svc.canRetryRun(run) {
 			continue
 		}
 		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
@@ -1092,6 +1183,14 @@ func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, p
 
 func sameRecoveryClaim(run AutomationRun, startedAt time.Time, safeSummary string) bool {
 	return run.Status == RunStatusRunning && run.SafeSummary == safeSummary && run.StartedAt.Equal(startedAt)
+}
+
+func (svc *Service) canRetryRun(run AutomationRun) bool {
+	limit := automationMaxRetries(svc.options.Agents, run.AgentID)
+	if limit <= 0 {
+		return true
+	}
+	return run.AttemptCount < limit
 }
 
 func (svc *Service) hasAnyRun(ctx context.Context, automation Automation) bool {
@@ -1160,6 +1259,9 @@ func (svc *Service) validateRequiredAutomationReviews(ctx context.Context, autom
 }
 
 func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptInput) (AutomationRun, error) {
+	svc.claimMu.Lock()
+	defer svc.claimMu.Unlock()
+
 	projectID, runID, err := safeProjectObject(input.ProjectID, input.RunID, "run_id")
 	if err != nil {
 		return AutomationRun{}, err
@@ -1176,10 +1278,17 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		return AutomationRun{}, fmt.Errorf("%w: automation run is not externally claimed", ErrInvalidInput)
 	}
 	if run.Status != RunStatusRunning {
-		if status == RunStatusCompleted && run.Status == RunStatusCompleted {
+		if terminalAttemptAlreadyRecorded(run, status) {
 			return run, nil
 		}
-		if !(status == RunStatusCompleted && (run.Status == RunStatusVerifying || svc.completedAttemptMatchesRecoveredTask(ctx, run))) {
+		if status == RunStatusFailed && svc.failedAttemptMatchesAdvancedTask(ctx, run) {
+			return run, nil
+		}
+		if svc.externallyClaimedTaskOwnsRun(ctx, run) && (run.Status == RunStatusClaiming || run.Status == RunStatusStarting) {
+			// The external runner may fail while resolving its worktree or GitOps
+			// setup. At that point the Work Task is already owned by this run,
+			// so accepting the report prevents a stuck starting run.
+		} else if !(status == RunStatusCompleted && (run.Status == RunStatusVerifying || svc.completedAttemptMatchesRecoveredTask(ctx, run))) {
 			return AutomationRun{}, fmt.Errorf("%w: automation run is not externally claimed", ErrInvalidInput)
 		}
 	}
@@ -1252,6 +1361,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	case RunStatusTimeout:
 		run.Status = RunStatusTimeout
 	case RunStatusFailed:
+		if strings.TrimSpace(run.SafeSummary) == RunSafeSummaryGitOpsPostTaskRecovery && isGitOpsRecoveryFailure(failureCategory) {
+			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory)
+		}
 		run.Status = RunStatusFailed
 	default:
 		run.Status = status
@@ -1272,7 +1384,7 @@ func (svc *Service) completedAttemptMatchesRecoveredTask(ctx context.Context, ru
 	}
 	if run.Status == RunStatusFailed && isRecoverableGitOpsPostTaskFailure(run.FailureCategory) {
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
-		return err == nil && strings.TrimSpace(task.ClaimedByRunID) == run.ID && taskHasGitOpsRecoveryCloseout(task)
+		return err == nil && taskOwnsGitOpsRecoveryRun(task, run) && taskHasGitOpsRecoveryCloseout(task)
 	}
 	if run.Status != RunStatusBlocked || !isRecoverablePreExecutionFailure(run.FailureCategory) {
 		return false
@@ -1290,6 +1402,176 @@ func (svc *Service) completedAttemptMatchesRecoveredTask(ctx context.Context, ru
 	default:
 		return false
 	}
+}
+
+func (svc *Service) failedAttemptMatchesAdvancedTask(ctx context.Context, run AutomationRun) bool {
+	if svc == nil || svc.workTasks == nil || run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return false
+	}
+	if run.Status != RunStatusVerifying && run.Status != RunStatusCompleted {
+		return false
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+		return false
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying, projectworkplan.WorkTaskStatusDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func (svc *Service) externallyClaimedTaskOwnsRun(ctx context.Context, run AutomationRun) bool {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" || strings.TrimSpace(run.ID) == "" {
+		return false
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(task.ClaimedByRunID) == run.ID
+}
+
+func terminalAttemptAlreadyRecorded(run AutomationRun, status string) bool {
+	switch status {
+	case RunStatusCompleted, RunStatusFailed, RunStatusTimeout, RunStatusBlocked, RunStatusCancelled:
+		return run.Status == status
+	default:
+		return false
+	}
+}
+
+func isGitOpsRecoveryFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return strings.HasPrefix(category, "gitops_") || category == "automation_task_closeout_missing"
+}
+
+func taskOwnsGitOpsRecoveryRun(task projectworkplan.WorkTask, run AutomationRun) bool {
+	if strings.TrimSpace(task.ClaimedByRunID) == run.ID {
+		return true
+	}
+	if strings.TrimSpace(run.SafeSummary) != RunSafeSummaryGitOpsPostTaskRecovery {
+		return false
+	}
+	return containsRef(task.AgentRunIDs, run.ID)
+}
+
+func recoveryResumeInstructions(sentence string) string {
+	sentence = strings.TrimSpace(sentence)
+	if len(sentence) <= projectworkplan.MaxResumeInstructionsLength {
+		return sentence
+	}
+	return strings.TrimSpace(sentence[:projectworkplan.MaxResumeInstructionsLength])
+}
+
+func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = RunSafeSummaryGitOpsRecoveryRequeuedImplementation
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = RunSafeSummaryGitOpsRecoveryRequeuedImplementation
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "gitops_recovery_failed_requeue_implementation",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			ResumeInstructions: recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; rerun implementation to fix verification, generated artifacts, commit scope, or PR readiness before GitOps post-task is retried."),
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = readyTask.Status
+	run.SafeSummary = RunSafeSummaryGitOpsRecoveryRequeuedImplementation
+	run.FailureCategory = "gitops_recovery_failed_requires_implementation"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+		return updated, nil
+	}
+	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+		return updated, nil
+	}
+	return updated, nil
+}
+
+func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		run.Status = RunStatusFailed
+		run.FailureCategory = "pre_execution_recovery_failed_requires_implementation"
+		run.SafeSummary = "pre_execution_recovery_requeued_implementation"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		run.Status = RunStatusFailed
+		run.FailureCategory = "pre_execution_recovery_failed_requires_implementation"
+		run.SafeSummary = "pre_execution_recovery_requeued_implementation"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "pre_execution_recovery_failed_requeue_implementation",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			ResumeInstructions: recoveryResumeInstructions("Pre-execution recovery failed with " + safeFailure(category) + "; rerun implementation after resolving worktree, GitOps pre-task, or dirty-worktree scope setup before execution is retried."),
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = readyTask.Status
+	run.SafeSummary = "pre_execution_recovery_requeued_implementation"
+	run.FailureCategory = "pre_execution_recovery_failed_requires_implementation"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+		return updated, nil
+	}
+	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+		return updated, nil
+	}
+	return updated, nil
 }
 
 func (svc *Service) reconcileVerifyingRuns(ctx context.Context, projectID string) error {
@@ -1342,6 +1624,28 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 		return run, nil
 	}
 	if run.Status == RunStatusClaiming || run.Status == RunStatusStarting {
+		if task.Status == projectworkplan.WorkTaskStatusDone {
+			return svc.completeRunAfterTaskDone(ctx, run, task)
+		}
+		if isTerminalIncompleteTaskStatus(task.Status) {
+			return svc.finishRunAfterTaskTerminal(ctx, run, task)
+		}
+		if task.Status == projectworkplan.WorkTaskStatusNeedsReview || task.Status == projectworkplan.WorkTaskStatusVerifying {
+			now := svc.now()
+			run.Status = RunStatusVerifying
+			run.WorkTaskStatus = task.Status
+			run.SafeSummary = "external_codex_cli_completed_verification_required"
+			run.FailureCategory = ""
+			if run.FinishedAt.IsZero() {
+				run.FinishedAt = now
+			}
+			run.UpdatedAt = now
+			updated, err := svc.store.UpdateRun(ctx, run)
+			if err != nil {
+				return AutomationRun{}, err
+			}
+			return svc.reconcileVerifyingRun(ctx, updated)
+		}
 		if svc.runStartedBeforeService(run) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
 			return svc.requeueAbandonedRunningRun(ctx, run, task)
 		}
@@ -1434,12 +1738,11 @@ func (svc *Service) requeueAbandonedRunningRun(ctx context.Context, run Automati
 	}
 	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
 		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
-			ProjectID:          task.ProjectID,
-			TaskID:             task.ID,
-			SafeNextAction:     "external_runner_restart_requeue",
-			RunID:              run.ID,
-			TraceID:            firstNonEmpty(run.TraceID, run.ID),
-			ResumeInstructions: task.ResumeInstructions,
+			ProjectID:      task.ProjectID,
+			TaskID:         task.ID,
+			SafeNextAction: "external_runner_restart_requeue",
+			RunID:          run.ID,
+			TraceID:        firstNonEmpty(run.TraceID, run.ID),
 		},
 		Status: projectworkplan.WorkTaskStatusReady,
 	})
@@ -1492,7 +1795,7 @@ func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun
 		Outcome:            automationCloseoutOutcome(task),
 		SafeNextAction:     "automation_closeout",
 		ClaimRefs:          append([]string(nil), task.ClaimRefs...),
-		VerifierResultRefs: append([]string(nil), task.VerifierResultRefs...),
+		VerifierResultRefs: automationCloseoutVerifierRefs(task),
 		ReviewResultRefs:   append([]string(nil), task.ReviewResultRefs...),
 	}
 	if reason := automationReviewExemptReason(task); reason != "" {
@@ -1558,9 +1861,29 @@ func taskHasConfirmedFinding(task projectworkplan.WorkTask) bool {
 }
 
 func taskHasRemediationHandoff(task projectworkplan.WorkTask) bool {
-	for _, ref := range append(append(append([]string{}, task.EvidenceRefs...), task.ArtifactRefs...), task.KnowledgeCandidateRefs...) {
+	refs := append([]string{task.Outcome, task.ResumeInstructions}, task.ClaimRefs...)
+	refs = append(refs, task.EvidenceRefs...)
+	refs = append(refs, task.ArtifactRefs...)
+	refs = append(refs, task.KnowledgeCandidateRefs...)
+	for _, ref := range refs {
 		value := strings.ToLower(strings.TrimSpace(ref))
-		if strings.Contains(value, "remediation-work-plan") || strings.Contains(value, "remediation-work-task") || strings.Contains(value, "remediation-automation") || strings.Contains(value, "create-remediation") {
+		if refIndicatesNoConfirmedBug(value) {
+			continue
+		}
+		if strings.Contains(value, "remediation-work-plan") ||
+			strings.Contains(value, "remediation work plan") ||
+			strings.Contains(value, "remediation-work-task") ||
+			strings.Contains(value, "remediation work task") ||
+			strings.Contains(value, "remediation-automation") ||
+			strings.Contains(value, "remediation automation") ||
+			strings.Contains(value, "create-remediation") ||
+			strings.Contains(value, "created remediation") ||
+			strings.Contains(value, "bug-work-plan") ||
+			strings.Contains(value, "bug work plan") ||
+			strings.Contains(value, "bug-work-task") ||
+			strings.Contains(value, "bug work task") ||
+			strings.Contains(value, "auto-remediate-") ||
+			strings.Contains(value, "auto-review-remediation-") {
 			return true
 		}
 	}
@@ -1809,7 +2132,7 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 		if run.TaskID != task.ID {
 			continue
 		}
-		if shouldQueueReplacementRun(run) {
+		if shouldQueueReplacementRunForTask(run, task) {
 			continue
 		}
 		return nil
@@ -1848,12 +2171,23 @@ func shouldQueueReplacementRun(run AutomationRun) bool {
 	case RunStatusFailed:
 		return isRecoverablePreExecutionFailure(run.FailureCategory) ||
 			isRecoverableGitOpsPostTaskFailure(run.FailureCategory) ||
-			isRecoverableReviewGitOpsFailure(run.FailureCategory)
+			isRecoverableReviewGitOpsFailure(run.FailureCategory) ||
+			strings.TrimSpace(run.FailureCategory) == "gitops_recovery_failed_requires_implementation" ||
+			strings.TrimSpace(run.FailureCategory) == "pre_execution_recovery_failed_requires_implementation"
 	case RunStatusTimeout:
 		return strings.TrimSpace(run.FailureCategory) == "external_runner_interrupted"
 	default:
 		return false
 	}
+}
+
+func shouldQueueReplacementRunForTask(run AutomationRun, task projectworkplan.WorkTask) bool {
+	if shouldQueueReplacementRun(run) {
+		return true
+	}
+	return run.Status == RunStatusBlocked &&
+		strings.TrimSpace(run.FailureCategory) == "work_task_blocked" &&
+		task.Status == projectworkplan.WorkTaskStatusReady
 }
 
 func dependencyReadyRunID(task projectworkplan.WorkTask, automation Automation) string {
@@ -2512,6 +2846,18 @@ func automationMaxRuntime(agents []AutomationAgent, agentID string, fallback tim
 	return 10 * time.Minute
 }
 
+func automationMaxRetries(agents []AutomationAgent, agentID string) int {
+	for _, agent := range agents {
+		if agent.ID == agentID {
+			if agent.MaxRetries > 0 {
+				return agent.MaxRetries
+			}
+			return defaultAutomationMaxRetries
+		}
+	}
+	return defaultAutomationMaxRetries
+}
+
 func (svc *Service) createRejectedRun(ctx context.Context, automation Automation, planID string, taskID string, owner string, input SubmitRunInput, status string, reason string) (AutomationRun, error) {
 	now := svc.now()
 	run := AutomationRun{ID: svc.newID("automation_run"), ProjectID: automation.ProjectID, AutomationID: automation.ID, AgentID: firstNonEmpty(owner, automation.AgentID), PlanID: planID, TaskID: taskID, Status: status, RunnerKind: strings.TrimSpace(input.RunnerKind), FailureCategory: safeFailure(reason), CreatedAt: now, UpdatedAt: now, FinishedAt: now}
@@ -2768,7 +3114,7 @@ func validateExecutableTask(task projectworkplan.WorkTask) error {
 
 func isRecoverableGitOpsPostTaskFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "gitops_post_task_failed", "gitops_branch_policy_failed", "gitops_command_failed", "gitops_invalid_input", "gitops_verification_failed":
+	case "gitops_post_task_failed", "gitops_branch_policy_failed", "gitops_command_failed", "gitops_invalid_input", "gitops_verification_failed", "gitops_dirty_worktree_scope":
 		return true
 	default:
 		return false
@@ -2777,7 +3123,7 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 
 func isRecoverablePreExecutionFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "worktree_resolve_failed", "claim_failed", "start_failed", "gitops_pre_task_failed":
+	case "worktree_resolve_failed", "claim_failed", "start_failed", "gitops_pre_task_failed", "gitops_dirty_worktree", "gitops_dirty_worktree_scope":
 		return true
 	default:
 		return false
@@ -2785,6 +3131,9 @@ func isRecoverablePreExecutionFailure(category string) bool {
 }
 
 func preExecutionRecoveryTaskMatchesRun(task projectworkplan.WorkTask, run AutomationRun) bool {
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		return false
+	}
 	if validateExecutableTask(task) == nil {
 		return true
 	}
@@ -2798,7 +3147,7 @@ func preExecutionRecoveryTaskMatchesRun(task projectworkplan.WorkTask, run Autom
 
 func isRecoverableReviewGitOpsFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "gitops_dirty_worktree", "gitops_pre_task_failed":
+	case "gitops_dirty_worktree", "gitops_dirty_worktree_scope", "gitops_pre_task_failed":
 		return true
 	default:
 		return false
@@ -2846,6 +3195,9 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 	default:
 		return false
 	}
+	if isReadOnlyScannerTask(task) && readOnlyScannerTaskHasCloseoutOutput(task) {
+		return true
+	}
 	if len(task.VerifierResultRefs) == 0 {
 		return false
 	}
@@ -2886,6 +3238,44 @@ func metadataOnlyTaskHasCloseoutEvidence(task projectworkplan.WorkTask) bool {
 		len(task.ArtifactRefs) > 0 ||
 		len(task.KnowledgeCandidateRefs) > 0 ||
 		strings.TrimSpace(task.Outcome) != ""
+}
+
+func readOnlyScannerTaskHasCloseoutOutput(task projectworkplan.WorkTask) bool {
+	if len(task.VerifierResultRefs) > 0 ||
+		len(task.ClaimRefs) > 0 ||
+		len(task.ArtifactRefs) > 0 ||
+		len(task.KnowledgeCandidateRefs) > 0 ||
+		strings.TrimSpace(task.Outcome) != "" {
+		return true
+	}
+	for _, ref := range task.EvidenceRefs {
+		if isMeaningfulScannerEvidenceRef(ref) {
+			return true
+		}
+	}
+	return false
+}
+
+func automationCloseoutVerifierRefs(task projectworkplan.WorkTask) []string {
+	refs := append([]string(nil), task.VerifierResultRefs...)
+	if len(refs) == 0 && isReadOnlyScannerTask(task) && readOnlyScannerTaskHasCloseoutOutput(task) {
+		refs = append(refs, "verifier.automation.read-only-scanner-output")
+	}
+	return refs
+}
+
+func isMeaningfulScannerEvidenceRef(ref string) bool {
+	value := strings.ToLower(strings.TrimSpace(ref))
+	if value == "" {
+		return false
+	}
+	if strings.HasPrefix(value, "automation_run") ||
+		strings.Contains(value, "automation-run") ||
+		strings.Contains(value, "action-start") ||
+		strings.Contains(value, "run-start") {
+		return false
+	}
+	return true
 }
 
 func automationCloseoutOutcome(task projectworkplan.WorkTask) string {
@@ -3055,6 +3445,37 @@ func safeBranchToken(value string) string {
 		return token[:80]
 	}
 	return token
+}
+
+func remediationFindingScopedGitRef(value string, fallbackPrefix string, findingToken string) string {
+	value = strings.TrimSpace(value)
+	findingToken = safeBranchToken(findingToken)
+	if value == "" {
+		return fallbackPrefix + findingToken
+	}
+	if strings.Contains(value, findingToken) {
+		return value
+	}
+	suffix := "-" + findingToken
+	maxBase := 200 - len(suffix)
+	if maxBase < 1 {
+		return findingToken[:minInt(len(findingToken), 200)]
+	}
+	if len(value) > maxBase {
+		value = value[:maxBase]
+	}
+	value = strings.TrimRight(value, ".:/@+-")
+	if value == "" {
+		return fallbackPrefix + findingToken
+	}
+	return value + suffix
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func safeDisplayRef(value string) string {

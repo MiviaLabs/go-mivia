@@ -283,7 +283,7 @@ type taskActionMCPInput struct {
 }
 
 func (input taskActionMCPInput) action() WorkTaskActionInput {
-	return WorkTaskActionInput{ProjectID: input.projectID(), TaskID: input.TaskID, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, ContextPackRefs: input.ContextPackRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, KnowledgeRefs: input.KnowledgeRefs, Outcome: input.Outcome, BlockedReason: input.BlockedReason, BlockedByTaskIDs: input.BlockedByTaskIDs, ResumeInstructions: input.ResumeInstructions, VerifierResultRefs: input.VerifierResultRefs, ReviewResultRefs: input.ReviewResultRefs, ReviewExemptReason: input.ReviewExemptReason}
+	return WorkTaskActionInput{ProjectID: input.projectID(), TaskID: input.TaskID, OwnerAgent: input.OwnerAgent, RunID: input.RunID, TraceID: input.TraceID, ContextPackRefs: input.ContextPackRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, KnowledgeRefs: input.KnowledgeRefs, Outcome: input.Outcome, SafeNextAction: input.SafeNextAction, BlockedReason: input.BlockedReason, BlockedByTaskIDs: input.BlockedByTaskIDs, ResumeInstructions: input.ResumeInstructions, VerifierResultRefs: input.VerifierResultRefs, ReviewResultRefs: input.ReviewResultRefs, ReviewExemptReason: input.ReviewExemptReason}
 }
 
 type taskStatusMCPInput struct {
@@ -354,7 +354,9 @@ func (input updatePlanStatusInput) projectID() string {
 func (input resumePlanInput) projectID() string    { return firstNonEmpty(input.ID, input.ProjectID) }
 func (input createTaskMCPInput) projectID() string { return firstNonEmpty(input.ID, input.ProjectID) }
 func (input createTaskMCPInput) planID() string    { return firstNonEmpty(input.PlanID, input.WorkPlanID) }
-func (input createTaskMCPInput) runID() string     { return firstNonEmpty(input.RunID, input.CreatedByRunID) }
+func (input createTaskMCPInput) runID() string {
+	return firstNonEmpty(input.RunID, input.CreatedByRunID)
+}
 func (input createTaskMCPInput) description() string {
 	if strings.TrimSpace(input.Description) != "" {
 		return input.Description

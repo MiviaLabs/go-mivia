@@ -89,7 +89,7 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 func TestPostTaskStagesOnlyChangedFilesInsideAllowedScopes(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
-		{Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n?? apps/domain-inventory/src/trpc/__tests__/family-pricing-user-context.spec.ts\n M README.md\n"},
+		{Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n?? apps/domain-inventory/src/trpc/__tests__/family-pricing-user-context.spec.ts\n"},
 		{Stdout: "fix-MASS-0000-family-pricing\n"},
 		{},
 		{},
@@ -123,12 +123,107 @@ func TestPostTaskStagesOnlyChangedFilesInsideAllowedScopes(t *testing.T) {
 		t.Fatalf("expected seven git commands, got %d", len(runner.commands))
 	}
 	addArgs := strings.Join(runner.commands[3].Args, "\n")
-	if strings.Contains(addArgs, "\nservices") || strings.Contains(addArgs, "\npackages") || strings.Contains(addArgs, "\nREADME.md") {
+	if strings.Contains(addArgs, "\nservices") || strings.Contains(addArgs, "\npackages") {
 		t.Fatalf("unexpected add args: %q", addArgs)
 	}
 	if !strings.Contains(addArgs, "apps/domain-inventory/src/trpc/trpc.router.ts") ||
 		!strings.Contains(addArgs, "apps/domain-inventory/src/trpc/__tests__/family-pricing-user-context.spec.ts") {
 		t.Fatalf("expected changed app files to be staged, got %q", addArgs)
+	}
+}
+
+func TestPostTaskRejectsDirtyFilesOutsideAllowedScopes(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n M README.md\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+		RemoteName:      "origin",
+		GitHubCLIPath:   "gh",
+	}, runner)
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"apps/domain-inventory/src/trpc"},
+	})
+	if !errors.Is(err, ErrDirtyWorktreeScope) {
+		t.Fatalf("expected dirty worktree scope error, got %v", err)
+	}
+	if got := FailureCategory(err); got != "gitops_dirty_worktree_scope" {
+		t.Fatalf("expected scoped dirty category, got %q", got)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected trust probe and status only, got %d", len(runner.commands))
+	}
+}
+
+func TestPostTaskRejectsRenameFromOutsideAllowedScope(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: "R  README.md -> apps/domain-inventory/src/trpc/readme.ts\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+		RemoteName:      "origin",
+		GitHubCLIPath:   "gh",
+	}, runner)
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"apps/domain-inventory/src/trpc"},
+	})
+	if !errors.Is(err, ErrDirtyWorktreeScope) {
+		t.Fatalf("expected dirty worktree scope error for rename source, got %v", err)
+	}
+}
+
+func TestPostTaskAllowsRenameWithinAllowedScope(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: "R  apps/domain-inventory/src/trpc/old.ts -> apps/domain-inventory/src/trpc/new.ts\n"},
+		{Stdout: "fix-MASS-0000-family-pricing\n"},
+		{},
+		{},
+		{},
+		{},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+		RemoteName:      "origin",
+		GitHubCLIPath:   "gh",
+	}, runner)
+
+	if _, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"apps/domain-inventory/src/trpc"},
+	}); err != nil {
+		t.Fatalf("expected in-scope rename to commit: %v", err)
+	}
+	addArgs := strings.Join(runner.commands[3].Args, "\n")
+	if !strings.Contains(addArgs, "apps/domain-inventory/src/trpc/old.ts") || !strings.Contains(addArgs, "apps/domain-inventory/src/trpc/new.ts") {
+		t.Fatalf("expected both rename paths to be staged, got %q", addArgs)
 	}
 }
 
@@ -424,6 +519,28 @@ func TestPreTaskRejectsDirtyWorktreeWhenRequired(t *testing.T) {
 	}
 	if got := strings.Join(runner.commands[0].Args, " "); got != "-c safe.directory=/tmp/worktree rev-parse --show-toplevel" {
 		t.Fatalf("expected trust probe command, got %q", got)
+	}
+}
+
+func TestPreTaskWithinScopeAllowsOnlyTaskScopedDirtyWorktree(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{{}, {Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n"}}}
+	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RequireCleanBeforeTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)
+
+	if err := svc.PreTaskWithinScope(context.Background(), "/tmp/worktree", []string{"apps/domain-inventory/src/trpc"}); err != nil {
+		t.Fatalf("expected in-scope dirty worktree to pass scoped pre-task: %v", err)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected trust probe and status commands, got %d", len(runner.commands))
+	}
+}
+
+func TestPreTaskWithinScopeRejectsUnrelatedDirtyWorktree(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{{}, {Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n M apps/sos/src/workflows/sos.ts\n"}}}
+	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RequireCleanBeforeTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)
+
+	err := svc.PreTaskWithinScope(context.Background(), "/tmp/worktree", []string{"apps/domain-inventory/src/trpc"})
+	if !errors.Is(err, ErrDirtyWorktreeScope) {
+		t.Fatalf("expected scoped dirty worktree error, got %v", err)
 	}
 }
 
