@@ -51,6 +51,8 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 	workflowhttpapi "github.com/MiviaLabs/go-mivia/internal/projectworkflow/httpapi"
 	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflowchain"
+	chainstore "github.com/MiviaLabs/go-mivia/internal/projectworkflowchain/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 	workplanhttpapi "github.com/MiviaLabs/go-mivia/internal/projectworkplan/httpapi"
 	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
@@ -254,7 +256,6 @@ func run() error {
 			Statuses: append([]string(nil), cfg.Automation.WorkPlanStatusTrigger.Statuses...),
 		},
 	})
-	projectWorkPlanService.SetStatusChangeHandler(projectAutomationService)
 	projectAutomationExecutor := projectautomation.NewExecutor(projectAutomationService, projectautomation.ExecutorOptions{
 		Enabled:               cfg.Automation.Enabled,
 		RunnerEnabled:         cfg.Automation.RunnerEnabled,
@@ -269,6 +270,8 @@ func run() error {
 	if err := loadConfiguredWorkflows(ctx, cfg, projectWorkflowService, logger); err != nil {
 		return err
 	}
+	projectWorkflowChainService := projectworkflowchain.New(chainstore.NewLadybugStore(metadataPersistentGraph), projectWorkflowService, projectWorkPlanService, workflowChainConfigs(cfg))
+	projectWorkPlanService.SetStatusChangeHandler(workPlanStatusFanout{handlers: []projectworkplan.WorkPlanStatusChangeHandler{projectAutomationService, projectWorkflowChainService}})
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
 		LiveUpdatesEnabled:       cfg.Ingestion.LiveUpdatesEnabled,
 		DebounceInterval:         cfg.Ingestion.DebounceInterval,
@@ -354,7 +357,7 @@ func run() error {
 		}, diagnostics.RuntimeOptions{Enabled: cfg.Debug.RuntimeMetricsEnabled})
 		diagnostics.RegisterRoutes(mux, diagnosticsService)
 	}
-	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationAndWorkflow(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectConfidenceService, projectConfidenceInputs, projectKnowledgeService, projectKnowledgeInputs, projectWorkPlanService, projectAutomationService, projectWorkflowService, projectIntegrationService, diagnosticsService, activityRecorder, logger))
+	mux.Handle("/mcp", mcpapi.NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationWorkflowAndChains(agentService, researchService, projectRegistry, projectDigestService, projectIngestionScheduler, projectWorkspaceService, projectEvidenceService, projectConfidenceService, projectConfidenceInputs, projectKnowledgeService, projectKnowledgeInputs, projectWorkPlanService, projectAutomationService, projectWorkflowService, projectWorkflowChainService, projectIntegrationService, diagnosticsService, activityRecorder, logger))
 
 	handler := httpserver.Chain(
 		mux,
@@ -446,6 +449,59 @@ func loadConfiguredWorkflows(ctx context.Context, cfg config.Config, svc *projec
 		logger.Info("workflow definitions loaded", slog.Int("workflow_count", len(result.Workflows)), slog.Int("permission_snapshot_count", len(result.PermissionSnapshotIDs)))
 	}
 	return nil
+}
+
+type workPlanStatusFanout struct {
+	handlers []projectworkplan.WorkPlanStatusChangeHandler
+}
+
+func (fanout workPlanStatusFanout) HandleWorkPlanStatusChanged(ctx context.Context, change projectworkplan.WorkPlanStatusChange) error {
+	for _, handler := range fanout.handlers {
+		if handler == nil {
+			continue
+		}
+		if err := handler.HandleWorkPlanStatusChanged(ctx, change); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func workflowChainConfigs(cfg config.Config) []projectworkflowchain.Config {
+	out := make([]projectworkflowchain.Config, 0)
+	for _, project := range cfg.Projects {
+		gitOpsEnabled := cfg.GitOperations.Enabled
+		if project.GitOperations != nil {
+			gitOpsEnabled = project.GitOperations.Enabled
+		}
+		for _, chain := range project.WorkflowChains {
+			converted := projectworkflowchain.Config{
+				ProjectID:            project.ID,
+				ChainRef:             chain.ChainRef,
+				Enabled:              chain.Enabled,
+				InputKind:            chain.InputKind,
+				InputPattern:         chain.InputPattern,
+				ContextProvider:      chain.ContextProvider,
+				ContextMode:          chain.ContextMode,
+				DefaultTitleTemplate: chain.DefaultTitleTemplate,
+				GitOpsMode:           chain.GitOpsMode,
+				GitOpsEnabled:        gitOpsEnabled,
+				Stages:               make([]projectworkflowchain.StageConfig, 0, len(chain.Stages)),
+			}
+			for _, stage := range chain.Stages {
+				converted.Stages = append(converted.Stages, projectworkflowchain.StageConfig{
+					StageRef:                 stage.StageRef,
+					WorkflowRef:              stage.WorkflowRef,
+					Trigger:                  stage.Trigger,
+					DependsOn:                append([]string(nil), stage.DependsOn...),
+					AutomationRefTemplate:    stage.AutomationRefTemplate,
+					RequiredStatusBeforeNext: stage.RequiredStatusBeforeNext,
+				})
+			}
+			out = append(out, converted)
+		}
+	}
+	return out
 }
 
 func resolveWorkflowDefinitionPath(configPath string, path string) (string, error) {

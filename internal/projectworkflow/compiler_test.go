@@ -33,8 +33,8 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if len(result.ReviewerTaskIDs) != 2 {
 		t.Fatalf("expected implementation and automation reviewer tasks, got %#v", result.ReviewerTaskIDs)
 	}
-	if len(result.AutomationIDs) != 1 {
-		t.Fatalf("expected one automation, got %#v", result.AutomationIDs)
+	if len(result.AutomationIDs) != 2 {
+		t.Fatalf("expected executor and reviewer automations, got %#v", result.AutomationIDs)
 	}
 	if len(result.PermissionSnapshotIDs) != 3 {
 		t.Fatalf("expected agent permission snapshots, got %#v", result.PermissionSnapshotIDs)
@@ -94,16 +94,29 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if !strings.Contains(automationReviewer.Description, "Agent instructions: Review independently before approval.") || !strings.Contains(automationReviewer.Description, "Gate instructions: Review automation refs") {
 		t.Fatalf("automation reviewer task missing reviewer agent or gate instructions: %#v", automationReviewer)
 	}
-	if len(automationReviewer.DependencyTaskIDs) != 1 || automationReviewer.DependencyTaskIDs[0] != impl.ID {
-		t.Fatalf("automation reviewer task must depend on implementation task: %#v", automationReviewer)
+	if len(automationReviewer.DependencyTaskIDs) != 0 {
+		t.Fatalf("automation reviewer task must not depend on tasks it gates: %#v", automationReviewer)
 	}
 	if !containsString(automationReviewer.EvidenceNeeded, "automation ref") || !containsString(automationReviewer.EvidenceNeeded, "allowed task refs") {
 		t.Fatalf("automation reviewer task missing required evidence: %#v", automationReviewer)
 	}
 
-	createdAutomation, err := automations.GetAutomation(ctx, "project-1", result.AutomationIDs[0])
-	if err != nil {
-		t.Fatalf("get automation: %v", err)
+	var createdAutomation projectautomation.Automation
+	var reviewAutomation projectautomation.Automation
+	for _, automationID := range result.AutomationIDs {
+		automation, err := automations.GetAutomation(ctx, "project-1", automationID)
+		if err != nil {
+			t.Fatalf("get automation %s: %v", automationID, err)
+		}
+		switch {
+		case len(automation.AllowedTaskRefs) == 1 && automation.AllowedTaskRefs[0] == automationReviewer.TaskRef:
+			reviewAutomation = automation
+		default:
+			createdAutomation = automation
+		}
+	}
+	if createdAutomation.ID == "" || reviewAutomation.ID == "" {
+		t.Fatalf("expected executor and review automations, got executor=%#v review=%#v", createdAutomation, reviewAutomation)
 	}
 	if createdAutomation.PlanID != result.WorkPlanID || !strings.HasPrefix(createdAutomation.AutomationRef, "workflow-ref:run-1:compile-") || !strings.HasSuffix(createdAutomation.AutomationRef, ":automation-step") {
 		t.Fatalf("unexpected automation refs: %#v", createdAutomation)
@@ -120,6 +133,24 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if createdAutomation.SourceKind != projectautomation.AutomationSourceWorkflow {
 		t.Fatalf("automation must be marked workflow-sourced: %#v", createdAutomation)
 	}
+	if reviewAutomation.PlanID != result.WorkPlanID || !strings.HasPrefix(reviewAutomation.AutomationRef, "workflow-ref:run-1:compile-") || !strings.HasSuffix(reviewAutomation.AutomationRef, ":review-automation-step-review-automation") {
+		t.Fatalf("unexpected review automation refs: %#v", reviewAutomation)
+	}
+	if reviewAutomation.AgentID != "reviewer" || reviewAutomation.TriggerKind != projectautomation.TriggerKindAutomatic || reviewAutomation.Status != projectautomation.AutomationStatusEnabled {
+		t.Fatalf("review automation must be enabled automatic reviewer work: %#v", reviewAutomation)
+	}
+	if reviewAutomation.SchedulePolicy != "on-ready-task" {
+		t.Fatalf("review automation must use the ready-task scheduler: %#v", reviewAutomation)
+	}
+	if len(reviewAutomation.AllowedTaskRefs) != 1 || reviewAutomation.AllowedTaskRefs[0] != automationReviewer.TaskRef {
+		t.Fatalf("review automation must be scoped to generated review task ref: %#v", reviewAutomation.AllowedTaskRefs)
+	}
+	if strings.Contains(reviewAutomation.Purpose, automationReviewer.TaskRef) || strings.Contains(reviewAutomation.Purpose, "raw_prompt") {
+		t.Fatalf("review automation purpose must not embed task refs or unsafe markers: %#v", reviewAutomation)
+	}
+	if !strings.HasPrefix(reviewAutomation.PermissionRef, "permission_snapshot:") || reviewAutomation.SourceKind != projectautomation.AutomationSourceWorkflow {
+		t.Fatalf("review automation must have workflow source and permission snapshot: %#v", reviewAutomation)
+	}
 }
 
 func TestCompileWorkflowDryRunPersistsNothing(t *testing.T) {
@@ -131,7 +162,7 @@ func TestCompileWorkflowDryRunPersistsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry-run compile workflow: %v", err)
 	}
-	if !result.DryRun || result.WorkPlanID == "" || len(result.WorkTaskIDs) != 1 || len(result.ReviewerTaskIDs) != 2 || len(result.AutomationIDs) != 1 {
+	if !result.DryRun || result.WorkPlanID == "" || len(result.WorkTaskIDs) != 1 || len(result.ReviewerTaskIDs) != 2 || len(result.AutomationIDs) != 2 {
 		t.Fatalf("unexpected dry-run summary: %#v", result)
 	}
 	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
@@ -212,8 +243,8 @@ func TestCompileWorkflowAllowsRepeatedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list automations: %v", err)
 	}
-	if len(autos) != 2 {
-		t.Fatalf("expected two compiled automations, got %#v", autos)
+	if len(autos) != 4 {
+		t.Fatalf("expected two executor and two reviewer automations, got %#v", autos)
 	}
 }
 

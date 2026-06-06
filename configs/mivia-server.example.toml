@@ -87,6 +87,7 @@ definition_paths = [
   "configs/workflows/governed-decomposition-planning.toml",
   "configs/workflows/governed-workplan-implementation.toml",
   "configs/workflows/governed-code-review-bug-planning.toml",
+  "configs/workflows/governed-post-implementation-validation.toml",
 ]
 
 [automation]
@@ -300,6 +301,39 @@ sensitive_marker_policy = "skip_file"
 # what_changed_template = "Jira: https://example.atlassian.net/browse/{{ticket_ref}}\n\nCompleted {{work_task_title}} for {{project_id}}."
 # how_verified_template = "Agent workflow:\n- plan-task: yes (https://example.atlassian.net/browse/{{ticket_ref}})\n- pr-audit: N/A\n\nProject ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 # tests_template = "{{test_results}}"
+
+[[projects.workflow_chains]]
+chain_ref = "example-governed-ticket-delivery"
+enabled = false
+input_kind = "jira_issue_key"
+input_pattern = "^ABC-[0-9]+$"
+context_provider = "jira"
+context_mode = "local_ingested"
+default_title_template = "{{input_ref}} governed delivery"
+gitops_mode = "draft_pr_after_post_validation"
+
+[[projects.workflow_chains.stages]]
+stage_ref = "decomposition"
+workflow_ref = "governed-decomposition-planning"
+trigger = "on_chain_start"
+automation_ref_template = "{{chain_ref}}.{{input_ref}}.decomposition"
+required_status_before_next = "completed"
+
+[[projects.workflow_chains.stages]]
+stage_ref = "implementation"
+workflow_ref = "governed-workplan-implementation"
+trigger = "after_stage_review_passed"
+depends_on = ["decomposition"]
+automation_ref_template = "{{chain_ref}}.{{input_ref}}.implementation"
+required_status_before_next = "completed"
+
+[[projects.workflow_chains.stages]]
+stage_ref = "post-validation"
+workflow_ref = "governed-post-implementation-validation"
+trigger = "after_stage_review_passed"
+depends_on = ["implementation"]
+automation_ref_template = "{{chain_ref}}.{{input_ref}}.post-validation"
+required_status_before_next = "completed"
 
 # Optional Atlassian Cloud project integrations. Credentials are references only:
 # never put raw email addresses, API tokens, passwords, or Basic auth values here.

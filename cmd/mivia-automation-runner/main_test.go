@@ -1085,6 +1085,80 @@ func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
 	}
 }
 
+func TestRunOnceClosesOutReadOnlyReviewTaskAfterCodexSuccess(t *testing.T) {
+	setReadableCodexHome(t)
+	var attemptCompleted atomic.Int32
+	var verifierAttached atomic.Int32
+	var taskCompleted atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			input := testCodexInput("run-1")
+			input.TaskRef = "review-run-planning-automation"
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", TaskID: "task-1", TraceID: "trace-1"},
+				CodexInput: input,
+				TimeoutMS:  1000,
+			})
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			if taskCompleted.Load() > 0 {
+				writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "done", ReviewResultRefs: []string{"review:run-1"}, VerifierResultRefs: []string{"verifier:run-1"}})
+				return
+			}
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "in_progress"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/verifier-results":
+			var input struct {
+				Ref             string `json:"ref"`
+				Status          string `json:"status"`
+				AttachedByRunID string `json:"attached_by_run_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode verifier result: %v", err)
+			}
+			if input.Ref != "verifier:run-1" || input.Status != "passed" || input.AttachedByRunID != "run-1" {
+				t.Fatalf("unexpected verifier result input: %+v", input)
+			}
+			verifierAttached.Add(1)
+			writeJSON(t, w, map[string]string{"ref": input.Ref})
+		case "/api/v1/projects/project-1/work-tasks/task-1/complete":
+			var input struct {
+				RunID              string   `json:"run_id"`
+				VerifierResultRefs []string `json:"verifier_result_refs"`
+				ReviewExemptReason string   `json:"review_exempt_reason"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode complete task: %v", err)
+			}
+			if input.RunID != "run-1" || strings.Join(input.VerifierResultRefs, ",") != "verifier:run-1" || !strings.Contains(input.ReviewExemptReason, "nested self-review is prohibited") {
+				t.Fatalf("unexpected complete input: %+v", input)
+			}
+			taskCompleted.Add(1)
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "done"})
+		case "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			var input projectautomation.CompleteAttemptInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode attempt: %v", err)
+			}
+			if input.Status != projectautomation.RunStatusCompleted || input.FailureCategory != "" {
+				t.Fatalf("expected completed attempt, got %+v", input)
+			}
+			attemptCompleted.Add(1)
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", Status: projectautomation.RunStatusVerifying})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", "/bin/true"})
+	if status != 0 {
+		t.Fatalf("expected exit 0, got %d", status)
+	}
+	if attemptCompleted.Load() != 1 || verifierAttached.Load() != 1 || taskCompleted.Load() != 1 {
+		t.Fatalf("expected closeout calls and attempt completion, got attempt=%d verifier=%d task=%d", attemptCompleted.Load(), verifierAttached.Load(), taskCompleted.Load())
+	}
+}
+
 func TestRunOnceDiscoversProjectsWhenProjectOmitted(t *testing.T) {
 	setReadableCodexHome(t)
 	var completed atomic.Int32
