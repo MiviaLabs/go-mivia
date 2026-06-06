@@ -2921,6 +2921,11 @@ func shouldQueueReplacementRunForTask(run AutomationRun, task projectworkplan.Wo
 	if shouldQueueReplacementRun(run) {
 		return true
 	}
+	if run.Status == RunStatusPolicyDenied &&
+		task.Status == projectworkplan.WorkTaskStatusReady &&
+		strings.Contains(strings.TrimSpace(run.FailureCategory), "task_not_ready") {
+		return true
+	}
 	return run.Status == RunStatusBlocked &&
 		strings.TrimSpace(run.FailureCategory) == "work_task_blocked" &&
 		task.Status == projectworkplan.WorkTaskStatusReady

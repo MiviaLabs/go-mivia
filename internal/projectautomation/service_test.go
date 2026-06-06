@@ -1322,6 +1322,41 @@ func TestQueueReadyDependentAutomationDoesNotBlockAfterExternalRunnerInterruptio
 	}
 }
 
+func TestQueueReadyDependentAutomationReplacesStaleTaskNotReadyPolicyDeniedRun(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "fix-a", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:                "policy-denied-run",
+		ProjectID:         automation.ProjectID,
+		AutomationID:      automation.ID,
+		AgentID:           automation.AgentID,
+		PlanID:            task.PlanID,
+		TaskID:            task.ID,
+		Status:            RunStatusPolicyDenied,
+		RunnerKind:        RunnerKindCodexCLI,
+		FailureCategory:   "invalid_project_automation_input:_task_not_ready",
+		SafeSummary:       "dependency_ready_automation_queued",
+		OrchestratorRunID: dependencyReadyRunID(task, automation),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.queueReadyDependentAutomation(ctx, automation, task); err != nil {
+		t.Fatalf("queueReadyDependentAutomation returned error: %v", err)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected replacement run after stale task_not_ready denial, got %+v", runs)
+	}
+}
+
 func TestQueueReadyDependentAutomationAllowsReplacementBelowRetryLimit(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
