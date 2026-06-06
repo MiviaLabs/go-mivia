@@ -891,6 +891,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
 	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
@@ -938,6 +941,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		return ClaimedRun{}, err
 	}
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
 	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
@@ -2239,6 +2245,58 @@ func (svc *Service) requeueAbandonedRunningRun(ctx context.Context, run Automati
 		return updated, nil
 	}
 	return updated, nil
+}
+
+func (svc *Service) reconcileInterruptedRunsWithProgressedTasks(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" {
+		return nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusTimeout})
+	if err != nil {
+		return err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.FailureCategory) != "external_runner_interrupted" || run.TaskID == "" {
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+			continue
+		}
+		if task.Status == projectworkplan.WorkTaskStatusDone {
+			if _, err := svc.completeRunAfterTaskDone(ctx, run, task); err != nil {
+				return err
+			}
+			continue
+		}
+		if isTerminalIncompleteTaskStatus(task.Status) {
+			if _, err := svc.finishRunAfterTaskTerminal(ctx, run, task); err != nil {
+				return err
+			}
+			continue
+		}
+		if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
+			continue
+		}
+		now := svc.now()
+		run.Status = RunStatusVerifying
+		run.WorkTaskStatus = task.Status
+		run.SafeSummary = "external_runner_timeout_task_progressed_verification_required"
+		run.FailureCategory = ""
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		updated, err := svc.store.UpdateRun(ctx, run)
+		if err != nil {
+			return err
+		}
+		if _, err := svc.reconcileVerifyingRun(ctx, updated); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun) (AutomationRun, error) {

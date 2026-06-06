@@ -3466,6 +3466,50 @@ func TestRequeueAbandonedRunningRunSkipsStaleSnapshotAfterDurableFailure(t *test
 	}
 }
 
+func TestReconcileInterruptedRunWithProgressedTaskMovesToVerifying(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-confirmed-bug", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.now = func() time.Time { return time.Unix(250, 0).UTC() }
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       "project-1",
+		AutomationID:    "automation-a",
+		AgentID:         "implementation-automation",
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  projectworkplan.WorkTaskStatusInProgress,
+		Status:          RunStatusTimeout,
+		RunnerKind:      RunnerKindCodexCLI,
+		FailureCategory: "external_runner_interrupted",
+		SafeSummary:     "external_codex_cli_abandoned_after_restart",
+		ClaimID:         "claim-a",
+		RunnerID:        "runner-a",
+		FinishedAt:      time.Unix(200, 0).UTC(),
+		UpdatedAt:       time.Unix(200, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, "project-1"); err != nil {
+		t.Fatalf("reconcileInterruptedRunsWithProgressedTasks returned error: %v", err)
+	}
+	updated, err := store.GetRun(ctx, "project-1", "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if updated.Status != RunStatusVerifying || updated.WorkTaskStatus != projectworkplan.WorkTaskStatusNeedsReview || updated.FailureCategory != "" {
+		t.Fatalf("expected interrupted progressed run to move to verifying, got %#v", updated)
+	}
+	if updated.SafeSummary != "external_runner_timeout_task_progressed_verification_required" {
+		t.Fatalf("expected timeout progress safe summary, got %q", updated.SafeSummary)
+	}
+}
+
 func TestClaimNextRunRequeuesAbandonedClaimingRunAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "create-confirmed-bug-work-plans", []string{"packages/contracts"})
