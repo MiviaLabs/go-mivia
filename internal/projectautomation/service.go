@@ -21,6 +21,7 @@ var ErrInvalidInput = errors.New("invalid project automation input")
 
 const defaultAutomationMaxRetries = 3
 const defaultAutomationMaxReplacementRunsPerTask = 3
+const automationReplacementRetryLimitCategory = "automation_replacement_retry_limit_reached"
 
 var (
 	refPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
@@ -2129,29 +2130,18 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 	if err != nil {
 		return err
 	}
-	replacementFailures := 0
+	if countTerminalReplacementFailures(existing, task.ID) >= defaultAutomationMaxReplacementRunsPerTask {
+		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
+		return err
+	}
 	for _, run := range existing {
 		if run.TaskID != task.ID {
 			continue
-		}
-		if isTerminalReplacementFailure(run) {
-			replacementFailures++
 		}
 		if shouldQueueReplacementRunForTask(run, task) {
 			continue
 		}
 		return nil
-	}
-	if replacementFailures >= defaultAutomationMaxReplacementRunsPerTask {
-		_, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
-			ProjectID:          task.ProjectID,
-			TaskID:             task.ID,
-			SafeNextAction:     "automation_replacement_retry_limit_reached",
-			TraceID:            "automation-replacement-limit",
-			BlockedReason:      "Automation replacement retry limit reached after repeated GitOps, pre-execution, or external-runner recovery failures.",
-			ResumeInstructions: "Inspect the task worktree, dirty files, GitOps scope, and task file metadata before requeueing. Do not create another replacement run until the concrete blocker is corrected.",
-		})
-		return err
 	}
 	now := svc.now()
 	run := AutomationRun{
@@ -2171,6 +2161,63 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 	}
 	_, err = svc.store.CreateRun(ctx, run)
 	return err
+}
+
+func (svc *Service) replacementRetryLimitReached(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (bool, error) {
+	if !isQueuedReplacementRun(run) {
+		return false, nil
+	}
+	if run.ProjectID == "" || run.AutomationID == "" || task.PlanID == "" || task.ID == "" {
+		return false, nil
+	}
+	existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: run.ProjectID, AutomationID: run.AutomationID, PlanID: task.PlanID})
+	if err != nil {
+		return false, err
+	}
+	return countTerminalReplacementFailures(existing, task.ID) >= defaultAutomationMaxReplacementRunsPerTask, nil
+}
+
+func (svc *Service) blockRunAfterReplacementRetryLimit(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
+	blockedTask, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
+	if err != nil {
+		return run, err
+	}
+	now := svc.now()
+	run.Status = RunStatusBlocked
+	run.WorkTaskStatus = blockedTask.Status
+	run.FailureCategory = automationReplacementRetryLimitCategory
+	run.SafeSummary = automationReplacementRetryLimitCategory
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	return svc.store.UpdateRun(ctx, run)
+}
+
+func (svc *Service) blockTaskAfterReplacementRetryLimit(ctx context.Context, task projectworkplan.WorkTask) (projectworkplan.WorkTask, error) {
+	return svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		SafeNextAction:     automationReplacementRetryLimitCategory,
+		TraceID:            "automation-replacement-limit",
+		BlockedReason:      "Automation replacement retry limit reached after repeated GitOps, pre-execution, or external-runner recovery failures.",
+		ResumeInstructions: "Inspect the task worktree, dirty files, GitOps scope, and task file metadata before requeueing. Do not create another replacement run until the concrete blocker is corrected.",
+	})
+}
+
+func countTerminalReplacementFailures(runs []AutomationRun, taskID string) int {
+	count := 0
+	for _, run := range runs {
+		if run.TaskID == taskID && isTerminalReplacementFailure(run) {
+			count++
+		}
+	}
+	return count
+}
+
+func isQueuedReplacementRun(run AutomationRun) bool {
+	return strings.TrimSpace(run.SafeSummary) == "dependency_ready_automation_queued" ||
+		strings.HasPrefix(strings.TrimSpace(run.OrchestratorRunID), "dependency-ready:")
 }
 
 func isActiveAutomationRunStatus(status string) bool {
@@ -2525,6 +2572,15 @@ func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRu
 		err := fmt.Errorf("%w: task_dependencies_not_done", ErrInvalidInput)
 		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "task_dependencies_not_done")
 		return updated, projectworkplan.WorkTask{}, err
+	}
+	if reached, err := svc.replacementRetryLimitReached(ctx, run, task); err != nil {
+		return run, projectworkplan.WorkTask{}, err
+	} else if reached {
+		updated, updateErr := svc.blockRunAfterReplacementRetryLimit(ctx, run, task)
+		if updateErr != nil {
+			return updated, projectworkplan.WorkTask{}, updateErr
+		}
+		return updated, projectworkplan.WorkTask{}, fmt.Errorf("%w: %s", ErrInvalidInput, automationReplacementRetryLimitCategory)
 	}
 	run.TaskID = task.ID
 	run.PlanID = task.PlanID
