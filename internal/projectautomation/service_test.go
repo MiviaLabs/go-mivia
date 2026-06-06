@@ -1864,6 +1864,55 @@ func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *te
 	}
 }
 
+func TestCreateRemediationFromFindingInheritsBaseRefFromCreatorRunPlan(t *testing.T) {
+	ctx := context.Background()
+	workTasks := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"audit-plan": {
+				ID:         "audit-plan",
+				ProjectID:  "project-1",
+				PlanRef:    "audit-plan",
+				Title:      "Audit plan",
+				Status:     projectworkplan.WorkPlanStatusDone,
+				GitBaseRef: "main",
+			},
+		},
+		tasks: map[string]projectworkplan.WorkTask{},
+	}
+	store := newTestStore()
+	svc := New(store, workTasks, Options{Enabled: true, RunnerEnabled: true})
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:           "audit-run",
+		ProjectID:    "project-1",
+		AutomationID: "audit-automation",
+		AgentID:      "code-review-scanner",
+		PlanID:       "audit-plan",
+		Status:       RunStatusCompleted,
+		RunnerKind:   RunnerKindCodexCLI,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	result, err := svc.CreateRemediationFromFinding(ctx, CreateRemediationFromFindingInput{
+		ProjectID:               "project-1",
+		FindingRef:              "finding.audit-base-inheritance",
+		FindingStatus:           "confirmed",
+		Title:                   "Fix audit base inheritance",
+		Summary:                 "Repair deterministic remediation base ref selection.",
+		CreatedByRunID:          "audit-run",
+		GitBranchRef:            "mivia/remediate-audit-base-inheritance",
+		GitWorktreeRef:          "wt-remediate-audit-base-inheritance",
+		FilesToEdit:             []string{"internal/projectautomation/service.go"},
+		VerificationRequirement: "Run focused automation tests.",
+	})
+	if err != nil {
+		t.Fatalf("CreateRemediationFromFinding returned error: %v", err)
+	}
+	if result.WorkPlan.GitBaseRef != "main" {
+		t.Fatalf("expected remediation plan to inherit creator run base ref, got %q", result.WorkPlan.GitBaseRef)
+	}
+}
+
 func TestCreateRemediationFromFindingScopesSharedAuditGitRefsPerFinding(t *testing.T) {
 	ctx := context.Background()
 	workTasks := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{}}

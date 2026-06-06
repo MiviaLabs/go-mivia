@@ -139,6 +139,12 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
 	}
+	if gitBaseRef == "" {
+		gitBaseRef, err = svc.remediationBaseRefFromCreatorRun(ctx, workPlans, projectID, runID)
+		if err != nil {
+			return CreateRemediationFromFindingResult{}, err
+		}
+	}
 	gitBranchRef, err := safeOptionalRef(input.GitBranchRef, "git_branch_ref")
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
@@ -313,6 +319,28 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		result.Activated = true
 	}
 	return result, nil
+}
+
+func (svc *Service) remediationBaseRefFromCreatorRun(ctx context.Context, workPlans remediationWorkPlanAPI, projectID string, runID string) (string, error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return "", nil
+	}
+	run, err := svc.store.GetRun(ctx, projectID, runID)
+	if err != nil || strings.TrimSpace(run.PlanID) == "" {
+		return "", nil
+	}
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: projectID})
+	if err != nil {
+		return "", err
+	}
+	for _, plan := range plans {
+		if plan.ID != run.PlanID {
+			continue
+		}
+		return safeOptionalRef(plan.GitBaseRef, "creator_plan.git_base_ref")
+	}
+	return "", nil
 }
 
 func (svc *Service) getOrCreateRemediationWorkPlan(ctx context.Context, workPlans remediationWorkPlanAPI, input projectworkplan.CreateWorkPlanInput) (projectworkplan.WorkPlan, error) {
