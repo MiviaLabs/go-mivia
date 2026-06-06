@@ -20,6 +20,7 @@ import (
 var ErrInvalidInput = errors.New("invalid project automation input")
 
 const defaultAutomationMaxRetries = 3
+const defaultAutomationMaxReplacementRunsPerTask = 3
 
 var (
 	refPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
@@ -2128,14 +2129,29 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 	if err != nil {
 		return err
 	}
+	replacementFailures := 0
 	for _, run := range existing {
 		if run.TaskID != task.ID {
 			continue
+		}
+		if isTerminalReplacementFailure(run) {
+			replacementFailures++
 		}
 		if shouldQueueReplacementRunForTask(run, task) {
 			continue
 		}
 		return nil
+	}
+	if replacementFailures >= defaultAutomationMaxReplacementRunsPerTask {
+		_, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "automation_replacement_retry_limit_reached",
+			TraceID:            "automation-replacement-limit",
+			BlockedReason:      "Automation replacement retry limit reached after repeated GitOps, pre-execution, or external-runner recovery failures.",
+			ResumeInstructions: "Inspect the task worktree, dirty files, GitOps scope, and task file metadata before requeueing. Do not create another replacement run until the concrete blocker is corrected.",
+		})
+		return err
 	}
 	now := svc.now()
 	run := AutomationRun{
@@ -2161,6 +2177,22 @@ func isActiveAutomationRunStatus(status string) bool {
 	switch status {
 	case RunStatusQueued, RunStatusClaiming, RunStatusStarting, RunStatusRunning, RunStatusVerifying:
 		return true
+	default:
+		return false
+	}
+}
+
+func isTerminalReplacementFailure(run AutomationRun) bool {
+	switch run.Status {
+	case RunStatusFailed:
+		switch strings.TrimSpace(run.FailureCategory) {
+		case "gitops_recovery_failed_requires_implementation", "pre_execution_recovery_failed_requires_implementation":
+			return true
+		default:
+			return false
+		}
+	case RunStatusTimeout:
+		return strings.TrimSpace(run.FailureCategory) == "external_runner_interrupted"
 	default:
 		return false
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -552,6 +553,92 @@ func TestClaimNextRunRequeuesExhaustedPreExecutionRecoveryClaimedByFailedRun(t *
 				}
 			})
 		}
+	}
+}
+
+func TestQueueReadyDependentAutomationBlocksAfterReplacementRetryLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "fix-a", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	for i, category := range []string{
+		"pre_execution_recovery_failed_requires_implementation",
+		"gitops_recovery_failed_requires_implementation",
+		"pre_execution_recovery_failed_requires_implementation",
+	} {
+		if _, err := store.CreateRun(ctx, AutomationRun{
+			ID:              fmt.Sprintf("failed-run-%d", i),
+			ProjectID:       automation.ProjectID,
+			AutomationID:    automation.ID,
+			AgentID:         automation.AgentID,
+			PlanID:          task.PlanID,
+			TaskID:          task.ID,
+			Status:          RunStatusFailed,
+			RunnerKind:      RunnerKindCodexCLI,
+			FailureCategory: category,
+			SafeSummary:     "replacement_terminal_failure",
+		}); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+
+	if err := svc.queueReadyDependentAutomation(ctx, automation, task); err != nil {
+		t.Fatalf("queueReadyDependentAutomation returned error: %v", err)
+	}
+	updatedTask := fake.tasks[task.ID]
+	if updatedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected task to block after replacement limit, got %#v", updatedTask)
+	}
+	if !strings.Contains(updatedTask.BlockedReason, "replacement retry limit") {
+		t.Fatalf("expected retry-limit blocked reason, got %q", updatedTask.BlockedReason)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != defaultAutomationMaxReplacementRunsPerTask {
+		t.Fatalf("expected no replacement run after limit, got %d runs", len(runs))
+	}
+}
+
+func TestQueueReadyDependentAutomationAllowsReplacementBelowRetryLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "fix-a", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	for i := 0; i < defaultAutomationMaxReplacementRunsPerTask-1; i++ {
+		if _, err := store.CreateRun(ctx, AutomationRun{
+			ID:              fmt.Sprintf("failed-run-%d", i),
+			ProjectID:       automation.ProjectID,
+			AutomationID:    automation.ID,
+			AgentID:         automation.AgentID,
+			PlanID:          task.PlanID,
+			TaskID:          task.ID,
+			Status:          RunStatusFailed,
+			RunnerKind:      RunnerKindCodexCLI,
+			FailureCategory: "pre_execution_recovery_failed_requires_implementation",
+			SafeSummary:     "replacement_terminal_failure",
+		}); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+
+	if err := svc.queueReadyDependentAutomation(ctx, automation, task); err != nil {
+		t.Fatalf("queueReadyDependentAutomation returned error: %v", err)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != defaultAutomationMaxReplacementRunsPerTask {
+		t.Fatalf("expected replacement run below limit, got %d runs", len(runs))
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected task to remain ready below limit, got %#v", fake.tasks[task.ID])
 	}
 }
 
@@ -4723,8 +4810,21 @@ func (fake *fakeWorkTasks) FailWorkTask(_ context.Context, input projectworkplan
 	return task, nil
 }
 
-func (fake *fakeWorkTasks) BlockWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
-	return projectworkplan.WorkTask{}, nil
+func (fake *fakeWorkTasks) BlockWorkTask(_ context.Context, input projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	task, ok := fake.tasks[input.TaskID]
+	if !ok {
+		return projectworkplan.WorkTask{}, errors.New("not found")
+	}
+	task.Status = projectworkplan.WorkTaskStatusBlocked
+	task.BlockedReason = input.BlockedReason
+	task.ResumeInstructions = input.ResumeInstructions
+	if input.TraceID != "" {
+		task.TraceID = input.TraceID
+	}
+	fake.tasks[input.TaskID] = task
+	return task, nil
 }
 
 type fakeGovernance struct {
