@@ -603,7 +603,8 @@ func TestClaimNextRunRequeuesExhaustedPreExecutionRecoveryClaimedByFailedRun(t *
 				if err != nil {
 					t.Fatalf("GetRun returned error: %v", err)
 				}
-				if exhausted.FailureCategory != "pre_execution_recovery_failed_requires_implementation" || exhausted.SafeSummary != "pre_execution_recovery_requeued_implementation" {
+				expectedSummary := "pre_execution_recovery_requeued_implementation_after_" + category
+				if exhausted.FailureCategory != "pre_execution_recovery_failed_requires_implementation" || exhausted.SafeSummary != expectedSummary {
 					t.Fatalf("expected exhausted run to be terminalized for implementation, got %+v", exhausted)
 				}
 				updatedTask := fake.tasks[task.ID]

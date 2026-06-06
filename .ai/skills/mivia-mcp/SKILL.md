@@ -145,7 +145,7 @@ When `projects.workspace.git_status` or equivalent MCP workspace git support is 
 - `isolation_mode=dedicated_worktree`
 - `parallel_group_ref=<shared orchestration ref>`
 - `workspace_ref=<opaque workspace ref>`
-- `git_base_ref=<base ref>`
+- `git_base_ref=<verified project default branch/base ref, or omit it so workspace creation uses HEAD>`
 - `git_branch_ref=<per-plan branch ref using the mivia/ prefix>`
 - `git_worktree_ref=<opaque per-plan worktree ref>`
 
@@ -154,6 +154,8 @@ All new repository branches, including automation-created task branches, MUST us
 Use `isolation_mode=dedicated_worktree` for automated Work Plans, including read-only audits and inspections, so runners read fresh default-branch code instead of a dirty live checkout. Use `isolation_mode=shared` only for direct human/orchestrator metadata inspection that will not execute through automation. Do not use `shared` for implementation, generated-file writes, config changes, docs changes, test changes, automation writes, automated audits, or any task that may modify the workspace. Use `isolation_mode=unavailable` only when git isolation is genuinely unavailable and report the risk before execution. These are refs, not filesystem locations. Do not run two Work Plans in the same worktree ref when likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
 
 When `projects.workspace.git_worktree_create` is exposed, the orchestrator MUST call it before assigning executable write-capable Work Tasks for a new Work Plan. The tool creates the dedicated worktree from `worktree_ref`, `branch_ref`, and optional `base_ref`, and returns metadata refs only. Agents must use the returned `isolation_ref`/`worktree_ref` in Work Plan metadata and automation refs. Do not create worktrees with raw shell commands when the MCP tool is available.
+
+Do not guess `git_base_ref`. Discover the target repository's actual default/base ref from project context or git state first. If the ref is not verified, omit `git_base_ref`; the workspace worktree creator will use `HEAD`. Never hard-code `main` for repositories that use `master` or another default branch.
 
 Dedicated worktrees are lifecycle resources. When a write-capable Work Plan reaches a terminal status (`done`, `failed`, `cancelled`, or `superseded`), the orchestrator or automation cleanup path must remove the dedicated worktree after verifier/review evidence is preserved and only when no active runs, unpreserved changes, or dependent review gates still need it. If cleanup tooling is missing, record the cleanup gap in the Work Plan/final report instead of leaving it implicit.
 

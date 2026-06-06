@@ -301,6 +301,13 @@ func (svc *Service) gitCreateWorktreeTarget(ctx context.Context, root string, ta
 	} else if errors.Is(existingBranchErr, context.Canceled) || errors.Is(existingBranchErr, context.DeadlineExceeded) {
 		return existingBranchErr
 	}
+	if baseRef != defaultWorktreeBaseRef {
+		if _, _, headErr := svc.git.Run(ctx, root, 1024, "worktree", "add", "-b", branchRef, target, defaultWorktreeBaseRef); headErr == nil {
+			return nil
+		} else if errors.Is(headErr, context.Canceled) || errors.Is(headErr, context.DeadlineExceeded) {
+			return headErr
+		}
+	}
 	return ErrGitUnavailable
 }
 
