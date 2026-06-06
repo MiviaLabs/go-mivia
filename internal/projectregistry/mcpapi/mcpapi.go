@@ -745,6 +745,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			PathPrefix       string          `json:"path_prefix,omitempty"`
 			PageSize         int             `json:"page_size,omitempty"`
 			PageToken        string          `json:"page_token,omitempty"`
+			WorktreeRef      string          `json:"worktree_ref,omitempty"`
 			Meta             json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -767,6 +768,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			PathPrefix:       input.PathPrefix,
 			PageSize:         input.PageSize,
 			PageToken:        input.PageToken,
+			WorktreeRef:      input.WorktreeRef,
 		})
 		return toolResult(status), err
 	case "projects.workspace.git_diff", "projects_workspace_git_diff":
@@ -779,6 +781,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			ContextLines int             `json:"context_lines,omitempty"`
 			MaxDiffBytes int             `json:"max_diff_bytes,omitempty"`
 			PageToken    string          `json:"page_token,omitempty"`
+			WorktreeRef  string          `json:"worktree_ref,omitempty"`
 			Meta         json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -798,6 +801,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			ContextLines: input.ContextLines,
 			MaxDiffBytes: input.MaxDiffBytes,
 			PageToken:    input.PageToken,
+			WorktreeRef:  input.WorktreeRef,
 		})
 		return toolResult(diff), err
 	case "projects.workspace.git_worktree_create", "projects_workspace_git_worktree_create":
@@ -833,6 +837,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			FileID       string          `json:"file_id,omitempty"`
 			RelativePath string          `json:"relative_path,omitempty"`
 			MaxBytes     int             `json:"max_bytes,omitempty"`
+			WorktreeRef  string          `json:"worktree_ref,omitempty"`
 			Meta         json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -848,6 +853,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			FileID:       input.FileID,
 			RelativePath: input.RelativePath,
 			MaxBytes:     input.MaxBytes,
+			WorktreeRef:  input.WorktreeRef,
 		})
 		return toolResult(file), err
 	case "projects.workspace.file_edit", "projects_workspace_file_edit":
@@ -858,6 +864,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			EditToken    string                       `json:"edit_token"`
 			DryRun       bool                         `json:"dry_run,omitempty"`
 			Edits        []projectworkspace.ExactEdit `json:"edits"`
+			WorktreeRef  string                       `json:"worktree_ref,omitempty"`
 			Meta         json.RawMessage              `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -875,6 +882,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			EditToken:    input.EditToken,
 			DryRun:       input.DryRun,
 			Edits:        input.Edits,
+			WorktreeRef:  input.WorktreeRef,
 		})
 		return toolResult(result), err
 	case "projects.workspace.file_create", "projects_workspace_file_create":
@@ -884,6 +892,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			Text             string          `json:"text"`
 			CreateParentDirs bool            `json:"create_parent_dirs,omitempty"`
 			DryRun           bool            `json:"dry_run,omitempty"`
+			WorktreeRef      string          `json:"worktree_ref,omitempty"`
 			Meta             json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -900,6 +909,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			Text:             input.Text,
 			CreateParentDirs: input.CreateParentDirs,
 			DryRun:           input.DryRun,
+			WorktreeRef:      input.WorktreeRef,
 		})
 		return toolResult(result), err
 	case "projects.workspace.file_delete", "projects_workspace_file_delete":
@@ -909,6 +919,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			RelativePath string          `json:"relative_path,omitempty"`
 			EditToken    string          `json:"edit_token"`
 			DryRun       bool            `json:"dry_run,omitempty"`
+			WorktreeRef  string          `json:"worktree_ref,omitempty"`
 			Meta         json.RawMessage `json:"_meta,omitempty"`
 		}
 		if err := decodeRaw(arguments, &input); err != nil {
@@ -925,6 +936,7 @@ func CallToolWithWorkspaceAndDiagnostics(ctx context.Context, registry *projectr
 			RelativePath: input.RelativePath,
 			EditToken:    input.EditToken,
 			DryRun:       input.DryRun,
+			WorktreeRef:  input.WorktreeRef,
 		})
 		return toolResult(result), err
 	default:
@@ -1359,6 +1371,7 @@ func workspaceToolDefinitions() []map[string]any {
 				"id":                map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"include_untracked": map[string]any{"type": "boolean"},
 				"path_prefix":       map[string]any{"type": "string"},
+				"worktree_ref":      workspaceWorktreeRefProperty(),
 			}), []string{"id"}),
 		},
 		{
@@ -1374,6 +1387,7 @@ func workspaceToolDefinitions() []map[string]any {
 				"context_lines":  map[string]any{"type": "integer", "minimum": 0, "maximum": 10},
 				"max_diff_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": projectworkspace.MaxDiffBytes},
 				"page_token":     map[string]any{"type": "string"},
+				"worktree_ref":   workspaceWorktreeRefProperty(),
 			}, []string{"id"}),
 		},
 		{
@@ -1392,24 +1406,26 @@ func workspaceToolDefinitions() []map[string]any {
 		{
 			"name":        "projects.workspace.file_read",
 			"title":       "Read Current Workspace File",
-			"description": "Read one current eligible text file and return an opaque edit token for exact edits. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
+			"description": "Read one current eligible text file and return an opaque edit token for exact edits. Pass worktree_ref to read from a managed project worktree. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
 			"inputSchema": objectSchema(map[string]any{
 				"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"file_id":       map[string]any{"type": "string"},
 				"relative_path": map[string]any{"type": "string"},
 				"max_bytes":     map[string]any{"type": "integer", "minimum": 1, "description": "Optional caller text byte cap. Omit to return the full eligible file text; text_truncated is true only when this cap is applied."},
+				"worktree_ref":  workspaceWorktreeRefProperty(),
 			}, []string{"id"}),
 		},
 		{
 			"name":        "projects.workspace.file_edit",
 			"title":       "Apply Exact Workspace File Edit",
-			"description": "Apply token-guarded exact byte-span edits to one eligible file and queue path ingestion after successful writes. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
+			"description": "Apply token-guarded exact byte-span edits to one eligible file. Pass the same worktree_ref used for file_read to edit a managed project worktree instead of the canonical root. The id must be a project id or alias returned by projects.list/projects.get, not a cwd, root, UNC path, or filesystem workspace path.",
 			"inputSchema": objectSchema(map[string]any{
 				"id":            map[string]any{"type": "string", "minLength": 1, "description": "Project id or safe alias returned by projects.list/projects.get; do not pass a filesystem path, cwd, root, UNC path, or workspace URI."},
 				"file_id":       map[string]any{"type": "string"},
 				"relative_path": map[string]any{"type": "string"},
 				"edit_token":    map[string]any{"type": "string", "minLength": 1},
 				"dry_run":       map[string]any{"type": "boolean"},
+				"worktree_ref":  workspaceWorktreeRefProperty(),
 				"edits": map[string]any{
 					"type":     "array",
 					"minItems": 1,
@@ -1432,6 +1448,7 @@ func workspaceToolDefinitions() []map[string]any {
 				"text":               map[string]any{"type": "string"},
 				"create_parent_dirs": map[string]any{"type": "boolean"},
 				"dry_run":            map[string]any{"type": "boolean"},
+				"worktree_ref":       workspaceWorktreeRefProperty(),
 			}, []string{"id", "relative_path", "text"}),
 		},
 		{
@@ -1444,8 +1461,18 @@ func workspaceToolDefinitions() []map[string]any {
 				"relative_path": map[string]any{"type": "string", "description": "Project-relative path. Either relative_path or file_id must be provided."},
 				"edit_token":    map[string]any{"type": "string", "minLength": 1},
 				"dry_run":       map[string]any{"type": "boolean"},
+				"worktree_ref":  workspaceWorktreeRefProperty(),
 			}, []string{"id", "edit_token"}),
 		},
+	}
+}
+
+func workspaceWorktreeRefProperty() map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"minLength":   1,
+		"maxLength":   200,
+		"description": "Optional opaque managed worktree ref returned/requested by projects.workspace.git_worktree_create. This is not a filesystem path, cwd, root, UNC path, or workspace URI. For edit/delete, use the same worktree_ref used to obtain edit_token.",
 	}
 }
 

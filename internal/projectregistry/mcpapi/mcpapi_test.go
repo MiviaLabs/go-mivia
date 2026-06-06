@@ -466,6 +466,84 @@ func TestCallToolWithWorkspace_ReadAndEditAlias(t *testing.T) {
 	if result.Applied || result.NewEditToken == "" {
 		t.Fatalf("unexpected dry-run edit result: %#v", result)
 	}
+
+	worktreeRef := "plan-1"
+	worktreeRoot := filepath.Join(root, ".mivia-worktrees", "example-service", "example-service-plan-1")
+	if err := os.MkdirAll(worktreeRoot, 0o700); err != nil {
+		t.Fatalf("create managed worktree fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreeRoot, "main.go"), []byte("package worker\n"), 0o600); err != nil {
+		t.Fatalf("write managed worktree fixture: %v", err)
+	}
+	worktreeRead, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.file_read", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "main.go",
+		"worktree_ref":  worktreeRef,
+	}))
+	if err != nil {
+		t.Fatalf("workspace worktree read: %v", err)
+	}
+	worktreeFile := worktreeRead["structuredContent"].(projectworkspace.WorkspaceFile)
+	if worktreeFile.Text != "package worker\n" || worktreeFile.EditToken == "" {
+		t.Fatalf("unexpected worktree read: %#v", worktreeFile)
+	}
+	_, err = mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.file_edit", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "main.go",
+		"edit_token":    file.EditToken,
+		"worktree_ref":  worktreeRef,
+		"edits": []map[string]any{{
+			"start_byte": 8,
+			"end_byte":   14,
+			"old_text":   "worker",
+			"new_text":   "edited",
+		}},
+	}))
+	if err == nil {
+		t.Fatal("expected canonical edit token to be rejected for worktree edit")
+	}
+	worktreeEdit, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.file_edit", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "main.go",
+		"edit_token":    worktreeFile.EditToken,
+		"worktree_ref":  worktreeRef,
+		"edits": []map[string]any{{
+			"start_byte": 8,
+			"end_byte":   14,
+			"old_text":   "worker",
+			"new_text":   "edited",
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("workspace worktree edit: %v", err)
+	}
+	worktreeEditResult := worktreeEdit["structuredContent"].(projectworkspace.EditResult)
+	if !worktreeEditResult.Applied {
+		t.Fatalf("expected worktree edit to apply: %#v", worktreeEditResult)
+	}
+	if got, err := os.ReadFile(filepath.Join(worktreeRoot, "main.go")); err != nil || string(got) != "package edited\n" {
+		t.Fatalf("unexpected worktree file after edit: %q err=%v", string(got), err)
+	}
+	if got, err := os.ReadFile(fullPath); err != nil || string(got) != "package main\n" {
+		t.Fatalf("canonical root was modified: %q err=%v", string(got), err)
+	}
+}
+
+func TestWorkspaceToolDefinitionsExposeOpaqueWorktreeRef(t *testing.T) {
+	for _, name := range []string{
+		"projects.workspace.git_status",
+		"projects.workspace.git_diff",
+		"projects.workspace.file_read",
+		"projects.workspace.file_edit",
+		"projects.workspace.file_create",
+		"projects.workspace.file_delete",
+	} {
+		tool := findToolDefinition(t, mcpapi.ToolDefinitionsWithWorkspace(true, true), name)
+		body := marshalResult(t, tool)
+		if !strings.Contains(body, "worktree_ref") || !(strings.Contains(body, "not a filesystem path") || strings.Contains(body, "Must match the ref used")) {
+			t.Fatalf("%s schema does not expose opaque worktree_ref: %s", name, body)
+		}
+	}
 }
 
 func TestCallToolWithWorkspace_CreateAndDeleteAliases(t *testing.T) {
@@ -535,6 +613,104 @@ func TestCallToolWithWorkspace_GitWorktreeCreate(t *testing.T) {
 	got := result["structuredContent"].(projectworkspace.GitCreateWorktreeResult)
 	if got.IsolationRef == "" || strings.Contains(marshalResult(t, result), "/home/") || strings.Contains(marshalResult(t, result), "\\\\wsl.localhost") {
 		t.Fatalf("unexpected worktree result: %s", marshalResult(t, result))
+	}
+}
+
+func TestWorkspaceToolSchemasExposeOpaqueWorktreeRef(t *testing.T) {
+	tools := mcpapi.ToolDefinitionsWithWorkspace(false, true)
+	for _, name := range []string{
+		"projects.workspace.git_status",
+		"projects.workspace.git_diff",
+		"projects.workspace.file_read",
+		"projects.workspace.file_edit",
+		"projects.workspace.file_create",
+		"projects.workspace.file_delete",
+	} {
+		tool := findToolDefinition(t, tools, name)
+		schemaBody := marshalResult(t, tool)
+		if !strings.Contains(schemaBody, "worktree_ref") || !strings.Contains(schemaBody, "opaque") || strings.Contains(schemaBody, "root_path") {
+			t.Fatalf("%s schema does not expose safe opaque worktree_ref: %s", name, schemaBody)
+		}
+	}
+}
+
+func TestCallToolWithWorkspace_ForwardsWorktreeRef(t *testing.T) {
+	registry, digest := newServices(t)
+	workspace := &fakeWorkspaceAPI{}
+	worktreeRef := "worktree/mcp-plan"
+
+	if _, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.git_status", marshalArgs(t, map[string]any{
+		"id":           "example-service",
+		"worktree_ref": worktreeRef,
+	})); err != nil {
+		t.Fatalf("workspace status: %v", err)
+	}
+	if workspace.status.ProjectID != "example-service" || workspace.status.Options.WorktreeRef != worktreeRef {
+		t.Fatalf("unexpected status dispatch: %#v", workspace.status)
+	}
+
+	if _, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.git_diff", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "main.go",
+		"worktree_ref":  worktreeRef,
+	})); err != nil {
+		t.Fatalf("workspace diff: %v", err)
+	}
+	if workspace.diff.ProjectID != "example-service" || workspace.diff.Options.RelativePath != "main.go" || workspace.diff.Options.WorktreeRef != worktreeRef {
+		t.Fatalf("unexpected diff dispatch: %#v", workspace.diff)
+	}
+
+	if _, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.file_read", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "main.go",
+		"worktree_ref":  worktreeRef,
+	})); err != nil {
+		t.Fatalf("workspace read: %v", err)
+	}
+	if workspace.read.ProjectID != "example-service" || workspace.read.Options.RelativePath != "main.go" || workspace.read.Options.WorktreeRef != worktreeRef {
+		t.Fatalf("unexpected read dispatch: %#v", workspace.read)
+	}
+
+	if _, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.file_edit", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "main.go",
+		"edit_token":    "token",
+		"worktree_ref":  worktreeRef,
+		"edits": []map[string]any{{
+			"start_byte": 0,
+			"end_byte":   7,
+			"old_text":   "package",
+			"new_text":   "module",
+		}},
+	})); err != nil {
+		t.Fatalf("workspace edit: %v", err)
+	}
+	if workspace.edit.ProjectID != "example-service" || workspace.edit.Options.RelativePath != "main.go" || workspace.edit.Options.WorktreeRef != worktreeRef {
+		t.Fatalf("unexpected edit dispatch: %#v", workspace.edit)
+	}
+
+	if _, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.file_create", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "docs/new.md",
+		"text":          "new file\n",
+		"worktree_ref":  worktreeRef,
+	})); err != nil {
+		t.Fatalf("workspace create: %v", err)
+	}
+	if workspace.create.ProjectID != "example-service" || workspace.create.Options.RelativePath != "docs/new.md" || workspace.create.Options.WorktreeRef != worktreeRef {
+		t.Fatalf("unexpected create dispatch: %#v", workspace.create)
+	}
+
+	if _, err := mcpapi.CallToolWithWorkspace(context.Background(), registry, digest, nil, workspace, "projects.workspace.file_delete", marshalArgs(t, map[string]any{
+		"id":            "example-service",
+		"relative_path": "docs/new.md",
+		"edit_token":    "token",
+		"worktree_ref":  worktreeRef,
+	})); err != nil {
+		t.Fatalf("workspace delete: %v", err)
+	}
+	if workspace.delete.ProjectID != "example-service" || workspace.delete.Options.RelativePath != "docs/new.md" || workspace.delete.Options.WorktreeRef != worktreeRef {
+		t.Fatalf("unexpected delete dispatch: %#v", workspace.delete)
 	}
 }
 
@@ -991,6 +1167,22 @@ type fakeDiagnosticsSnapshotter struct {
 }
 
 type fakeWorkspaceAPI struct {
+	status struct {
+		ProjectID string
+		Options   projectworkspace.GitStatusOptions
+	}
+	diff struct {
+		ProjectID string
+		Options   projectworkspace.GitDiffOptions
+	}
+	read struct {
+		ProjectID string
+		Options   projectworkspace.ReadFileOptions
+	}
+	edit struct {
+		ProjectID string
+		Options   projectworkspace.EditFileOptions
+	}
 	create struct {
 		ProjectID string
 		Options   projectworkspace.CreateFileOptions
@@ -1009,12 +1201,16 @@ func (fake *fakeWorkspaceAPI) GitAvailable(context.Context, string) (bool, error
 	return false, nil
 }
 
-func (fake *fakeWorkspaceAPI) GitStatus(context.Context, string, projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {
-	return projectworkspace.GitStatus{}, nil
+func (fake *fakeWorkspaceAPI) GitStatus(_ context.Context, projectID string, options projectworkspace.GitStatusOptions) (projectworkspace.GitStatus, error) {
+	fake.status.ProjectID = projectID
+	fake.status.Options = options
+	return projectworkspace.GitStatus{ProjectID: projectID}, nil
 }
 
-func (fake *fakeWorkspaceAPI) GitDiff(context.Context, string, projectworkspace.GitDiffOptions) (projectworkspace.GitDiff, error) {
-	return projectworkspace.GitDiff{}, nil
+func (fake *fakeWorkspaceAPI) GitDiff(_ context.Context, projectID string, options projectworkspace.GitDiffOptions) (projectworkspace.GitDiff, error) {
+	fake.diff.ProjectID = projectID
+	fake.diff.Options = options
+	return projectworkspace.GitDiff{ProjectID: projectID, Scope: options.Scope}, nil
 }
 
 func (fake *fakeWorkspaceAPI) GitCreateWorktree(_ context.Context, projectID string, options projectworkspace.GitCreateWorktreeOptions) (projectworkspace.GitCreateWorktreeResult, error) {
@@ -1030,12 +1226,26 @@ func (fake *fakeWorkspaceAPI) GitCreateWorktree(_ context.Context, projectID str
 	}, nil
 }
 
-func (fake *fakeWorkspaceAPI) ReadFile(context.Context, string, projectworkspace.ReadFileOptions) (projectworkspace.WorkspaceFile, error) {
-	return projectworkspace.WorkspaceFile{}, nil
+func (fake *fakeWorkspaceAPI) ReadFile(_ context.Context, projectID string, options projectworkspace.ReadFileOptions) (projectworkspace.WorkspaceFile, error) {
+	fake.read.ProjectID = projectID
+	fake.read.Options = options
+	return projectworkspace.WorkspaceFile{
+		ProjectID:    projectID,
+		RelativePath: options.RelativePath,
+		EditToken:    "token",
+	}, nil
 }
 
-func (fake *fakeWorkspaceAPI) EditFile(context.Context, string, projectworkspace.EditFileOptions) (projectworkspace.EditResult, error) {
-	return projectworkspace.EditResult{}, nil
+func (fake *fakeWorkspaceAPI) EditFile(_ context.Context, projectID string, options projectworkspace.EditFileOptions) (projectworkspace.EditResult, error) {
+	fake.edit.ProjectID = projectID
+	fake.edit.Options = options
+	return projectworkspace.EditResult{
+		File: projectworkspace.WorkspaceFile{
+			ProjectID:    projectID,
+			RelativePath: options.RelativePath,
+		},
+		NewEditToken: "new-token",
+	}, nil
 }
 
 func (fake *fakeWorkspaceAPI) CreateFile(_ context.Context, projectID string, options projectworkspace.CreateFileOptions) (projectworkspace.CreateFileResult, error) {

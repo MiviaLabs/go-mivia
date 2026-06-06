@@ -1101,8 +1101,35 @@ func worktreePathReady(path string) bool {
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+	gitPath := filepath.Join(path, ".git")
+	info, err = os.Stat(gitPath)
+	if err != nil {
 		return false
+	}
+	if info.IsDir() {
+		return true
+	}
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return false
+	}
+	const prefix = "gitdir: "
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	if gitDir == "" {
+		return false
+	}
+	resolved := filepath.Clean(gitDir)
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Clean(filepath.Join(path, filepath.FromSlash(gitDir)))
+	}
+	for _, required := range []string{"HEAD", "commondir", "gitdir"} {
+		if _, err := os.Stat(filepath.Join(resolved, required)); err != nil {
+			return false
+		}
 	}
 	return true
 }

@@ -98,6 +98,10 @@ func (svc *Service) GitStatus(ctx context.Context, projectID string, options Git
 	if err != nil {
 		return GitStatus{}, err
 	}
+	project, err = scopedProjectRoot(project, options.WorktreeRef)
+	if err != nil {
+		return GitStatus{}, err
+	}
 	prefix := strings.TrimSpace(options.PathPrefix)
 	if prefix != "" {
 		prefix, err = normalizeAllowedPath(project, prefix, nil)
@@ -132,6 +136,10 @@ func (svc *Service) GitStatus(ctx context.Context, projectID string, options Git
 
 func (svc *Service) GitDiff(ctx context.Context, projectID string, options GitDiffOptions) (GitDiff, error) {
 	project, err := svc.project(projectID, false)
+	if err != nil {
+		return GitDiff{}, err
+	}
+	project, err = scopedProjectRoot(project, options.WorktreeRef)
 	if err != nil {
 		return GitDiff{}, err
 	}
@@ -408,6 +416,7 @@ func restoreWorktreeOwnership(root string, target string, metadataName string, b
 	paths := []string{
 		filepath.Join(root, ".mivia-worktrees"),
 		target,
+		filepath.Join(root, ".git", "worktrees"),
 		filepath.Join(root, ".git", "worktrees", metadataName),
 		filepath.Join(root, ".git", "refs", "heads", filepath.FromSlash(branchRef)),
 		filepath.Join(root, ".git", "logs", "refs", "heads", filepath.FromSlash(branchRef)),
@@ -472,6 +481,10 @@ func (svc *Service) verifyCreatedWorktree(ctx context.Context, target string, br
 
 func (svc *Service) ReadFile(ctx context.Context, projectID string, options ReadFileOptions) (WorkspaceFile, error) {
 	project, err := svc.project(projectID, false)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	project, err = scopedProjectRoot(project, options.WorktreeRef)
 	if err != nil {
 		return WorkspaceFile{}, err
 	}
@@ -547,6 +560,11 @@ func (svc *Service) EditFile(ctx context.Context, projectID string, options Edit
 	if err != nil {
 		return EditResult{}, err
 	}
+	worktreeScoped := strings.TrimSpace(options.WorktreeRef) != ""
+	project, err = scopedProjectRoot(project, options.WorktreeRef)
+	if err != nil {
+		return EditResult{}, err
+	}
 	if strings.TrimSpace(options.EditToken) == "" || len(options.Edits) == 0 {
 		return EditResult{}, ErrInvalidInput
 	}
@@ -605,7 +623,7 @@ func (svc *Service) EditFile(ctx context.Context, projectID string, options Edit
 	}
 	result.File = svc.workspaceFile(project, fileID, relativePath, written, writtenInfo, DefaultMaxReadBytes)
 	result.NewEditToken = result.File.EditToken
-	if svc.ingest != nil {
+	if svc.ingest != nil && !worktreeScoped {
 		run, err := svc.ingest.IngestPath(ctx, project.ID, relativePath, projectingestion.TriggerLive)
 		if err != nil {
 			return EditResult{}, ErrIngestionUnsupported
@@ -617,6 +635,11 @@ func (svc *Service) EditFile(ctx context.Context, projectID string, options Edit
 
 func (svc *Service) CreateFile(ctx context.Context, projectID string, options CreateFileOptions) (CreateFileResult, error) {
 	project, err := svc.project(projectID, true)
+	if err != nil {
+		return CreateFileResult{}, err
+	}
+	worktreeScoped := strings.TrimSpace(options.WorktreeRef) != ""
+	project, err = scopedProjectRoot(project, options.WorktreeRef)
 	if err != nil {
 		return CreateFileResult{}, err
 	}
@@ -664,16 +687,23 @@ func (svc *Service) CreateFile(ctx context.Context, projectID string, options Cr
 		File:    svc.workspaceFile(project, "", relativePath, written, info, DefaultMaxReadBytes),
 	}
 	result.NewEditToken = result.File.EditToken
-	runID, err := svc.queuePathIngestion(ctx, project.ID, relativePath)
-	if err != nil {
-		return CreateFileResult{}, err
+	if !worktreeScoped {
+		runID, err := svc.queuePathIngestion(ctx, project.ID, relativePath)
+		if err != nil {
+			return CreateFileResult{}, err
+		}
+		result.IngestionRunID = runID
 	}
-	result.IngestionRunID = runID
 	return result, nil
 }
 
 func (svc *Service) DeleteFile(ctx context.Context, projectID string, options DeleteFileOptions) (DeleteFileResult, error) {
 	project, err := svc.project(projectID, true)
+	if err != nil {
+		return DeleteFileResult{}, err
+	}
+	worktreeScoped := strings.TrimSpace(options.WorktreeRef) != ""
+	project, err = scopedProjectRoot(project, options.WorktreeRef)
 	if err != nil {
 		return DeleteFileResult{}, err
 	}
@@ -716,12 +746,36 @@ func (svc *Service) DeleteFile(ctx context.Context, projectID string, options De
 	if err := os.Remove(fullPath); err != nil {
 		return DeleteFileResult{}, ErrInvalidInput
 	}
-	runID, err := svc.queuePathIngestion(ctx, project.ID, relativePath)
-	if err != nil {
-		return DeleteFileResult{}, err
+	if !worktreeScoped {
+		runID, err := svc.queuePathIngestion(ctx, project.ID, relativePath)
+		if err != nil {
+			return DeleteFileResult{}, err
+		}
+		result.IngestionRunID = runID
 	}
-	result.IngestionRunID = runID
 	return result, nil
+}
+
+func scopedProjectRoot(project projectregistry.Project, worktreeRef string) (projectregistry.Project, error) {
+	worktreeRef = strings.TrimSpace(worktreeRef)
+	if worktreeRef == "" {
+		return project, nil
+	}
+	worktreeRef, err := safeGitRef(worktreeRef)
+	if err != nil {
+		return projectregistry.Project{}, err
+	}
+	target, err := worktreeTargetPath(project, worktreeRef)
+	if err != nil {
+		return projectregistry.Project{}, err
+	}
+	info, err := os.Stat(target)
+	if err != nil || !info.IsDir() {
+		return projectregistry.Project{}, ErrInvalidInput
+	}
+	scoped := project
+	scoped.CanonicalRootPath = target
+	return scoped, nil
 }
 
 func (svc *Service) project(projectID string, requireEdit bool) (projectregistry.Project, error) {
@@ -968,6 +1022,7 @@ func (svc *Service) editToken(project projectregistry.Project, relativePath stri
 	sum := sha256.Sum256(content)
 	payload := strings.Join([]string{
 		project.ID,
+		filepath.Clean(project.CanonicalRootPath),
 		relativePath,
 		strconv.FormatInt(info.Size(), 10),
 		strconv.FormatInt(info.ModTime().UTC().UnixNano(), 10),

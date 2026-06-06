@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/agentactivity"
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
@@ -54,6 +55,101 @@ func TestWorkspaceService_ReadEditAndQueueIngestion(t *testing.T) {
 	content := readFixture(t, root, "cmd/main.go")
 	if !strings.Contains(content, "func Run()") {
 		t.Fatalf("edit was not written: %s", content)
+	}
+}
+
+func TestWorkspaceService_WorktreeRefEditChangesOnlyManagedWorktree(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n\nfunc Canonical() {}\n")
+	project := projectregistry.Project{ID: "example-service", CanonicalRootPath: filepath.Clean(root)}
+	worktreeRoot, err := worktreeTargetPath(project, "worktree/plan-1")
+	if err != nil {
+		t.Fatalf("worktree target: %v", err)
+	}
+	writeFixture(t, worktreeRoot, "main.go", "package main\n\nfunc Worktree() {}\n")
+	ingest := &fakeWorkspaceIngestion{runID: "ingest-path-1"}
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), ingest, Options{Enabled: true})
+
+	file, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{
+		RelativePath: "main.go",
+		WorktreeRef:  "worktree/plan-1",
+	})
+	if err != nil {
+		t.Fatalf("read worktree file: %v", err)
+	}
+	start := strings.Index(file.Text, "Worktree")
+	result, err := svc.EditFile(context.Background(), "example-service", EditFileOptions{
+		RelativePath: "main.go",
+		EditToken:    file.EditToken,
+		WorktreeRef:  "worktree/plan-1",
+		Edits: []ExactEdit{{
+			StartByte: start,
+			EndByte:   start + len("Worktree"),
+			OldText:   "Worktree",
+			NewText:   "Changed",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("edit worktree file: %v", err)
+	}
+	if !result.Applied || result.IngestionRunID != "" || ingest.path != "" {
+		t.Fatalf("worktree edit should apply without canonical ingestion, result=%#v ingest=%#v", result, ingest)
+	}
+	if got := readFixture(t, root, "main.go"); strings.Contains(got, "Changed") || !strings.Contains(got, "Canonical") {
+		t.Fatalf("canonical root was changed: %q", got)
+	}
+	if got := readFixture(t, worktreeRoot, "main.go"); !strings.Contains(got, "Changed") {
+		t.Fatalf("worktree root was not changed: %q", got)
+	}
+}
+
+func TestWorkspaceService_EditTokensAreScopedByRoot(t *testing.T) {
+	root := t.TempDir()
+	project := projectregistry.Project{ID: "example-service", CanonicalRootPath: filepath.Clean(root)}
+	worktreeRoot, err := worktreeTargetPath(project, "worktree/plan-1")
+	if err != nil {
+		t.Fatalf("worktree target: %v", err)
+	}
+	content := "package main\n"
+	writeFixture(t, root, "main.go", content)
+	writeFixture(t, worktreeRoot, "main.go", content)
+	sameTime := time.Unix(1700000000, 123)
+	if err := os.Chtimes(filepath.Join(root, "main.go"), sameTime, sameTime); err != nil {
+		t.Fatalf("set canonical mtime: %v", err)
+	}
+	if err := os.Chtimes(filepath.Join(worktreeRoot, "main.go"), sameTime, sameTime); err != nil {
+		t.Fatalf("set worktree mtime: %v", err)
+	}
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+
+	canonical, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "main.go"})
+	if err != nil {
+		t.Fatalf("read canonical file: %v", err)
+	}
+	worktree, err := svc.ReadFile(context.Background(), "example-service", ReadFileOptions{RelativePath: "main.go", WorktreeRef: "worktree/plan-1"})
+	if err != nil {
+		t.Fatalf("read worktree file: %v", err)
+	}
+	if canonical.EditToken == worktree.EditToken {
+		t.Fatalf("expected root-scoped edit tokens to differ")
+	}
+
+	_, err = svc.EditFile(context.Background(), "example-service", EditFileOptions{
+		RelativePath: "main.go",
+		EditToken:    canonical.EditToken,
+		WorktreeRef:  "worktree/plan-1",
+		Edits:        []ExactEdit{{StartByte: 0, EndByte: 7, OldText: "package", NewText: "module"}},
+	})
+	if !errors.Is(err, ErrEditTokenInvalid) {
+		t.Fatalf("expected canonical token to be rejected for worktree edit, got %v", err)
+	}
+	_, err = svc.EditFile(context.Background(), "example-service", EditFileOptions{
+		RelativePath: "main.go",
+		EditToken:    worktree.EditToken,
+		Edits:        []ExactEdit{{StartByte: 0, EndByte: 7, OldText: "package", NewText: "module"}},
+	})
+	if !errors.Is(err, ErrEditTokenInvalid) {
+		t.Fatalf("expected worktree token to be rejected for canonical edit, got %v", err)
 	}
 }
 

@@ -52,6 +52,7 @@ type GitStatusOptions struct {
 	PathPrefix       string
 	PageSize         int
 	PageToken        string
+	WorktreeRef      string
 }
 
 type GitStatus struct {
@@ -79,6 +80,7 @@ type GitDiffOptions struct {
 	ContextLines int
 	MaxDiffBytes int
 	PageToken    string
+	WorktreeRef  string
 }
 
 type GitDiff struct {
@@ -123,6 +125,7 @@ type ReadFileOptions struct {
 	FileID       string
 	RelativePath string
 	MaxBytes     int
+	WorktreeRef  string
 }
 
 type WorkspaceFile struct {
@@ -144,6 +147,7 @@ type EditFileOptions struct {
 	EditToken    string
 	DryRun       bool
 	Edits        []ExactEdit
+	WorktreeRef  string
 }
 
 type ExactEdit struct {
@@ -167,6 +171,7 @@ type CreateFileOptions struct {
 	Text             string
 	CreateParentDirs bool
 	DryRun           bool
+	WorktreeRef      string
 }
 
 type CreateFileResult struct {
@@ -181,6 +186,7 @@ type DeleteFileOptions struct {
 	RelativePath string
 	EditToken    string
 	DryRun       bool
+	WorktreeRef  string
 }
 
 type DeleteFileResult struct {

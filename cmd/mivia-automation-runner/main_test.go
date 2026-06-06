@@ -52,6 +52,7 @@ func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: ../metadata\n"), 0o644); err != nil {
 				t.Fatalf("write worktree git file: %v", err)
 			}
+			writeFakeWorktreeMetadata(t, target, "../metadata")
 			writeJSON(t, w, map[string]any{"applied": true})
 		default:
 			http.NotFound(w, r)
@@ -67,6 +68,32 @@ func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
 	want := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-worktree-docs-smoke")
 	if resolved != want {
 		t.Fatalf("expected %q, got %q", want, resolved)
+	}
+}
+
+func TestWorktreePathReadyRejectsStaleGitdirPointer(t *testing.T) {
+	target := filepath.Join(t.TempDir(), ".mivia-worktrees", "project-1", "project-1-worktree-docs-smoke")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("create worktree target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: ../../.git/worktrees/missing-worktree\n"), 0o644); err != nil {
+		t.Fatalf("write stale git pointer: %v", err)
+	}
+	if worktreePathReady(target) {
+		t.Fatalf("stale worktree gitdir pointer must not be considered ready")
+	}
+}
+
+func writeFakeWorktreeMetadata(t *testing.T, target string, gitdir string) {
+	t.Helper()
+	metadata := filepath.Clean(filepath.Join(target, filepath.FromSlash(gitdir)))
+	if err := os.MkdirAll(metadata, 0o700); err != nil {
+		t.Fatalf("create worktree metadata: %v", err)
+	}
+	for _, name := range []string{"HEAD", "commondir", "gitdir"} {
+		if err := os.WriteFile(filepath.Join(metadata, name), []byte("ref: refs/heads/mivia/worktree-docs-smoke\n"), 0o644); err != nil {
+			t.Fatalf("write worktree metadata %s: %v", name, err)
+		}
 	}
 }
 
@@ -193,6 +220,7 @@ func TestResolveTaskScopedRunWorkDirCreatesSuffixedDedicatedWorktree(t *testing.
 			if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: ../metadata\n"), 0o644); err != nil {
 				t.Fatalf("write task-scoped worktree git file: %v", err)
 			}
+			writeFakeWorktreeMetadata(t, target, "../metadata")
 			writeJSON(t, w, map[string]any{"applied": true})
 		default:
 			http.NotFound(w, r)
@@ -260,6 +288,7 @@ func TestResolveTaskScopedRunWorkDirSupportsLegacySharedRefsSafely(t *testing.T)
 			if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: ../metadata\n"), 0o644); err != nil {
 				t.Fatalf("write task-scoped worktree git file: %v", err)
 			}
+			writeFakeWorktreeMetadata(t, target, "../metadata")
 			writeJSON(t, w, map[string]any{"applied": true})
 		default:
 			http.NotFound(w, r)

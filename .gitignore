@@ -58,3 +58,5 @@ docs/plans/
 docs/research/plans/
 *research-plan*.md
 *.research-plan.md
+
+.pnpm-store
