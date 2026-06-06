@@ -232,6 +232,7 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 	if err != nil {
 		return GitCreateWorktreeResult{}, err
 	}
+	metadataName := safeWorktreeDirName(project.ID + "-" + worktreeRef)
 	lock := svc.lockFor(project.ID + "\x00git-worktree\x00" + worktreeRef)
 	lock.Lock()
 	defer lock.Unlock()
@@ -245,6 +246,13 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 				if removeErr := os.RemoveAll(target); removeErr != nil {
 					return GitCreateWorktreeResult{}, ErrEditConflict
 				}
+				_ = os.RemoveAll(filepath.Join(project.CanonicalRootPath, ".git", "worktrees", metadataName))
+			} else if isStaleManagedWorktreeMetadata(project.CanonicalRootPath, target, metadataName) {
+				_, _, _ = svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now")
+				if removeErr := os.RemoveAll(target); removeErr != nil {
+					return GitCreateWorktreeResult{}, ErrEditConflict
+				}
+				_ = os.RemoveAll(filepath.Join(project.CanonicalRootPath, ".git", "worktrees", metadataName))
 			} else {
 				return GitCreateWorktreeResult{}, ErrEditConflict
 			}
@@ -267,7 +275,6 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 		_, _, _ = svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now")
 		return GitCreateWorktreeResult{}, ErrGitUnavailable
 	}
-	metadataName := safeWorktreeDirName(project.ID + "-" + worktreeRef)
 	if err := makeWorktreeGitdirPortable(project.CanonicalRootPath, target, metadataName); err != nil {
 		_, _, _ = svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now")
 		return GitCreateWorktreeResult{}, ErrGitUnavailable
@@ -329,6 +336,43 @@ func ensureWorktreeStorageExcluded(root string) error {
 	defer file.Close()
 	_, err = file.WriteString(prefix + ".mivia-worktrees/\n")
 	return err
+}
+
+func isStaleManagedWorktreeMetadata(root string, target string, metadataName string) bool {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	metadataDir := filepath.Join(root, ".git", "worktrees", metadataName)
+	worktreeGitFile := filepath.Join(target, ".git")
+	info, err := os.Stat(worktreeGitFile)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	data, err := os.ReadFile(worktreeGitFile)
+	if err != nil {
+		return false
+	}
+	const prefix = "gitdir: "
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	gitdir := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	if gitdir == "" {
+		return false
+	}
+	resolved := filepath.Clean(gitdir)
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Clean(filepath.Join(target, filepath.FromSlash(gitdir)))
+	}
+	if resolved != metadataDir {
+		return false
+	}
+	for _, required := range []string{"HEAD", "commondir", "gitdir"} {
+		if _, err := os.Stat(filepath.Join(metadataDir, required)); err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func makeWorktreeGitdirPortable(root string, target string, metadataName string) error {

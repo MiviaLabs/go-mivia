@@ -661,6 +661,54 @@ func TestWorkspaceService_GitCreateWorktreeRejectsInvalidTargetAfterGitSuccess(t
 	}
 }
 
+func TestWorkspaceService_GitCreateWorktreeRecreatesStaleManagedGitdirPointer(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package main\n")
+	project := projectregistry.Project{ID: "example-service", CanonicalRootPath: filepath.Clean(root)}
+	target, err := worktreeTargetPath(project, "worktree/plan-1")
+	if err != nil {
+		t.Fatalf("target path: %v", err)
+	}
+	metadataName := safeWorktreeDirName(project.ID + "-worktree/plan-1")
+	metadataDir := filepath.Join(root, ".git", "worktrees", metadataName)
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("create stale target: %v", err)
+	}
+	if err := os.MkdirAll(metadataDir, 0o700); err != nil {
+		t.Fatalf("create stale metadata: %v", err)
+	}
+	relativeMetadataDir, err := filepath.Rel(target, metadataDir)
+	if err != nil {
+		t.Fatalf("relative metadata dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, ".git"), []byte("gitdir: "+filepath.ToSlash(relativeMetadataDir)+"\n"), 0o644); err != nil {
+		t.Fatalf("write stale gitdir pointer: %v", err)
+	}
+	writeFixture(t, target, "stale.txt", "stale\n")
+
+	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
+	runner := &recordingGitRunner{createWorktreeTarget: true, failVerifyUntilAdd: true}
+	svc.SetGitRunner(runner)
+
+	result, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
+		WorktreeRef: "worktree/plan-1",
+		BranchRef:   "codex/plan-1",
+		BaseRef:     "main",
+	})
+	if err != nil {
+		t.Fatalf("recreate stale managed worktree: %v", err)
+	}
+	if !result.Applied || runner.worktreeAddCalls != 1 || !runner.sawWorktreePrune() {
+		t.Fatalf("expected stale managed worktree cleanup and recreate, result=%#v calls=%#v", result, runner.calls)
+	}
+	if _, err := os.Stat(filepath.Join(target, "stale.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected stale target contents to be removed, got %v", err)
+	}
+	if metadataGitdir := readFixture(t, metadataDir, "gitdir"); !filepath.IsAbs(strings.TrimSpace(metadataGitdir)) {
+		t.Fatalf("expected recreated metadata gitdir pointer, got %q", metadataGitdir)
+	}
+}
+
 func TestWorkspaceService_GitCreateWorktreePrunesAndRetriesStaleMetadata(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package main\n")
@@ -932,6 +980,7 @@ type recordingGitRunner struct {
 	failFirstWorktreeAdd bool
 	failWorktreeAddCount int
 	failWorktreeVerify   bool
+	failVerifyUntilAdd   bool
 	worktreeBranch       string
 	worktreeAddCalls     int
 }
@@ -968,6 +1017,9 @@ func (runner *recordingGitRunner) Run(_ context.Context, root string, _ int, arg
 		}
 	}
 	if len(args) == 2 && args[0] == "rev-parse" && args[1] == "--is-inside-work-tree" {
+		if runner.failVerifyUntilAdd && runner.worktreeAddCalls == 0 {
+			return nil, false, errors.New("not a valid worktree")
+		}
 		if runner.failWorktreeVerify {
 			return nil, false, errors.New("not a valid worktree")
 		}
