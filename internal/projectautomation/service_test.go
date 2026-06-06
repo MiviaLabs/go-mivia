@@ -2223,6 +2223,44 @@ func TestExternalRunNowQueuesWithoutServerSideCodex(t *testing.T) {
 	}
 }
 
+func TestExternalRunNowQueuesExplicitGitOpsPostTaskRecovery(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.EvidenceRefs = []string{"implementation/evidence"}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createTestAutomation(t, ctx, svc)
+
+	run, err := svc.RunNow(ctx, SubmitRunInput{
+		ProjectID:         automation.ProjectID,
+		AutomationID:      automation.ID,
+		TaskID:            "task-a",
+		OrchestratorRunID: "explicit-gitops-recovery",
+		SafeNextAction:    RunSafeSummaryGitOpsPostTaskRecovery,
+	})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_post_task_failed" || run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
+		t.Fatalf("expected gitops recovery candidate, got %+v", run)
+	}
+	updatedTask := fake.tasks["task-a"]
+	if updatedTask.ClaimedByRunID != run.ID || !containsRef(updatedTask.AgentRunIDs, run.ID) {
+		t.Fatalf("expected task to record recovery run ownership, got task=%+v run=%+v", updatedTask, run)
+	}
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != run.ID || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery || claimed.Run.Status != RunStatusRunning {
+		t.Fatalf("expected explicit gitops recovery run to claim, got %+v", claimed.Run)
+	}
+}
+
 func TestExternalClaimAndCompleteAttempt(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
@@ -5096,6 +5134,12 @@ func (fake *fakeWorkTasks) UpdateWorkTaskStatus(_ context.Context, input project
 	task.Status = input.Status
 	if input.Status == projectworkplan.WorkTaskStatusReady {
 		task.ClaimedByRunID = ""
+	}
+	if input.RunID != "" && strings.TrimSpace(input.SafeNextAction) == "explicit_gitops_post_task_recovery" {
+		task.ClaimedByRunID = input.RunID
+		if !containsRef(task.AgentRunIDs, input.RunID) {
+			task.AgentRunIDs = append(task.AgentRunIDs, input.RunID)
+		}
 	}
 	if input.ResumeInstructions != "" {
 		task.ResumeInstructions = input.ResumeInstructions

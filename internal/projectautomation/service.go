@@ -727,6 +727,9 @@ func (svc *Service) RunNow(ctx context.Context, input SubmitRunInput) (Automatio
 		return run, err
 	}
 	if svc.options.RunnerExecution == RunnerExecutionExternal {
+		if strings.TrimSpace(input.SafeNextAction) == RunSafeSummaryGitOpsPostTaskRecovery {
+			return svc.prepareExternalGitOpsPostTaskRecoveryRun(ctx, run)
+		}
 		run.SafeSummary = "external_runner_queued"
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
@@ -752,6 +755,51 @@ func (svc *Service) RunNow(ctx context.Context, input SubmitRunInput) (Automatio
 		return svc.failRun(ctx, run, RunStatusVerifying, "verification_required")
 	}
 	return svc.runCodexTask(ctx, run, task)
+}
+
+func (svc *Service) prepareExternalGitOpsPostTaskRecoveryRun(ctx context.Context, run AutomationRun) (AutomationRun, error) {
+	if svc.workTasks == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		run.Status = RunStatusPolicyDenied
+		run.FailureCategory = "work_task_api_unavailable"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil || !taskHasGitOpsRecoveryCloseout(task) {
+		run.Status = RunStatusPolicyDenied
+		run.FailureCategory = "gitops_recovery_closeout_missing"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	if updater, ok := svc.workTasks.(workTaskStatusUpdater); ok && updater != nil {
+		updatedTask, updateErr := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+			WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+				ProjectID:      task.ProjectID,
+				TaskID:         task.ID,
+				RunID:          run.ID,
+				TraceID:        firstNonEmpty(run.TraceID, run.ID),
+				SafeNextAction: "explicit_gitops_post_task_recovery",
+			},
+			Status: task.Status,
+		})
+		if updateErr != nil {
+			return AutomationRun{}, updateErr
+		}
+		task = updatedTask
+	}
+	run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
+	if !taskOwnsGitOpsRecoveryRun(task, run) {
+		run.Status = RunStatusPolicyDenied
+		run.FailureCategory = "gitops_recovery_run_not_attached"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	now := svc.now()
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = task.Status
+	run.FailureCategory = "gitops_post_task_failed"
+	run.UpdatedAt = now
+	return svc.store.UpdateRun(ctx, run)
 }
 
 func (svc *Service) ExecuteQueuedRun(ctx context.Context, projectID, runID string) (AutomationRun, error) {
