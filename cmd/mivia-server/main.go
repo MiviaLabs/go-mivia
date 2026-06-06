@@ -245,6 +245,10 @@ func run() error {
 		CodexBinaryPath:           cfg.Automation.CodexBinaryPath,
 		Agents:                    automationAgents(cfg.Automation.Agents),
 		PermissionResolver:        projectWorkflowService,
+		DirtyScopeRecovery: projectautomation.DirtyScopeRecoveryOptions{
+			AllowedSupportPathspecs: cfg.GitOperations.DirtyScopeRecovery.AllowedSupportPathspecs,
+			PathspecResolver:        dirtyScopeRecoveryResolver(cfg),
+		},
 		WorkPlanStatusTrigger: projectautomation.WorkPlanStatusTriggerOptions{
 			Enabled:  cfg.Automation.WorkPlanStatusTrigger.Enabled,
 			Statuses: append([]string(nil), cfg.Automation.WorkPlanStatusTrigger.Statuses...),
@@ -654,6 +658,22 @@ func automationAgents(configAgents []config.AutomationAgent) []projectautomation
 		})
 	}
 	return agents
+}
+
+func dirtyScopeRecoveryResolver(cfg config.Config) func(projectID string) []string {
+	byProject := make(map[string][]string, len(cfg.Projects))
+	for _, project := range cfg.Projects {
+		if project.GitOperations == nil {
+			continue
+		}
+		byProject[project.ID] = append([]string(nil), project.GitOperations.DirtyScopeRecovery.AllowedSupportPathspecs...)
+		for _, alias := range project.Aliases {
+			byProject[alias] = append([]string(nil), project.GitOperations.DirtyScopeRecovery.AllowedSupportPathspecs...)
+		}
+	}
+	return func(projectID string) []string {
+		return append([]string(nil), byProject[projectID]...)
+	}
 }
 
 func automationProjectIDs(projects []projectregistry.Project) []string {

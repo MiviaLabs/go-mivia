@@ -396,6 +396,7 @@ func New(store Store, workTasks WorkTaskAPI, options Options) *Service {
 	}
 	agents := append([]AutomationAgent(nil), options.Agents...)
 	options.Agents = agents
+	options.DirtyScopeRecovery.AllowedSupportPathspecs = safeTaskPathspecs(options.DirtyScopeRecovery.AllowedSupportPathspecs)
 	startedAt := time.Now().UTC()
 	return &Service{
 		store:     store,
@@ -1778,7 +1779,7 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 	}
 	dirtyPaths := dirtyPathsFromEvidenceRefs(evidenceRefs)
 	if strings.TrimSpace(category) == "gitops_dirty_worktree_scope" && len(dirtyPaths) > 0 {
-		expandScopes, outsidePaths := classifyDirtyScopePaths(task, dirtyPaths)
+		expandScopes, outsidePaths := svc.classifyDirtyScopePaths(run.ProjectID, task, dirtyPaths)
 		if len(outsidePaths) > 0 {
 			return svc.blockTaskAfterOutOfScopeDirtyPaths(ctx, updater, run, task, outsidePaths)
 		}
@@ -1937,7 +1938,7 @@ func (svc *Service) expandOrBlockPreExecutionDirtyScope(ctx context.Context, run
 	if strings.TrimSpace(run.FailureCategory) != "gitops_dirty_worktree_scope" || len(dirtyPaths) == 0 {
 		return task, run, false, nil
 	}
-	expandScopes, outsidePaths := classifyDirtyScopePaths(task, dirtyPaths)
+	expandScopes, outsidePaths := svc.classifyDirtyScopePaths(run.ProjectID, task, dirtyPaths)
 	if len(outsidePaths) > 0 {
 		updater, ok := svc.workTasks.(workTaskStatusUpdater)
 		if !ok || updater == nil {
@@ -4114,12 +4115,13 @@ func dirtyPathsFromEvidenceRefs(refs []string) []string {
 	return uniqueRefs(out)
 }
 
-func classifyDirtyScopePaths(task projectworkplan.WorkTask, dirtyPaths []string) ([]string, []string) {
+func (svc *Service) classifyDirtyScopePaths(projectID string, task projectworkplan.WorkTask, dirtyPaths []string) ([]string, []string) {
 	likely := safeTaskPathspecs(task.LikelyFilesAffected)
 	if len(likely) == 0 {
 		return nil, dirtyPaths
 	}
 	current := safeTaskPathspecs(task.FilesToEdit)
+	supportScopes := svc.automationSupportPathspecs(projectID)
 	var expand []string
 	var outside []string
 	for _, path := range dirtyPaths {
@@ -4132,7 +4134,7 @@ func classifyDirtyScopePaths(task projectworkplan.WorkTask, dirtyPaths []string)
 		}
 		scope := firstMatchingTaskScope(path, likely)
 		if scope == "" {
-			scope = automationSupportPathScope(path)
+			scope = firstMatchingTaskScope(path, supportScopes)
 		}
 		if scope == "" {
 			outside = append(outside, path)
@@ -4143,22 +4145,12 @@ func classifyDirtyScopePaths(task projectworkplan.WorkTask, dirtyPaths []string)
 	return uniqueRefs(expand), uniqueRefs(outside)
 }
 
-func automationSupportPathScope(path string) string {
-	path = filepath.ToSlash(strings.TrimSpace(path))
-	for _, scope := range []string{
-		".claude",
-		".codex",
-		".cursor",
-		".windsurf",
-		".github/copilot-instructions.md",
-		".ai/skills",
-		".ai/rules",
-	} {
-		if taskPathMatchesScope(path, scope) {
-			return scope
-		}
+func (svc *Service) automationSupportPathspecs(projectID string) []string {
+	scopes := append([]string(nil), svc.options.DirtyScopeRecovery.AllowedSupportPathspecs...)
+	if svc.options.DirtyScopeRecovery.PathspecResolver != nil {
+		scopes = append(scopes, svc.options.DirtyScopeRecovery.PathspecResolver(projectID)...)
 	}
-	return ""
+	return safeTaskPathspecs(scopes)
 }
 
 func safeTaskPathspecs(values []string) []string {

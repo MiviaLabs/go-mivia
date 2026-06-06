@@ -557,6 +557,9 @@ func mergeGitOperations(base config.GitOperations, override config.GitOperations
 		merged.GitHubCLIPath = override.GitHubCLIPath
 	}
 	merged.Conventions = mergeGitOpsConventions(merged.Conventions, override.Conventions)
+	if len(override.DirtyScopeRecovery.AllowedSupportPathspecs) > 0 {
+		merged.DirtyScopeRecovery.AllowedSupportPathspecs = append([]string(nil), override.DirtyScopeRecovery.AllowedSupportPathspecs...)
+	}
 	return merged
 }
 

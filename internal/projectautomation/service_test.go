@@ -767,7 +767,7 @@ func TestRequeuePreExecutionRecoveryBoundsDirtyPathBlockedReason(t *testing.T) {
 	}
 }
 
-func TestRequeuePreExecutionRecoveryExpandsAutomationSupportDirtyPaths(t *testing.T) {
+func TestRequeuePreExecutionRecoveryBlocksUnconfiguredAutomationSupportDirtyPaths(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "fix-a", []string{"apps/frontend-mobile/lib"})
 	task.Status = projectworkplan.WorkTaskStatusInProgress
@@ -797,8 +797,65 @@ func TestRequeuePreExecutionRecoveryExpandsAutomationSupportDirtyPaths(t *testin
 	}
 
 	updated, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, []string{
+		"gitops-dirty-path:.codex/skills/flutter-use-http-package/SKILL.md",
+	})
+	if err != nil {
+		t.Fatalf("requeueTaskAfterPreExecutionRecoveryFailure returned error: %v", err)
+	}
+	if updated.FailureCategory != "gitops_dirty_worktree_scope_requires_plan" {
+		t.Fatalf("expected unconfigured support dirty path to require a plan, got %+v", updated)
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected task blocked, got %+v", fake.tasks[task.ID])
+	}
+}
+
+func TestRequeuePreExecutionRecoveryExpandsConfiguredAutomationSupportDirtyPaths(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"apps/frontend-mobile/lib"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	task.LikelyFilesAffected = []string{"apps/frontend-mobile/lib"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  RunnerExecutionExternal,
+		MaxParallelTasks: 1,
+		DirtyScopeRecovery: DirtyScopeRecoveryOptions{PathspecResolver: func(projectID string) []string {
+			if projectID != "project-1" {
+				return nil
+			}
+			return []string{".claude", ".codex", ".github", ".devcontainer", ".ai/skills", ".ai/rules"}
+		}},
+	})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries,
+		SafeSummary:     "pre_execution_recovery",
+		FailureCategory: "gitops_dirty_worktree_scope",
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, []string{
 		"gitops-dirty-path:.claude/rules/typescript.md",
 		"gitops-dirty-path:.codex/skills/flutter-use-http-package/SKILL.md",
+		"gitops-dirty-path:.github/pull_request_template.md",
+		"gitops-dirty-path:.devcontainer/devcontainer.json",
+		"gitops-dirty-path:.ai/skills/automated-workplan/SKILL.md",
 	})
 	if err != nil {
 		t.Fatalf("requeueTaskAfterPreExecutionRecoveryFailure returned error: %v", err)
@@ -807,7 +864,7 @@ func TestRequeuePreExecutionRecoveryExpandsAutomationSupportDirtyPaths(t *testin
 		t.Fatalf("expected implementation requeue after support path expansion, got %+v", updated)
 	}
 	requeuedTask := fake.tasks[task.ID]
-	for _, want := range []string{".claude", ".codex"} {
+	for _, want := range []string{".claude", ".codex", ".github", ".devcontainer", ".ai/skills"} {
 		if !containsString(requeuedTask.FilesToEdit, want) {
 			t.Fatalf("expected %q to be added to files_to_edit, got %+v", want, requeuedTask.FilesToEdit)
 		}

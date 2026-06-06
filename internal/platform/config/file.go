@@ -168,6 +168,11 @@ type fileGitOpsConfig struct {
 	GitHubTokenFile              *string                      `toml:"github_token_file"`
 	GitHubCLIPath                *string                      `toml:"github_cli_path"`
 	Conventions                  *fileGitOpsConventionsConfig `toml:"conventions"`
+	DirtyScopeRecovery           *fileDirtyScopeRecovery      `toml:"dirty_scope_recovery"`
+}
+
+type fileDirtyScopeRecovery struct {
+	AllowedSupportPathspecs []string `toml:"allowed_support_pathspecs"`
 }
 
 type fileGitOpsConventionsConfig struct {
@@ -832,6 +837,9 @@ func applyFileGitOps(base *GitOperations, cfg *fileGitOpsConfig) {
 	}
 	if cfg.GitHubCLIPath != nil {
 		base.GitHubCLIPath = strings.TrimSpace(*cfg.GitHubCLIPath)
+	}
+	if cfg.DirtyScopeRecovery != nil {
+		base.DirtyScopeRecovery.AllowedSupportPathspecs = trimStringSlice(cfg.DirtyScopeRecovery.AllowedSupportPathspecs)
 	}
 	if cfg.Conventions != nil {
 		if cfg.Conventions.CommitType != nil {

@@ -29,6 +29,33 @@ func TestEffectiveInitialScanOnStartKeepsConfiguredValueWithoutRecovery(t *testi
 	}
 }
 
+func TestDirtyScopeRecoveryResolverUsesProjectGitOpsPolicy(t *testing.T) {
+	resolver := dirtyScopeRecoveryResolver(config.Config{
+		GitOperations: config.GitOperations{
+			DirtyScopeRecovery: config.DirtyScopeRecovery{AllowedSupportPathspecs: []string{".global"}},
+		},
+		Projects: []config.Project{
+			{
+				ID:      "project-a",
+				Aliases: []string{"alias-a"},
+				GitOperations: &config.GitOperations{
+					DirtyScopeRecovery: config.DirtyScopeRecovery{AllowedSupportPathspecs: []string{".codex", ".github"}},
+				},
+			},
+		},
+	})
+
+	if got := strings.Join(resolver("project-a"), ","); got != ".codex,.github" {
+		t.Fatalf("expected project dirty scope policy, got %q", got)
+	}
+	if got := strings.Join(resolver("alias-a"), ","); got != ".codex,.github" {
+		t.Fatalf("expected alias dirty scope policy, got %q", got)
+	}
+	if got := strings.Join(resolver("missing"), ","); got != "" {
+		t.Fatalf("expected no project policy for missing project, got %q", got)
+	}
+}
+
 func TestProjectPersistentGraphMaxOpenDerivesFromConfiguredProjects(t *testing.T) {
 	projects := make([]config.Project, 0, ladybug.DefaultPebbleGraphMaxOpen+4)
 	for index := 0; index < ladybug.DefaultPebbleGraphMaxOpen+4; index++ {

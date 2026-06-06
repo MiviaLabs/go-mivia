@@ -190,6 +190,12 @@ type Options struct {
 	PermissionResolver        PermissionResolver
 	Governance                GovernanceOptions
 	WorkPlanStatusTrigger     WorkPlanStatusTriggerOptions
+	DirtyScopeRecovery        DirtyScopeRecoveryOptions
+}
+
+type DirtyScopeRecoveryOptions struct {
+	AllowedSupportPathspecs []string
+	PathspecResolver        func(projectID string) []string
 }
 
 type WorkPlanStatusTriggerOptions struct {

@@ -141,6 +141,11 @@ type GitOperations struct {
 	GitHubTokenFile              string
 	GitHubCLIPath                string
 	Conventions                  GitOpsConventions
+	DirtyScopeRecovery           DirtyScopeRecovery
+}
+
+type DirtyScopeRecovery struct {
+	AllowedSupportPathspecs []string
 }
 
 type GitOpsConventions struct {
@@ -941,6 +946,27 @@ func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool)
 	}
 	if err := gitops.Conventions.Validate(); err != nil {
 		return err
+	}
+	if err := gitops.DirtyScopeRecovery.Validate(prefix); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (recovery DirtyScopeRecovery) Validate(prefix string) error {
+	for _, value := range recovery.AllowedSupportPathspecs {
+		path := strings.TrimSpace(filepath.ToSlash(value))
+		if err := validateSafeVerifierPath(prefix+"_DIRTY_SCOPE_RECOVERY_ALLOWED_SUPPORT_PATHSPECS", path); err != nil {
+			return err
+		}
+		switch {
+		case path == ".git" || strings.HasPrefix(path, ".git/"):
+			return fmt.Errorf("%s_DIRTY_SCOPE_RECOVERY_ALLOWED_SUPPORT_PATHSPECS must not include .git", prefix)
+		case path == ".mivia-worktrees" || strings.HasPrefix(path, ".mivia-worktrees/"):
+			return fmt.Errorf("%s_DIRTY_SCOPE_RECOVERY_ALLOWED_SUPPORT_PATHSPECS must not include .mivia-worktrees", prefix)
+		case path == ".ai/tasks" || strings.HasPrefix(path, ".ai/tasks/"):
+			return fmt.Errorf("%s_DIRTY_SCOPE_RECOVERY_ALLOWED_SUPPORT_PATHSPECS must not include .ai/tasks", prefix)
+		}
 	}
 	return nil
 }
