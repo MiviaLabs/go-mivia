@@ -1137,6 +1137,16 @@ func TestGitOpsRecoveryRequeueBoundsStoredLongResumeInstructions(t *testing.T) {
 	if !strings.Contains(updatedTask.ResumeInstructions, "GitOps recovery failed with gitops_post_task_failed") {
 		t.Fatalf("expected recovery instructions, got %q", updatedTask.ResumeInstructions)
 	}
+	updatedRun, err := automationStore.GetRun(ctx, "project-1", "run-gitops")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if updatedRun.FailureCategory != "gitops_recovery_failed_requires_implementation" {
+		t.Fatalf("expected stable requeue failure category, got %q", updatedRun.FailureCategory)
+	}
+	if !strings.Contains(updatedRun.SafeSummary, "gitops_post_task_failed") {
+		t.Fatalf("expected safe summary to preserve original failure category, got %q", updatedRun.SafeSummary)
+	}
 }
 
 func TestGitOpsRecoveryRequeueUsesImplementationClaimForAttachedRecoveryRun(t *testing.T) {
@@ -4395,7 +4405,7 @@ func TestCompleteAttemptRequeuesImplementationAfterGitOpsRecoveryFailure(t *test
 	if err != nil {
 		t.Fatalf("CompleteAttempt returned error: %v", err)
 	}
-	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_recovery_failed_requires_implementation" || run.SafeSummary != RunSafeSummaryGitOpsRecoveryRequeuedImplementation {
+	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_recovery_failed_requires_implementation" || !strings.Contains(run.SafeSummary, "gitops_verification_failed") {
 		t.Fatalf("expected terminal GitOps recovery reroute, got %+v", run)
 	}
 	requeuedTask := fake.tasks[task.ID]
@@ -4463,7 +4473,7 @@ func TestClaimNextRunRequeuesExhaustedGitOpsRecoveryAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if exhausted.FailureCategory != "gitops_recovery_failed_requires_implementation" || exhausted.SafeSummary != RunSafeSummaryGitOpsRecoveryRequeuedImplementation {
+	if exhausted.FailureCategory != "gitops_recovery_failed_requires_implementation" || !strings.Contains(exhausted.SafeSummary, "gitops_post_task_failed") {
 		t.Fatalf("expected exhausted run to be terminalized for implementation, got %+v", exhausted)
 	}
 	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusInProgress || fake.tasks[task.ID].ClaimedByRunID != claimed.Run.ID {

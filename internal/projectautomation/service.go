@@ -1641,7 +1641,7 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
 		run.Status = RunStatusFailed
 		run.FailureCategory = category
-		run.SafeSummary = RunSafeSummaryGitOpsRecoveryRequeuedImplementation
+		run.SafeSummary = gitOpsRecoveryRequeueSummary(category)
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
 	}
@@ -1669,7 +1669,7 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 	}
 	run.Status = RunStatusFailed
 	run.WorkTaskStatus = readyTask.Status
-	run.SafeSummary = RunSafeSummaryGitOpsRecoveryRequeuedImplementation
+	run.SafeSummary = gitOpsRecoveryRequeueSummary(category)
 	run.FailureCategory = "gitops_recovery_failed_requires_implementation"
 	now := svc.now()
 	if run.FinishedAt.IsZero() {
@@ -1688,6 +1688,14 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 		return updated, nil
 	}
 	return updated, nil
+}
+
+func gitOpsRecoveryRequeueSummary(category string) string {
+	category = safeFailure(category)
+	if category == "" {
+		return RunSafeSummaryGitOpsRecoveryRequeuedImplementation
+	}
+	return RunSafeSummaryGitOpsRecoveryRequeuedImplementation + "_after_" + category
 }
 
 func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
