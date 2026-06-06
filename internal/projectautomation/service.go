@@ -2440,7 +2440,7 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 			return nil
 		}
 	}
-	if countTerminalReplacementFailures(existing, task.ID) >= defaultAutomationMaxReplacementRunsPerTask {
+	if countTerminalReplacementFailures(existing, task) >= defaultAutomationMaxReplacementRunsPerTask {
 		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
 		return err
 	}
@@ -2484,7 +2484,7 @@ func (svc *Service) replacementRetryLimitReached(ctx context.Context, run Automa
 	if err != nil {
 		return false, err
 	}
-	return countTerminalReplacementFailures(existing, task.ID) >= defaultAutomationMaxReplacementRunsPerTask, nil
+	return countTerminalReplacementFailures(existing, task) >= defaultAutomationMaxReplacementRunsPerTask, nil
 }
 
 func (svc *Service) blockRunAfterReplacementRetryLimit(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
@@ -2515,14 +2515,30 @@ func (svc *Service) blockTaskAfterReplacementRetryLimit(ctx context.Context, tas
 	})
 }
 
-func countTerminalReplacementFailures(runs []AutomationRun, taskID string) int {
+func countTerminalReplacementFailures(runs []AutomationRun, task projectworkplan.WorkTask) int {
 	count := 0
+	recoveryAfter := time.Time{}
+	if taskHasSystemFixRecoveryMarker(task) {
+		recoveryAfter = task.UpdatedAt
+	}
 	for _, run := range runs {
-		if run.TaskID == taskID && isTerminalReplacementFailure(run) {
+		if !recoveryAfter.IsZero() && !run.UpdatedAt.After(recoveryAfter) {
+			continue
+		}
+		if run.TaskID == task.ID && isTerminalReplacementFailure(run) {
 			count++
 		}
 	}
 	return count
+}
+
+func taskHasSystemFixRecoveryMarker(task projectworkplan.WorkTask) bool {
+	for _, ref := range task.AgentRunIDs {
+		if strings.HasPrefix(strings.TrimSpace(ref), "orchestrator-system-fix-") {
+			return true
+		}
+	}
+	return false
 }
 
 func isQueuedReplacementRun(run AutomationRun) bool {
