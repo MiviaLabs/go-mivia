@@ -405,7 +405,7 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 	if got := strings.Join(runner.commands[3].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
 		t.Fatalf("expected lint verifier command, got %q", got)
 	}
-	if got := strings.Join(runner.commands[3].Env, "\n"); got != "BFF_ADMIN_URL=http://localhost:3000\nSESSION_PASSWORD=test-secret" {
+	if got := strings.Join(runner.commands[3].Env, "\n"); !strings.Contains(got, "XDG_CONFIG_HOME=") || !strings.Contains(got, "BFF_ADMIN_URL=http://localhost:3000") || !strings.Contains(got, "SESSION_PASSWORD=test-secret") {
 		t.Fatalf("expected sorted verifier env, got %q", got)
 	}
 	if got := strings.Join(runner.commands[4].Args, " "); got != "-lc pnpm -s nx run contracts:verify-openapi" {

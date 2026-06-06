@@ -312,26 +312,38 @@ func (svc *Service) runVerifierCommand(ctx context.Context, workDir string, comm
 	if command == "" || strings.ContainsAny(command, "\x00\r\n") {
 		return fmt.Errorf("%w: unsafe verifier command", ErrInvalidInput)
 	}
-	if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: verifierEnv(svc.options.Verification.Env)}); err != nil {
+	env, err := verifierEnv(svc.options.Verification.Env, workDir)
+	if err != nil {
+		return err
+	}
+	if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: env}); err != nil {
 		return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
 	}
 	return nil
 }
 
-func verifierEnv(values map[string]string) []string {
+func verifierEnv(values map[string]string, workDir string) ([]string, error) {
+	configHome := filepath.Join(os.TempDir(), "mivia-gitops-verifier-"+safeHash(workDir), ".config")
+	if err := os.MkdirAll(configHome, 0o700); err != nil {
+		return nil, err
+	}
+	out := []string{"XDG_CONFIG_HOME=" + configHome}
 	if len(values) == 0 {
-		return nil
+		return out, nil
 	}
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	env := make([]string, 0, len(keys))
 	for _, key := range keys {
-		env = append(env, key+"="+values[key])
+		if key == "XDG_CONFIG_HOME" {
+			out[0] = key + "=" + values[key]
+			continue
+		}
+		out = append(out, key+"="+values[key])
 	}
-	return env
+	return out, nil
 }
 
 func (svc *Service) generatedArtifactPathspecs() []string {
