@@ -322,7 +322,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 			if err != nil {
 				status = projectautomation.RunStatusFailed
-				failureCategory = projectgitops.FailureCategory(err)
+				failureCategory = projectgitops.FailureCategoryWithDetail(err)
 			} else {
 				evidenceRefs = append(evidenceRefs, gitResult.EvidenceRefs...)
 				for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
@@ -396,7 +396,7 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 	}
 	gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 	if err != nil {
-		return projectautomation.RunStatusFailed, projectgitops.FailureCategory(err), time.Since(started).Milliseconds(), nil
+		return projectautomation.RunStatusFailed, projectgitops.FailureCategoryWithDetail(err), time.Since(started).Milliseconds(), nil
 	}
 	evidenceRefs := append([]string(nil), gitResult.EvidenceRefs...)
 	for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {

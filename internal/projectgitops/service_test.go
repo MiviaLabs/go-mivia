@@ -343,6 +343,13 @@ func TestFailureCategoryUsesVerificationError(t *testing.T) {
 	}
 }
 
+func TestFailureCategoryWithDetailPreservesVerificationCommandHash(t *testing.T) {
+	err := fmt.Errorf("%w: %s", ErrVerificationFailed, "abcdef123456")
+	if got := FailureCategoryWithDetail(err); got != "gitops_verification_failed_abcdef123456" {
+		t.Fatalf("expected detailed verification category, got %q", got)
+	}
+}
+
 func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},

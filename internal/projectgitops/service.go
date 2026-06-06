@@ -241,6 +241,22 @@ func FailureCategory(err error) string {
 	}
 }
 
+func FailureCategoryWithDetail(err error) string {
+	category := FailureCategory(err)
+	if category != "gitops_verification_failed" {
+		return category
+	}
+	fields := strings.Fields(err.Error())
+	if len(fields) == 0 {
+		return category
+	}
+	detail := fields[len(fields)-1]
+	if matched, _ := regexp.MatchString(`^[a-f0-9]{12}$`, detail); matched {
+		return category + "_" + detail
+	}
+	return category
+}
+
 func (svc *Service) runVerification(ctx context.Context, workDir string) ([]string, []string, error) {
 	if len(svc.options.Verification.BootstrapCommands) == 0 &&
 		len(svc.options.Verification.AlwaysBeforePR) == 0 &&
