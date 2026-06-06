@@ -708,6 +708,10 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 	now := svc.now()
 	task.Status = next
 	task.UpdatedAt = now
+	if next != WorkTaskStatusBlocked {
+		task.BlockedReason = ""
+		task.BlockedByTaskIDs = nil
+	}
 	switch next {
 	case WorkTaskStatusClaimed:
 		task.ClaimedAt = now

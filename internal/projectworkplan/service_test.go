@@ -306,6 +306,37 @@ func TestServiceTaskTransitions(t *testing.T) {
 	if _, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: blockTarget.ID, BlockedReason: "missing dependency"}); err == nil {
 		t.Fatal("expected block without resume instructions to fail")
 	}
+	blocked, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             blockTarget.ID,
+		BlockedReason:      "waiting for dependency",
+		ResumeInstructions: "retry after dependency is ready",
+		BlockedByTaskIDs:   []string{task.ID},
+	})
+	if err != nil {
+		t.Fatalf("block target: %v", err)
+	}
+	if blocked.BlockedReason == "" || len(blocked.BlockedByTaskIDs) != 1 {
+		t.Fatalf("expected blocker metadata to persist while blocked, got %#v", blocked)
+	}
+	unblocked, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: blockTarget.ID})
+	if err != nil {
+		t.Fatalf("release blocked target: %v", err)
+	}
+	if unblocked.Status != projectworkplan.WorkTaskStatusReady || unblocked.BlockedReason != "" || len(unblocked.BlockedByTaskIDs) != 0 {
+		t.Fatalf("expected release to clear blocker metadata, got %#v", unblocked)
+	}
+	reclaimed, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: blockTarget.ID, RunID: "run-block-retry"})
+	if err != nil {
+		t.Fatalf("claim unblocked target: %v", err)
+	}
+	started, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: reclaimed.ID, RunID: "run-block-retry"})
+	if err != nil {
+		t.Fatalf("start unblocked target: %v", err)
+	}
+	if started.BlockedReason != "" || len(started.BlockedByTaskIDs) != 0 {
+		t.Fatalf("expected active task to stay clear of blocker metadata, got %#v", started)
+	}
 }
 
 func TestServiceIntentionalResumeInstructionUpdatesAllowLongSafeTextAndRejectUnsafeText(t *testing.T) {
