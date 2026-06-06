@@ -22,9 +22,17 @@ func TestParseWorkflowTOMLValid(t *testing.T) {
 	if defs[0].Agents[0].LogPolicy != "metadata_only" {
 		t.Fatalf("expected default log policy metadata_only, got %q", defs[0].Agents[0].LogPolicy)
 	}
+	if defs[0].Agents[0].Instructions == "" {
+		t.Fatalf("expected agent instructions to parse: %#v", defs[0].Agents[0])
+	}
 	if !defs[0].ReviewGates[0].IndependentFromOwner {
 		t.Fatal("expected review gate independent_from_owner to default true")
 	}
+}
+
+func TestParseWorkflowTOMLUnsafeAgentInstructionsFails(t *testing.T) {
+	toml := strings.Replace(validWorkflowTOML(), `instructions = "Use bounded task metadata only."`, `instructions = "token=secret"`, 1)
+	assertWorkflowIssue(t, toml, "unsafe_text", "agents[0].instructions")
 }
 
 func TestParseWorkflowTOMLMissingReviewerInstructionsFails(t *testing.T) {
@@ -117,6 +125,7 @@ status = "draft"
 id = "worker"
 display_name = "Worker"
 purpose = "Implement scoped metadata workflow tasks."
+instructions = "Use bounded task metadata only."
 allowed_skills = ["mivia-mcp"]
 allowed_tools = ["projects.workspace.file_read"]
 workspace_mode = "edit"
@@ -126,6 +135,7 @@ network_policy = "disabled"
 id = "reviewer"
 display_name = "Reviewer"
 purpose = "Review scoped metadata workflow tasks."
+instructions = "Review bounded task evidence independently."
 secret_policy = "deny"
 log_policy = "metadata_only"
 

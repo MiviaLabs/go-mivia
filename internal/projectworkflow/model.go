@@ -45,6 +45,7 @@ type WorkflowAgentDefinition struct {
 	ID              string    `json:"id"`
 	DisplayName     string    `json:"display_name"`
 	Purpose         string    `json:"purpose"`
+	Instructions    string    `json:"instructions,omitempty"`
 	AllowedSkills   []string  `json:"allowed_skills,omitempty"`
 	AllowedTools    []string  `json:"allowed_tools,omitempty"`
 	AllowedCommands []string  `json:"allowed_commands,omitempty"`
@@ -64,6 +65,7 @@ type WorkflowPermissionSnapshot struct {
 	ProjectID       string    `json:"project_id"`
 	AgentID         string    `json:"agent_id"`
 	WorkflowID      string    `json:"workflow_id"`
+	Instructions    string    `json:"instructions,omitempty"`
 	AllowedSkills   []string  `json:"allowed_skills,omitempty"`
 	AllowedTools    []string  `json:"allowed_tools,omitempty"`
 	AllowedCommands []string  `json:"allowed_commands,omitempty"`
@@ -90,10 +92,13 @@ type WorkflowStep struct {
 	Description             string   `json:"description,omitempty"`
 	EvidenceNeeded          []string `json:"evidence_needed,omitempty"`
 	ContextPackRefs         []string `json:"context_pack_refs,omitempty"`
+	FilesToRead             []string `json:"files_to_read,omitempty"`
+	FilesToEdit             []string `json:"files_to_edit,omitempty"`
 	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
 	VerificationRequirement string   `json:"verification_requirement,omitempty"`
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
+	ReviewGate              string   `json:"review_gate,omitempty"`
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
 	MaxParallelTasks        int      `json:"max_parallel_tasks,omitempty"`
 	AutomationStatus        string   `json:"automation_status,omitempty"`

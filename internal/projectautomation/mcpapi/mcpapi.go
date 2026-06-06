@@ -76,7 +76,19 @@ func CallTool(ctx context.Context, api API, name string, arguments json.RawMessa
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"content": []map[string]any{{"type": "json", "json": value}}}, nil
+	value = automationToolResultValue(canonical, value)
+	return toolResult(value), nil
+}
+
+func automationToolResultValue(name string, value any) any {
+	switch name {
+	case "projects.automations.list":
+		return map[string]any{"automations": value}
+	case "projects.automation_runs.list":
+		return map[string]any{"automation_runs": value}
+	default:
+		return value
+	}
 }
 
 func validateArguments(_ string, arguments json.RawMessage) error {
@@ -103,6 +115,17 @@ func canonicalToolName(name string) string {
 
 func tool(name, title, description string, inputSchema map[string]any) map[string]any {
 	return map[string]any{"name": name, "title": title, "description": description, "inputSchema": inputSchema}
+}
+
+func toolResult(value any) map[string]any {
+	encoded, _ := json.Marshal(value)
+	return map[string]any{
+		"content": []map[string]string{
+			{"type": "text", "text": string(encoded)},
+		},
+		"structuredContent": value,
+		"isError":           false,
+	}
 }
 
 func schema(properties map[string]any, required []string) map[string]any {

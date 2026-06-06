@@ -111,7 +111,7 @@ func TestWorkflowRoutesAgentDefinitionsAndPermissionSnapshots(t *testing.T) {
 		t.Fatalf("unexpected agent definition list: %#v", agents)
 	}
 	agent := requestJSON[projectworkflow.WorkflowAgentDefinition](t, mux, http.MethodGet, "/api/v1/projects/project-1/workflows/workflow-1/agent-definitions/worker", nil, http.StatusOK)
-	if agent.ID != "worker" || agent.LogPolicy != "metadata_only" {
+	if agent.ID != "worker" || agent.LogPolicy != "metadata_only" || agent.Instructions != "Implement only the bounded task metadata." {
 		t.Fatalf("unexpected agent definition: %#v", agent)
 	}
 
@@ -120,7 +120,7 @@ func TestWorkflowRoutesAgentDefinitionsAndPermissionSnapshots(t *testing.T) {
 		t.Fatalf("unexpected permission snapshots: %#v", snapshots)
 	}
 	snapshot := requestJSON[projectworkflow.WorkflowPermissionSnapshot](t, mux, http.MethodGet, "/api/v1/projects/project-1/permission-snapshots/permission-snapshot-workflow-b-worker", nil, http.StatusOK)
-	if snapshot.AgentID != "worker" || snapshot.WorkflowID != "workflow-1" || !strings.HasPrefix(snapshot.ContentHash, "sha256-") {
+	if snapshot.AgentID != "worker" || snapshot.WorkflowID != "workflow-1" || snapshot.Instructions != "Implement only the bounded task metadata." || !strings.HasPrefix(snapshot.ContentHash, "sha256-") {
 		t.Fatalf("unexpected permission snapshot: %#v", snapshot)
 	}
 }
@@ -265,6 +265,7 @@ status = "enabled"
 id = "worker"
 display_name = "Worker"
 purpose = "Implement one bounded task"
+instructions = "Implement only the bounded task metadata."
 allowed_skills = ["mivia-mcp"]
 allowed_tools = ["projects.workspace.file_read"]
 denied_commands = ["git push"]
@@ -279,6 +280,7 @@ max_retries = 1
 id = "reviewer"
 display_name = "Reviewer"
 purpose = "Review one bounded task"
+instructions = "Review task metadata independently."
 allowed_skills = ["mivia-mcp"]
 allowed_tools = ["projects.work_tasks.attach_review_result"]
 denied_commands = ["go test"]

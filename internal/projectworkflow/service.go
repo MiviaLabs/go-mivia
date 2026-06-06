@@ -308,6 +308,7 @@ func (svc *Service) permissionSnapshotForAgent(workflow WorkflowDefinition, agen
 		ProjectID:       workflow.ProjectID,
 		AgentID:         agent.ID,
 		WorkflowID:      workflow.ID,
+		Instructions:    strings.TrimSpace(agent.Instructions),
 		AllowedSkills:   sortedCopy(agent.AllowedSkills),
 		AllowedTools:    sortedCopy(agent.AllowedTools),
 		AllowedCommands: sortedCopy(agent.AllowedCommands),
@@ -364,6 +365,7 @@ func (svc *Service) CheckAutomationPermission(ctx context.Context, input project
 func permissionSnapshotContentHash(snapshot WorkflowPermissionSnapshot) string {
 	payload := struct {
 		AgentID         string   `json:"agent_id"`
+		Instructions    string   `json:"instructions,omitempty"`
 		AllowedSkills   []string `json:"allowed_skills,omitempty"`
 		AllowedTools    []string `json:"allowed_tools,omitempty"`
 		AllowedCommands []string `json:"allowed_commands,omitempty"`
@@ -375,7 +377,8 @@ func permissionSnapshotContentHash(snapshot WorkflowPermissionSnapshot) string {
 		MaxRuntime      string   `json:"max_runtime,omitempty"`
 		MaxRetries      int      `json:"max_retries,omitempty"`
 	}{
-		AgentID: snapshot.AgentID, AllowedSkills: sortedCopy(snapshot.AllowedSkills), AllowedTools: sortedCopy(snapshot.AllowedTools),
+		AgentID: snapshot.AgentID, Instructions: snapshot.Instructions,
+		AllowedSkills: sortedCopy(snapshot.AllowedSkills), AllowedTools: sortedCopy(snapshot.AllowedTools),
 		AllowedCommands: sortedCopy(snapshot.AllowedCommands), DeniedCommands: sortedCopy(snapshot.DeniedCommands),
 		WorkspaceMode: snapshot.WorkspaceMode, NetworkPolicy: snapshot.NetworkPolicy, SecretPolicy: snapshot.SecretPolicy,
 		LogPolicy: snapshot.LogPolicy, MaxRuntime: snapshot.MaxRuntime, MaxRetries: snapshot.MaxRetries,

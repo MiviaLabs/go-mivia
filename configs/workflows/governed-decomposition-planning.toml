@@ -9,6 +9,7 @@ status = "enabled"
 id = "planning-worker"
 display_name = "Planning Worker"
 purpose = "Reads bounded project context and drafts low-intelligence-ready Work Task metadata."
+instructions = "Use MCP context health and bounded context refs first. Create metadata-only Work Tasks executable from task fields and attached refs without hidden chat context."
 allowed_skills = ["mivia-mcp", "plan-task"]
 allowed_tools = [
   "projects.list",
@@ -31,6 +32,7 @@ max_retries = 1
 id = "planning-reviewer"
 display_name = "Planning Reviewer"
 purpose = "Reviews Work Plan and Work Task decomposition for readiness, evidence, dependencies, and verifier scope."
+instructions = "Reject decomposition that lacks evidence refs, verifier scope, dependencies, resume instructions, review gates, files_to_read, or clear files_to_edit decisions."
 allowed_skills = ["mivia-mcp", "project-review"]
 allowed_tools = [
   "projects.work_plans.get",
@@ -51,6 +53,7 @@ max_retries = 0
 id = "planning-orchestrator"
 display_name = "Planning Orchestrator"
 purpose = "Compiles planning tasks and queues only reviewed ready tasks for automation."
+instructions = "Move tasks to ready or queue automation only after independent review refs, permission snapshots, and safe task packet metadata exist."
 allowed_skills = ["mivia-mcp"]
 allowed_tools = [
   "projects.work_plans.resume",
@@ -74,10 +77,22 @@ title = "Discover Planning Context"
 agent = "planning-worker"
 description = "Identify repo instructions, current project state, relevant docs, source areas, and MCP surface gaps for the requested objective."
 evidence_needed = ["project-context-health", "repo-instructions-ref", "context-pack-ref", "mcp-surface-gap-ref"]
+files_to_read = [
+  ".ai/INDEX.md",
+  ".ai/rules/00-operating-doctrine.md",
+  ".ai/rules/05-external-systems.md",
+  ".ai/rules/10-security-privacy.md",
+  ".ai/rules/20-go-service-standards.md",
+  ".ai/rules/30-docker-data.md",
+  ".ai/skills/mivia-mcp/SKILL.md",
+  "configs/workflows/governed-decomposition-planning.toml"
+]
+files_to_edit = []
 likely_files_affected = [".ai/INDEX.md", "docs", "internal", "configs"]
 verification_requirement = "orchestrator verifies context refs exist before decomposition"
 expected_output = "bounded planning context summary and evidence refs"
 failure_criteria = "block if context freshness, scope, or MCP availability cannot be established"
+review_gate = "planning-readiness-review required before context task is done"
 resume_instructions = "resume by reading attached context refs and current Work Plan metadata"
 
 [[steps]]
@@ -88,10 +103,18 @@ agent = "planning-worker"
 depends_on = ["discover-planning-context"]
 description = "Create small Work Tasks with objective, files, evidence, dependencies, verifier, output, failure criteria, resume instructions, and review gate."
 evidence_needed = ["context-pack-ref", "task-decomposition-ref", "dependency-map-ref"]
+files_to_read = [
+  ".ai/INDEX.md",
+  ".ai/skills/mivia-mcp/SKILL.md",
+  "docs/agent-context-guide.md",
+  "configs/workflows/governed-decomposition-planning.toml"
+]
+files_to_edit = []
 likely_files_affected = [".ai", "docs", "internal", "configs"]
 verification_requirement = "orchestrator checks every task is low-intelligence-ready before ready status"
 expected_output = "Work Tasks in planned status with complete metadata"
 failure_criteria = "block if any task depends on hidden chat context or lacks review and verifier requirements"
+review_gate = "planning-readiness-review must approve task packets before ready status"
 resume_instructions = "resume from Work Plan id, task refs, dependency map, and evidence refs"
 max_parallel_tasks = 1
 
@@ -103,10 +126,13 @@ agent = "planning-orchestrator"
 depends_on = ["decompose-work-plan"]
 description = "Move only reviewed decomposition-complete tasks from planned to ready and leave incomplete tasks blocked."
 evidence_needed = ["review-result-ref", "ready-task-list-ref"]
+files_to_read = ["configs/workflows/governed-decomposition-planning.toml"]
+files_to_edit = []
 likely_files_affected = []
 verification_requirement = "orchestrator confirms review refs before ready status"
 expected_output = "ready task refs or blocked task refs with resume instructions"
 failure_criteria = "block if any task lacks independent review or required metadata"
+review_gate = "planning-readiness-review required before status changes"
 resume_instructions = "resume by listing task statuses and checking attached review refs"
 
 [[steps]]
@@ -117,16 +143,19 @@ agent = "planning-orchestrator"
 depends_on = ["mark-ready-after-review"]
 description = "Queue reviewed planning tasks only after decomposition and review gates have passed."
 evidence_needed = ["automation-ref", "permission-snapshot-ref", "ready-task-list-ref"]
+files_to_read = ["configs/workflows/governed-decomposition-planning.toml"]
+files_to_edit = []
 likely_files_affected = []
 verification_requirement = "orchestrator verifies automation refs and no worker-run full tests"
 expected_output = "automation batch queued for ready planning tasks"
 failure_criteria = "block if ready tasks overlap unsafely or lack permission snapshots"
+review_gate = "planning-readiness-review required before automation queueing"
 resume_instructions = "resume from automation run refs and task statuses"
 max_parallel_tasks = 2
 
 [[review_gates]]
 id = "planning-readiness-review"
-applies_to = ["decompose-work-plan", "mark-ready-after-review", "queue-planning-automation"]
+applies_to = ["discover-planning-context", "decompose-work-plan", "mark-ready-after-review", "queue-planning-automation"]
 reviewer_agent = "planning-reviewer"
 required = true
 independent_from_owner = true

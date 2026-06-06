@@ -33,6 +33,9 @@ func TestServiceImportValidTOMLCreatesWorkflow(t *testing.T) {
 	if got.WorkflowRef != "workflow-parser-validator" {
 		t.Fatalf("unexpected workflow ref: %#v", got)
 	}
+	if got.Agents[0].Instructions != "Use bounded task metadata only." {
+		t.Fatalf("agent instructions were not persisted: %#v", got.Agents[0])
+	}
 }
 
 func TestServiceValidateOnlyDoesNotPersist(t *testing.T) {
@@ -116,6 +119,9 @@ func TestServiceImportCreatesPermissionSnapshotForEveryAgent(t *testing.T) {
 		if snapshot.SecretPolicy != "deny" || snapshot.LogPolicy != "metadata_only" {
 			t.Fatalf("snapshot did not enforce metadata-only defaults: %#v", snapshot)
 		}
+		if snapshot.AgentID == "worker" && snapshot.Instructions != "Use bounded task metadata only." {
+			t.Fatalf("snapshot did not preserve agent instructions: %#v", snapshot)
+		}
 	}
 	if !seen["worker"] || !seen["reviewer"] {
 		t.Fatalf("missing agent snapshots: %#v", seen)
@@ -195,6 +201,17 @@ func TestServicePermissionSnapshotHashChangesWhenPermissionsChange(t *testing.T)
 	secondWorker := snapshotForAgent(t, second.PermissionSnapshots, "worker")
 	if firstWorker.ContentHash == secondWorker.ContentHash {
 		t.Fatalf("expected permission hash to change, got %q", firstWorker.ContentHash)
+	}
+	instructionTOML := strings.Replace(validWorkflowTOML(), `instructions = "Use bounded task metadata only."`, `instructions = "Use only declared files and bounded evidence refs."`, 1)
+	thirdStore := newWorkflowServiceStore()
+	thirdSvc := testWorkflowService(thirdStore)
+	third, err := thirdSvc.ImportWorkflowTOML(ctx, ImportWorkflowTOMLInput{ProjectID: "mivialabs-agents-monorepo", Data: []byte(instructionTOML)})
+	if err != nil {
+		t.Fatalf("import instruction-changed workflow: %v", err)
+	}
+	thirdWorker := snapshotForAgent(t, third.PermissionSnapshots, "worker")
+	if firstWorker.ContentHash == thirdWorker.ContentHash {
+		t.Fatalf("expected permission hash to change when agent instructions change, got %q", firstWorker.ContentHash)
 	}
 	firstWorker.AllowedTools = append(firstWorker.AllowedTools, "mutated")
 	stored := snapshotForAgent(t, firstStore.snapshotList(), "worker")

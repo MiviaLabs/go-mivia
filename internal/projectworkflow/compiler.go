@@ -257,14 +257,17 @@ func (svc *Service) ensureCompileSnapshots(ctx context.Context, workflow Workflo
 		byAgent[snapshot.AgentID] = snapshot
 	}
 	for _, agent := range workflow.Agents {
-		if byAgent[agent.ID].ID != "" {
-			continue
-		}
-		snapshot, err := svc.permissionSnapshotForAgent(workflow, agent)
+		expected, err := svc.permissionSnapshotForAgent(workflow, agent)
 		if err != nil {
 			return nil, err
 		}
-		created, err := svc.store.CreatePermissionSnapshot(ctx, snapshot)
+		if existing := byAgent[agent.ID]; existing.ID != "" {
+			if existing.ContentHash != expected.ContentHash {
+				return nil, fmt.Errorf("%w: permission snapshot %s does not match agent definition", ErrInvalidInput, existing.ID)
+			}
+			continue
+		}
+		created, err := svc.store.CreatePermissionSnapshot(ctx, expected)
 		if err != nil {
 			return nil, err
 		}
@@ -287,17 +290,20 @@ func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string,
 		PlanID:                  planID,
 		TaskRef:                 step.ID,
 		Title:                   step.Title,
-		Description:             step.Description,
+		Description:             descriptionWithAgentInstructions(step.Description, workflowAgentInstructions(workflow, step.Agent)),
 		OwnerAgent:              step.Agent,
 		RunID:                   runID,
 		TraceID:                 firstNonEmpty(traceID, workflow.TraceID),
 		EvidenceNeeded:          fallbackList(evidence, "implementation-evidence-required"),
 		ContextPackRefs:         step.ContextPackRefs,
+		FilesToRead:             step.FilesToRead,
+		FilesToEdit:             step.FilesToEdit,
 		LikelyFilesAffected:     step.LikelyFilesAffected,
 		DependencyTaskIDs:       dependencyTaskIDs(step, taskByStep),
 		VerificationRequirement: firstNonEmpty(step.VerificationRequirement, "orchestrator runs focused verifier"),
 		ExpectedOutput:          firstNonEmpty(step.ExpectedOutput, "bounded implementation artifact"),
 		FailureCriteria:         firstNonEmpty(step.FailureCriteria, "block if evidence or verifier scope is missing"),
+		ReviewGate:              firstNonEmpty(step.ReviewGate, compileReviewGate(gates)),
 		ResumeInstructions:      firstNonEmpty(step.ResumeInstructions, "resume from task metadata and attached refs only"),
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	}
@@ -307,19 +313,21 @@ func (svc *Service) reviewTaskInput(workflow WorkflowDefinition, planID string, 
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               workflow.ProjectID,
 		PlanID:                  planID,
-		TaskRef:                 reviewed.TaskRef + "-review-" + gate.ID,
+		TaskRef:                 "review-" + reviewed.TaskRef + "-" + gate.ID,
 		Title:                   "Review " + reviewed.Title,
-		Description:             "TOML instructions: " + truncateForCompile(gate.Instructions, 980),
+		Description:             reviewGateDescription(gate, workflowAgentInstructions(workflow, gate.ReviewerAgent)),
 		OwnerAgent:              gate.ReviewerAgent,
 		RunID:                   runID,
 		TraceID:                 firstNonEmpty(traceID, workflow.TraceID),
 		EvidenceNeeded:          reviewerEvidence(gate, reviewed.ID),
 		ContextPackRefs:         reviewed.ContextPackRefs,
+		FilesToRead:             reviewFilesToRead(reviewed),
 		LikelyFilesAffected:     reviewed.LikelyFilesAffected,
 		DependencyTaskIDs:       []string{reviewed.ID},
 		VerificationRequirement: "attach review_result_ref",
 		ExpectedOutput:          "decision and rationale",
 		FailureCriteria:         "block on self-review, missing evidence, missing verifier, or unclear decision",
+		ReviewGate:              "review gate " + gate.ID,
 		ResumeInstructions:      "review only the referenced task, changed files, evidence refs, verifier refs, and gate instructions",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	}
@@ -329,19 +337,21 @@ func (svc *Service) reviewAutomationTaskInput(workflow WorkflowDefinition, planI
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               workflow.ProjectID,
 		PlanID:                  planID,
-		TaskRef:                 step.ID + "-review-" + gate.ID,
+		TaskRef:                 "review-" + step.ID + "-" + gate.ID,
 		Title:                   "Review " + step.Title,
-		Description:             "TOML instructions: " + truncateForCompile(gate.Instructions, 980),
+		Description:             reviewGateDescription(gate, workflowAgentInstructions(workflow, gate.ReviewerAgent)),
 		OwnerAgent:              gate.ReviewerAgent,
 		RunID:                   runID,
 		TraceID:                 firstNonEmpty(traceID, workflow.TraceID),
 		EvidenceNeeded:          reviewerAutomationEvidence(gate, step.ID),
 		ContextPackRefs:         step.ContextPackRefs,
+		FilesToRead:             step.FilesToRead,
 		LikelyFilesAffected:     step.LikelyFilesAffected,
 		DependencyTaskIDs:       dependencyTaskIDs(step, taskByStep),
 		VerificationRequirement: "attach review_result_ref before automation execution",
 		ExpectedOutput:          "automation review decision placeholder",
 		FailureCriteria:         "block on self-review, missing automation ref, missing verifier, or unclear decision",
+		ReviewGate:              "review gate " + gate.ID,
 		ResumeInstructions:      "review only the automation step metadata, allowed task refs, permission snapshot ref, and gate instructions",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	}
@@ -487,6 +497,64 @@ func reviewerAutomationEvidence(gate WorkflowReviewGate, stepID string) []string
 	evidence := []string{"automation ref", "permission snapshot ref", "allowed task refs", "automation step " + stepID}
 	evidence = append(evidence, gate.RequiredArtifacts...)
 	return evidence
+}
+
+func workflowAgentInstructions(workflow WorkflowDefinition, agentID string) string {
+	agentID = strings.TrimSpace(agentID)
+	for _, agent := range workflow.Agents {
+		if agent.ID == agentID {
+			return strings.TrimSpace(agent.Instructions)
+		}
+	}
+	return ""
+}
+
+func descriptionWithAgentInstructions(description string, instructions string) string {
+	description = strings.TrimSpace(description)
+	instructions = strings.TrimSpace(instructions)
+	if instructions == "" {
+		return truncateForCompile(description, 1000)
+	}
+	if description == "" {
+		return truncateForCompile("Agent instructions: "+instructions, 1000)
+	}
+	return truncateForCompile("Agent instructions: "+instructions+" Task description: "+description, 1000)
+}
+
+func reviewGateDescription(gate WorkflowReviewGate, reviewerInstructions string) string {
+	return descriptionWithAgentInstructions("Gate instructions: "+gate.Instructions, reviewerInstructions)
+}
+
+func compileReviewGate(gates []WorkflowReviewGate) string {
+	if len(gates) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(gates))
+	for _, gate := range gates {
+		if strings.TrimSpace(gate.ID) != "" {
+			ids = append(ids, gate.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	return truncateForCompile("required review gates: "+strings.Join(ids, ","), 500)
+}
+
+func reviewFilesToRead(task projectworkplan.WorkTask) []string {
+	out := make([]string, 0, len(task.FilesToRead)+len(task.FilesToEdit)+len(task.LikelyFilesAffected))
+	seen := map[string]bool{}
+	for _, list := range [][]string{task.FilesToRead, task.FilesToEdit, task.LikelyFilesAffected} {
+		for _, value := range list {
+			value = strings.TrimSpace(value)
+			if value == "" || seen[value] {
+				continue
+			}
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func fallbackList(values []string, fallback string) []string {

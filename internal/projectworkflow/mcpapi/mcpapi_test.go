@@ -286,15 +286,30 @@ func TestCallToolImportGetListAndPermissionSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list agents: %v", err)
 	}
-	if len(listed["structuredContent"].([]projectworkflow.WorkflowAgentDefinition)) != 3 {
+	agents := listed["structuredContent"].([]projectworkflow.WorkflowAgentDefinition)
+	if len(agents) != 3 {
 		t.Fatalf("unexpected agent list: %#v", listed)
+	}
+	if agents[0].Instructions == "" {
+		t.Fatalf("agent definitions should expose instructions: %#v", agents)
+	}
+	gotAgent, err := CallTool(ctx, svc, "projects.agent_definitions.get", mustArgs(t, map[string]any{"id": "project-1", "workflow_id": "workflow-1", "agent_id": "worker"}))
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if gotAgent["structuredContent"].(projectworkflow.WorkflowAgentDefinition).Instructions != "Implement bounded behavior only." {
+		t.Fatalf("unexpected agent instructions: %#v", gotAgent)
 	}
 	snapshots, err := CallTool(ctx, svc, "projects.permission_snapshots.list", mustArgs(t, map[string]any{"id": "project-1", "workflow_id": "workflow-1"}))
 	if err != nil {
 		t.Fatalf("list snapshots: %v", err)
 	}
-	if len(snapshots["structuredContent"].([]projectworkflow.WorkflowPermissionSnapshot)) != 3 {
+	permissionSnapshots := snapshots["structuredContent"].([]projectworkflow.WorkflowPermissionSnapshot)
+	if len(permissionSnapshots) != 3 {
 		t.Fatalf("unexpected snapshot list: %#v", snapshots)
+	}
+	if permissionSnapshots[0].Instructions == "" {
+		t.Fatalf("permission snapshots should include immutable agent instructions: %#v", permissionSnapshots)
 	}
 	if _, err := CallTool(ctx, svc, "projects.workflows.list", mustArgs(t, map[string]any{"id": "project-1", "page_size": 10, "page_token": "0"})); err != nil {
 		t.Fatalf("list workflows with paging fields: %v", err)
@@ -385,6 +400,7 @@ status = "enabled"
 id = "worker"
 display_name = "Worker"
 purpose = "Implement one bounded task."
+instructions = "Implement bounded behavior only."
 allowed_tools = ["projects.work_tasks.start"]
 secret_policy = "deny"
 log_policy = "metadata_only"
@@ -393,6 +409,7 @@ log_policy = "metadata_only"
 id = "reviewer"
 display_name = "Reviewer"
 purpose = "Review bounded task evidence."
+instructions = "Review bounded evidence independently."
 allowed_tools = ["projects.work_tasks.attach_review_result"]
 secret_policy = "deny"
 log_policy = "metadata_only"
@@ -401,6 +418,7 @@ log_policy = "metadata_only"
 id = "automation"
 display_name = "Automation"
 purpose = "Queue governed automation."
+instructions = "Queue only reviewed task refs."
 allowed_tools = ["projects.automations.run"]
 secret_policy = "deny"
 log_policy = "metadata_only"
