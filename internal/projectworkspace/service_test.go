@@ -705,27 +705,28 @@ func TestWorkspaceService_GitCreateWorktreeUsesExistingBranchAfterCreateRetryFai
 	}
 }
 
-func TestWorkspaceService_GitCreateWorktreeFallsBackToHeadWhenBaseRefUnavailable(t *testing.T) {
+func TestWorkspaceService_GitCreateWorktreeRejectsExplicitBaseRefFailureWithoutHeadFallback(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package main\n")
 	svc := NewService(newWorkspaceRegistry(t, root, projectregistry.WorkspaceModeEdit), nil, Options{Enabled: true})
 	runner := &recordingGitRunner{createWorktreeTarget: true, failWorktreeAddCount: 3}
 	svc.SetGitRunner(runner)
 
-	result, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
+	_, err := svc.GitCreateWorktree(context.Background(), "example-service", GitCreateWorktreeOptions{
 		WorktreeRef: "worktree/plan-1",
 		BranchRef:   "codex/plan-1",
 		BaseRef:     "main",
 	})
-	if err != nil {
-		t.Fatalf("create worktree with HEAD fallback: %v", err)
+	if !errors.Is(err, ErrGitUnavailable) {
+		t.Fatalf("expected explicit base failure to be surfaced, got %v", err)
 	}
-	if !result.Applied || runner.worktreeAddCalls != 4 || !runner.sawWorktreePrune() {
-		t.Fatalf("expected HEAD fallback after unavailable base, result=%#v calls=%#v", result, runner.calls)
+	if runner.worktreeAddCalls != 3 || !runner.sawWorktreePrune() {
+		t.Fatalf("expected explicit base attempts without HEAD fallback, calls=%#v", runner.calls)
 	}
-	headFallback := runner.calls[len(runner.calls)-3]
-	if len(headFallback) != 6 || headFallback[0] != "worktree" || headFallback[1] != "add" || headFallback[2] != "-b" || headFallback[3] != "codex/plan-1" || headFallback[5] != "HEAD" {
-		t.Fatalf("expected HEAD worktree fallback before verification, got %#v", headFallback)
+	for _, call := range runner.calls {
+		if len(call) >= 6 && call[0] == "worktree" && call[1] == "add" && call[2] == "-b" && call[5] == defaultWorktreeBaseRef {
+			t.Fatalf("explicit base failure must not create a HEAD-based worktree, calls=%#v", runner.calls)
+		}
 	}
 }
 

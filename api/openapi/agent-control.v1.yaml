@@ -3867,7 +3867,7 @@ components:
         base_ref:
           type: string
           maxLength: 200
-          description: Safe base ref. Defaults to HEAD.
+          description: Safe base ref. Omit to default to HEAD; explicit unavailable refs are not replaced with HEAD.
         dry_run:
           type: boolean
           default: false

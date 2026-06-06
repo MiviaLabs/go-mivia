@@ -139,7 +139,7 @@ When MCP workspace git support is available, each parallel Work Plan MUST declar
 
 Agents MUST NOT run two write-capable Work Plans in the same worktree ref when their likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
 
-When exposed, `projects.workspace.git_worktree_create` MUST be used by the orchestrator before assigning executable parallel Work Tasks for a new Work Plan. It accepts `worktree_ref`, `branch_ref`, optional `base_ref`, and `dry_run`, creates the dedicated git worktree through the governed workspace boundary, and returns metadata refs only. Agents must use the returned `isolation_ref`/`worktree_ref` in Work Plan metadata and automation refs. Do not create worktrees with raw shell commands when the MCP tool is available.
+When exposed, `projects.workspace.git_worktree_create` MUST be used by the orchestrator before assigning executable parallel Work Tasks for a new Work Plan. It accepts `worktree_ref`, `branch_ref`, optional `base_ref`, and `dry_run`, creates the dedicated git worktree through the governed workspace boundary, and returns metadata refs only. Omit `base_ref` to use `HEAD`; an explicit unavailable `base_ref` must fail instead of being replaced with `HEAD`. Agents must use the returned `isolation_ref`/`worktree_ref` in Work Plan metadata and automation refs. Do not create worktrees with raw shell commands when the MCP tool is available.
 
 ### Project Automation Contract
 
