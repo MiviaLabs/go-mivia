@@ -3,6 +3,8 @@ package projectworkflow
 import (
 	"context"
 	"errors"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -45,8 +47,11 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if len(plans) != 1 || plans[0].ID != result.WorkPlanID || plans[0].UserRequestRef != "request-1" {
 		t.Fatalf("unexpected compiled plan: %#v", plans)
 	}
-	if plans[0].IsolationMode != projectworkplan.WorkPlanIsolationDedicatedWorktree || plans[0].GitBaseRef != "main" || !strings.HasPrefix(plans[0].GitBranchRef, "mivia/workflow-ref-run-1-compile-") || !strings.HasPrefix(plans[0].GitWorktreeRef, "workflow/workflow-ref-run-1-compile-") {
+	if plans[0].IsolationMode != projectworkplan.WorkPlanIsolationDedicatedWorktree || !strings.HasPrefix(plans[0].GitBranchRef, "mivia/workflow-ref-run-1-compile-") || !strings.HasPrefix(plans[0].GitWorktreeRef, "workflow/workflow-ref-run-1-compile-") {
 		t.Fatalf("compiled workflow plan must use dedicated worktree isolation, got %#v", plans[0])
+	}
+	if plans[0].GitBaseRef != "" {
+		t.Fatalf("compiled workflow plan must omit unverified git base ref, got %#v", plans[0])
 	}
 
 	tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: result.WorkPlanID})
@@ -125,6 +130,43 @@ func TestCompileWorkflowDryRunPersistsNothing(t *testing.T) {
 	if len(plans) != 0 || len(autos) != 0 || len(workflowStore.snapshots) != 0 {
 		t.Fatalf("dry run persisted plans=%#v automations=%#v snapshots=%#v", plans, autos, workflowStore.snapshots)
 	}
+}
+
+func TestCompileWorkflowToWorkPlanOmitsUnverifiedGitBaseRefOnOriginMasterRepo(t *testing.T) {
+	if !hasLocalGitRef(t, "origin/master") {
+		t.Skip("requires local origin/master ref")
+	}
+	if hasLocalGitRef(t, "origin/main") {
+		t.Skip("requires origin/master repo without origin/main ref")
+	}
+
+	ctx := context.Background()
+	svc, workflowStore, workPlans, _ := newCompileFixture()
+	workflowStore.seedWorkflow(baseCompileWorkflow())
+
+	result, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list work plans: %v", err)
+	}
+	if len(plans) != 1 || plans[0].ID != result.WorkPlanID {
+		t.Fatalf("unexpected compiled plan: %#v", plans)
+	}
+	if plans[0].GitBaseRef == "main" {
+		t.Fatalf("compile_to_work_plan must not hardcode main as git base ref: %#v", plans[0])
+	}
+	if plans[0].GitBaseRef != "" {
+		t.Fatalf("compile_to_work_plan must omit unverified git base ref, got %q", plans[0].GitBaseRef)
+	}
+}
+
+func hasLocalGitRef(t *testing.T, ref string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "-C", filepath.Join("..", ".."), "rev-parse", "--verify", "--quiet", ref)
+	return cmd.Run() == nil
 }
 
 func TestCompileWorkflowAllowsRepeatedRuns(t *testing.T) {

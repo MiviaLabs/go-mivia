@@ -84,7 +84,6 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 		IsolationMode:    projectworkplan.WorkPlanIsolationDedicatedWorktree,
 		ParallelGroupRef: isolation.parallelGroupRef,
 		WorkspaceRef:     isolation.workspaceRef,
-		GitBaseRef:       isolation.gitBaseRef,
 		GitBranchRef:     isolation.gitBranchRef,
 		GitWorktreeRef:   isolation.gitWorktreeRef,
 	})
@@ -396,7 +395,6 @@ func compileAutomationRef(planRef string, stepID string) string {
 type compileIsolation struct {
 	parallelGroupRef string
 	workspaceRef     string
-	gitBaseRef       string
 	gitBranchRef     string
 	gitWorktreeRef   string
 }
@@ -409,10 +407,11 @@ func compileIsolationRefs(workflow WorkflowDefinition, planRef string, userReque
 	if token == "" {
 		token = "workflow"
 	}
+	// Workflow metadata does not carry a verified repository default branch.
+	// Leave git_base_ref unset so workspace creation falls back to HEAD.
 	return compileIsolation{
 		parallelGroupRef: "workflow/" + token,
 		workspaceRef:     "workflow/" + token,
-		gitBaseRef:       "main",
 		gitBranchRef:     "mivia/" + token,
 		gitWorktreeRef:   "workflow/" + token,
 	}
