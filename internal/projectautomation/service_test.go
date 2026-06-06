@@ -745,7 +745,7 @@ func TestRequeuePreExecutionRecoveryBoundsDirtyPathBlockedReason(t *testing.T) {
 	}
 	refs := make([]string, 0, 20)
 	for i := 0; i < 20; i++ {
-		refs = append(refs, fmt.Sprintf("gitops-dirty-path:.claude/skills/flutter-generated-long-path-%02d/SKILL.md", i))
+		refs = append(refs, fmt.Sprintf("gitops-dirty-path:.unknown/skills/flutter-generated-long-path-%02d/SKILL.md", i))
 	}
 
 	updated, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, refs)
@@ -759,11 +759,102 @@ func TestRequeuePreExecutionRecoveryBoundsDirtyPathBlockedReason(t *testing.T) {
 	if len(blockedTask.BlockedReason) > 500 {
 		t.Fatalf("expected blocked reason within service limit, got length %d: %q", len(blockedTask.BlockedReason), blockedTask.BlockedReason)
 	}
-	if !strings.Contains(blockedTask.BlockedReason, ".claude/skills/flutter-generated-long-path-00/SKILL.md") {
+	if !strings.Contains(blockedTask.BlockedReason, ".unknown/skills/flutter-generated-long-path-00/SKILL.md") {
 		t.Fatalf("expected blocked reason to include the first dirty path, got %q", blockedTask.BlockedReason)
 	}
 	if !strings.Contains(blockedTask.BlockedReason, "more") {
 		t.Fatalf("expected blocked reason to summarize omitted paths, got %q", blockedTask.BlockedReason)
+	}
+}
+
+func TestRequeuePreExecutionRecoveryExpandsAutomationSupportDirtyPaths(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"apps/frontend-mobile/lib"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	task.LikelyFilesAffected = []string{"apps/frontend-mobile/lib"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries,
+		SafeSummary:     "pre_execution_recovery",
+		FailureCategory: "gitops_dirty_worktree_scope",
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, []string{
+		"gitops-dirty-path:.claude/rules/typescript.md",
+		"gitops-dirty-path:.codex/skills/flutter-use-http-package/SKILL.md",
+	})
+	if err != nil {
+		t.Fatalf("requeueTaskAfterPreExecutionRecoveryFailure returned error: %v", err)
+	}
+	if updated.FailureCategory != "pre_execution_recovery_failed_requires_implementation" {
+		t.Fatalf("expected implementation requeue after support path expansion, got %+v", updated)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	for _, want := range []string{".claude", ".codex"} {
+		if !containsString(requeuedTask.FilesToEdit, want) {
+			t.Fatalf("expected %q to be added to files_to_edit, got %+v", want, requeuedTask.FilesToEdit)
+		}
+	}
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected task ready after support path expansion, got %+v", requeuedTask)
+	}
+}
+
+func TestRequeuePreExecutionRecoveryDoesNotExpandLocalTaskDirtyPaths(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"apps/frontend-mobile/lib"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	task.LikelyFilesAffected = []string{"apps/frontend-mobile/lib"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries,
+		SafeSummary:     "pre_execution_recovery",
+		FailureCategory: "gitops_dirty_worktree_scope",
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, []string{"gitops-dirty-path:.ai/tasks/active/local.md"})
+	if err != nil {
+		t.Fatalf("requeueTaskAfterPreExecutionRecoveryFailure returned error: %v", err)
+	}
+	if updated.FailureCategory != "gitops_dirty_worktree_scope_requires_plan" {
+		t.Fatalf("expected local task path to require a plan, got %+v", updated)
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected local task path to block, got %+v", fake.tasks[task.ID])
 	}
 }
 

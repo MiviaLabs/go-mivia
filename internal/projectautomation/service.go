@@ -4002,12 +4002,33 @@ func classifyDirtyScopePaths(task projectworkplan.WorkTask, dirtyPaths []string)
 		}
 		scope := firstMatchingTaskScope(path, likely)
 		if scope == "" {
+			scope = automationSupportPathScope(path)
+		}
+		if scope == "" {
 			outside = append(outside, path)
 			continue
 		}
 		expand = append(expand, scope)
 	}
 	return uniqueRefs(expand), uniqueRefs(outside)
+}
+
+func automationSupportPathScope(path string) string {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	for _, scope := range []string{
+		".claude",
+		".codex",
+		".cursor",
+		".windsurf",
+		".github/copilot-instructions.md",
+		".ai/skills",
+		".ai/rules",
+	} {
+		if taskPathMatchesScope(path, scope) {
+			return scope
+		}
+	}
+	return ""
 }
 
 func safeTaskPathspecs(values []string) []string {
