@@ -16,6 +16,10 @@ import (
 
 var ErrInvalidInput = errors.New("invalid input")
 
+// MaxResumeInstructionsLength is kept for legacy tests and stored-value
+// compatibility. New resume instruction validation is intentionally uncapped.
+const MaxResumeInstructionsLength = 16 * 1024
+
 var (
 	refPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
 	emailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
@@ -304,7 +308,7 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	if err != nil {
 		return WorkTask{}, err
 	}
-	resume, err := safeOptionalText(input.ResumeInstructions, "resume_instructions", 500)
+	resume, err := safeResumeInstructions(input.ResumeInstructions, "resume_instructions")
 	if err != nil {
 		return WorkTask{}, err
 	}
@@ -553,6 +557,7 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 	if err != nil {
 		return WorkTask{}, err
 	}
+	gitOpsRecoveryRerun := allowsGitOpsRecoveryRerun(task, input, next)
 	if next == WorkTaskStatusClaimed {
 		if strings.TrimSpace(input.RunID) == "" {
 			return WorkTask{}, fmt.Errorf("%w: run_id is required to claim a task", ErrInvalidInput)
@@ -565,7 +570,13 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 			return WorkTask{}, fmt.Errorf("%w: task is claimed by another run", ErrInvalidInput)
 		}
 	}
-	if next == WorkTaskStatusReady && task.Status != WorkTaskStatusPlanned && task.Status != WorkTaskStatusClaimed && task.Status != WorkTaskStatusBlocked && task.Status != WorkTaskStatusNeedsReview {
+	if next == WorkTaskStatusReady && releaseIsStale(task.Status) && !gitOpsRecoveryRerun {
+		return task, nil
+	}
+	if gitOpsRecoveryRerun && task.ClaimedByRunID != "" && strings.TrimSpace(input.RunID) != task.ClaimedByRunID {
+		return WorkTask{}, fmt.Errorf("%w: gitops recovery rerun requires current claimed run", ErrInvalidInput)
+	}
+	if next == WorkTaskStatusReady && task.Status != WorkTaskStatusReady && task.Status != WorkTaskStatusPlanned && task.Status != WorkTaskStatusClaimed && task.Status != WorkTaskStatusInProgress && task.Status != WorkTaskStatusBlocked && task.Status != WorkTaskStatusNeedsReview && !gitOpsRecoveryRerun {
 		return WorkTask{}, fmt.Errorf("%w: release requires claimed status", ErrInvalidInput)
 	}
 	if next == WorkTaskStatusInProgress && task.Status != WorkTaskStatusClaimed {
@@ -574,7 +585,7 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 	if next == WorkTaskStatusBlocked && strings.TrimSpace(input.ResumeInstructions) == "" {
 		return WorkTask{}, fmt.Errorf("%w: resume_instructions is required", ErrInvalidInput)
 	}
-	if err := validateTaskTransition(task.Status, next); err != nil {
+	if err := validateTaskTransition(task.Status, next); err != nil && !gitOpsRecoveryRerun {
 		return WorkTask{}, err
 	}
 	if next == WorkTaskStatusReady && task.DecompositionQuality != DecompositionReady {
@@ -612,7 +623,7 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 		}
 	}
 	if input.ResumeInstructions != "" {
-		task.ResumeInstructions, err = safeOptionalText(input.ResumeInstructions, "resume_instructions", 500)
+		task.ResumeInstructions, err = safeResumeInstructions(input.ResumeInstructions, "resume_instructions")
 		if err != nil {
 			return WorkTask{}, err
 		}
@@ -676,6 +687,7 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 		if err != nil {
 			return WorkTask{}, err
 		}
+		task.ReviewResultRefs = nil
 	}
 	now := svc.now()
 	task.Status = next
@@ -881,6 +893,13 @@ func validatePlanTransition(from, to string) error {
 	return validateTransition(from, to, allowed, "work plan")
 }
 
+func allowsGitOpsRecoveryRerun(task WorkTask, input WorkTaskActionInput, next string) bool {
+	return task.Status == WorkTaskStatusVerifying &&
+		next == WorkTaskStatusReady &&
+		strings.TrimSpace(input.SafeNextAction) == "gitops_recovery_failed_requeue_implementation" &&
+		strings.TrimSpace(input.RunID) != ""
+}
+
 func validateTaskTransition(from, to string) error {
 	if from == to {
 		return nil
@@ -889,7 +908,7 @@ func validateTaskTransition(from, to string) error {
 		WorkTaskStatusPlanned:     {WorkTaskStatusReady, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusReady:       {WorkTaskStatusClaimed, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusClaimed:     {WorkTaskStatusInProgress, WorkTaskStatusReady, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
-		WorkTaskStatusInProgress:  {WorkTaskStatusBlocked, WorkTaskStatusNeedsReview, WorkTaskStatusVerifying, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
+		WorkTaskStatusInProgress:  {WorkTaskStatusReady, WorkTaskStatusBlocked, WorkTaskStatusNeedsReview, WorkTaskStatusVerifying, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusBlocked:     {WorkTaskStatusReady, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusNeedsReview: {WorkTaskStatusReady, WorkTaskStatusVerifying, WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusVerifying:   {WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
@@ -898,6 +917,15 @@ func validateTaskTransition(from, to string) error {
 		WorkTaskStatusCancelled:   {WorkTaskStatusSuperseded},
 	}
 	return validateTransition(from, to, allowed, "work task")
+}
+
+func releaseIsStale(status string) bool {
+	switch status {
+	case WorkTaskStatusVerifying, WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateTransition(from, to string, allowed map[string][]string, label string) error {
@@ -1019,6 +1047,15 @@ func safeOptionalText(value string, name string, max int) (string, error) {
 	if len(value) > max {
 		return "", fmt.Errorf("%w: %s is too long", ErrInvalidInput, name)
 	}
+	return safeTextContent(value, name)
+}
+
+func safeResumeInstructions(value string, name string) (string, error) {
+	value = strings.TrimSpace(value)
+	return safeTextContent(value, name)
+}
+
+func safeTextContent(value string, name string) (string, error) {
 	piiCheckValue := redactSafePathTokens(value)
 	if containsUnsafeMarker(value) || emailPattern.MatchString(piiCheckValue) || phonePattern.MatchString(piiCheckValue) {
 		return "", fmt.Errorf("%w: %s contains unsafe content", ErrInvalidInput, name)

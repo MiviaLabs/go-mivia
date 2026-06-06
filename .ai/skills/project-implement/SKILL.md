@@ -12,11 +12,13 @@ Workflow:
 1. Read `.ai/INDEX.md`, relevant rules, and the selected plan.
 2. Confirm the selected phase and no-go scope.
 3. Inspect current files before editing.
-4. Revalidate the plan's documentation impact against current source.
-5. Implement only files named or clearly required by the selected phase.
-6. Update stable docs where feasible, or record `None - reason` in the handoff.
-7. Run the phase verifier.
-8. Write a handoff summary with changed files, docs changed, docs intentionally not changed, verification, residual risk, and next prompt.
+4. For bug fixes, confirm the bug in current code before choosing a fix. Name the failing path, expected behavior, actual behavior, and evidence.
+5. Add or identify the narrowest regression test or reproducible verifier before editing the fix. If no regression test is feasible, record why.
+6. Revalidate the plan's documentation impact against current source.
+7. Implement only files named or clearly required by the selected phase.
+8. Update stable docs where feasible, or record `None - reason` in the handoff.
+9. Run the new regression test first for bug fixes, then the phase verifier.
+10. Write a handoff summary with changed files, docs changed, docs intentionally not changed, verification, residual risk, and next prompt.
 
 No-go rules:
 

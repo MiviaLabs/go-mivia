@@ -366,6 +366,20 @@ func TestToolDefinitionsLifecycleSchemasExposeActionableEnums(t *testing.T) {
 	}
 }
 
+func TestMCPWorkTaskSchemaDoesNotCapResumeInstructionsAt1200(t *testing.T) {
+	t.Parallel()
+	for _, toolName := range []string{"projects.work_tasks.create", "projects.work_tasks.update_status", "projects.work_tasks.block"} {
+		schema := toolSchema(t, toolName)
+		resume := propertySchema(t, schema, "resume_instructions")
+		if _, ok := resume["maxLength"]; ok {
+			t.Fatalf("%s resume_instructions schema must not expose maxLength, got %#v", toolName, resume)
+		}
+		if resume["type"] != "string" {
+			t.Fatalf("%s resume_instructions schema must stay string, got %#v", toolName, resume)
+		}
+	}
+}
+
 func toolSchema(t *testing.T, name string) map[string]any {
 	t.Helper()
 	for _, definition := range ToolDefinitions() {

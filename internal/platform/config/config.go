@@ -67,6 +67,7 @@ type Config struct {
 	AgentActivity     AgentActivity
 	Automation        Automation
 	GitOperations     GitOperations
+	Verification      Verification
 	Projects          []Project
 }
 
@@ -152,6 +153,19 @@ type GitOpsConventions struct {
 	TestsTemplate            string
 }
 
+type Verification struct {
+	BootstrapCommands  []string
+	AlwaysBeforePR     []string
+	GeneratedArtifacts []GeneratedArtifactVerification
+	Env                map[string]string
+}
+
+type GeneratedArtifactVerification struct {
+	Paths            []string
+	Command          string
+	RequiredBeforePR bool
+}
+
 type WorkPlanStatusTrigger struct {
 	Enabled  bool
 	Statuses []string
@@ -220,6 +234,7 @@ type Project struct {
 	SensitiveMarkerPolicy string
 	Integrations          IntegrationConfig
 	GitOperations         *GitOperations
+	Verification          *Verification
 }
 
 type IntegrationConfig struct {
@@ -351,6 +366,7 @@ func defaultConfig(configPath string) Config {
 		Workflows:         Workflows{Enabled: false},
 		Automation:        defaultAutomation(),
 		GitOperations:     defaultGitOperations(),
+		Verification:      Verification{},
 		Projects:          nil,
 	}
 }
@@ -658,13 +674,91 @@ func (cfg Config) Validate() error {
 	if err := cfg.GitOperations.Validate(); err != nil {
 		return err
 	}
+	if err := cfg.Verification.Validate("MIVIA_VERIFICATION"); err != nil {
+		return err
+	}
 	for _, project := range cfg.Projects {
-		if project.GitOperations == nil {
-			continue
+		if project.GitOperations != nil {
+			if err := project.GitOperations.validate("project "+project.ID+" git_operations", true); err != nil {
+				return err
+			}
 		}
-		if err := project.GitOperations.validate("project "+project.ID+" git_operations", true); err != nil {
+		if project.Verification != nil {
+			if err := project.Verification.Validate("project " + project.ID + " verification"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (verification Verification) Validate(prefix string) error {
+	for i, command := range verification.BootstrapCommands {
+		if err := validateSafeVerifierCommand(fmt.Sprintf("%s_BOOTSTRAP_COMMANDS[%d]", prefix, i), command); err != nil {
 			return err
 		}
+	}
+	for i, command := range verification.AlwaysBeforePR {
+		if err := validateSafeVerifierCommand(fmt.Sprintf("%s_ALWAYS_BEFORE_PR[%d]", prefix, i), command); err != nil {
+			return err
+		}
+	}
+	for i, generated := range verification.GeneratedArtifacts {
+		if len(generated.Paths) == 0 {
+			return fmt.Errorf("%s_GENERATED_ARTIFACTS[%d]_PATHS must not be empty", prefix, i)
+		}
+		for j, path := range generated.Paths {
+			if err := validateSafeVerifierPath(fmt.Sprintf("%s_GENERATED_ARTIFACTS[%d]_PATHS[%d]", prefix, i, j), path); err != nil {
+				return err
+			}
+		}
+		if err := validateSafeVerifierCommand(fmt.Sprintf("%s_GENERATED_ARTIFACTS[%d]_COMMAND", prefix, i), generated.Command); err != nil {
+			return err
+		}
+	}
+	for key, value := range verification.Env {
+		if err := validateSafeVerifierEnv(fmt.Sprintf("%s_ENV[%s]", prefix, key), key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSafeVerifierCommand(name string, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s must not be empty", name)
+	}
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("%s must not contain control characters", name)
+	}
+	if len(value) > 1000 {
+		return fmt.Errorf("%s must be <= 1000 characters", name)
+	}
+	return nil
+}
+
+func validateSafeVerifierPath(name string, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, "..") || strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("%s must be a safe project-relative path or glob", name)
+	}
+	return nil
+}
+
+func validateSafeVerifierEnv(name, key, value string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("%s key must not be empty", name)
+	}
+	if !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`).MatchString(key) {
+		return fmt.Errorf("%s key must be a valid environment variable name", name)
+	}
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("%s value must not contain control characters", name)
+	}
+	if len(value) > 2000 {
+		return fmt.Errorf("%s value must be <= 2000 characters", name)
 	}
 	return nil
 }

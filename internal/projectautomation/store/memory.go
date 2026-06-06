@@ -131,6 +131,9 @@ func (store *MemoryStore) UpdateRun(_ context.Context, value projectautomation.A
 	if !ok || existing.ProjectID != value.ProjectID {
 		return projectautomation.AutomationRun{}, ErrNotFound
 	}
+	if shouldPreserveExistingRun(existing, value) {
+		return cloneRun(existing), nil
+	}
 	store.runs[value.ID] = cloneRun(value)
 	return cloneRun(value), nil
 }

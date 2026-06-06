@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
@@ -28,6 +29,7 @@ const (
 
 type LadybugStore struct {
 	graph ladybug.Graph
+	mu    sync.Mutex
 }
 
 func NewLadybugStore(graph ladybug.Graph) *LadybugStore {
@@ -170,13 +172,30 @@ func (store *LadybugStore) ListRuns(ctx context.Context, filter projectautomatio
 }
 
 func (store *LadybugStore) UpdateRun(ctx context.Context, value projectautomation.AutomationRun) (projectautomation.AutomationRun, error) {
-	if _, err := store.GetRun(ctx, value.ProjectID, value.ID); err != nil {
-		return projectautomation.AutomationRun{}, err
-	}
 	value = cloneRun(value)
-	return cloneRun(value), store.write(ctx, func(graph ladybug.Graph) error {
+	updated := value
+	err := store.write(ctx, func(graph ladybug.Graph) error {
+		node, err := graph.GetNode(ctx, labelProjectAutomationRun, graphID(value.ProjectID, value.ID))
+		if errors.Is(err, ladybug.ErrNodeNotFound) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		existing := nodeToRun(node)
+		if existing.ProjectID != value.ProjectID {
+			return ErrNotFound
+		}
+		if shouldPreserveExistingRun(existing, value) {
+			updated = existing
+			return nil
+		}
 		return graph.PutNode(ctx, runNode(value))
 	})
+	if err != nil {
+		return projectautomation.AutomationRun{}, err
+	}
+	return cloneRun(updated), nil
 }
 
 func (store *LadybugStore) CreateAttempt(ctx context.Context, value projectautomation.AutomationAttempt) (projectautomation.AutomationAttempt, error) {
@@ -238,6 +257,8 @@ func (store *LadybugStore) ensureUniqueAutomationRef(ctx context.Context, projec
 }
 
 func (store *LadybugStore) write(ctx context.Context, fn func(ladybug.Graph) error) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	if batch, ok := store.graph.(ladybug.BatchGraph); ok {
 		return batch.Batch(ctx, fn)
 	}
@@ -287,6 +308,11 @@ func runNode(value projectautomation.AutomationRun) ladybug.Node {
 		"parallel_group_id":   value.ParallelGroupID,
 		"failure_category":    value.FailureCategory,
 		"safe_summary":        value.SafeSummary,
+		"claim_id":            value.ClaimID,
+		"runner_id":           value.RunnerID,
+		"claimed_at":          formatTime(value.ClaimedAt),
+		"last_heartbeat_at":   formatTime(value.LastHeartbeatAt),
+		"lease_expires_at":    formatTime(value.LeaseExpiresAt),
 		"started_at":          formatTime(value.StartedAt),
 		"finished_at":         formatTime(value.FinishedAt),
 		"created_at":          formatTime(value.CreatedAt),
@@ -377,6 +403,11 @@ func nodeToRun(node ladybug.Node) projectautomation.AutomationRun {
 		ParallelGroupID:   props["parallel_group_id"],
 		FailureCategory:   props["failure_category"],
 		SafeSummary:       props["safe_summary"],
+		ClaimID:           props["claim_id"],
+		RunnerID:          props["runner_id"],
+		ClaimedAt:         parseTime(props["claimed_at"]),
+		LastHeartbeatAt:   parseTime(props["last_heartbeat_at"]),
+		LeaseExpiresAt:    parseTime(props["lease_expires_at"]),
 		StartedAt:         parseTime(props["started_at"]),
 		FinishedAt:        parseTime(props["finished_at"]),
 		CreatedAt:         parseTime(props["created_at"]),

@@ -235,8 +235,22 @@ func (svc *Service) GitCreateWorktree(ctx context.Context, projectID string, opt
 	lock := svc.lockFor(project.ID + "\x00git-worktree\x00" + worktreeRef)
 	lock.Lock()
 	defer lock.Unlock()
-	if _, err := os.Stat(target); err == nil {
-		return GitCreateWorktreeResult{}, ErrEditConflict
+	if info, err := os.Stat(target); err == nil {
+		if info.IsDir() && svc.verifyCreatedWorktree(ctx, target, branchRef) == nil {
+			return result, nil
+		}
+		if info.IsDir() {
+			if _, gitErr := os.Stat(filepath.Join(target, ".git")); errors.Is(gitErr, os.ErrNotExist) {
+				_, _, _ = svc.git.Run(ctx, project.CanonicalRootPath, 1024, "worktree", "prune", "--expire", "now")
+				if removeErr := os.RemoveAll(target); removeErr != nil {
+					return GitCreateWorktreeResult{}, ErrEditConflict
+				}
+			} else {
+				return GitCreateWorktreeResult{}, ErrEditConflict
+			}
+		} else {
+			return GitCreateWorktreeResult{}, ErrEditConflict
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return GitCreateWorktreeResult{}, ErrInvalidInput
 	}

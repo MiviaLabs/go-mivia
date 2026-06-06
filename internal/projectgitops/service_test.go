@@ -3,6 +3,7 @@ package projectgitops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -64,17 +65,165 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	if len(runner.commands) != 7 {
 		t.Fatalf("expected seven git commands, got %d", len(runner.commands))
 	}
-	if got := strings.Join(runner.commands[0].Args, " "); got != "rev-parse --show-toplevel" {
+	if got := strings.Join(runner.commands[0].Args, " "); got != "-c safe.directory=/tmp/worktree rev-parse --show-toplevel" {
 		t.Fatalf("expected trust probe command, got %q", got)
 	}
 	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit --no-verify -m") {
 		t.Fatalf("expected commit command, got %q", got)
 	}
-	if message := runner.commands[5].Args[3]; !strings.Contains(message, "Project ID: project-1") || !strings.Contains(message, "Automation ID: automation_1") {
+	messageArg := ""
+	for i, arg := range runner.commands[5].Args {
+		if arg == "-m" && i+1 < len(runner.commands[5].Args) {
+			messageArg = runner.commands[5].Args[i+1]
+			break
+		}
+	}
+	if message := messageArg; !strings.Contains(message, "Project ID: project-1") || !strings.Contains(message, "Automation ID: automation_1") {
 		t.Fatalf("expected rendered metadata in commit message, got %q", message)
 	}
 	if !containsEnv(runner.commands[5].Env, "GIT_AUTHOR_EMAIL=automation@example.test") {
 		t.Fatalf("expected author email env, got %+v", runner.commands[5].Env)
+	}
+}
+
+func TestPostTaskStagesOnlyChangedFilesInsideAllowedScopes(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n?? apps/domain-inventory/src/trpc/__tests__/family-pricing-user-context.spec.ts\n"},
+		{Stdout: "fix-MASS-0000-family-pricing\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+		GitHubCLIPath:        "gh",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"apps", "libs", "packages", "services", "src"},
+	})
+	if err != nil {
+		t.Fatalf("expected post task commit to ignore absent allowed scopes and stage changed files: %v", err)
+	}
+	if len(runner.commands) != 7 {
+		t.Fatalf("expected seven git commands, got %d", len(runner.commands))
+	}
+	addArgs := strings.Join(runner.commands[3].Args, "\n")
+	if strings.Contains(addArgs, "\nservices") || strings.Contains(addArgs, "\npackages") {
+		t.Fatalf("unexpected add args: %q", addArgs)
+	}
+	if !strings.Contains(addArgs, "apps/domain-inventory/src/trpc/trpc.router.ts") ||
+		!strings.Contains(addArgs, "apps/domain-inventory/src/trpc/__tests__/family-pricing-user-context.spec.ts") {
+		t.Fatalf("expected changed app files to be staged, got %q", addArgs)
+	}
+}
+
+func TestPostTaskRejectsDirtyFilesOutsideAllowedScopes(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n M README.md\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+		RemoteName:      "origin",
+		GitHubCLIPath:   "gh",
+	}, runner)
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"apps/domain-inventory/src/trpc"},
+	})
+	if !errors.Is(err, ErrDirtyWorktreeScope) {
+		t.Fatalf("expected dirty worktree scope error, got %v", err)
+	}
+	if got := FailureCategory(err); got != "gitops_dirty_worktree_scope" {
+		t.Fatalf("expected scoped dirty category, got %q", got)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected trust probe and status only, got %d", len(runner.commands))
+	}
+}
+
+func TestPostTaskRejectsRenameFromOutsideAllowedScope(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: "R  README.md -> apps/domain-inventory/src/trpc/readme.ts\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+		RemoteName:      "origin",
+		GitHubCLIPath:   "gh",
+	}, runner)
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"apps/domain-inventory/src/trpc"},
+	})
+	if !errors.Is(err, ErrDirtyWorktreeScope) {
+		t.Fatalf("expected dirty worktree scope error for rename source, got %v", err)
+	}
+}
+
+func TestPostTaskAllowsRenameWithinAllowedScope(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: "R  apps/domain-inventory/src/trpc/old.ts -> apps/domain-inventory/src/trpc/new.ts\n"},
+		{Stdout: "fix-MASS-0000-family-pricing\n"},
+		{},
+		{},
+		{},
+		{},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+		RemoteName:      "origin",
+		GitHubCLIPath:   "gh",
+	}, runner)
+
+	if _, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"apps/domain-inventory/src/trpc"},
+	}); err != nil {
+		t.Fatalf("expected in-scope rename to commit: %v", err)
+	}
+	addArgs := strings.Join(runner.commands[3].Args, "\n")
+	if !strings.Contains(addArgs, "apps/domain-inventory/src/trpc/old.ts") || !strings.Contains(addArgs, "apps/domain-inventory/src/trpc/new.ts") {
+		t.Fatalf("expected both rename paths to be staged, got %q", addArgs)
 	}
 }
 
@@ -132,7 +281,7 @@ func TestPostTaskPushRequiresSSHConfig(t *testing.T) {
 	}
 }
 
-func TestPostTaskRejectsPushFromBranchOutsidePolicy(t *testing.T) {
+func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M README.md\n"},
@@ -140,7 +289,9 @@ func TestPostTaskRejectsPushFromBranchOutsidePolicy(t *testing.T) {
 		{},
 		{},
 		{},
+		{},
 		{Stdout: "abc123def456\n"},
+		{},
 	}}
 	svc := NewWithRunner(Options{
 		Enabled:              true,
@@ -167,11 +318,147 @@ func TestPostTaskRejectsPushFromBranchOutsidePolicy(t *testing.T) {
 		OperatorID:       "operator_1",
 		AllowedPathspecs: []string{"README.md"},
 	})
-	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "required pattern") {
-		t.Fatalf("expected branch policy error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected derived branch to pass policy: %v", err)
 	}
-	if len(runner.commands) != 7 {
-		t.Fatalf("expected no push after branch policy failure, got %d commands", len(runner.commands))
+	if got := strings.Join(runner.commands[3].Args, " "); got != "-c safe.directory=/tmp/worktree checkout -B fix-MASS-0000-automation-run-1" {
+		t.Fatalf("expected derived branch checkout, got %q", got)
+	}
+	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:fix-MASS-0000-automation-run-1" {
+		t.Fatalf("expected push to derived branch, got %q", got)
+	}
+}
+
+func TestFailureCategoryUsesBranchPolicyError(t *testing.T) {
+	err := fmt.Errorf("%w: %w: branch mismatch", ErrInvalidInput, ErrBranchPolicy)
+	if got := FailureCategory(err); got != "gitops_branch_policy_failed" {
+		t.Fatalf("expected branch policy failure category, got %q", got)
+	}
+}
+
+func TestFailureCategoryUsesVerificationError(t *testing.T) {
+	err := fmt.Errorf("%w: verifier failed", ErrVerificationFailed)
+	if got := FailureCategory(err); got != "gitops_verification_failed" {
+		t.Fatalf("expected verification failure category, got %q", got)
+	}
+}
+
+func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M packages/contracts/src/schemas/auth.ts\n"},
+		{},
+		{},
+		{Stdout: " M packages/contracts/src/schemas/auth.ts\n M packages/contracts/dist/openapi.json\n M packages/contracts/dist/openapi.yaml\n"},
+		{Stdout: "fix-MASS-0000-contracts\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+		GitHubCLIPath:        "gh",
+		Verification: VerificationProfile{
+			AlwaysBeforePR: []string{"pnpm -s nx affected -t lint --base=origin/main --head=HEAD"},
+			Env:            map[string]string{"SESSION_PASSWORD": "test-secret", "BFF_ADMIN_URL": "http://localhost:3000"},
+			GeneratedArtifacts: []GeneratedArtifactVerifier{{
+				Paths:            []string{"packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"},
+				Command:          "pnpm -s nx run contracts:verify-openapi",
+				RequiredBeforePR: true,
+			}},
+		},
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"packages/contracts/src"},
+	})
+	if err != nil {
+		t.Fatalf("expected post task with verification to succeed: %v", err)
+	}
+	if !containsString(result.EvidenceRefs, "project-verification-passed") {
+		t.Fatalf("expected verification evidence ref, got %+v", result.EvidenceRefs)
+	}
+	if got := strings.Join(runner.commands[2].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
+		t.Fatalf("expected lint verifier command, got %q", got)
+	}
+	if got := strings.Join(runner.commands[2].Env, "\n"); got != "BFF_ADMIN_URL=http://localhost:3000\nSESSION_PASSWORD=test-secret" {
+		t.Fatalf("expected sorted verifier env, got %q", got)
+	}
+	if got := strings.Join(runner.commands[3].Args, " "); got != "-lc pnpm -s nx run contracts:verify-openapi" {
+		t.Fatalf("expected openapi verifier command, got %q", got)
+	}
+	addArgs := strings.Join(runner.commands[6].Args, "\n")
+	for _, want := range []string{"packages/contracts/src/schemas/auth.ts", "packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"} {
+		if !strings.Contains(addArgs, want) {
+			t.Fatalf("expected staged generated artifact %q in add args %q", want, addArgs)
+		}
+	}
+}
+
+func TestPostTaskFailsBeforeCommitWhenVerificationFails(t *testing.T) {
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{Stdout: " M packages/contracts/src/schemas/auth.ts\n"},
+		},
+		errs: []error{
+			nil,
+			nil,
+			errors.New("lint failed"),
+		},
+	}
+	svc := NewWithRunner(Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+		RemoteName:      "origin",
+		GitHubCLIPath:   "gh",
+		Verification: VerificationProfile{
+			AlwaysBeforePR: []string{"pnpm -s nx affected -t lint --base=origin/main --head=HEAD"},
+		},
+	}, runner)
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"packages/contracts/src"},
+	})
+	if !errors.Is(err, ErrVerificationFailed) {
+		t.Fatalf("expected verification failure, got %v", err)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("expected no commands after failed verifier, got %d", len(runner.commands))
+	}
+}
+
+func TestDerivePolicyBranchPrefersConfiguredCommitType(t *testing.T) {
+	svc := NewWithRunner(Options{
+		BranchNamePattern: `^(feat|fix|docs|chore|refactor)-ABC-[0-9]+(-[a-z0-9-]+)*$`,
+		Conventions:       Conventions{CommitType: "chore"},
+	}, &recordingRunner{})
+	got := svc.derivePolicyBranch(PostTaskInput{
+		TaskTitle:       "Update generated docs",
+		AutomationRunID: "automation_run_1",
+	})
+	if got != "chore-ABC-0000-update-generated-docs" {
+		t.Fatalf("expected configured commit type branch, got %q", got)
 	}
 }
 
@@ -217,7 +504,7 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 	if result.PushRef == "" {
 		t.Fatalf("expected push ref, got %+v", result)
 	}
-	if got := strings.Join(runner.commands[7].Args, " "); got != "push --no-verify origin HEAD:docs-MASS-123-docs" {
+	if got := strings.Join(runner.commands[7].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:docs-MASS-123-docs" {
 		t.Fatalf("expected push to matching branch, got %q", got)
 	}
 }
@@ -230,8 +517,30 @@ func TestPreTaskRejectsDirtyWorktreeWhenRequired(t *testing.T) {
 	if !errors.Is(err, ErrDirtyWorktree) {
 		t.Fatalf("expected dirty worktree error, got %v", err)
 	}
-	if got := strings.Join(runner.commands[0].Args, " "); got != "rev-parse --show-toplevel" {
+	if got := strings.Join(runner.commands[0].Args, " "); got != "-c safe.directory=/tmp/worktree rev-parse --show-toplevel" {
 		t.Fatalf("expected trust probe command, got %q", got)
+	}
+}
+
+func TestPreTaskWithinScopeAllowsOnlyTaskScopedDirtyWorktree(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{{}, {Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n"}}}
+	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RequireCleanBeforeTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)
+
+	if err := svc.PreTaskWithinScope(context.Background(), "/tmp/worktree", []string{"apps/domain-inventory/src/trpc"}); err != nil {
+		t.Fatalf("expected in-scope dirty worktree to pass scoped pre-task: %v", err)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("expected trust probe and status commands, got %d", len(runner.commands))
+	}
+}
+
+func TestPreTaskWithinScopeRejectsUnrelatedDirtyWorktree(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{{}, {Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n M apps/sos/src/workflows/sos.ts\n"}}}
+	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, RequireCleanBeforeTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, runner)
+
+	err := svc.PreTaskWithinScope(context.Background(), "/tmp/worktree", []string{"apps/domain-inventory/src/trpc"})
+	if !errors.Is(err, ErrDirtyWorktreeScope) {
+		t.Fatalf("expected scoped dirty worktree error, got %v", err)
 	}
 }
 
@@ -466,6 +775,15 @@ func containsEnv(values []string, expected string) bool {
 func hasEnvPrefix(values []string, prefix string) bool {
 	for _, value := range values {
 		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
 			return true
 		}
 	}

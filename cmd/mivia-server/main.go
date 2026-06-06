@@ -139,6 +139,9 @@ func run() error {
 	if err := metadataPersistentGraph.Bootstrap(ctx, ladybugschema.BootstrapSchema()); err != nil {
 		return err
 	}
+	if err := workplanstore.MigrateLadybugMetadata(ctx, projectGraph, metadataPersistentGraph, automationProjectIDs(projectRegistry.List())); err != nil {
+		return err
+	}
 	agentStore := store.NewLadybugStore(metadataPersistentGraph)
 	researchService := research.NewService(researchstore.NewLadybugMetadataStore(metadataPersistentGraph))
 	projectDigestService := projectregistry.NewDigestService(projectRegistry, projectGraph)
@@ -229,9 +232,9 @@ func run() error {
 	projectEvidenceService := projectevidence.New(evidencestore.NewLadybugStore(projectGraph))
 	projectConfidenceService := projectconfidence.New(confidencestore.NewLadybugStore(projectGraph))
 	projectKnowledgeService := projectknowledge.New(knowledgestore.NewLadybugStore(projectGraph))
-	projectWorkPlanService := projectworkplan.New(workplanstore.NewLadybugStore(projectGraph))
+	projectWorkPlanService := projectworkplan.New(workplanstore.NewLadybugStore(metadataPersistentGraph))
 	projectWorkflowService := projectworkflow.New(workflowstore.NewMemoryStore())
-	projectAutomationService := projectautomation.New(automationstore.NewLadybugStore(projectGraph), projectWorkPlanService, projectautomation.Options{
+	projectAutomationService := projectautomation.New(automationstore.NewLadybugStore(metadataPersistentGraph), projectWorkPlanService, projectautomation.Options{
 		Enabled:                   cfg.Automation.Enabled,
 		RunnerEnabled:             cfg.Automation.RunnerEnabled,
 		RequireCodexWhenAvailable: cfg.Automation.RequireCodexWhenAvailable,

@@ -157,6 +157,54 @@ func TestLadybugStoreRejectsDuplicateAutomationRefInProject(t *testing.T) {
 	}
 }
 
+func TestLadybugStorePreservesAdvancedRunFromStaleRecoveryUpdate(t *testing.T) {
+	ctx := context.Background()
+	graph := ladybug.NewMemoryGraph()
+	store := bootstrappedAutomationStore(t, ctx, graph)
+	now := time.Unix(100, 0).UTC()
+	run := projectautomation.AutomationRun{
+		ID:              "run-1",
+		ProjectID:       "project-a",
+		AutomationID:    "automation-1",
+		AgentID:         "bug-fix-worker",
+		PlanID:          "plan-1",
+		TaskID:          "task-1",
+		Status:          projectautomation.RunStatusVerifying,
+		RunnerKind:      projectautomation.RunnerKindCodexCLI,
+		SafeSummary:     "external_codex_cli_completed_verification_required",
+		AttemptCount:    2,
+		FailureCategory: "",
+		CreatedAt:       now,
+		UpdatedAt:       now.Add(time.Second),
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	stale := run
+	stale.Status = projectautomation.RunStatusRunning
+	stale.SafeSummary = projectautomation.RunSafeSummaryGitOpsPostTaskRecovery
+	stale.FailureCategory = "gitops_post_task_failed"
+	stale.AttemptCount = 3
+	stale.StartedAt = now.Add(2 * time.Second)
+	stale.FinishedAt = time.Time{}
+	stale.UpdatedAt = stale.StartedAt
+
+	got, err := store.UpdateRun(ctx, stale)
+	if err != nil {
+		t.Fatalf("update stale recovery run: %v", err)
+	}
+	if got.Status != projectautomation.RunStatusVerifying || got.SafeSummary != run.SafeSummary || got.AttemptCount != run.AttemptCount {
+		t.Fatalf("expected advanced run to be preserved, got %#v", got)
+	}
+	persisted, err := store.GetRun(ctx, run.ProjectID, run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if persisted.Status != projectautomation.RunStatusVerifying || persisted.AttemptCount != run.AttemptCount {
+		t.Fatalf("expected persisted run to stay advanced, got %#v", persisted)
+	}
+}
+
 func bootstrappedAutomationStore(t *testing.T, ctx context.Context, graph ladybug.Graph) *LadybugStore {
 	t.Helper()
 	store, err := NewBootstrappedLadybugStore(ctx, graph)

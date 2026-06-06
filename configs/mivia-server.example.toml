@@ -102,6 +102,8 @@ require_codex_when_available = true
 allow_manual_runner = false
 queue_depth = 16
 poll_interval = "5s"
+# External runner sidecars should send heartbeats more often than the server's
+# 90s claim lease. Compose defaults MIVIA_AUTOMATION_RUNNER_HEARTBEAT_INTERVAL to 15s.
 global_worker_count = 1
 per_project_worker_limit = 1
 per_agent_worker_limit = 1
@@ -155,6 +157,34 @@ pull_request_title_template = "{{commit_subject}}"
 what_changed_template = "Completed automation work task {{work_task_id}} for project {{project_id}}."
 how_verified_template = "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 tests_template = "{{test_results}}"
+
+[verification]
+# Optional global project verification profile. These commands run in the
+# automation worktree after Codex writes changes and before GitOps commits,
+# pushes, or creates a draft PR. Keep commands safe, deterministic, and
+# repository-local.
+bootstrap_commands = []
+always_before_pr = []
+
+# Per-project verification may override the global profile.
+#
+# [projects.verification]
+# bootstrap_commands = [
+#   "pnpm install --frozen-lockfile --prefer-offline --ignore-scripts",
+# ]
+# always_before_pr = [
+#   "pnpm -s nx affected -t lint --base=origin/main --head=HEAD --parallel=4",
+#   "pnpm -s nx affected -t typecheck --base=origin/main --head=HEAD --parallel=4",
+#   "test ! -d policies/semgrep/rules || semgrep scan --config policies/semgrep/rules/ --error apps/ libs/ packages/",
+# ]
+#
+# [[projects.verification.generated_artifacts]]
+# paths = [
+#   "packages/contracts/dist/openapi.json",
+#   "packages/contracts/dist/openapi.yaml",
+# ]
+# command = "pnpm -s nx run contracts:verify-openapi"
+# required_before_pr = true
 
 [[projects]]
 id = "example-service"

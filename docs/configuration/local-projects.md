@@ -161,6 +161,11 @@ Do not treat that as a Go module proxy path. Go module publication uses reposito
 | `git_operations.conventions.what_changed_template` | No | Safe placeholder template for the PR `What changed` section. |
 | `git_operations.conventions.how_verified_template` | No | Safe placeholder template for the PR `How verified` section, usually including project, plan, task, automation, review, and verifier refs. |
 | `git_operations.conventions.tests_template` | No | Safe placeholder template for the PR `Tests` section; `{{test_results}}` includes supplied test summaries or states that orchestrator verification is pending. |
+| `verification.bootstrap_commands` | No | Global setup commands run in automation worktrees before required project verification and before GitOps commit/push/PR. |
+| `verification.always_before_pr` | No | Global required verification commands. Any failure stops GitOps with `gitops_verification_failed`. |
+| `verification.generated_artifacts.paths` | No | Root-relative generated artifact paths that may be staged after their verifier runs. |
+| `verification.generated_artifacts.command` | When generated artifact verifier is listed | Repository-local command that regenerates or verifies the artifact set. |
+| `verification.generated_artifacts.required_before_pr` | No | When `true`, runs the command before GitOps and allows the listed artifact paths into the task commit. |
 
 Persisted ingestion runs in `pending` or `running` state are local in-memory queue leftovers after a server restart. Current builds mark them failed with `error_category=server_restarted` during startup; use live startup scans or submit a fresh `projects.ingest` run to repair freshness.
 | `projects.id` | Yes | Stable project slug. |
@@ -180,6 +185,7 @@ Persisted ingestion runs in `pending` or `running` state are local in-memory que
 | `projects.max_file_bytes` | No | Per-project file cap for content graph ingestion. Unset or `0` means unlimited; positive values explicitly cap indexed file bytes. |
 | `projects.max_chunk_bytes` | No | Per-project chunk cap for storage and response truncation. |
 | `projects.sensitive_marker_policy` | No | Only `skip_file` is accepted. |
+| `projects.verification.*` | No | Per-project verification override using the same fields as global `[verification]`. Use this for repository-specific lint, typecheck, test, and generated-artifact gates. |
 
 For Dart and Flutter projects, generated files are included by default after the normal path, size, binary, UTF-8, and sensitive-marker gates pass. Keep `.g.dart`, `.freezed.dart`, `.mocks.dart`, `.generated.dart`, and similar files indexable unless a project deliberately trades generated-code visibility for less noise. Exclude build outputs such as `build/**` rather than generated Dart source that Flutter engineers may need for references, calls, or symbol navigation.
 

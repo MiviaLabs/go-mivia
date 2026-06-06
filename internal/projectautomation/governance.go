@@ -152,6 +152,11 @@ func (svc *Service) attachAttemptGovernance(ctx context.Context, run AutomationR
 			return refs.KnowledgeRefs, err
 		}
 	}
+	for _, evidenceRef := range refs.EvidenceRefs {
+		if _, err := svc.workTasks.AttachEvidence(ctx, projectworkplan.AttachInput{ProjectID: run.ProjectID, TaskID: run.TaskID, Ref: evidenceRef, AttachedByRunID: run.ID, TraceID: run.TraceID, Note: "automation_attempt_evidence_ref"}); err != nil {
+			return refs.KnowledgeRefs, err
+		}
+	}
 	if len(refs.ReviewRefs) > 0 {
 		reviewAttacher, ok := svc.workTasks.(reviewResultAttacher)
 		if ok {

@@ -83,6 +83,24 @@ func TestRoutes_DashboardServesEmbeddedAssets(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"STATUS_GROUPS",
+		"active: new Set",
+		"blocked: new Set",
+		"failed: new Set",
+		"completed: new Set",
+		"waiting: new Set",
+		"function statusGroup",
+		"function workStatusGroup",
+		"function automationRunStatusGroup",
+		"function apparentAutomationRunLeaseState",
+		"lease_expires_at",
+		"stale lease",
+	} {
+		if !strings.Contains(app.Body.String(), want) {
+			t.Fatalf("expected dashboard app to contain normalized automation status helper %q", want)
+		}
+	}
+	for _, want := range []string{
 		"Workflows", "tabProjectWorkflows(project.id)", "projectSubview = \"workflows\"", "/workflows", "/agent-definitions", "/permission-snapshots?workflow_id=", "/compile",
 		"Workflow List", "Workflow Detail", "Permission Summary", "Steps And Dependencies", "Review Gates", "Reviewer Instructions",
 		"Validate compile", "Compile validated workflow", "Validate compile first. Compilation requires a second explicit action after validation passes.", "dry_run: true", "dry_run: false",

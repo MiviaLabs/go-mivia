@@ -10,13 +10,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
 var (
-	ErrInvalidInput  = errors.New("invalid git operations input")
-	ErrCommandFailed = errors.New("git operations command failed")
-	ErrDirtyWorktree = errors.New("git operations dirty worktree")
+	ErrInvalidInput       = errors.New("invalid git operations input")
+	ErrBranchPolicy       = errors.New("git operations branch policy failed")
+	ErrCommandFailed      = errors.New("git operations command failed")
+	ErrDirtyWorktree      = errors.New("git operations dirty worktree")
+	ErrDirtyWorktreeScope = errors.New("git operations dirty worktree outside task scope")
+	ErrVerificationFailed = errors.New("git operations verification failed")
 )
 
 var safeRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
@@ -48,21 +52,47 @@ func (svc *Service) PreTask(ctx context.Context, workDir string) error {
 	if !svc.options.Enabled || !svc.options.CommitAfterTask || !svc.options.RequireCleanBeforeTask {
 		return nil
 	}
-	workDir = strings.TrimSpace(workDir)
-	if workDir == "" || !filepath.IsAbs(workDir) {
-		return fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
-	}
-	if err := svc.ensureSafeDirectory(ctx, workDir); err != nil {
-		return err
-	}
-	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
+	status, err := svc.preTaskStatus(ctx, workDir)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(status.Stdout) != "" {
+	if strings.TrimSpace(status) != "" {
 		return ErrDirtyWorktree
 	}
 	return nil
+}
+
+func (svc *Service) PreTaskWithinScope(ctx context.Context, workDir string, allowedPathspecs []string) error {
+	if !svc.options.Enabled || !svc.options.CommitAfterTask || !svc.options.RequireCleanBeforeTask {
+		return nil
+	}
+	status, err := svc.preTaskStatus(ctx, workDir)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) == "" {
+		return nil
+	}
+	allowed := sanitizePathspecs(append(allowedPathspecs, svc.generatedArtifactPathspecs()...))
+	if len(allowed) == 0 || changedPathspecsOutsideAllowed(status, allowed) {
+		return ErrDirtyWorktreeScope
+	}
+	return nil
+}
+
+func (svc *Service) preTaskStatus(ctx context.Context, workDir string) (string, error) {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" || !filepath.IsAbs(workDir) {
+		return "", fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
+	}
+	if err := svc.ensureSafeDirectory(ctx, workDir); err != nil {
+		return "", err
+	}
+	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	return status.Stdout, nil
 }
 
 func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTaskResult, error) {
@@ -88,20 +118,51 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		return PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}, nil
 	}
 
-	pathspecs := sanitizePathspecs(input.AllowedPathspecs)
-	if len(pathspecs) == 0 {
+	verificationRefs, verificationTests, err := svc.runVerification(ctx, workDir)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	if len(verificationTests) > 0 {
+		input.TestResults = append(input.TestResults, verificationTests...)
+	}
+	if len(verificationRefs) > 0 {
+		status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
+		if err != nil {
+			return PostTaskResult{}, err
+		}
+		if strings.TrimSpace(status.Stdout) == "" {
+			result := PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}
+			result.EvidenceRefs = append(result.EvidenceRefs, verificationRefs...)
+			return result, nil
+		}
+	}
+
+	allowedPathspecs := sanitizePathspecs(append(input.AllowedPathspecs, svc.generatedArtifactPathspecs()...))
+	if len(allowedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
+	}
+	if changedPathspecsOutsideAllowed(status.Stdout, allowedPathspecs) {
+		return PostTaskResult{}, ErrDirtyWorktreeScope
+	}
+	changedPathspecs := changedPathspecsWithinAllowed(status.Stdout, allowedPathspecs)
+	if len(changedPathspecs) == 0 {
+		return PostTaskResult{}, fmt.Errorf("%w: no changed files matched safe task pathspecs", ErrInvalidInput)
 	}
 	if strings.TrimSpace(input.BranchName) == "" {
 		if branch, err := svc.currentBranch(ctx, workDir); err == nil {
 			input.BranchName = branch
 		}
 	}
+	branch, err := svc.normalizeBranchForPolicy(ctx, workDir, input)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	input.BranchName = branch
 	rendered, err := Render(input, svc.options.Conventions)
 	if err != nil {
 		return PostTaskResult{}, err
 	}
-	addArgs := append([]string{"add", "--"}, pathspecs...)
+	addArgs := append([]string{"add", "--"}, changedPathspecs...)
 	if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
 		return PostTaskResult{}, err
 	}
@@ -128,7 +189,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	}
 	result := PostTaskResult{
 		CommitRef:    "git-commit-" + strings.TrimSpace(sha.Stdout),
-		EvidenceRefs: []string{"git-commit-created"},
+		EvidenceRefs: append([]string{"git-commit-created"}, verificationRefs...),
 	}
 	if svc.options.PushAfterTask {
 		branch := strings.TrimSpace(input.BranchName)
@@ -157,6 +218,111 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		}
 	}
 	return result, nil
+}
+
+func FailureCategory(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrDirtyWorktree):
+		return "gitops_dirty_worktree"
+	case errors.Is(err, ErrDirtyWorktreeScope):
+		return "gitops_dirty_worktree_scope"
+	case errors.Is(err, ErrVerificationFailed):
+		return "gitops_verification_failed"
+	case errors.Is(err, ErrBranchPolicy):
+		return "gitops_branch_policy_failed"
+	case errors.Is(err, ErrInvalidInput):
+		return "gitops_invalid_input"
+	case errors.Is(err, ErrCommandFailed):
+		return "gitops_command_failed"
+	default:
+		return "gitops_post_task_failed"
+	}
+}
+
+func (svc *Service) runVerification(ctx context.Context, workDir string) ([]string, []string, error) {
+	if len(svc.options.Verification.BootstrapCommands) == 0 &&
+		len(svc.options.Verification.AlwaysBeforePR) == 0 &&
+		len(svc.options.Verification.GeneratedArtifacts) == 0 {
+		return nil, nil, nil
+	}
+	refs := make([]string, 0)
+	tests := make([]string, 0)
+	for _, command := range svc.options.Verification.BootstrapCommands {
+		if err := svc.runVerifierCommand(ctx, workDir, command); err != nil {
+			return nil, nil, err
+		}
+		refs = append(refs, "verify-bootstrap-"+safeHash(command))
+		tests = append(tests, safeTestResult(command, "passed"))
+	}
+	for _, command := range svc.options.Verification.AlwaysBeforePR {
+		if err := svc.runVerifierCommand(ctx, workDir, command); err != nil {
+			return nil, nil, err
+		}
+		refs = append(refs, "verify-project-"+safeHash(command))
+		tests = append(tests, safeTestResult(command, "passed"))
+	}
+	for _, generated := range svc.options.Verification.GeneratedArtifacts {
+		if !generated.RequiredBeforePR {
+			continue
+		}
+		if err := svc.runVerifierCommand(ctx, workDir, generated.Command); err != nil {
+			return nil, nil, err
+		}
+		refs = append(refs, "verify-generated-"+safeHash(generated.Command))
+		tests = append(tests, safeTestResult(generated.Command, "passed"))
+	}
+	if len(refs) > 0 {
+		refs = append(refs, "project-verification-passed")
+	}
+	return refs, tests, nil
+}
+
+func (svc *Service) runVerifierCommand(ctx context.Context, workDir string, command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" || strings.ContainsAny(command, "\x00\r\n") {
+		return fmt.Errorf("%w: unsafe verifier command", ErrInvalidInput)
+	}
+	if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: verifierEnv(svc.options.Verification.Env)}); err != nil {
+		return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
+	}
+	return nil
+}
+
+func verifierEnv(values map[string]string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(keys))
+	for _, key := range keys {
+		env = append(env, key+"="+values[key])
+	}
+	return env
+}
+
+func (svc *Service) generatedArtifactPathspecs() []string {
+	out := make([]string, 0)
+	for _, generated := range svc.options.Verification.GeneratedArtifacts {
+		if !generated.RequiredBeforePR {
+			continue
+		}
+		out = append(out, generated.Paths...)
+	}
+	return out
+}
+
+func safeTestResult(command string, status string) string {
+	summary := strings.TrimSpace(command)
+	if len(summary) > 120 {
+		summary = summary[:120]
+	}
+	return summary + ": " + status
 }
 
 func (svc *Service) validatePushConfig() error {
@@ -195,7 +361,7 @@ func (svc *Service) currentBranch(ctx context.Context, workDir string) (string, 
 func (svc *Service) validateBranchPolicy(branch string) error {
 	prefix := strings.TrimSpace(svc.options.BranchPrefix)
 	if prefix != "" && !strings.HasPrefix(branch, prefix) {
-		return fmt.Errorf("%w: branch %q does not match required prefix %q", ErrInvalidInput, branch, prefix)
+		return fmt.Errorf("%w: %w: branch %q does not match required prefix %q", ErrInvalidInput, ErrBranchPolicy, branch, prefix)
 	}
 	pattern := strings.TrimSpace(svc.options.BranchNamePattern)
 	if pattern == "" {
@@ -206,9 +372,115 @@ func (svc *Service) validateBranchPolicy(branch string) error {
 		return fmt.Errorf("%w: invalid branch pattern", ErrInvalidInput)
 	}
 	if !compiled.MatchString(branch) {
-		return fmt.Errorf("%w: branch %q does not match required pattern", ErrInvalidInput, branch)
+		return fmt.Errorf("%w: %w: branch %q does not match required pattern", ErrInvalidInput, ErrBranchPolicy, branch)
 	}
 	return nil
+}
+
+func (svc *Service) normalizeBranchForPolicy(ctx context.Context, workDir string, input PostTaskInput) (string, error) {
+	branch := strings.TrimSpace(input.BranchName)
+	if branch == "" {
+		var err error
+		branch, err = svc.currentBranch(ctx, workDir)
+		if err != nil {
+			return "", err
+		}
+	}
+	if svc.validateBranchPolicy(branch) == nil {
+		return branch, nil
+	}
+	derived := svc.derivePolicyBranch(input)
+	if derived == "" || derived == branch {
+		return branch, svc.validateBranchPolicy(branch)
+	}
+	if err := svc.validateBranchPolicy(derived); err != nil {
+		return branch, svc.validateBranchPolicy(branch)
+	}
+	if _, err := svc.git(ctx, workDir, nil, "checkout", "-B", derived); err != nil {
+		return "", err
+	}
+	return derived, nil
+}
+
+func (svc *Service) derivePolicyBranch(input PostTaskInput) string {
+	projectKey := branchPatternProjectKey(svc.options.BranchNamePattern)
+	if projectKey == "" {
+		projectKey = ticketProjectKey(input.TaskRef, input.TaskTitle, input.BranchName)
+	}
+	if projectKey == "" {
+		return ""
+	}
+	kind := branchKind(svc.options.BranchNamePattern, svc.options.Conventions.CommitType)
+	slug := safeBranchToken(firstNonEmpty(input.TaskRef, input.TaskTitle, input.AutomationRunID))
+	if slug == "" {
+		slug = "automation-task"
+	}
+	return kind + "-" + projectKey + "-0000-" + slug
+}
+
+func branchKind(pattern string, preferred string) string {
+	preferred = strings.ToLower(strings.TrimSpace(preferred))
+	if preferred != "" && strings.Contains(pattern, preferred) {
+		return preferred
+	}
+	if strings.Contains(pattern, "fix") {
+		return "fix"
+	}
+	for _, candidate := range []string{"chore", "docs", "feat", "refactor"} {
+		if strings.Contains(pattern, candidate) {
+			return candidate
+		}
+	}
+	if preferred != "" {
+		return preferred
+	}
+	return "chore"
+}
+
+func branchPatternProjectKey(pattern string) string {
+	match := regexp.MustCompile(`[A-Z][A-Z0-9]+-\[0-9\]`).FindString(pattern)
+	if match == "" {
+		return ""
+	}
+	return strings.TrimSuffix(match, "-[0-9]")
+}
+
+func ticketProjectKey(values ...string) string {
+	for _, value := range values {
+		match := regexp.MustCompile(`\b([A-Z][A-Z0-9]+)-[0-9]+\b`).FindStringSubmatch(strings.TrimSpace(value))
+		if len(match) == 2 {
+			return match[1]
+		}
+	}
+	return ""
+}
+
+func safeBranchToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		allowed := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if allowed {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (svc *Service) ensureDraftPR(ctx context.Context, workDir string, rendered RenderedOutput) (string, error) {
@@ -228,6 +500,9 @@ func (svc *Service) ensureDraftPR(ctx context.Context, workDir string, rendered 
 }
 
 func (svc *Service) git(ctx context.Context, dir string, env []string, args ...string) (CommandResult, error) {
+	if safeDir := safeGitDirectoryArg(dir); safeDir != "" {
+		args = append([]string{"-c", "safe.directory=" + safeDir}, args...)
+	}
 	return svc.run(ctx, Command{Path: "git", Args: args, Dir: dir, Env: env})
 }
 
@@ -246,6 +521,14 @@ func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) err
 	env := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config")}
 	_, err := svc.git(ctx, workDir, env, "config", "--global", "--add", "safe.directory", workDir)
 	return err
+}
+
+func safeGitDirectoryArg(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || !filepath.IsAbs(dir) || strings.ContainsAny(dir, "\x00\r\n") {
+		return ""
+	}
+	return dir
 }
 
 func (svc *Service) run(ctx context.Context, command Command) (CommandResult, error) {
@@ -301,6 +584,88 @@ func sanitizePathspecs(values []string) []string {
 		out = append(out, trimmed)
 	}
 	return out
+}
+
+func changedPathspecsWithinAllowed(status string, allowed []string) []string {
+	changed := changedPathsFromStatus(status)
+	out := make([]string, 0, len(changed))
+	seen := make(map[string]struct{}, len(changed))
+	for _, path := range changed {
+		if !isSafeRelativePathspec(path) {
+			continue
+		}
+		for _, allow := range allowed {
+			if pathMatchesAllowedPathspec(path, allow) {
+				if _, ok := seen[path]; !ok {
+					seen[path] = struct{}{}
+					out = append(out, path)
+				}
+				break
+			}
+		}
+	}
+	return out
+}
+
+func changedPathspecsOutsideAllowed(status string, allowed []string) bool {
+	for _, path := range changedPathsFromStatus(status) {
+		if !isSafeRelativePathspec(path) {
+			return true
+		}
+		matched := false
+		for _, allow := range allowed {
+			if pathMatchesAllowedPathspec(path, allow) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return true
+		}
+	}
+	return false
+}
+
+func changedPathsFromStatus(status string) []string {
+	lines := strings.Split(strings.ReplaceAll(status, "\x00", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if len(line) < 4 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
+			source := strings.TrimSpace(path[:idx])
+			destination := strings.TrimSpace(path[idx+4:])
+			if source != "" {
+				out = append(out, source)
+			}
+			if destination != "" {
+				out = append(out, destination)
+			}
+			continue
+		}
+		if path != "" {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func pathMatchesAllowedPathspec(path, allow string) bool {
+	allow = strings.TrimSuffix(strings.TrimSpace(allow), "/")
+	if allow == "" {
+		return false
+	}
+	return path == allow || strings.HasPrefix(path, allow+"/")
+}
+
+func isSafeRelativePathspec(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || strings.HasPrefix(path, "/") || strings.Contains(path, "..") || strings.ContainsAny(path, "\x00\r\n") {
+		return false
+	}
+	return true
 }
 
 func validateSafeRef(name, value string) error {

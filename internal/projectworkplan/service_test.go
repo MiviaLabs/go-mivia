@@ -179,6 +179,27 @@ func TestServiceCreateWorkTaskValidation(t *testing.T) {
 	}
 }
 
+func TestServiceCreateWorkTaskAllowsLongSafeResumeInstructions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-long-create-resume")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	input := readyTaskInput(plan.ID, "task-long-create-resume")
+	longResume := strings.Repeat("resume safely. ", 1500) + "done"
+	input.ResumeInstructions = longResume
+
+	task, err := svc.CreateWorkTask(ctx, input)
+	if err != nil {
+		t.Fatalf("create task with long resume instructions: %v", err)
+	}
+	if task.ResumeInstructions != longResume {
+		t.Fatalf("expected long resume instructions to persist, got length %d", len(task.ResumeInstructions))
+	}
+}
+
 func TestServiceTaskTransitions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -225,13 +246,24 @@ func TestServiceTaskTransitions(t *testing.T) {
 	if _, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, VerifierResultRefs: []string{"verifier-1"}}); err == nil {
 		t.Fatal("expected in_progress -> done to fail")
 	}
+	released, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-1"})
+	if err != nil {
+		t.Fatalf("release in-progress task: %v", err)
+	}
+	if released.Status != projectworkplan.WorkTaskStatusReady || released.ClaimedByRunID != "" {
+		t.Fatalf("expected released in-progress task to be ready and unclaimed, got %#v", released)
+	}
 
 	releaseTarget, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-release"))
 	if err != nil {
 		t.Fatalf("create release target: %v", err)
 	}
-	if _, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: releaseTarget.ID}); err == nil {
-		t.Fatal("expected release from ready to fail")
+	releasedReady, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: releaseTarget.ID})
+	if err != nil {
+		t.Fatalf("release ready task should be idempotent: %v", err)
+	}
+	if releasedReady.Status != projectworkplan.WorkTaskStatusReady || releasedReady.ClaimedByRunID != "" {
+		t.Fatalf("expected idempotent release to keep task ready and unclaimed, got %#v", releasedReady)
 	}
 
 	blockTarget, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-block"))
@@ -240,6 +272,201 @@ func TestServiceTaskTransitions(t *testing.T) {
 	}
 	if _, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: blockTarget.ID, BlockedReason: "missing dependency"}); err == nil {
 		t.Fatal("expected block without resume instructions to fail")
+	}
+}
+
+func TestServiceIntentionalResumeInstructionUpdatesAllowLongSafeTextAndRejectUnsafeText(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-long-update-resume")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-long-update-resume"))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	longResume := strings.Repeat("continue safely. ", 1500) + "done"
+	blocked, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             task.ID,
+		BlockedReason:      "waiting for a safe recovery handoff",
+		ResumeInstructions: longResume,
+	})
+	if err != nil {
+		t.Fatalf("block task with long resume instructions: %v", err)
+	}
+	if blocked.Status != projectworkplan.WorkTaskStatusBlocked || blocked.ResumeInstructions != longResume {
+		t.Fatalf("expected blocked task with persisted long resume instructions, got length %d", len(blocked.ResumeInstructions))
+	}
+
+	if _, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID}); err != nil {
+		t.Fatalf("release blocked task: %v", err)
+	}
+	if _, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             task.ID,
+		BlockedReason:      "waiting for redacted recovery handoff",
+		ResumeInstructions: "retry after token=secret is removed",
+	}); err == nil || !strings.Contains(err.Error(), "resume_instructions contains unsafe content") {
+		t.Fatalf("expected unsafe resume update to fail deterministically, got %v", err)
+	}
+}
+
+func TestServiceClaimAndReleaseIgnoreStoredLongResumeInstructions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mem := store.NewMemoryStore()
+	svc := projectworkplan.New(mem)
+	plan, err := createPlan(ctx, t, svc, "plan-long-resume")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-long-resume"))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	task.ResumeInstructions = strings.Repeat("x", projectworkplan.MaxResumeInstructionsLength+25)
+	if _, err := mem.UpdateWorkTask(ctx, task); err != nil {
+		t.Fatalf("store long resume task: %v", err)
+	}
+
+	claimed, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-long-resume"})
+	if err != nil {
+		t.Fatalf("claim task with stored long resume: %v", err)
+	}
+	if claimed.Status != projectworkplan.WorkTaskStatusClaimed {
+		t.Fatalf("expected claimed task, got %#v", claimed)
+	}
+	released, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-long-resume"})
+	if err != nil {
+		t.Fatalf("release task with stored long resume: %v", err)
+	}
+	if released.Status != projectworkplan.WorkTaskStatusReady || released.ClaimedByRunID != "" {
+		t.Fatalf("expected ready unclaimed task, got %#v", released)
+	}
+	if len(released.ResumeInstructions) <= projectworkplan.MaxResumeInstructionsLength {
+		t.Fatalf("expected stored legacy resume instructions to be preserved, got length %d", len(released.ResumeInstructions))
+	}
+}
+
+func TestServiceReleaseWorkTaskIsNoopForLaterStates(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-release-stale")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	verifying, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-verifying"))
+	if err != nil {
+		t.Fatalf("create verifying task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: verifying.ID, RunID: "run-verifying"}); err != nil {
+		t.Fatalf("claim verifying task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: verifying.ID, RunID: "run-verifying"}); err != nil {
+		t.Fatalf("start verifying task: %v", err)
+	}
+	verifying, err = svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: verifying.ID, RunID: "run-verifying"},
+		Status:              projectworkplan.WorkTaskStatusVerifying,
+	})
+	if err != nil {
+		t.Fatalf("move task to verifying: %v", err)
+	}
+	releasedVerifying, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: verifying.ID, RunID: "run-verifying"})
+	if err != nil {
+		t.Fatalf("stale release from verifying should be noop: %v", err)
+	}
+	if releasedVerifying.Status != projectworkplan.WorkTaskStatusVerifying {
+		t.Fatalf("expected stale release to preserve verifying status, got %#v", releasedVerifying)
+	}
+
+	failed, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-failed"))
+	if err != nil {
+		t.Fatalf("create failed task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: failed.ID, RunID: "run-failed"}); err != nil {
+		t.Fatalf("claim failed task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: failed.ID, RunID: "run-failed"}); err != nil {
+		t.Fatalf("start failed task: %v", err)
+	}
+	failed, err = svc.FailWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: failed.ID, RunID: "run-failed"})
+	if err != nil {
+		t.Fatalf("fail task: %v", err)
+	}
+	releasedFailed, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: failed.ID, RunID: "run-failed"})
+	if err != nil {
+		t.Fatalf("stale release from failed should be noop: %v", err)
+	}
+	if releasedFailed.Status != projectworkplan.WorkTaskStatusFailed {
+		t.Fatalf("expected stale release to preserve failed status, got %#v", releasedFailed)
+	}
+}
+
+func TestServiceAllowsGitOpsRecoveryRerunFromVerifying(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-gitops-rerun")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-gitops-rerun"))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-gitops"}); err != nil {
+		t.Fatalf("claim task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-gitops"}); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	if _, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-gitops"},
+		Status:              projectworkplan.WorkTaskStatusVerifying,
+	}); err != nil {
+		t.Fatalf("move task to verifying: %v", err)
+	}
+	if _, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:      "project-1",
+			TaskID:         task.ID,
+			RunID:          "wrong-run",
+			SafeNextAction: "gitops_recovery_failed_requeue_implementation",
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	}); err == nil {
+		t.Fatal("expected gitops rerun reset with wrong run to fail")
+	}
+	genericRelease, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-gitops"},
+		Status:              projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		t.Fatalf("generic verifying release should remain stale no-op, got error: %v", err)
+	}
+	if genericRelease.Status != projectworkplan.WorkTaskStatusVerifying {
+		t.Fatalf("expected generic verifying release to preserve status, got %#v", genericRelease)
+	}
+	reset, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:      "project-1",
+			TaskID:         task.ID,
+			RunID:          "run-gitops",
+			SafeNextAction: "gitops_recovery_failed_requeue_implementation",
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		t.Fatalf("gitops rerun reset returned error: %v", err)
+	}
+	if reset.Status != projectworkplan.WorkTaskStatusReady || reset.ClaimedByRunID != "" {
+		t.Fatalf("expected task ready and unclaimed, got %#v", reset)
 	}
 }
 
@@ -316,6 +543,39 @@ func TestServiceCallWorkPlanToolUpdateStatusAcceptsOutcome(t *testing.T) {
 	}
 	if updated.Outcome != "implementation completed" {
 		t.Fatalf("expected outcome from MCP adapter, got %+v", updated)
+	}
+}
+
+func TestServiceCallWorkPlanToolUpdateStatusCarriesSafeNextActionForGitOpsRecovery(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-mcp-gitops-rerun")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-mcp-gitops-rerun"))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	callWorkPlanTool(t, svc, "projects.work_tasks.claim", map[string]any{"id": "project-1", "task_id": task.ID, "run_id": "run-gitops"})
+	callWorkPlanTool(t, svc, "projects.work_tasks.start", map[string]any{"id": "project-1", "task_id": task.ID, "run_id": "run-gitops"})
+	if _, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-gitops"},
+		Status:              projectworkplan.WorkTaskStatusVerifying,
+	}); err != nil {
+		t.Fatalf("move task to verifying: %v", err)
+	}
+
+	reset := callWorkPlanTool(t, svc, "projects.work_tasks.update_status", map[string]any{
+		"id":               "project-1",
+		"task_id":          task.ID,
+		"status":           "ready",
+		"run_id":           "run-gitops",
+		"safe_next_action": "gitops_recovery_failed_requeue_implementation",
+	}).(projectworkplan.WorkTask)
+	if reset.Status != projectworkplan.WorkTaskStatusReady || reset.ClaimedByRunID != "" {
+		t.Fatalf("expected MCP gitops recovery to return ready unclaimed task, got %#v", reset)
 	}
 }
 
@@ -453,6 +713,35 @@ func TestServiceCompletionRequiresIndependentReviewOrExemption(t *testing.T) {
 	}
 	if exempt.ReviewExemptReason == "" {
 		t.Fatalf("expected review exemption reason, got %+v", exempt)
+	}
+
+	staleReviewTask, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-stale-review-exempt"))
+	if err != nil {
+		t.Fatalf("create stale review exempt task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: staleReviewTask.ID, RunID: "run-stale-exempt"}); err != nil {
+		t.Fatalf("claim stale review exempt task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: staleReviewTask.ID, RunID: "run-stale-exempt"}); err != nil {
+		t.Fatalf("start stale review exempt task: %v", err)
+	}
+	if _, err := svc.AttachVerifierResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: staleReviewTask.ID, Ref: "verifier:stale-exempt", AttachedByRunID: "run-stale-exempt"}); err != nil {
+		t.Fatalf("attach stale exempt verifier: %v", err)
+	}
+	staleExempt, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             staleReviewTask.ID,
+		Outcome:            "metadata-only closeout with stale review ref ignored",
+		SafeNextAction:     "get next task",
+		VerifierResultRefs: []string{"verifier:stale-exempt"},
+		ReviewResultRefs:   []string{"review:not-attached"},
+		ReviewExemptReason: "metadata-only automation task; no repository writes require secondary review",
+	})
+	if err != nil {
+		t.Fatalf("complete with exemption and stale review ref: %v", err)
+	}
+	if len(staleExempt.ReviewResultRefs) != 0 || staleExempt.ReviewExemptReason == "" {
+		t.Fatalf("expected exemption to clear stale review refs, got %+v", staleExempt)
 	}
 }
 

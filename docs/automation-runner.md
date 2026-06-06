@@ -34,9 +34,13 @@ For ignored local overrides, use a runner-specific variable if the server still 
 
 ```yaml
 user: "${MIVIA_AUTOMATION_CONTAINER_USER:-1000:1000}"
+healthcheck:
+  disable: true
 ```
 
 Set `MIVIA_AUTOMATION_CONTAINER_USER="$(id -u):$(id -g)"` for the automation sidecar. Avoid `0:0`; root-run sidecars create root-owned commits, refs, and worktree metadata on Linux and macOS bind mounts.
+
+Disable the image healthcheck on every runner service, including per-project runner services in `.docker-compose.local.yml`. The image healthcheck targets the server's internal `/readyz` endpoint; a runner container does not expose that endpoint and will be marked unhealthy even while it is correctly polling and executing queued runs.
 
 ## GitOps Conventions
 
@@ -60,6 +64,38 @@ Supported placeholders:
 - `{{commit_subject}}`
 
 Draft PR bodies always render exactly these sections: `What changed`, `How verified`, and `Tests`. The default `How verified` text includes project ID, Work Plan ID, Work Task ID, automation ID, automation run ID, operator ID, review refs, and verifier refs. Test results are included when a caller supplies safe summaries; otherwise the runner states that tests were not reported and orchestrator verification is pending.
+
+## Project Verification Profiles
+
+Runner GitOps also supports global `[verification]` defaults and per-project `[projects.verification]` overrides. Verification commands run inside the automation worktree after Codex finishes and before GitOps commits, pushes, or creates a draft PR. A failed verifier stops the post-task flow with `gitops_verification_failed`; the runner must not commit or open a PR from an unverified worktree.
+
+Use `bootstrap_commands` for deterministic setup, `always_before_pr` for required lint/typecheck/test gates, and `generated_artifacts` for checked-in generated outputs. When a generated-artifact verifier is `required_before_pr = true`, its `paths` are automatically added to the safe staging pathspecs so regenerated files can be committed with the task.
+
+The container image includes Node.js, `pnpm`, Python 3, `pip`, `venv`, and Semgrep so project profiles can enforce common repository gates without relying on prompt text. Keep heavyweight or repository-specific commands in config, not in the image; the image should provide the tool runtime, while `[projects.verification]` decides which gates run for that project.
+
+Automated Work Plans use dedicated worktrees by default, including read-only audits. This keeps scanner/reviewer agents on fresh default-branch code instead of a dirty live checkout. When `cleanup_worktree_after_plan_done = true`, the runner removes the dedicated `.mivia-worktrees/<project>/...` checkout after the owning Work Plan reaches a terminal status.
+
+Example:
+
+```toml
+[projects.verification]
+bootstrap_commands = ["pnpm install --frozen-lockfile --prefer-offline --ignore-scripts"]
+always_before_pr = [
+  "pnpm -s nx affected -t lint --base=origin/main --head=HEAD --parallel=4",
+  "pnpm -s nx affected -t typecheck --base=origin/main --head=HEAD --parallel=4",
+  "test ! -d policies/semgrep/rules || semgrep scan --config policies/semgrep/rules/ --error apps/ libs/ packages/",
+]
+
+[[projects.verification.generated_artifacts]]
+paths = [
+  "packages/contracts/dist/openapi.json",
+  "packages/contracts/dist/openapi.yaml",
+]
+command = "pnpm -s nx run contracts:verify-openapi"
+required_before_pr = true
+```
+
+Agents should still mention likely verifier impact in the Work Task, but the runner enforces the configured profile. Do not rely on prompt instructions alone for repository-specific CI gates or generated artifacts.
 
 Example:
 
@@ -106,7 +142,7 @@ flowchart LR
   GitOps --> PR
 ```
 
-`projects.automations.create_remediation_from_finding` creates the remediation Work Plan, a ready implementation Work Task, and an enabled automatic implementation automation. When `activate_plan=true` and `automation.work_plan_status_trigger.enabled=true`, moving the generated Work Plan to an active trigger status queues execution automatically. Normal operation should not call `projects.automations.run` manually.
+`projects.automations.create_remediation_from_finding` creates the remediation Work Plan, a ready implementation Work Task, and an enabled automatic implementation automation. Generated remediation tasks require a focused regression test when feasible, or a concrete not-feasible reason in the task outcome. When `activate_plan=true` and `automation.work_plan_status_trigger.enabled=true`, moving the generated Work Plan to an active trigger status queues execution automatically. Normal operation should not call `projects.automations.run` manually.
 
 The tool accepts only confirmed findings. It rejects speculative review notes, raw prompts, raw source dumps, raw stderr, secrets, roots, provider payloads, external URLs, and PII. The generated implementation still remains untrusted until independent review refs and orchestrator verifier refs are attached through the Work Task lifecycle.
 

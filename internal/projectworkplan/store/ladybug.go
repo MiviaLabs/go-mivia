@@ -204,7 +204,7 @@ func (store *LadybugStore) ListAttachments(ctx context.Context, projectID string
 	if _, err := store.GetWorkTask(ctx, projectID, taskID); err != nil {
 		return nil, err
 	}
-	labels := []string{labelWorkTaskEvidenceAttachment, labelWorkTaskContextPackAttachment, labelWorkTaskClaimAttachment, labelWorkTaskVerifierResultAttachment, labelWorkTaskKnowledgeAttachment}
+	labels := []string{labelWorkTaskEvidenceAttachment, labelWorkTaskContextPackAttachment, labelWorkTaskClaimAttachment, labelWorkTaskVerifierResultAttachment, labelWorkTaskReviewResultAttachment, labelWorkTaskKnowledgeAttachment}
 	out := []model.Attachment{}
 	for _, label := range labels {
 		nodes, err := store.graph.ListNodes(ctx, label, map[string]string{"project_id": projectID, "task_id": taskID})

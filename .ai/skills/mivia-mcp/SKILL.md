@@ -64,7 +64,7 @@ Checked-in workflow definitions:
 
 - `workflow-decomposition-planning`: turns a user objective into a governed Work Plan and isolated Work Tasks.
 - `workflow-workplan-implementation`: executes reviewed ready Work Tasks through bounded workers, independent review, and orchestrator verification.
-- `workflow-code-review-bug-planning`: automatic code review workflow that can queue bounded scanner, independent-review, and bug Work Plan creation tasks. It creates bug Work Plans only for independently confirmed, evidence-backed bugs and must not auto-implement speculative or unreviewed findings.
+- `workflow-code-review-bug-planning`: automatic code review workflow that can queue bounded scanner, independent-review, and bug Work Plan creation tasks. It creates bug Work Plans only for independently confirmed, evidence-backed bugs and must not auto-implement speculative or unreviewed findings. Confirmed-bug remediation tasks must include a focused regression test when feasible, or record a concrete not-feasible reason.
 
 REST mirrors the same metadata surface at:
 
@@ -145,7 +145,7 @@ When `projects.workspace.git_status` or equivalent MCP workspace git support is 
 
 All new repository branches, including automation-created task branches, MUST use the `mivia/` prefix with a short descriptive suffix. Do not use `codex/`, `claude/`, `agent/`, personal-name prefixes, or unprefixed feature names unless the user explicitly asks for a one-off exception.
 
-Use `isolation_mode=shared` only for read-only planning or inspection Work Plans. Do not use `shared` for implementation, generated-file writes, config changes, docs changes, test changes, automation writes, or any task that may modify the workspace. Use `isolation_mode=unavailable` only when git isolation is genuinely unavailable and report the risk before execution. These are refs, not filesystem locations. Do not run two write-capable Work Plans in the same worktree ref when likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
+Use `isolation_mode=dedicated_worktree` for automated Work Plans, including read-only audits and inspections, so runners read fresh default-branch code instead of a dirty live checkout. Use `isolation_mode=shared` only for direct human/orchestrator metadata inspection that will not execute through automation. Do not use `shared` for implementation, generated-file writes, config changes, docs changes, test changes, automation writes, automated audits, or any task that may modify the workspace. Use `isolation_mode=unavailable` only when git isolation is genuinely unavailable and report the risk before execution. These are refs, not filesystem locations. Do not run two Work Plans in the same worktree ref when likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
 
 When `projects.workspace.git_worktree_create` is exposed, the orchestrator MUST call it before assigning executable write-capable Work Tasks for a new Work Plan. The tool creates the dedicated worktree from `worktree_ref`, `branch_ref`, and optional `base_ref`, and returns metadata refs only. Agents must use the returned `isolation_ref`/`worktree_ref` in Work Plan metadata and automation refs. Do not create worktrees with raw shell commands when the MCP tool is available.
 
@@ -163,16 +163,19 @@ Mandatory rules:
 4. External runners MUST call `projects.automation_runs.claim_next`, execute only the returned metadata-only Codex input, then call `projects.automation_runs.complete_attempt` with status metadata only.
 5. Do not call `projects.automations.create`, `projects.automations.run`, or `projects.automations.run_parallel_batch` until `projects.work_plans.*` and `projects.work_tasks.*` have created the execution structure.
 6. For normal automation, do not call `projects.automations.run` after creating an enabled automatic automation. Activate the Work Plan and let the Work Plan status trigger queue the run. Manual run calls are only for explicit smoke, diagnostic, or recovery actions requested by the user or required by a documented surface gap.
-7. Required pre-automation task metadata: bounded objective, dependencies, evidence/context/claim refs where needed, likely affected files or discovery scope, verification requirement, and resume instructions.
-8. Parallel work must be orchestrator-owned. Use `projects.automations.run_parallel_batch` only for explicit parallel batches after dependency and file-overlap checks.
-9. A parallel batch may include only independent ready tasks with done dependencies, disjoint likely affected files, explicit verification requirements, and no overlapping artifact or promotion scope.
-10. Worker/subagent prompts must be generated from Work Task metadata and safe refs only. They must not depend on hidden chat context.
-11. Only the orchestrator runs verifier commands unless the task explicitly allows a worker to run a narrow verifier.
-12. Every automation-produced write-capable task needs an independent review result attached with `projects.work_tasks.attach_review_result` before completion. Do not let an implementation worker review its own task.
+7. For task-triggered automatic automations, create the Work Task as `planned`, create and enable the matching automation, then transition the Work Task to `ready`. Do not create a Work Task directly as `ready` before its enabled automation exists; that can miss the lifecycle transition edge and leave the task idle.
+8. For dependent chains, create downstream tasks as `planned`, create their automations, and let dependency completion or an explicit governed status transition move them to `ready`.
+9. Required pre-automation task metadata: bounded objective, dependencies, evidence/context/claim refs where needed, likely affected files or discovery scope, verification requirement, and resume instructions.
+10. Parallel work must be orchestrator-owned. Use `projects.automations.run_parallel_batch` only for explicit parallel batches after dependency and file-overlap checks.
+11. A parallel batch may include only independent ready tasks with done dependencies, disjoint likely affected files, explicit verification requirements, and no overlapping artifact or promotion scope.
+12. Worker/subagent prompts must be generated from Work Task metadata and safe refs only. They must not depend on hidden chat context.
+13. Only the orchestrator runs verifier commands unless the task explicitly allows a worker to run a narrow verifier.
+14. Every automation-produced write-capable task needs an independent review result attached with `projects.work_tasks.attach_review_result` before completion. Do not let an implementation worker review its own task.
     - Reviewer execution must be modeled as reviewer Work Tasks and automation runs. Codex Desktop subagents are optional client-side helpers only; they are not the source of truth for reviewer capacity. Runner worker limits are controlled by Mivia automation config (`global_worker_count`, `per_project_worker_limit`, and `per_agent_worker_limit`).
-13. Automation output is untrusted until independent review refs, verifier refs, and Evidence Graph outcomes exist.
-14. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
-15. Confirmed review findings may create remediation Work Plans only through `projects.automations.create_remediation_from_finding`. The finding must be independently confirmed, represented by safe refs and bounded summaries, and may activate the generated Work Plan so the status trigger queues implementation. Suspected or speculative findings must not create implementation automations. After this tool creates an automatic implementation automation, do not manually call `projects.automations.run` in normal flow; the Work Plan status trigger is responsible for queueing, and the runner is responsible only for executing queued runs.
+15. Automation output is untrusted until independent review refs, verifier refs, and Evidence Graph outcomes exist.
+16. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
+17. Confirmed review findings may create remediation Work Plans only through `projects.automations.create_remediation_from_finding`. The finding must be independently confirmed, represented by safe refs and bounded summaries, and may activate the generated Work Plan so the status trigger queues implementation. Suspected or speculative findings must not create implementation automations. The generated implementation task must require a focused regression test when feasible; if a regression test is not feasible in scope, the task outcome must record the concrete reason. The tool must produce both an implementation Work Task/automation and a separate independent review Work Task/automation. After the implementation runner completes and the implementation task is `needs_review`, the server must ready and queue the review automation automatically. Post-implementation review automation is read-only: it reviews the implementation worktree, attaches review refs, and must not create commits, pushes, or PRs. Once required verifier refs and independent review refs or an allowed review-task exemption exist, runner polling must reconcile `verifying` runs by completing the Work Task, marking the automation run `completed`, and completing the Work Plan when no open tasks remain. Do not manually call `projects.automations.run` in normal flow; the Work Plan status trigger, post-implementation review queueing, and runner-poll closeout reconciliation are responsible for automation, and the runner is responsible only for executing queued runs.
+18. Repository-specific CI and generated-artifact requirements must be encoded in `[verification]` or `[projects.verification]`. Work Tasks should mention the expected gates, but the runner must enforce lint/typecheck/test/generated-artifact commands before GitOps commit, push, or draft PR.
 
 GitOps output rules:
 
@@ -188,7 +191,9 @@ Strict automation sequence:
 work plan
 -> isolated-worker-ready work tasks
 -> context/evidence/claim refs
+-> task-triggered work tasks stay planned until matching automation exists
 -> enabled automatic automation definition
+-> task-triggered work task moved to ready
 -> Work Plan moved into configured trigger status
 -> status trigger queues run
 -> external claim/complete if configured

@@ -70,16 +70,23 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 
 	title := firstNonEmpty(titleOverride, workflow.Title)
 	planRef := compilePlanRef(workflow.WorkflowRef, runID, svc.newID)
+	isolation := compileIsolationRefs(workflow, planRef, userRequestRef, runID)
 	plan, err := svc.workPlans.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
-		ProjectID:      workflow.ProjectID,
-		PlanRef:        planRef,
-		UserRequestRef: userRequestRef,
-		Title:          title,
-		GoalSummary:    workflow.Purpose,
-		OwnerAgent:     "workflow-compiler",
-		CreatedByRunID: firstNonEmpty(runID, workflow.CreatedByRunID),
-		TraceID:        firstNonEmpty(traceID, workflow.TraceID),
-		ResumeSummary:  "Compiled from workflow " + workflow.WorkflowRef + "; execute ready Work Tasks through governed automation.",
+		ProjectID:        workflow.ProjectID,
+		PlanRef:          planRef,
+		UserRequestRef:   userRequestRef,
+		Title:            title,
+		GoalSummary:      workflow.Purpose,
+		OwnerAgent:       "workflow-compiler",
+		CreatedByRunID:   firstNonEmpty(runID, workflow.CreatedByRunID),
+		TraceID:          firstNonEmpty(traceID, workflow.TraceID),
+		ResumeSummary:    "Compiled from workflow " + workflow.WorkflowRef + "; execute ready Work Tasks through governed automation.",
+		IsolationMode:    projectworkplan.WorkPlanIsolationDedicatedWorktree,
+		ParallelGroupRef: isolation.parallelGroupRef,
+		WorkspaceRef:     isolation.workspaceRef,
+		GitBaseRef:       isolation.gitBaseRef,
+		GitBranchRef:     isolation.gitBranchRef,
+		GitWorktreeRef:   isolation.gitWorktreeRef,
 	})
 	if err != nil {
 		return WorkflowCompileResult{}, err
@@ -384,6 +391,54 @@ func compilePlanRef(workflowRef string, runID string, newID func(string) string)
 
 func compileAutomationRef(planRef string, stepID string) string {
 	return refWithSuffix(planRef, stepID)
+}
+
+type compileIsolation struct {
+	parallelGroupRef string
+	workspaceRef     string
+	gitBaseRef       string
+	gitBranchRef     string
+	gitWorktreeRef   string
+}
+
+func compileIsolationRefs(workflow WorkflowDefinition, planRef string, userRequestRef string, runID string) compileIsolation {
+	token := safeCompileGitToken(firstNonEmpty(planRef, userRequestRef, runID, workflow.WorkflowRef, workflow.ID))
+	if token == "" {
+		token = safeCompileGitToken(workflow.ProjectID)
+	}
+	if token == "" {
+		token = "workflow"
+	}
+	return compileIsolation{
+		parallelGroupRef: "workflow/" + token,
+		workspaceRef:     "workflow/" + token,
+		gitBaseRef:       "main",
+		gitBranchRef:     "mivia/" + token,
+		gitWorktreeRef:   "workflow/" + token,
+	}
+}
+
+func safeCompileGitToken(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && builder.Len() > 0 {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(builder.String(), "-")
+	if len(out) > 96 {
+		out = strings.Trim(out[:96], "-")
+	}
+	return out
 }
 
 func refWithSuffix(base string, suffix string) string {
