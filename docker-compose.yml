@@ -55,6 +55,8 @@ services:
       - --watch
       - --poll-interval
       - "${MIVIA_AUTOMATION_RUNNER_POLL_INTERVAL:-5s}"
+      - --heartbeat-interval
+      - "${MIVIA_AUTOMATION_RUNNER_HEARTBEAT_INTERVAL:-15s}"
       - --codex
       - "${MIVIA_AUTOMATION_CODEX_BINARY:-codex}"
       - --codex-cd

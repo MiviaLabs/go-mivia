@@ -179,7 +179,7 @@ func TestServiceCreateWorkTaskValidation(t *testing.T) {
 	}
 }
 
-func TestServiceCreateWorkTaskAcceptsMaxLengthResumeInstructions(t *testing.T) {
+func TestServiceCreateWorkTaskAllowsLongSafeResumeInstructions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	svc := newService()
@@ -188,14 +188,15 @@ func TestServiceCreateWorkTaskAcceptsMaxLengthResumeInstructions(t *testing.T) {
 		t.Fatalf("create plan: %v", err)
 	}
 	input := readyTaskInput(plan.ID, "task-long-create-resume")
-	input.ResumeInstructions = strings.Repeat("r", projectworkplan.MaxResumeInstructionsLength)
+	longResume := strings.Repeat("resume safely. ", 1500) + "done"
+	input.ResumeInstructions = longResume
 
 	task, err := svc.CreateWorkTask(ctx, input)
 	if err != nil {
-		t.Fatalf("create task with max-length resume instructions: %v", err)
+		t.Fatalf("create task with long resume instructions: %v", err)
 	}
-	if len(task.ResumeInstructions) != projectworkplan.MaxResumeInstructionsLength {
-		t.Fatalf("expected max-length resume instructions to persist, got length %d", len(task.ResumeInstructions))
+	if task.ResumeInstructions != longResume {
+		t.Fatalf("expected long resume instructions to persist, got length %d", len(task.ResumeInstructions))
 	}
 }
 
@@ -274,7 +275,7 @@ func TestServiceTaskTransitions(t *testing.T) {
 	}
 }
 
-func TestServiceIntentionalResumeInstructionUpdatesAreBounded(t *testing.T) {
+func TestServiceIntentionalResumeInstructionUpdatesAllowLongSafeTextAndRejectUnsafeText(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	svc := newService()
@@ -287,31 +288,22 @@ func TestServiceIntentionalResumeInstructionUpdatesAreBounded(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	maxResume := strings.Repeat("u", projectworkplan.MaxResumeInstructionsLength)
+	longResume := strings.Repeat("continue safely. ", 1500) + "done"
 	blocked, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
 		ProjectID:          "project-1",
 		TaskID:             task.ID,
-		BlockedReason:      "waiting for a bounded recovery handoff",
-		ResumeInstructions: maxResume,
+		BlockedReason:      "waiting for a safe recovery handoff",
+		ResumeInstructions: longResume,
 	})
 	if err != nil {
-		t.Fatalf("block task with max-length resume instructions: %v", err)
+		t.Fatalf("block task with long resume instructions: %v", err)
 	}
-	if blocked.Status != projectworkplan.WorkTaskStatusBlocked || len(blocked.ResumeInstructions) != projectworkplan.MaxResumeInstructionsLength {
-		t.Fatalf("expected blocked task with persisted max-length resume instructions, got %#v", blocked)
+	if blocked.Status != projectworkplan.WorkTaskStatusBlocked || blocked.ResumeInstructions != longResume {
+		t.Fatalf("expected blocked task with persisted long resume instructions, got length %d", len(blocked.ResumeInstructions))
 	}
 
 	if _, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID}); err != nil {
 		t.Fatalf("release blocked task: %v", err)
-	}
-	tooLongResume := strings.Repeat("v", projectworkplan.MaxResumeInstructionsLength+1)
-	if _, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
-		ProjectID:          "project-1",
-		TaskID:             task.ID,
-		BlockedReason:      "waiting for another bounded recovery handoff",
-		ResumeInstructions: tooLongResume,
-	}); err == nil || !strings.Contains(err.Error(), "resume_instructions is too long") {
-		t.Fatalf("expected over-limit resume update to fail deterministically, got %v", err)
 	}
 	if _, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
 		ProjectID:          "project-1",

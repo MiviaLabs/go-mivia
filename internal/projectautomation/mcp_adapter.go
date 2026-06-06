@@ -91,13 +91,13 @@ func (svc *Service) CallAutomationTool(ctx context.Context, name string, argumen
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
 		}
-		return svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: input.projectID(), AgentID: input.AgentID, RunnerKind: input.RunnerKind})
+		return svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: input.projectID(), AgentID: input.AgentID, RunnerKind: input.RunnerKind, RunnerID: input.RunnerID})
 	case "projects.automation_runs.complete_attempt":
 		var input completeAttemptMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, fmt.Errorf("%w: invalid automation arguments", ErrInvalidInput)
 		}
-		return svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: input.projectID(), RunID: input.RunID, Status: input.Status, FailureCategory: input.FailureCategory, DurationMS: input.DurationMS, VerifierResultRefs: input.VerifierRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, ReviewRefs: input.ReviewRefs, KnowledgeRefs: input.KnowledgeRefs})
+		return svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: input.projectID(), RunID: input.RunID, ClaimID: input.ClaimID, RunnerID: input.RunnerID, Status: input.Status, FailureCategory: input.FailureCategory, DurationMS: input.DurationMS, VerifierResultRefs: input.VerifierRefs, EvidenceRefs: input.EvidenceRefs, ClaimRefs: input.ClaimRefs, ReviewRefs: input.ReviewRefs, KnowledgeRefs: input.KnowledgeRefs})
 	default:
 		return nil, fmt.Errorf("%w: unknown automation tool", ErrInvalidInput)
 	}
@@ -299,6 +299,7 @@ type claimNextMCPInput struct {
 	ProjectID  string `json:"project_id,omitempty"`
 	AgentID    string `json:"agent_id,omitempty"`
 	RunnerKind string `json:"runner_kind,omitempty"`
+	RunnerID   string `json:"runner_id,omitempty"`
 }
 
 func (input claimNextMCPInput) projectID() string {
@@ -309,6 +310,8 @@ type completeAttemptMCPInput struct {
 	ID              string   `json:"id"`
 	ProjectID       string   `json:"project_id,omitempty"`
 	RunID           string   `json:"run_id"`
+	ClaimID         string   `json:"claim_id,omitempty"`
+	RunnerID        string   `json:"runner_id,omitempty"`
 	Status          string   `json:"status"`
 	FailureCategory string   `json:"failure_category,omitempty"`
 	DurationMS      int64    `json:"duration_ms,omitempty"`

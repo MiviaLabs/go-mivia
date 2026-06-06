@@ -77,6 +77,19 @@ func TestParseWorkflowTOMLZeroMaxParallelTasksFails(t *testing.T) {
 	assertWorkflowIssue(t, toml, "invalid_value", "steps[1].max_parallel_tasks")
 }
 
+func TestParseWorkflowTOMLAllowsLongSafeResumeInstructions(t *testing.T) {
+	toml := strings.Replace(validWorkflowTOML(), `resume_instructions = "Run focused workflow tests."`, `resume_instructions = "`+strings.Repeat("continue safely. ", 1500)+`"`, 1)
+	_, issues, err := ParseWorkflowTOML([]byte(toml))
+	if err != nil {
+		t.Fatalf("ParseWorkflowTOML returned error: %v", err)
+	}
+	for _, issue := range issues {
+		if issue.FieldPath == "steps[0].resume_instructions" {
+			t.Fatalf("expected long safe resume instructions to pass, got %#v", issues)
+		}
+	}
+}
+
 func assertWorkflowIssue(t *testing.T, toml string, code string, field string) {
 	t.Helper()
 	_, issues, err := ParseWorkflowTOML([]byte(toml))

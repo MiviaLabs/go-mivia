@@ -16,8 +16,8 @@ import (
 
 var ErrInvalidInput = errors.New("invalid input")
 
-// MaxResumeInstructionsLength is intentionally larger than other Work Task text
-// fields because resume instructions are generated operational handoff metadata.
+// MaxResumeInstructionsLength is kept for legacy tests and stored-value
+// compatibility. New resume instruction validation is intentionally uncapped.
 const MaxResumeInstructionsLength = 16 * 1024
 
 var (
@@ -308,7 +308,7 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	if err != nil {
 		return WorkTask{}, err
 	}
-	resume, err := safeOptionalText(input.ResumeInstructions, "resume_instructions", MaxResumeInstructionsLength)
+	resume, err := safeResumeInstructions(input.ResumeInstructions, "resume_instructions")
 	if err != nil {
 		return WorkTask{}, err
 	}
@@ -623,7 +623,7 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 		}
 	}
 	if input.ResumeInstructions != "" {
-		task.ResumeInstructions, err = safeOptionalText(input.ResumeInstructions, "resume_instructions", MaxResumeInstructionsLength)
+		task.ResumeInstructions, err = safeResumeInstructions(input.ResumeInstructions, "resume_instructions")
 		if err != nil {
 			return WorkTask{}, err
 		}
@@ -1047,6 +1047,15 @@ func safeOptionalText(value string, name string, max int) (string, error) {
 	if len(value) > max {
 		return "", fmt.Errorf("%w: %s is too long", ErrInvalidInput, name)
 	}
+	return safeTextContent(value, name)
+}
+
+func safeResumeInstructions(value string, name string) (string, error) {
+	value = strings.TrimSpace(value)
+	return safeTextContent(value, name)
+}
+
+func safeTextContent(value string, name string) (string, error) {
 	piiCheckValue := redactSafePathTokens(value)
 	if containsUnsafeMarker(value) || emailPattern.MatchString(piiCheckValue) || phonePattern.MatchString(piiCheckValue) {
 		return "", fmt.Errorf("%w: %s contains unsafe content", ErrInvalidInput, name)

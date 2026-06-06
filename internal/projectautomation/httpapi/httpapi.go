@@ -36,6 +36,7 @@ func RegisterRoutes(mux *http.ServeMux, svc *projectautomation.Service) {
 	mux.Handle("GET /api/v1/projects/{id}/automation-runs", listRunsHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/automation-runs/claim-next", claimNextRunHandler(svc))
 	mux.Handle("GET /api/v1/projects/{id}/automation-runs/{run_id}", getRunHandler(svc))
+	mux.Handle("POST /api/v1/projects/{id}/automation-runs/{run_id}/heartbeat", heartbeatRunHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result", completeAttemptHandler(svc))
 }
 
@@ -170,6 +171,23 @@ func completeAttemptHandler(svc *projectautomation.Service) http.Handler {
 		input.ProjectID = projectID(r)
 		input.RunID = r.PathValue("run_id")
 		run, err := svc.CompleteAttempt(r.Context(), input)
+		writeResult(w, run, err, http.StatusOK)
+	})
+}
+
+func heartbeatRunHandler(svc *projectautomation.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !requireJSON(w, r) {
+			return
+		}
+		var input projectautomation.HeartbeatRunInput
+		if err := decodeJSON(r, &input); err != nil {
+			writeInvalidJSON(w)
+			return
+		}
+		input.ProjectID = projectID(r)
+		input.RunID = r.PathValue("run_id")
+		run, err := svc.HeartbeatRun(r.Context(), input)
 		writeResult(w, run, err, http.StatusOK)
 	})
 }

@@ -132,6 +132,11 @@ type AutomationRun struct {
 	ParallelGroupID   string    `json:"parallel_group_id,omitempty"`
 	FailureCategory   string    `json:"failure_category,omitempty"`
 	SafeSummary       string    `json:"safe_summary,omitempty"`
+	ClaimID           string    `json:"claim_id,omitempty"`
+	RunnerID          string    `json:"runner_id,omitempty"`
+	ClaimedAt         time.Time `json:"claimed_at,omitempty"`
+	LastHeartbeatAt   time.Time `json:"last_heartbeat_at,omitempty"`
+	LeaseExpiresAt    time.Time `json:"lease_expires_at,omitempty"`
 	StartedAt         time.Time `json:"started_at,omitempty"`
 	FinishedAt        time.Time `json:"finished_at,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
@@ -302,6 +307,7 @@ type ClaimNextRunInput struct {
 	ProjectID  string `json:"project_id,omitempty"`
 	AgentID    string `json:"agent_id,omitempty"`
 	RunnerKind string `json:"runner_kind,omitempty"`
+	RunnerID   string `json:"runner_id,omitempty"`
 }
 
 type ClaimedRun struct {
@@ -313,6 +319,8 @@ type ClaimedRun struct {
 type CompleteAttemptInput struct {
 	ProjectID          string   `json:"project_id,omitempty"`
 	RunID              string   `json:"run_id"`
+	ClaimID            string   `json:"claim_id,omitempty"`
+	RunnerID           string   `json:"runner_id,omitempty"`
 	Status             string   `json:"status"`
 	FailureCategory    string   `json:"failure_category,omitempty"`
 	DurationMS         int64    `json:"duration_ms,omitempty"`
@@ -321,6 +329,13 @@ type CompleteAttemptInput struct {
 	ClaimRefs          []string `json:"claim_refs,omitempty"`
 	ReviewRefs         []string `json:"review_result_refs,omitempty"`
 	KnowledgeRefs      []string `json:"knowledge_candidate_refs,omitempty"`
+}
+
+type HeartbeatRunInput struct {
+	ProjectID string `json:"project_id,omitempty"`
+	RunID     string `json:"run_id"`
+	ClaimID   string `json:"claim_id"`
+	RunnerID  string `json:"runner_id,omitempty"`
 }
 
 type PermissionCheckInput struct {

@@ -5,8 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
 
 const (
@@ -120,7 +118,7 @@ func (v *workflowValidator) validateSteps(agents []WorkflowAgentDefinition, step
 		v.optionalText(step.VerificationRequirement, base+".verification_requirement", 500)
 		v.optionalText(step.ExpectedOutput, base+".expected_output", 500)
 		v.optionalText(step.FailureCriteria, base+".failure_criteria", 500)
-		v.optionalText(step.ResumeInstructions, base+".resume_instructions", projectworkplan.MaxResumeInstructionsLength)
+		v.resumeInstructions(step.ResumeInstructions, base+".resume_instructions")
 		v.optionalRef(step.AutomationStatus, base+".automation_status")
 		v.optionalRef(step.TriggerKind, base+".trigger_kind")
 		v.optionalRef(step.SchedulePolicy, base+".schedule_policy")
@@ -248,6 +246,18 @@ func (v *workflowValidator) optionalText(value, field string, max int) bool {
 	if len(value) > max {
 		v.add("too_long", field, "field is too long")
 		return false
+	}
+	if containsUnsafeWorkflowText(value) || containsRootMarker(value) {
+		v.add("unsafe_text", field, "field contains unsafe text marker")
+		return false
+	}
+	return true
+}
+
+func (v *workflowValidator) resumeInstructions(value, field string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
 	}
 	if containsUnsafeWorkflowText(value) || containsRootMarker(value) {
 		v.add("unsafe_text", field, "field contains unsafe text marker")

@@ -40,6 +40,7 @@ func run(args []string) int {
 	watch := flags.Bool("watch", false, "continuously claim queued tasks until interrupted")
 	pollInterval := flags.Duration("poll-interval", 5*time.Second, "poll interval when once is false")
 	requestTimeout := flags.Duration("request-timeout", 30*time.Second, "HTTP timeout for server discovery, claim, and report requests")
+	heartbeatInterval := flags.Duration("heartbeat-interval", 15*time.Second, "external run heartbeat interval")
 	idleExitAfter := flags.Duration("idle-exit-after", 0, "optional idle duration after which watch mode exits; 0 disables idle exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -69,7 +70,8 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "codex runtime config unavailable: %v\n", err)
 		return 1
 	}
-	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: &http.Client{Timeout: normalizedRequestTimeout(*requestTimeout)}}
+	runnerID := defaultRunnerID()
+	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: &http.Client{Timeout: normalizedRequestTimeout(*requestTimeout)}, runnerID: runnerID, heartbeatInterval: normalizedHeartbeatInterval(*heartbeatInterval)}
 	var idleSince time.Time
 	for {
 		projectIDs, err := runnerProjectIDs(context.Background(), client, strings.TrimSpace(*projectID))
@@ -109,6 +111,25 @@ func normalizedRequestTimeout(timeout time.Duration) time.Duration {
 		return time.Second
 	}
 	return timeout
+}
+
+func normalizedHeartbeatInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return 15 * time.Second
+	}
+	if interval < time.Second {
+		return time.Second
+	}
+	return interval
+}
+
+func defaultRunnerID() string {
+	host, _ := os.Hostname()
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = "runner"
+	}
+	return fmt.Sprintf("%s:%d", host, os.Getpid())
 }
 
 func checkCodexLauncher(ctx context.Context, codexOptions codexLaunchOptions) error {
@@ -205,18 +226,20 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		fmt.Fprintln(os.Stdout, "no queued automation run")
 		return 0, true, false
 	}
+	stopHeartbeat := client.startHeartbeat(ctx, projectID, claimed.Run)
+	defer stopHeartbeat()
 	runWorkDir, err := client.resolveRunWorkDir(ctx, projectID, claimed.Run.PlanID, strings.TrimSpace(codexOptions.WorkDir))
 	if err != nil {
 		result := projectautomation.CompleteAttemptInput{
 			Status:          projectautomation.RunStatusFailed,
 			FailureCategory: "worktree_resolve_failed",
 		}
-		completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result)
+		completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run, result)
 		if reportErr != nil {
 			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
 			return 1, false, true
 		}
-		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, completedRun.Status)
+		fmt.Fprintf(os.Stdout, "automation run %s durably reported %s\n", claimed.Run.ID, completedRun.Status)
 		return 1, true, true
 	}
 	runCodexOptions := codexOptions
@@ -239,13 +262,13 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			DurationMS:      durationMS,
 			EvidenceRefs:    evidenceRefs,
 		}
-		completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run.ID, result)
+		completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run, result)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
 			return 1, false, true
 		}
 		cleanupTerminalPlanWorktree(ctx, client, gitOpsOptions, projectID, firstNonEmpty(completedRun.PlanID, claimed.Run.PlanID), strings.TrimSpace(codexOptions.WorkDir), runWorkDir)
-		fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, completedRun.Status)
+		fmt.Fprintf(os.Stdout, "automation run %s durably reported %s\n", claimed.Run.ID, completedRun.Status)
 		if status == projectautomation.RunStatusCompleted {
 			return 0, true, true
 		}
@@ -278,12 +301,12 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			case errors.Is(preTaskErr, projectgitops.ErrDirtyWorktree):
 				result.FailureCategory = "gitops_dirty_worktree"
 			}
-			completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run.ID, result)
+			completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run, result)
 			if reportErr != nil {
 				fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
 				return 1, false, true
 			}
-			fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, completedRun.Status)
+			fmt.Fprintf(os.Stdout, "automation run %s durably reported %s\n", claimed.Run.ID, completedRun.Status)
 			return 1, true, true
 		}
 	}
@@ -316,13 +339,13 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		DurationMS:      durationMS,
 		EvidenceRefs:    evidenceRefs,
 	}
-	completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run.ID, result)
+	completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run, result)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
 		return 1, false, true
 	}
 	cleanupTerminalPlanWorktree(ctx, client, gitOpsOptions, projectID, firstNonEmpty(completedRun.PlanID, claimed.Run.PlanID), strings.TrimSpace(codexOptions.WorkDir), runWorkDir)
-	fmt.Fprintf(os.Stdout, "automation run %s reported %s\n", claimed.Run.ID, completedRun.Status)
+	fmt.Fprintf(os.Stdout, "automation run %s durably reported %s\n", claimed.Run.ID, completedRun.Status)
 	if status == projectautomation.RunStatusCompleted {
 		return 0, true, true
 	}
@@ -739,8 +762,10 @@ func writeCodexInput(input projectautomation.CodexTaskInput) (string, func(), er
 }
 
 type runnerClient struct {
-	baseURL string
-	http    *http.Client
+	baseURL           string
+	http              *http.Client
+	runnerID          string
+	heartbeatInterval time.Duration
 }
 
 type projectListResponse struct {
@@ -793,7 +818,7 @@ var windowsPathForRunner = func(path string) (string, error) {
 }
 
 func (client *runnerClient) claimNext(ctx context.Context, projectID string, agentID string) (projectautomation.ClaimedRun, bool, error) {
-	input := projectautomation.ClaimNextRunInput{AgentID: agentID, RunnerKind: projectautomation.RunnerKindCodexCLI}
+	input := projectautomation.ClaimNextRunInput{AgentID: agentID, RunnerKind: projectautomation.RunnerKindCodexCLI, RunnerID: client.runnerID}
 	var claimed projectautomation.ClaimedRun
 	status, err := client.post(ctx, fmt.Sprintf("/api/v1/projects/%s/automation-runs/claim-next", url.PathEscape(projectID)), input, &claimed)
 	if status == http.StatusBadRequest {
@@ -808,10 +833,70 @@ func (client *runnerClient) claimNext(ctx context.Context, projectID string, age
 	return claimed, true, nil
 }
 
-func (client *runnerClient) completeAttempt(ctx context.Context, projectID string, runID string, input projectautomation.CompleteAttemptInput) (projectautomation.AutomationRun, error) {
+func (client *runnerClient) completeAttempt(ctx context.Context, projectID string, claimed projectautomation.AutomationRun, input projectautomation.CompleteAttemptInput) (projectautomation.AutomationRun, error) {
+	input.ClaimID = claimed.ClaimID
+	input.RunnerID = client.runnerID
 	var run projectautomation.AutomationRun
-	_, err := client.post(ctx, fmt.Sprintf("/api/v1/projects/%s/automation-runs/%s/attempt-result", url.PathEscape(projectID), url.PathEscape(runID)), input, &run)
+	_, err := client.post(ctx, fmt.Sprintf("/api/v1/projects/%s/automation-runs/%s/attempt-result", url.PathEscape(projectID), url.PathEscape(claimed.ID)), input, &run)
+	if err != nil {
+		return run, err
+	}
+	if strings.TrimSpace(claimed.ClaimID) == "" {
+		return run, nil
+	}
+	durable, err := client.getRun(ctx, projectID, claimed.ID)
+	if err != nil {
+		return run, err
+	}
+	if durable.Status != run.Status || durable.FailureCategory != run.FailureCategory {
+		return run, fmt.Errorf("%w: automation run %s report mismatch returned=%s durable=%s", projectautomation.ErrInvalidInput, claimed.ID, run.Status, durable.Status)
+	}
+	return durable, nil
+}
+
+func (client *runnerClient) getRun(ctx context.Context, projectID string, runID string) (projectautomation.AutomationRun, error) {
+	var run projectautomation.AutomationRun
+	_, err := client.get(ctx, fmt.Sprintf("/api/v1/projects/%s/automation-runs/%s", url.PathEscape(projectID), url.PathEscape(runID)), &run)
 	return run, err
+}
+
+func (client *runnerClient) heartbeatRun(ctx context.Context, projectID string, run projectautomation.AutomationRun) error {
+	if strings.TrimSpace(run.ClaimID) == "" {
+		return nil
+	}
+	input := projectautomation.HeartbeatRunInput{ClaimID: run.ClaimID, RunnerID: client.runnerID}
+	var updated projectautomation.AutomationRun
+	_, err := client.post(ctx, fmt.Sprintf("/api/v1/projects/%s/automation-runs/%s/heartbeat", url.PathEscape(projectID), url.PathEscape(run.ID)), input, &updated)
+	return err
+}
+
+func (client *runnerClient) startHeartbeat(ctx context.Context, projectID string, run projectautomation.AutomationRun) func() {
+	if strings.TrimSpace(run.ClaimID) == "" {
+		return func() {}
+	}
+	interval := client.heartbeatInterval
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	hbCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				_ = client.heartbeatRun(hbCtx, projectID, run)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func (client *runnerClient) resolveRunWorkDir(ctx context.Context, projectID string, planID string, baseWorkDir string) (string, error) {

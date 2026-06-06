@@ -102,6 +102,8 @@ require_codex_when_available = true
 allow_manual_runner = false
 queue_depth = 16
 poll_interval = "5s"
+# External runner sidecars should send heartbeats more often than the server's
+# 90s claim lease. Compose defaults MIVIA_AUTOMATION_RUNNER_HEARTBEAT_INTERVAL to 15s.
 global_worker_count = 1
 per_project_worker_limit = 1
 per_agent_worker_limit = 1

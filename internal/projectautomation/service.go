@@ -22,6 +22,7 @@ var ErrInvalidInput = errors.New("invalid project automation input")
 const defaultAutomationMaxRetries = 3
 const defaultAutomationMaxReplacementRunsPerTask = 3
 const automationReplacementRetryLimitCategory = "automation_replacement_retry_limit_reached"
+const defaultExternalRunLeaseTTL = 90 * time.Second
 
 var (
 	refPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
@@ -711,7 +712,7 @@ func (svc *Service) RunNow(ctx context.Context, input SubmitRunInput) (Automatio
 	if run.RunnerKind == RunnerKindCodexCLI && !svc.codexAvailable() {
 		return svc.failRun(ctx, run, RunStatusRunnerUnavailable, "codex_cli_unavailable")
 	}
-	run, task, err := svc.prepareRunForExecution(ctx, run)
+	run, task, err := svc.prepareRunForExecution(ctx, run, "")
 	if err != nil {
 		return run, err
 	}
@@ -754,7 +755,7 @@ func (svc *Service) ExecuteQueuedRun(ctx context.Context, projectID, runID strin
 	if run.RunnerKind == RunnerKindCodexCLI && !svc.codexAvailable() {
 		return svc.failRun(ctx, run, RunStatusRunnerUnavailable, "codex_cli_unavailable")
 	}
-	run, task, err := svc.prepareRunForExecution(ctx, run)
+	run, task, err := svc.prepareRunForExecution(ctx, run, "")
 	if err != nil {
 		return run, err
 	}
@@ -796,6 +797,10 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if runnerKind != RunnerKindCodexCLI {
 		return ClaimedRun{}, fmt.Errorf("%w: external runner supports codex_cli only", ErrInvalidInput)
 	}
+	runnerID, err := safeOptionalRef(input.RunnerID, "runner_id")
+	if err != nil {
+		return ClaimedRun{}, err
+	}
 	if err := svc.reconcileRunningRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
@@ -811,13 +816,13 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
-	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID); err != nil || ok {
+	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, err
 	}
-	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID); err != nil || ok {
+	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, err
 	}
-	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID); err != nil || ok {
+	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, err
 	}
 	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
@@ -835,7 +840,7 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
 			continue
 		}
-		claimed, task, err := svc.prepareRunForExecution(ctx, run)
+		claimed, task, err := svc.prepareRunForExecution(ctx, run, runnerID)
 		if err != nil {
 			continue
 		}
@@ -875,7 +880,7 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
 			continue
 		}
-		claimed, task, err := svc.prepareRunForExecution(ctx, run)
+		claimed, task, err := svc.prepareRunForExecution(ctx, run, runnerID)
 		if err != nil {
 			continue
 		}
@@ -885,7 +890,7 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
 }
 
-func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID string, agentID string) (ClaimedRun, bool, error) {
+func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, error) {
 	runs, err := svc.recoverablePreExecutionRuns(ctx, projectID)
 	if err != nil {
 		return ClaimedRun{}, false, err
@@ -921,6 +926,7 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 		run.StartedAt = now
 		run.FinishedAt = time.Time{}
 		run.FailureCategory = ""
+		svc.applyExternalClaim(&run, runnerID, now)
 		run.UpdatedAt = now
 		claimed, err := svc.store.UpdateRun(ctx, run)
 		if err != nil {
@@ -1025,7 +1031,7 @@ func (svc *Service) prepareTaskForPreExecutionRecovery(ctx context.Context, run 
 	})
 }
 
-func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID string, agentID string) (ClaimedRun, bool, error) {
+func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, error) {
 	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
 	if err != nil {
 		return ClaimedRun{}, false, err
@@ -1059,6 +1065,7 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 		run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
 		run.StartedAt = now
 		run.FinishedAt = time.Time{}
+		svc.applyExternalClaim(&run, runnerID, now)
 		run.UpdatedAt = now
 		claimed, err := svc.store.UpdateRun(ctx, run)
 		if err != nil {
@@ -1135,7 +1142,7 @@ func (svc *Service) reconcileExhaustedPreExecutionRecoveryRuns(ctx context.Conte
 	return nil
 }
 
-func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, projectID string, agentID string) (ClaimedRun, bool, error) {
+func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, error) {
 	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
 	if err != nil {
 		return ClaimedRun{}, false, err
@@ -1169,6 +1176,7 @@ func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, p
 		run.StartedAt = now
 		run.FinishedAt = time.Time{}
 		run.FailureCategory = ""
+		svc.applyExternalClaim(&run, runnerID, now)
 		run.UpdatedAt = now
 		claimed, err := svc.store.UpdateRun(ctx, run)
 		if err != nil {
@@ -1185,6 +1193,17 @@ func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, p
 
 func sameRecoveryClaim(run AutomationRun, startedAt time.Time, safeSummary string) bool {
 	return run.Status == RunStatusRunning && run.SafeSummary == safeSummary && run.StartedAt.Equal(startedAt)
+}
+
+func (svc *Service) applyExternalClaim(run *AutomationRun, runnerID string, now time.Time) {
+	if run == nil {
+		return
+	}
+	run.ClaimID = svc.newID("claim")
+	run.RunnerID = runnerID
+	run.ClaimedAt = now
+	run.LastHeartbeatAt = now
+	run.LeaseExpiresAt = now.Add(defaultExternalRunLeaseTTL)
 }
 
 func (svc *Service) canRetryRun(run AutomationRun) bool {
@@ -1279,8 +1298,16 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	if run.RunnerKind != RunnerKindCodexCLI {
 		return AutomationRun{}, fmt.Errorf("%w: automation run is not externally claimed", ErrInvalidInput)
 	}
+	claimID, err := safeOptionalRef(input.ClaimID, "claim_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	runnerID, err := safeOptionalRef(input.RunnerID, "runner_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
 	if run.Status != RunStatusRunning {
-		if terminalAttemptAlreadyRecorded(run, status) {
+		if terminalAttemptAlreadyRecorded(run, status) && (run.ClaimID == "" || claimID == "" || run.ClaimID == claimID) {
 			return run, nil
 		}
 		if status == RunStatusFailed && svc.failedAttemptMatchesAdvancedTask(ctx, run) {
@@ -1292,6 +1319,14 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 			// so accepting the report prevents a stuck starting run.
 		} else if !(status == RunStatusCompleted && (run.Status == RunStatusVerifying || svc.completedAttemptMatchesRecoveredTask(ctx, run))) {
 			return AutomationRun{}, fmt.Errorf("%w: automation run is not externally claimed", ErrInvalidInput)
+		}
+	}
+	if run.Status == RunStatusRunning && run.ClaimID != "" && run.RunnerID != "" {
+		if claimID == "" || claimID != run.ClaimID {
+			return AutomationRun{}, fmt.Errorf("%w: claim_id does not match automation run", ErrInvalidInput)
+		}
+		if run.RunnerID != "" && runnerID != "" && runnerID != run.RunnerID {
+			return AutomationRun{}, fmt.Errorf("%w: runner_id does not match automation run", ErrInvalidInput)
 		}
 	}
 	failureCategory, err := safeText(input.FailureCategory, "failure_category", 200)
@@ -1351,6 +1386,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		return svc.failRun(ctx, run, RunStatusFailed, "attempt_record_failed")
 	}
 	run.FailureCategory = failureCategory
+	if runnerID != "" {
+		run.RunnerID = runnerID
+	}
 	run.FinishedAt = now
 	run.UpdatedAt = now
 	switch status {
@@ -1374,10 +1412,55 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	if err != nil {
 		return AutomationRun{}, err
 	}
-	if status == RunStatusCompleted {
-		return svc.reconcileVerifyingRun(ctx, updated)
+	durable, err := svc.store.GetRun(ctx, updated.ProjectID, updated.ID)
+	if err != nil {
+		return AutomationRun{}, err
 	}
-	return updated, nil
+	if durable.Status != updated.Status || durable.FailureCategory != updated.FailureCategory || durable.ClaimID != updated.ClaimID || (isTerminalRunStatus(updated.Status) && durable.FinishedAt.IsZero()) {
+		return AutomationRun{}, fmt.Errorf("%w: automation run durable completion mismatch", ErrInvalidInput)
+	}
+	if status == RunStatusCompleted {
+		return svc.reconcileVerifyingRun(ctx, durable)
+	}
+	return durable, nil
+}
+
+func (svc *Service) HeartbeatRun(ctx context.Context, input HeartbeatRunInput) (AutomationRun, error) {
+	svc.claimMu.Lock()
+	defer svc.claimMu.Unlock()
+	projectID, runID, err := safeProjectObject(input.ProjectID, input.RunID, "run_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	claimID, err := safeRef(input.ClaimID, "claim_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	runnerID, err := safeOptionalRef(input.RunnerID, "runner_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run, err := svc.store.GetRun(ctx, projectID, runID)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if run.Status != RunStatusRunning && run.Status != RunStatusClaiming && run.Status != RunStatusStarting {
+		return AutomationRun{}, fmt.Errorf("%w: automation run is not active", ErrInvalidInput)
+	}
+	if run.ClaimID == "" || run.ClaimID != claimID {
+		return AutomationRun{}, fmt.Errorf("%w: claim_id does not match automation run", ErrInvalidInput)
+	}
+	if run.RunnerID != "" && runnerID != "" && run.RunnerID != runnerID {
+		return AutomationRun{}, fmt.Errorf("%w: runner_id does not match automation run", ErrInvalidInput)
+	}
+	now := svc.now()
+	if runnerID != "" {
+		run.RunnerID = runnerID
+	}
+	run.LastHeartbeatAt = now
+	run.LeaseExpiresAt = now.Add(defaultExternalRunLeaseTTL)
+	run.UpdatedAt = now
+	return svc.store.UpdateRun(ctx, run)
 }
 
 func (svc *Service) completedAttemptMatchesRecoveredTask(ctx context.Context, run AutomationRun) bool {
@@ -1440,6 +1523,15 @@ func terminalAttemptAlreadyRecorded(run AutomationRun, status string) bool {
 	switch status {
 	case RunStatusCompleted, RunStatusFailed, RunStatusTimeout, RunStatusBlocked, RunStatusCancelled:
 		return run.Status == status
+	default:
+		return false
+	}
+}
+
+func isTerminalRunStatus(status string) bool {
+	switch status {
+	case RunStatusCompleted, RunStatusFailed, RunStatusTimeout, RunStatusBlocked, RunStatusCancelled, RunStatusPolicyDenied, RunStatusRunnerUnavailable:
+		return true
 	default:
 		return false
 	}
@@ -1648,7 +1740,7 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 			}
 			return svc.reconcileVerifyingRun(ctx, updated)
 		}
-		if svc.runStartedBeforeService(run) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
+		if (svc.externalRunLeaseExpired(run) || svc.runStartedBeforeService(run)) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
 			return svc.requeueAbandonedRunningRun(ctx, run, task)
 		}
 		return run, nil
@@ -1659,7 +1751,7 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 	if isTerminalIncompleteTaskStatus(task.Status) {
 		return svc.finishRunAfterTaskTerminal(ctx, run, task)
 	}
-	if svc.runStartedBeforeService(run) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
+	if (svc.externalRunLeaseExpired(run) || svc.runStartedBeforeService(run)) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
 		return svc.requeueAbandonedRunningRun(ctx, run, task)
 	}
 	if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
@@ -1718,6 +1810,13 @@ func (svc *Service) runStartedBeforeService(run AutomationRun) bool {
 		marker = run.StartedAt
 	}
 	return !marker.IsZero() && marker.Before(svc.startedAt)
+}
+
+func (svc *Service) externalRunLeaseExpired(run AutomationRun) bool {
+	if svc == nil || run.LeaseExpiresAt.IsZero() {
+		return false
+	}
+	return !svc.now().Before(run.LeaseExpiresAt)
 }
 
 func (svc *Service) requeueAbandonedRunningRun(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
@@ -2548,7 +2647,7 @@ func (svc *Service) ComputeParallelBatch(ctx context.Context, input ComputeParal
 	return svc.store.CreateParallelBatch(ctx, batch)
 }
 
-func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRun) (AutomationRun, projectworkplan.WorkTask, error) {
+func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRun, runnerID string) (AutomationRun, projectworkplan.WorkTask, error) {
 	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
 	if err != nil {
 		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "automation_unavailable")
@@ -2617,6 +2716,7 @@ func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRu
 	run.WorkTaskStatus = task.Status
 	run.AttemptCount++
 	run.StartedAt = svc.now()
+	svc.applyExternalClaim(&run, runnerID, run.StartedAt)
 	run.UpdatedAt = run.StartedAt
 	run, err = svc.store.UpdateRun(ctx, run)
 	if err != nil {
@@ -3216,7 +3316,7 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 
 func isRecoverablePreExecutionFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "worktree_resolve_failed", "claim_failed", "start_failed", "gitops_pre_task_failed", "gitops_dirty_worktree", "gitops_dirty_worktree_scope":
+	case "worktree_resolve_failed", "claim_failed", "start_failed", "gitops_pre_task_failed", "gitops_dirty_worktree":
 		return true
 	default:
 		return false

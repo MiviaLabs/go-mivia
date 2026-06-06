@@ -472,6 +472,71 @@ func TestClaimNextRunDoesNotValidateStoredLongResumeInstructions(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunSetsClaimLeaseAndCompleteAttemptRequiresMatchingClaimToken(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-lease", "lease-task", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	now := time.Unix(1000, 0).UTC()
+	svc.now = func() time.Time { return now }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	queued, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: task.ID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-1"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != queued.ID || claimed.Run.ClaimID == "" || claimed.Run.RunnerID != "runner-1" || claimed.Run.LastHeartbeatAt.IsZero() || claimed.Run.LeaseExpiresAt.IsZero() {
+		t.Fatalf("expected claim lease fields, got %+v", claimed.Run)
+	}
+	if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: claimed.Run.ID, Status: RunStatusFailed, FailureCategory: "gitops_dirty_worktree", ClaimID: "wrong-claim", RunnerID: "runner-1"}); err == nil || !strings.Contains(err.Error(), "claim_id does not match") {
+		t.Fatalf("expected wrong claim_id to be rejected, got %v", err)
+	}
+	completed, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: claimed.Run.ID, Status: RunStatusFailed, FailureCategory: "gitops_dirty_worktree", ClaimID: claimed.Run.ClaimID, RunnerID: "runner-1"})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	duplicate, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: claimed.Run.ID, Status: RunStatusFailed, FailureCategory: "gitops_dirty_worktree", ClaimID: claimed.Run.ClaimID, RunnerID: "runner-1"})
+	if err != nil {
+		t.Fatalf("duplicate CompleteAttempt returned error: %v", err)
+	}
+	if duplicate.ID != completed.ID || duplicate.Status != completed.Status {
+		t.Fatalf("expected idempotent terminal duplicate, got completed=%+v duplicate=%+v", completed, duplicate)
+	}
+}
+
+func TestHeartbeatRequiresMatchingClaimTokenAndExtendsLease(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-heartbeat", "heartbeat-task", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	now := time.Unix(1000, 0).UTC()
+	svc.now = func() time.Time { return now }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: task.ID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-1"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if _, err := svc.HeartbeatRun(ctx, HeartbeatRunInput{ProjectID: automation.ProjectID, RunID: claimed.Run.ID, ClaimID: "wrong-claim", RunnerID: "runner-1"}); err == nil {
+		t.Fatal("expected wrong heartbeat claim to fail")
+	}
+	now = now.Add(30 * time.Second)
+	heartbeat, err := svc.HeartbeatRun(ctx, HeartbeatRunInput{ProjectID: automation.ProjectID, RunID: claimed.Run.ID, ClaimID: claimed.Run.ClaimID, RunnerID: "runner-1"})
+	if err != nil {
+		t.Fatalf("HeartbeatRun returned error: %v", err)
+	}
+	if !heartbeat.LastHeartbeatAt.Equal(now) || !heartbeat.LeaseExpiresAt.After(claimed.Run.LeaseExpiresAt) {
+		t.Fatalf("expected heartbeat to extend lease, before=%+v after=%+v", claimed.Run, heartbeat)
+	}
+}
+
 func TestClaimNextRunSkipsPreExecutionRecoveryClaimedByAnotherRun(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
@@ -495,7 +560,7 @@ func TestClaimNextRunSkipsPreExecutionRecoveryClaimedByAnotherRun(t *testing.T) 
 }
 
 func TestClaimNextRunRequeuesExhaustedPreExecutionRecoveryClaimedByFailedRun(t *testing.T) {
-	for _, category := range []string{"gitops_dirty_worktree", "gitops_dirty_worktree_scope", "gitops_pre_task_failed"} {
+	for _, category := range []string{"gitops_dirty_worktree", "gitops_pre_task_failed"} {
 		for _, status := range []string{projectworkplan.WorkTaskStatusInProgress, projectworkplan.WorkTaskStatusClaimed, projectworkplan.WorkTaskStatusReady} {
 			t.Run(category+"_"+status, func(t *testing.T) {
 				ctx := context.Background()
