@@ -2732,6 +2732,10 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 			return nil
 		}
 	}
+	task, err = svc.markTaskAfterRecoverableDirtyScopeConfig(ctx, task, existing)
+	if err != nil {
+		return err
+	}
 	if countTerminalReplacementFailures(existing, task) >= defaultAutomationMaxReplacementRunsPerTask {
 		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
 		return err
@@ -2763,6 +2767,40 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 	}
 	_, err = svc.store.CreateRun(ctx, run)
 	return err
+}
+
+const dirtyScopeConfigRecoveryRunID = "orchestrator-system-fix-dirty-scope-config"
+
+func (svc *Service) markTaskAfterRecoverableDirtyScopeConfig(ctx context.Context, task projectworkplan.WorkTask, existing []AutomationRun) (projectworkplan.WorkTask, error) {
+	if svc == nil || svc.workTasks == nil || task.Status != projectworkplan.WorkTaskStatusReady || taskHasSystemFixRecoveryMarker(task) {
+		return task, nil
+	}
+	if countTerminalReplacementFailures(existing, task) < defaultAutomationMaxReplacementRunsPerTask {
+		return task, nil
+	}
+	dirtyPaths := dirtyPathsFromEvidenceRefs(task.EvidenceRefs)
+	if len(dirtyPaths) == 0 {
+		return task, nil
+	}
+	expandScopes, outsidePaths := svc.classifyDirtyScopePaths(task.ProjectID, task, dirtyPaths)
+	if len(outsidePaths) > 0 || len(expandScopes) == 0 {
+		return task, nil
+	}
+	if expander, ok := svc.workTasks.(workTaskScopeExpander); ok && expander != nil {
+		expanded, err := expander.ExpandWorkTaskScope(ctx, projectworkplan.ExpandWorkTaskScopeInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			FilesToEdit:        expandScopes,
+			RunID:              dirtyScopeConfigRecoveryRunID,
+			TraceID:            dirtyScopeConfigRecoveryRunID,
+			ResumeInstructions: recoveryResumeInstructions("Configured dirty-scope recovery now covers previous dirty paths: " + strings.Join(dirtyPaths, ", ") + ". Requeue implementation once under the refreshed scope."),
+		})
+		if err != nil {
+			return projectworkplan.WorkTask{}, err
+		}
+		return expanded, nil
+	}
+	return task, nil
 }
 
 func (svc *Service) replacementRetryLimitReached(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (bool, error) {
@@ -4117,11 +4155,11 @@ func dirtyPathsFromEvidenceRefs(refs []string) []string {
 
 func (svc *Service) classifyDirtyScopePaths(projectID string, task projectworkplan.WorkTask, dirtyPaths []string) ([]string, []string) {
 	likely := safeTaskPathspecs(task.LikelyFilesAffected)
-	if len(likely) == 0 {
+	supportScopes := svc.automationSupportPathspecs(projectID)
+	if len(likely) == 0 && len(supportScopes) == 0 {
 		return nil, dirtyPaths
 	}
 	current := safeTaskPathspecs(task.FilesToEdit)
-	supportScopes := svc.automationSupportPathspecs(projectID)
 	var expand []string
 	var outside []string
 	for _, path := range dirtyPaths {
