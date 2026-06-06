@@ -1204,7 +1204,7 @@ func TestGitOpsRecoveryRequeueBoundsStoredLongResumeInstructions(t *testing.T) {
 		t.Fatalf("CreateRun returned error: %v", err)
 	}
 
-	if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, "gitops_post_task_failed"); err != nil {
+	if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, "gitops_post_task_failed", nil); err != nil {
 		t.Fatalf("requeueTaskAfterGitOpsRecoveryFailure returned error: %v", err)
 	}
 	updatedTask, err := workSvc.GetWorkTask(ctx, "project-1", task.ID)
@@ -1307,7 +1307,7 @@ func TestGitOpsRecoveryRequeueUsesImplementationClaimForAttachedRecoveryRun(t *t
 		t.Fatalf("CreateRun returned error: %v", err)
 	}
 
-	if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, "gitops_post_task_failed"); err != nil {
+	if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, "gitops_post_task_failed", nil); err != nil {
 		t.Fatalf("requeueTaskAfterGitOpsRecoveryFailure returned error: %v", err)
 	}
 	updatedTask, err := workSvc.GetWorkTask(ctx, "project-1", task.ID)
@@ -4681,6 +4681,150 @@ func TestCompleteAttemptRequeuesImplementationAfterGitOpsRecoveryFailure(t *test
 	}
 }
 
+func TestCompleteAttemptExpandsScopeForDirtyPathsUnderLikelyFiles(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"apps/domain/src/service.ts"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.FilesToEdit = []string{"apps/domain/src/service.ts"}
+	task.LikelyFilesAffected = []string{"apps/domain/src"}
+	task.EvidenceRefs = []string{"implementation/evidence"}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusRunning,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    2,
+		SafeSummary:     RunSafeSummaryGitOpsPostTaskRecovery,
+		FailureCategory: "",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       automation.ProjectID,
+		RunID:           "run-a",
+		Status:          RunStatusFailed,
+		FailureCategory: "gitops_dirty_worktree_scope",
+		EvidenceRefs:    []string{"gitops-dirty-path:apps/domain/src/module.ts"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_recovery_failed_requires_implementation" {
+		t.Fatalf("expected recovery implementation requeue, got %+v", run)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if !containsString(requeuedTask.FilesToEdit, "apps/domain/src") {
+		t.Fatalf("expected likely directory scope to be added to files_to_edit, got %+v", requeuedTask.FilesToEdit)
+	}
+	if !strings.Contains(requeuedTask.ResumeInstructions, "apps/domain/src/module.ts") {
+		t.Fatalf("expected resume instructions to name dirty path, got %q", requeuedTask.ResumeInstructions)
+	}
+}
+
+func TestCompleteAttemptBlocksDirtyPathsOutsideLikelyFiles(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"apps/domain/src/service.ts"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.FilesToEdit = []string{"apps/domain/src/service.ts"}
+	task.LikelyFilesAffected = []string{"apps/domain/src"}
+	task.EvidenceRefs = []string{"implementation/evidence"}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusRunning,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    2,
+		SafeSummary:     RunSafeSummaryGitOpsPostTaskRecovery,
+		FailureCategory: "",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       automation.ProjectID,
+		RunID:           "run-a",
+		Status:          RunStatusFailed,
+		FailureCategory: "gitops_dirty_worktree_scope",
+		EvidenceRefs:    []string{"gitops-dirty-path:apps/other/src/module.ts"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_dirty_worktree_scope_requires_plan" {
+		t.Fatalf("expected dirty scope failure to require a new plan, got %+v", run)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected task blocked, got %+v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "apps/other/src/module.ts") || !strings.Contains(blockedTask.ResumeInstructions, "new plan") {
+		t.Fatalf("expected exact dirty path and new-plan instruction, got reason=%q resume=%q", blockedTask.BlockedReason, blockedTask.ResumeInstructions)
+	}
+	for _, candidate := range store.runs {
+		if candidate.ID != "run-a" && candidate.TaskID == task.ID && candidate.Status == RunStatusQueued {
+			t.Fatalf("expected no replacement run after out-of-scope dirty path, got %+v", candidate)
+		}
+	}
+}
+
+func TestCreateRemediationFromFindingAddsLikelyDirectoriesToEditScope(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeWorkTasks{plans: map[string]projectworkplan.WorkPlan{}, tasks: map[string]projectworkplan.WorkTask{}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	result, err := svc.CreateRemediationFromFinding(ctx, CreateRemediationFromFindingInput{
+		ProjectID:               "project-1",
+		FindingRef:              "confirmed-finding-scope",
+		FindingStatus:           "confirmed",
+		Title:                   "Fix scoped issue",
+		Summary:                 "Fix confirmed behavior without broad unsafe edits.",
+		ImplementationAgentID:   "codex-worker",
+		FilesToRead:             []string{"apps/domain/src/service.ts"},
+		FilesToEdit:             []string{"apps/domain/src/service.ts"},
+		LikelyFilesAffected:     []string{"apps/domain/src", "apps/domain/test"},
+		VerificationRequirement: "Focused regression must pass.",
+	})
+	if err != nil {
+		t.Fatalf("CreateRemediationFromFinding returned error: %v", err)
+	}
+	if !containsString(result.WorkTask.FilesToEdit, "apps/domain/src") || !containsString(result.WorkTask.FilesToEdit, "apps/domain/test") {
+		t.Fatalf("expected likely directories in files_to_edit, got %+v", result.WorkTask.FilesToEdit)
+	}
+}
+
 func TestClaimNextRunRequeuesExhaustedGitOpsRecoveryAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
@@ -5401,6 +5545,28 @@ func (fake *fakeWorkTasks) UpdateWorkTaskStatus(_ context.Context, input project
 		task.ClaimedByRunID = input.RunID
 		if !containsRef(task.AgentRunIDs, input.RunID) {
 			task.AgentRunIDs = append(task.AgentRunIDs, input.RunID)
+		}
+	}
+	if input.ResumeInstructions != "" {
+		task.ResumeInstructions = input.ResumeInstructions
+	}
+	if input.Status == projectworkplan.WorkTaskStatusBlocked {
+		task.BlockedReason = input.BlockedReason
+	}
+	fake.tasks[input.TaskID] = task
+	return task, nil
+}
+
+func (fake *fakeWorkTasks) ExpandWorkTaskScope(_ context.Context, input projectworkplan.ExpandWorkTaskScopeInput) (projectworkplan.WorkTask, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	task, ok := fake.tasks[input.TaskID]
+	if !ok {
+		return projectworkplan.WorkTask{}, errors.New("not found")
+	}
+	for _, path := range input.FilesToEdit {
+		if !containsString(task.FilesToEdit, path) {
+			task.FilesToEdit = append(task.FilesToEdit, path)
 		}
 	}
 	if input.ResumeInstructions != "" {

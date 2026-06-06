@@ -23,6 +23,29 @@ var (
 	ErrVerificationFailed = errors.New("git operations verification failed")
 )
 
+type DirtyWorktreeScopeError struct {
+	Paths []string
+}
+
+func (err DirtyWorktreeScopeError) Error() string {
+	if len(err.Paths) == 0 {
+		return ErrDirtyWorktreeScope.Error()
+	}
+	return ErrDirtyWorktreeScope.Error() + ": " + strings.Join(err.Paths, ", ")
+}
+
+func (err DirtyWorktreeScopeError) Unwrap() error {
+	return ErrDirtyWorktreeScope
+}
+
+func DirtyWorktreeScopePaths(err error) []string {
+	var scoped DirtyWorktreeScopeError
+	if errors.As(err, &scoped) {
+		return append([]string(nil), scoped.Paths...)
+	}
+	return nil
+}
+
 var safeRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 
 type Service struct {
@@ -74,8 +97,9 @@ func (svc *Service) PreTaskWithinScope(ctx context.Context, workDir string, allo
 		return nil
 	}
 	allowed := sanitizePathspecs(append(allowedPathspecs, svc.generatedArtifactPathspecs()...))
-	if len(allowed) == 0 || changedPathspecsOutsideAllowed(status, allowed) {
-		return ErrDirtyWorktreeScope
+	outside := changedPathspecsOutsideAllowed(status, allowed)
+	if len(allowed) == 0 || len(outside) > 0 {
+		return dirtyWorktreeScopeError(outside)
 	}
 	return nil
 }
@@ -141,8 +165,8 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if len(allowedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
 	}
-	if changedPathspecsOutsideAllowed(status.Stdout, allowedPathspecs) {
-		return PostTaskResult{}, ErrDirtyWorktreeScope
+	if outside := changedPathspecsOutsideAllowed(status.Stdout, allowedPathspecs); len(outside) > 0 {
+		return PostTaskResult{}, dirtyWorktreeScopeError(outside)
 	}
 	changedPathspecs := changedPathspecsWithinAllowed(status.Stdout, allowedPathspecs)
 	if len(changedPathspecs) == 0 {
@@ -672,10 +696,12 @@ func changedPathspecsWithinAllowed(status string, allowed []string) []string {
 	return out
 }
 
-func changedPathspecsOutsideAllowed(status string, allowed []string) bool {
+func changedPathspecsOutsideAllowed(status string, allowed []string) []string {
+	out := make([]string, 0)
 	for _, path := range changedPathsFromStatus(status) {
 		if !isSafeRelativePathspec(path) {
-			return true
+			out = append(out, "unsafe-pathspec")
+			continue
 		}
 		matched := false
 		for _, allow := range allowed {
@@ -685,10 +711,13 @@ func changedPathspecsOutsideAllowed(status string, allowed []string) bool {
 			}
 		}
 		if !matched {
-			return true
+			out = append(out, path)
+			if len(out) >= 20 {
+				break
+			}
 		}
 	}
-	return false
+	return out
 }
 
 func changedPathsFromStatus(status string) []string {
@@ -731,6 +760,17 @@ func isSafeRelativePathspec(path string) bool {
 		return false
 	}
 	return true
+}
+
+func dirtyWorktreeScopeError(paths []string) error {
+	paths = sanitizePathspecs(paths)
+	if len(paths) == 0 {
+		return ErrDirtyWorktreeScope
+	}
+	if len(paths) > 20 {
+		paths = paths[:20]
+	}
+	return DirtyWorktreeScopeError{Paths: paths}
 }
 
 func validateSafeRef(name, value string) error {

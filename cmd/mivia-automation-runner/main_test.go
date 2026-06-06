@@ -123,6 +123,14 @@ func TestDedicatedWorktreeRunnerInstructionsBlockBaseWorkspaceEdits(t *testing.T
 	}
 }
 
+func TestGitOpsDirtyScopeEvidenceRefsUseRejectedPaths(t *testing.T) {
+	err := projectgitops.DirtyWorktreeScopeError{Paths: []string{"apps/domain/src/module.ts"}}
+	refs := gitOpsDirtyScopeEvidenceRefs(err)
+	if len(refs) != 1 || refs[0] != "gitops-dirty-path:apps/domain/src/module.ts" {
+		t.Fatalf("expected dirty path evidence ref, got %+v", refs)
+	}
+}
+
 func TestResolveRunWorkDirFallsBackForSharedPlan(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

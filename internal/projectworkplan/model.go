@@ -224,6 +224,15 @@ type UpdateWorkTaskStatusInput struct {
 	Status string `json:"status"`
 }
 
+type ExpandWorkTaskScopeInput struct {
+	ProjectID          string   `json:"project_id,omitempty"`
+	TaskID             string   `json:"task_id"`
+	FilesToEdit        []string `json:"files_to_edit,omitempty"`
+	ResumeInstructions string   `json:"resume_instructions,omitempty"`
+	RunID              string   `json:"run_id,omitempty"`
+	TraceID            string   `json:"trace_id,omitempty"`
+}
+
 type GetNextWorkTaskInput struct {
 	ProjectID          string `json:"project_id,omitempty"`
 	PlanID             string `json:"plan_id,omitempty"`

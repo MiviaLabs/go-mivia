@@ -160,6 +160,9 @@ func TestPostTaskRejectsDirtyFilesOutsideAllowedScopes(t *testing.T) {
 	if got := FailureCategory(err); got != "gitops_dirty_worktree_scope" {
 		t.Fatalf("expected scoped dirty category, got %q", got)
 	}
+	if paths := DirtyWorktreeScopePaths(err); len(paths) != 1 || paths[0] != "README.md" {
+		t.Fatalf("expected rejected dirty path detail, got %+v", paths)
+	}
 	if len(runner.commands) != 2 {
 		t.Fatalf("expected trust probe and status only, got %d", len(runner.commands))
 	}
@@ -579,6 +582,9 @@ func TestPreTaskWithinScopeRejectsUnrelatedDirtyWorktree(t *testing.T) {
 	err := svc.PreTaskWithinScope(context.Background(), "/tmp/worktree", []string{"apps/domain-inventory/src/trpc"})
 	if !errors.Is(err, ErrDirtyWorktreeScope) {
 		t.Fatalf("expected scoped dirty worktree error, got %v", err)
+	}
+	if paths := DirtyWorktreeScopePaths(err); len(paths) != 1 || paths[0] != "apps/sos/src/workflows/sos.ts" {
+		t.Fatalf("expected rejected pre-task dirty path detail, got %+v", paths)
 	}
 }
 

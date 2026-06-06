@@ -61,6 +61,10 @@ type workTaskStatusUpdater interface {
 	UpdateWorkTaskStatus(context.Context, projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error)
 }
 
+type workTaskScopeExpander interface {
+	ExpandWorkTaskScope(context.Context, projectworkplan.ExpandWorkTaskScopeInput) (projectworkplan.WorkTask, error)
+}
+
 type remediationWorkPlanAPI interface {
 	CreateWorkPlan(context.Context, projectworkplan.CreateWorkPlanInput) (projectworkplan.WorkPlan, error)
 	ListWorkPlans(context.Context, projectworkplan.WorkPlanFilter) ([]projectworkplan.WorkPlan, error)
@@ -176,6 +180,7 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 	if len(likelyFiles) == 0 {
 		likelyFiles = append([]string(nil), filesToEdit...)
 	}
+	filesToEdit = remediationEditScope(filesToEdit, likelyFiles)
 	evidenceRefs, err := safeRefList(input.EvidenceRefs, "evidence_refs")
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
@@ -1261,7 +1266,7 @@ func (svc *Service) reconcileExhaustedGitOpsRecoveryRuns(ctx context.Context, pr
 		if !taskOwnsGitOpsRecoveryRun(task, run) {
 			continue
 		}
-		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory); err != nil {
+		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory, nil); err != nil {
 			return err
 		}
 	}
@@ -1560,7 +1565,7 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		run.Status = RunStatusTimeout
 	case RunStatusFailed:
 		if strings.TrimSpace(run.SafeSummary) == RunSafeSummaryGitOpsPostTaskRecovery && isGitOpsRecoveryFailure(failureCategory) {
-			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory)
+			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory, evidenceRefs)
 		}
 		run.Status = RunStatusFailed
 	default:
@@ -1735,7 +1740,7 @@ func recoveryResumeInstructions(sentence string) string {
 	return strings.TrimSpace(sentence[:projectworkplan.MaxResumeInstructionsLength])
 }
 
-func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, run AutomationRun, category string, evidenceRefs []string) (AutomationRun, error) {
 	updater, ok := svc.workTasks.(workTaskStatusUpdater)
 	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
 		run.Status = RunStatusFailed
@@ -1752,6 +1757,28 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
 	}
+	dirtyPaths := dirtyPathsFromEvidenceRefs(evidenceRefs)
+	if strings.TrimSpace(category) == "gitops_dirty_worktree_scope" && len(dirtyPaths) > 0 {
+		expandScopes, outsidePaths := classifyDirtyScopePaths(task, dirtyPaths)
+		if len(outsidePaths) > 0 {
+			return svc.blockTaskAfterOutOfScopeDirtyPaths(ctx, updater, run, task, outsidePaths)
+		}
+		if len(expandScopes) > 0 {
+			if expander, ok := svc.workTasks.(workTaskScopeExpander); ok && expander != nil {
+				expanded, err := expander.ExpandWorkTaskScope(ctx, projectworkplan.ExpandWorkTaskScopeInput{
+					ProjectID:          task.ProjectID,
+					TaskID:             task.ID,
+					FilesToEdit:        expandScopes,
+					RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+					TraceID:            firstNonEmpty(run.TraceID, run.ID),
+					ResumeInstructions: recoveryResumeInstructions("GitOps dirty paths were inside likely_files_affected and files_to_edit was expanded for retry: " + strings.Join(dirtyPaths, ", ")),
+				})
+				if err == nil {
+					task = expanded
+				}
+			}
+		}
+	}
 	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
 		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
 			ProjectID:          task.ProjectID,
@@ -1759,7 +1786,7 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 			SafeNextAction:     "gitops_recovery_failed_requeue_implementation",
 			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
 			TraceID:            firstNonEmpty(run.TraceID, run.ID),
-			ResumeInstructions: recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; rerun implementation to fix verification, generated artifacts, commit scope, or PR readiness before GitOps post-task is retried."),
+			ResumeInstructions: gitOpsRecoveryResumeInstructions(category, dirtyPaths),
 		},
 		Status: projectworkplan.WorkTaskStatusReady,
 	})
@@ -1795,6 +1822,42 @@ func gitOpsRecoveryRequeueSummary(category string) string {
 		return RunSafeSummaryGitOpsRecoveryRequeuedImplementation
 	}
 	return RunSafeSummaryGitOpsRecoveryRequeuedImplementation + "_after_" + category
+}
+
+func (svc *Service) blockTaskAfterOutOfScopeDirtyPaths(ctx context.Context, updater workTaskStatusUpdater, run AutomationRun, task projectworkplan.WorkTask, dirtyPaths []string) (AutomationRun, error) {
+	reason := recoveryResumeInstructions("GitOps dirty paths outside likely_files_affected require a new plan: " + strings.Join(dirtyPaths, ", "))
+	blockedTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "gitops_dirty_scope_requires_new_plan",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			BlockedReason:      reason,
+			ResumeInstructions: recoveryResumeInstructions(reason + "; create a new Work Plan or update likely_files_affected before rerunning."),
+		},
+		Status: projectworkplan.WorkTaskStatusBlocked,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = blockedTask.Status
+	run.FailureCategory = "gitops_dirty_worktree_scope_requires_plan"
+	run.SafeSummary = "gitops_recovery_blocked_after_out_of_scope_dirty_paths"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	return svc.store.UpdateRun(ctx, run)
+}
+
+func gitOpsRecoveryResumeInstructions(category string, dirtyPaths []string) string {
+	if len(dirtyPaths) > 0 {
+		return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; dirty paths: " + strings.Join(dirtyPaths, ", ") + ". Rerun implementation after files_to_edit scope is corrected.")
+	}
+	return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; rerun implementation to fix verification, generated artifacts, commit scope, or PR readiness before GitOps post-task is retried.")
 }
 
 func preExecutionRecoveryRequeueSummary(category string) string {
@@ -3800,6 +3863,92 @@ func safeFileList(values []string, field string) ([]string, error) {
 		out = append(out, trimmed)
 	}
 	return out, nil
+}
+
+func remediationEditScope(filesToEdit []string, likelyFiles []string) []string {
+	return uniqueRefs(append(append([]string{}, filesToEdit...), likelyFiles...))
+}
+
+func dirtyPathsFromEvidenceRefs(refs []string) []string {
+	const prefix = "gitops-dirty-path:"
+	out := make([]string, 0)
+	for _, ref := range refs {
+		path := filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(ref, prefix)))
+		if path == ref || !isSafeTaskPath(path) {
+			continue
+		}
+		out = append(out, path)
+		if len(out) >= 20 {
+			break
+		}
+	}
+	return uniqueRefs(out)
+}
+
+func classifyDirtyScopePaths(task projectworkplan.WorkTask, dirtyPaths []string) ([]string, []string) {
+	likely := safeTaskPathspecs(task.LikelyFilesAffected)
+	if len(likely) == 0 {
+		return nil, dirtyPaths
+	}
+	current := safeTaskPathspecs(task.FilesToEdit)
+	var expand []string
+	var outside []string
+	for _, path := range dirtyPaths {
+		if !isSafeTaskPath(path) {
+			outside = append(outside, "unsafe-path")
+			continue
+		}
+		if taskPathMatchesAny(path, current) {
+			continue
+		}
+		scope := firstMatchingTaskScope(path, likely)
+		if scope == "" {
+			outside = append(outside, path)
+			continue
+		}
+		expand = append(expand, scope)
+	}
+	return uniqueRefs(expand), uniqueRefs(outside)
+}
+
+func safeTaskPathspecs(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		path := filepath.ToSlash(strings.TrimSpace(value))
+		if isSafeTaskPath(path) {
+			out = append(out, strings.TrimSuffix(path, "/"))
+		}
+	}
+	return uniqueRefs(out)
+}
+
+func taskPathMatchesAny(path string, scopes []string) bool {
+	for _, scope := range scopes {
+		if taskPathMatchesScope(path, scope) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstMatchingTaskScope(path string, scopes []string) string {
+	for _, scope := range scopes {
+		if taskPathMatchesScope(path, scope) {
+			return scope
+		}
+	}
+	return ""
+}
+
+func taskPathMatchesScope(path string, scope string) bool {
+	path = strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(path)), "/")
+	scope = strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(scope)), "/")
+	return path == scope || strings.HasPrefix(path, scope+"/")
+}
+
+func isSafeTaskPath(path string) bool {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	return path != "" && len(path) <= 300 && !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "\\") && !strings.Contains(path, "..") && !strings.Contains(path, ":") && !strings.ContainsAny(path, "\x00\r\n\\")
 }
 
 func safeRequiredText(value, field string, max int) (string, error) {

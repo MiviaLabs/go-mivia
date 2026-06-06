@@ -303,6 +303,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			result := projectautomation.CompleteAttemptInput{
 				Status:          projectautomation.RunStatusFailed,
 				FailureCategory: "gitops_pre_task_failed",
+				EvidenceRefs:    gitOpsDirtyScopeEvidenceRefs(preTaskErr),
 			}
 			switch {
 			case errors.Is(preTaskErr, projectgitops.ErrDirtyWorktreeScope):
@@ -332,6 +333,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			if err != nil {
 				status = projectautomation.RunStatusFailed
 				failureCategory = projectgitops.FailureCategoryWithDetail(err)
+				evidenceRefs = append(evidenceRefs, gitOpsDirtyScopeEvidenceRefs(err)...)
 			} else {
 				evidenceRefs = append(evidenceRefs, gitResult.EvidenceRefs...)
 				for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
@@ -412,6 +414,25 @@ func gitOpsTaskPathspecs(claimed projectautomation.ClaimedRun, task runnerWorkTa
 	return append([]string(nil), claimed.CodexInput.LikelyFilesAffected...)
 }
 
+func gitOpsDirtyScopeEvidenceRefs(err error) []string {
+	paths := projectgitops.DirtyWorktreeScopePaths(err)
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		out = append(out, "gitops-dirty-path:"+path)
+		if len(out) >= 20 {
+			break
+		}
+	}
+	return out
+}
+
 func isReadOnlyReviewRun(claimed projectautomation.ClaimedRun) bool {
 	if strings.TrimSpace(claimed.Run.SafeSummary) == projectautomation.RunSafeSummaryPostImplementationReviewQueued {
 		return true
@@ -430,7 +451,7 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 	}
 	gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 	if err != nil {
-		return projectautomation.RunStatusFailed, projectgitops.FailureCategoryWithDetail(err), time.Since(started).Milliseconds(), nil
+		return projectautomation.RunStatusFailed, projectgitops.FailureCategoryWithDetail(err), time.Since(started).Milliseconds(), gitOpsDirtyScopeEvidenceRefs(err)
 	}
 	evidenceRefs := append([]string(nil), gitResult.EvidenceRefs...)
 	for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
