@@ -78,6 +78,98 @@ func TestCallToolAcceptsProjectIDAlias(t *testing.T) {
 	}
 }
 
+func TestCallToolReturnsMCPTextContentAndStructuredContent(t *testing.T) {
+	api := &captureAutomationAPI{value: []map[string]string{{"id": "automation_1"}}}
+	result, err := CallTool(context.Background(), api, "projects.automations.list", json.RawMessage(`{"id":"example-service"}`))
+	if err != nil {
+		t.Fatalf("CallTool returned error: %v", err)
+	}
+
+	content, ok := result["content"].([]map[string]string)
+	if !ok {
+		t.Fatalf("content should use text content shape, got %T: %#v", result["content"], result["content"])
+	}
+	if len(content) != 1 || content[0]["type"] != "text" {
+		t.Fatalf("unexpected content shape: %#v", content)
+	}
+	if strings.Contains(content[0]["text"], `"type":"json"`) {
+		t.Fatalf("content text should be encoded value only, got wrapper text: %s", content[0]["text"])
+	}
+	structured, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent should be an object envelope, got %T: %#v", result["structuredContent"], result["structuredContent"])
+	}
+	if _, ok := structured["automations"]; !ok {
+		t.Fatalf("structuredContent missing automations envelope: %#v", structured)
+	}
+	var text map[string][]map[string]string
+	if err := json.Unmarshal([]byte(content[0]["text"]), &text); err != nil {
+		t.Fatalf("content text should be JSON object envelope: %v", err)
+	}
+	if len(text["automations"]) != 1 || text["automations"][0]["id"] != "automation_1" {
+		t.Fatalf("content text missing automation list envelope: %#v", text)
+	}
+	if result["isError"] != false {
+		t.Fatalf("expected non-error tool result, got %#v", result["isError"])
+	}
+}
+
+func TestCallToolCreateUsesMCPTextContentShape(t *testing.T) {
+	api := &captureAutomationAPI{value: map[string]string{"id": "automation_1"}}
+	result, err := CallTool(context.Background(), api, "projects.automations.create", json.RawMessage(`{
+		"id":"example-service",
+		"automation_ref":"automation/ref",
+		"title":"Create automation"
+	}`))
+	if err != nil {
+		t.Fatalf("CallTool returned error: %v", err)
+	}
+	content, ok := result["content"].([]map[string]string)
+	if !ok {
+		t.Fatalf("content should use text content shape, got %T: %#v", result["content"], result["content"])
+	}
+	if len(content) != 1 || content[0]["type"] != "text" {
+		t.Fatalf("unexpected content shape: %#v", content)
+	}
+	structured, ok := result["structuredContent"].(map[string]string)
+	if !ok {
+		t.Fatalf("structuredContent should preserve create object, got %T: %#v", result["structuredContent"], result["structuredContent"])
+	}
+	if structured["id"] != "automation_1" {
+		t.Fatalf("unexpected create structuredContent: %#v", structured)
+	}
+	var text map[string]string
+	if err := json.Unmarshal([]byte(content[0]["text"]), &text); err != nil {
+		t.Fatalf("content text should be JSON object: %v", err)
+	}
+	if text["id"] != "automation_1" {
+		t.Fatalf("unexpected create content text: %#v", text)
+	}
+}
+
+func TestCallToolRunListReturnsObjectEnvelope(t *testing.T) {
+	api := &captureAutomationAPI{value: []map[string]string{{"id": "run_1"}}}
+	result, err := CallTool(context.Background(), api, "projects.automation_runs.list", json.RawMessage(`{"id":"example-service"}`))
+	if err != nil {
+		t.Fatalf("CallTool returned error: %v", err)
+	}
+	structured, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent should be an object envelope, got %T: %#v", result["structuredContent"], result["structuredContent"])
+	}
+	if _, ok := structured["automation_runs"]; !ok {
+		t.Fatalf("structuredContent missing automation_runs envelope: %#v", structured)
+	}
+	content := result["content"].([]map[string]string)
+	var text map[string][]map[string]string
+	if err := json.Unmarshal([]byte(content[0]["text"]), &text); err != nil {
+		t.Fatalf("content text should be JSON object envelope: %v", err)
+	}
+	if len(text["automation_runs"]) != 1 || text["automation_runs"][0]["id"] != "run_1" {
+		t.Fatalf("content text missing run list envelope: %#v", text)
+	}
+}
+
 func TestToolDefinitionsExposeProjectIDWithoutTopLevelCombinators(t *testing.T) {
 	for _, definition := range ToolDefinitions() {
 		schema, ok := definition["inputSchema"].(map[string]any)
@@ -153,10 +245,14 @@ func TestCreateAutomationSchemaExposesCompatibilityAliases(t *testing.T) {
 type captureAutomationAPI struct {
 	name      string
 	arguments json.RawMessage
+	value     any
 }
 
 func (api *captureAutomationAPI) CallAutomationTool(_ context.Context, name string, arguments json.RawMessage) (any, error) {
 	api.name = name
 	api.arguments = append(json.RawMessage(nil), arguments...)
+	if api.value != nil {
+		return api.value, nil
+	}
 	return map[string]string{"ok": "true"}, nil
 }

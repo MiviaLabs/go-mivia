@@ -167,6 +167,9 @@ ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
 github_token_env = "GITHUB_TOKEN"
 github_cli_path = "gh"
 
+[git_operations.dirty_scope_recovery]
+allowed_support_pathspecs = [".codex", ".claude", ".github", ".ai/skills", ".ai/rules"]
+
 [git_operations.conventions]
 commit_type = "feat"
 commit_scope = "gitops"
@@ -197,6 +200,9 @@ tests_template = "{{test_results}}"
 	}
 	if merged.GitOperations.Conventions.CommitType != "feat" || merged.GitOperations.Conventions.CommitScope != "gitops" || !strings.Contains(merged.GitOperations.Conventions.WhatChangedTemplate, "{{work_task_title}}") {
 		t.Fatalf("unexpected git operations conventions: %+v", merged.GitOperations.Conventions)
+	}
+	if strings.Join(merged.GitOperations.DirtyScopeRecovery.AllowedSupportPathspecs, ",") != ".codex,.claude,.github,.ai/skills,.ai/rules" {
+		t.Fatalf("unexpected dirty scope recovery config: %+v", merged.GitOperations.DirtyScopeRecovery)
 	}
 
 	t.Setenv("MIVIA_GIT_OPS_REMOTE_NAME", "origin")
@@ -245,6 +251,9 @@ workspace_mode = "edit"
 branch_prefix = ""
 branch_name_pattern = "^(feat|fix|docs)-ABC-[0-9]+(-[a-z0-9-]+)*$"
 
+[projects.git_operations.dirty_scope_recovery]
+allowed_support_pathspecs = [".codex", ".github"]
+
 [projects.git_operations.conventions]
 commit_type = "docs"
 commit_summary_template = "complete {{work_task_ref}}"
@@ -278,6 +287,36 @@ tests_template = "{{test_results}}"
 	}
 	if projectGitOps.Conventions.CommitType != "docs" || !strings.Contains(projectGitOps.Conventions.WhatChangedTemplate, "Summary") {
 		t.Fatalf("expected project convention override, got %+v", projectGitOps.Conventions)
+	}
+	if strings.Join(projectGitOps.DirtyScopeRecovery.AllowedSupportPathspecs, ",") != ".codex,.github" {
+		t.Fatalf("expected project dirty scope support path override, got %+v", projectGitOps.DirtyScopeRecovery)
+	}
+}
+
+func TestGitOperationsRejectsUnsafeDirtyScopeRecoverySupportPathspecs(t *testing.T) {
+	for _, candidate := range []string{".git", ".git/hooks", ".mivia-worktrees", ".mivia-worktrees/project", ".ai/tasks", ".ai/tasks/active/local.md", "../outside", "/absolute"} {
+		path := writeTempConfig(t, `
+version = 1
+
+[git_operations]
+enabled = false
+
+[git_operations.dirty_scope_recovery]
+allowed_support_pathspecs = ["`+candidate+`"]
+`)
+
+		cfg, err := loadFileConfig(path)
+		if err != nil {
+			t.Fatalf("expected TOML with %q to parse before validation: %v", candidate, err)
+		}
+		merged, err := cfg.applyTo(defaultConfig(path))
+		if err != nil {
+			t.Fatalf("expected TOML with %q to apply before validation: %v", candidate, err)
+		}
+		merged.resolveAutoSettings(1)
+		if err := merged.Validate(); err == nil {
+			t.Fatalf("expected unsafe dirty scope support path %q to fail validation", candidate)
+		}
 	}
 }
 

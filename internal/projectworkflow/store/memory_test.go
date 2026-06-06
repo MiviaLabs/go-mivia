@@ -158,6 +158,8 @@ func TestMemoryStoreReturnedSlicesAreCopies(t *testing.T) {
 	}
 	workflow.Agents[0].AllowedSkills[0] = "mutated-caller"
 	workflow.Steps[0].EvidenceNeeded[0] = "mutated-caller"
+	workflow.Steps[0].FilesToRead[0] = "mutated-caller"
+	workflow.Steps[0].FilesToEdit[0] = "mutated-caller"
 	workflow.ReviewGates[0].AppliesTo[0] = "mutated-caller"
 	workflow.PermissionSnapshots[0].AllowedTools[0] = "mutated-caller"
 
@@ -165,18 +167,20 @@ func TestMemoryStoreReturnedSlicesAreCopies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get workflow: %v", err)
 	}
-	if got.Agents[0].AllowedSkills[0] == "mutated-caller" || got.Steps[0].EvidenceNeeded[0] == "mutated-caller" || got.ReviewGates[0].AppliesTo[0] == "mutated-caller" || got.PermissionSnapshots[0].AllowedTools[0] == "mutated-caller" {
+	if got.Agents[0].AllowedSkills[0] == "mutated-caller" || got.Steps[0].EvidenceNeeded[0] == "mutated-caller" || got.Steps[0].FilesToRead[0] == "mutated-caller" || got.Steps[0].FilesToEdit[0] == "mutated-caller" || got.ReviewGates[0].AppliesTo[0] == "mutated-caller" || got.PermissionSnapshots[0].AllowedTools[0] == "mutated-caller" {
 		t.Fatalf("store kept caller-owned workflow slices: %#v", got)
 	}
 	got.Agents[0].AllowedSkills[0] = "mutated-read"
 	got.Steps[0].EvidenceNeeded[0] = "mutated-read"
+	got.Steps[0].FilesToRead[0] = "mutated-read"
+	got.Steps[0].FilesToEdit[0] = "mutated-read"
 	got.ReviewGates[0].AppliesTo[0] = "mutated-read"
 	got.PermissionSnapshots[0].AllowedTools[0] = "mutated-read"
 	again, err := mem.GetWorkflow(ctx, "project-1", created.ID)
 	if err != nil {
 		t.Fatalf("get workflow again: %v", err)
 	}
-	if again.Agents[0].AllowedSkills[0] == "mutated-read" || again.Steps[0].EvidenceNeeded[0] == "mutated-read" || again.ReviewGates[0].AppliesTo[0] == "mutated-read" || again.PermissionSnapshots[0].AllowedTools[0] == "mutated-read" {
+	if again.Agents[0].AllowedSkills[0] == "mutated-read" || again.Steps[0].EvidenceNeeded[0] == "mutated-read" || again.Steps[0].FilesToRead[0] == "mutated-read" || again.Steps[0].FilesToEdit[0] == "mutated-read" || again.ReviewGates[0].AppliesTo[0] == "mutated-read" || again.PermissionSnapshots[0].AllowedTools[0] == "mutated-read" {
 		t.Fatalf("store returned internal workflow slices: %#v", again)
 	}
 
@@ -237,6 +241,8 @@ func testWorkflow(projectID, id, ref string) projectworkflow.WorkflowDefinition 
 			DependsOn:               []string{"step-0"},
 			EvidenceNeeded:          []string{"source"},
 			ContextPackRefs:         []string{"context-1"},
+			FilesToRead:             []string{"internal/projectworkflow/model.go"},
+			FilesToEdit:             []string{"internal/projectworkflow/store/memory.go"},
 			LikelyFilesAffected:     []string{"internal/projectworkflow/store/memory.go"},
 			VerificationRequirement: "go test ./internal/projectworkflow/...",
 		}},

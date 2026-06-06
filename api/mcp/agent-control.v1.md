@@ -57,7 +57,7 @@ Rules:
 4. `projects.workflows.compile_to_work_plan` is the only workflow-to-execution bridge. It requires an enabled workflow and returns Work Plan, Work Task, reviewer task, automation, and permission snapshot refs plus validation issues. `dry_run=true` returns refs/issues only.
 5. Required review gates compile into reviewer Work Tasks. When `independent_from_owner=true`, the reviewer agent must differ from the implementation or automation agent.
 6. Automation steps must depend on at least one Work Task step and have a required review gate. They cannot bypass Work Plan/Work Task governance, independent review refs, verifier refs, Evidence Graph outcomes, confidence scoring, or Knowledge Promotion gates.
-7. Permission snapshots expose immutable metadata for allowed skills/tools/commands, denied commands, workspace mode, network policy, secret policy, log policy, runtime, retry policy, content hash, and run/trace refs. They are not OS sandbox proof and are not approval to execute outside workflow gates.
+7. Permission snapshots expose immutable metadata for bounded agent instructions, allowed skills/tools/commands, denied commands, workspace mode, network policy, secret policy, log policy, runtime, retry policy, content hash, and run/trace refs. They are not OS sandbox proof and are not approval to execute outside workflow gates.
 8. Knowledge promotion order is Evidence Graph refs/outcomes, verifier refs, independent review refs, confidence score when reusable, Knowledge Promotion candidate, validation, project promotion, and optional org review/promotion. No knowledge auto-promotes from TOML, automation, or confidence score alone.
 
 Project-scoped REST routes:
@@ -75,7 +75,7 @@ GET /api/v1/projects/{id}/permission-snapshots
 GET /api/v1/projects/{id}/permission-snapshots/{snapshot_id}
 ```
 
-Workflow records, agent definitions, review gates, compile results, and permission snapshots are metadata-only. Raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, and PII are prohibited.
+Workflow records, agent definitions, review gates, compile results, and permission snapshots are metadata-only. Agent instructions are bounded operational metadata and must not store raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
 
 ### Work Plan And Work Task Contract
 

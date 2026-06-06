@@ -62,12 +62,21 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if impl.OwnerAgent != "worker" || impl.VerificationRequirement == "" || impl.ExpectedOutput == "" || impl.FailureCriteria == "" || impl.ResumeInstructions == "" {
 		t.Fatalf("implementation task is not isolated-worker-ready: %#v", impl)
 	}
+	if !strings.Contains(impl.Description, "Agent instructions: Implement exactly one scoped task.") {
+		t.Fatalf("implementation task missing owner agent instructions: %#v", impl)
+	}
+	if !containsString(impl.FilesToRead, "internal/projectworkflow/compiler.go") || !containsString(impl.FilesToEdit, "internal/projectworkflow/compiler.go") || impl.ReviewGate == "" {
+		t.Fatalf("implementation task missing first-class task packet fields: %#v", impl)
+	}
 	if !containsString(impl.EvidenceNeeded, "review gate review-implement") {
 		t.Fatalf("implementation task missing review requirement: %#v", impl.EvidenceNeeded)
 	}
-	reviewer := taskByRef(t, tasks, "implement-step-review-review-implement")
+	reviewer := taskByRef(t, tasks, "review-implement-step-review-implement")
 	if reviewer.OwnerAgent != "reviewer" {
 		t.Fatalf("unexpected reviewer task owner: %#v", reviewer)
+	}
+	if !strings.Contains(reviewer.Description, "Agent instructions: Review independently before approval.") || !strings.Contains(reviewer.Description, "Gate instructions: Review changed files") {
+		t.Fatalf("reviewer task missing reviewer agent or gate instructions: %#v", reviewer)
 	}
 	if len(reviewer.DependencyTaskIDs) != 1 || reviewer.DependencyTaskIDs[0] != impl.ID {
 		t.Fatalf("reviewer task must depend on implementation task: %#v", reviewer)
@@ -75,9 +84,15 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if reviewer.VerificationRequirement != "attach review_result_ref" || !containsString(reviewer.EvidenceNeeded, "reviewed task id") {
 		t.Fatalf("reviewer task missing required review metadata: %#v", reviewer)
 	}
-	automationReviewer := taskByRef(t, tasks, "automation-step-review-review-automation")
+	if !containsString(reviewer.FilesToRead, "internal/projectworkflow/compiler.go") || reviewer.ReviewGate == "" {
+		t.Fatalf("reviewer task missing reviewed file packet fields: %#v", reviewer)
+	}
+	automationReviewer := taskByRef(t, tasks, "review-automation-step-review-automation")
 	if automationReviewer.OwnerAgent != "reviewer" {
 		t.Fatalf("unexpected automation reviewer owner: %#v", automationReviewer)
+	}
+	if !strings.Contains(automationReviewer.Description, "Agent instructions: Review independently before approval.") || !strings.Contains(automationReviewer.Description, "Gate instructions: Review automation refs") {
+		t.Fatalf("automation reviewer task missing reviewer agent or gate instructions: %#v", automationReviewer)
 	}
 	if len(automationReviewer.DependencyTaskIDs) != 1 || automationReviewer.DependencyTaskIDs[0] != impl.ID {
 		t.Fatalf("automation reviewer task must depend on implementation task: %#v", automationReviewer)
@@ -202,6 +217,25 @@ func TestCompileWorkflowAllowsRepeatedRuns(t *testing.T) {
 	}
 }
 
+func TestCompileWorkflowRejectsStalePermissionSnapshot(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, _, _ := newCompileFixture()
+	workflow := baseCompileWorkflow()
+	workflowStore.seedWorkflow(workflow)
+	staleSnapshotID := permissionSnapshotID(workflow.ID, "worker")
+	workflowStore.snapshots[workflow.ProjectID+"\x00"+staleSnapshotID] = WorkflowPermissionSnapshot{
+		ID:          staleSnapshotID,
+		ProjectID:   workflow.ProjectID,
+		WorkflowID:  workflow.ID,
+		AgentID:     "worker",
+		ContentHash: "sha256-stale",
+	}
+
+	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1"}); err == nil || !strings.Contains(err.Error(), "does not match agent definition") {
+		t.Fatalf("expected stale permission snapshot rejection, got %v", err)
+	}
+}
+
 func TestCompileWorkflowMissingAutomationReviewGateFails(t *testing.T) {
 	ctx := context.Background()
 	svc, workflowStore, _, _ := newCompileFixture()
@@ -278,9 +312,9 @@ func baseCompileWorkflow() WorkflowDefinition {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		Agents: []WorkflowAgentDefinition{
-			{ID: "worker", Purpose: "Implement bounded task metadata.", SecretPolicy: "deny", LogPolicy: "metadata_only", CreatedAt: now, UpdatedAt: now},
-			{ID: "reviewer", Purpose: "Review implementation task evidence.", SecretPolicy: "deny", LogPolicy: "metadata_only", CreatedAt: now, UpdatedAt: now},
-			{ID: "automation", Purpose: "Run governed automation metadata.", SecretPolicy: "deny", LogPolicy: "metadata_only", CreatedAt: now, UpdatedAt: now},
+			{ID: "worker", Purpose: "Implement bounded task metadata.", Instructions: "Implement exactly one scoped task.", SecretPolicy: "deny", LogPolicy: "metadata_only", CreatedAt: now, UpdatedAt: now},
+			{ID: "reviewer", Purpose: "Review implementation task evidence.", Instructions: "Review independently before approval.", SecretPolicy: "deny", LogPolicy: "metadata_only", CreatedAt: now, UpdatedAt: now},
+			{ID: "automation", Purpose: "Run governed automation metadata.", Instructions: "Queue only reviewed ready task refs.", SecretPolicy: "deny", LogPolicy: "metadata_only", CreatedAt: now, UpdatedAt: now},
 		},
 		Steps: []WorkflowStep{
 			{
@@ -291,10 +325,13 @@ func baseCompileWorkflow() WorkflowDefinition {
 				Description:             "Implement bounded workflow compiler behavior.",
 				EvidenceNeeded:          []string{"source-anchors-read"},
 				ContextPackRefs:         []string{"context-pack:workflow-compiler"},
+				FilesToRead:             []string{"internal/projectworkflow/compiler.go"},
+				FilesToEdit:             []string{"internal/projectworkflow/compiler.go"},
 				LikelyFilesAffected:     []string{"internal/projectworkflow/compiler.go"},
 				VerificationRequirement: "orchestrator runs focused compiler tests",
 				ExpectedOutput:          "compiler creates governed metadata",
 				FailureCriteria:         "block if compiler persists unsafe metadata",
+				ReviewGate:              "review-implement approval required before done",
 				ResumeInstructions:      "resume from compiler task metadata only",
 			},
 			{
@@ -391,6 +428,8 @@ func cloneCompileWorkflow(workflow WorkflowDefinition) WorkflowDefinition {
 		workflow.Steps[i].DependsOn = append([]string(nil), workflow.Steps[i].DependsOn...)
 		workflow.Steps[i].EvidenceNeeded = append([]string(nil), workflow.Steps[i].EvidenceNeeded...)
 		workflow.Steps[i].ContextPackRefs = append([]string(nil), workflow.Steps[i].ContextPackRefs...)
+		workflow.Steps[i].FilesToRead = append([]string(nil), workflow.Steps[i].FilesToRead...)
+		workflow.Steps[i].FilesToEdit = append([]string(nil), workflow.Steps[i].FilesToEdit...)
 		workflow.Steps[i].LikelyFilesAffected = append([]string(nil), workflow.Steps[i].LikelyFilesAffected...)
 	}
 	workflow.ReviewGates = append([]WorkflowReviewGate(nil), workflow.ReviewGates...)

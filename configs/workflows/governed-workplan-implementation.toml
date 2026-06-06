@@ -9,6 +9,7 @@ status = "enabled"
 id = "implementation-worker"
 display_name = "Implementation Worker"
 purpose = "Implements one ready Work Task from metadata and attached refs only."
+instructions = "Claim exactly one ready task, edit only declared scope, attach bounded evidence, and run only task-scoped checks explicitly allowed by the task."
 allowed_skills = ["mivia-mcp", "write-tests"]
 allowed_tools = [
   "projects.context_pack.build",
@@ -32,6 +33,7 @@ max_retries = 1
 id = "implementation-reviewer"
 display_name = "Implementation Reviewer"
 purpose = "Independently reviews changed files, evidence, verifier refs, and task outcome before completion."
+instructions = "Review changed files and evidence independently. Reject self-review, missing verifier refs, scope drift, unsafe metadata, or untested feasible behavior changes."
 allowed_skills = ["mivia-mcp", "mivialabs-code-review"]
 allowed_tools = [
   "projects.workspace.git_status",
@@ -52,6 +54,7 @@ max_retries = 0
 id = "implementation-orchestrator"
 display_name = "Implementation Orchestrator"
 purpose = "Owns task dispatch, focused verification, final broad tests, and completion gates."
+instructions = "Dispatch only reviewed ready tasks, run focused verifiers before broader tests, and complete tasks only after verifier and independent review refs exist."
 allowed_skills = ["mivia-mcp", "write-tests"]
 allowed_tools = [
   "projects.work_tasks.get_next",
@@ -76,10 +79,13 @@ title = "Select Ready Tasks"
 agent = "implementation-orchestrator"
 description = "Select reviewed ready Work Tasks with done dependencies and disjoint likely affected files for the next implementation batch."
 evidence_needed = ["ready-task-list-ref", "dependency-status-ref", "review-result-ref"]
+files_to_read = ["configs/workflows/governed-workplan-implementation.toml"]
+files_to_edit = []
 likely_files_affected = []
 verification_requirement = "orchestrator confirms dependencies and file overlap before dispatch"
 expected_output = "safe implementation batch refs or blocked reason"
 failure_criteria = "block if tasks are not ready, overlap unsafely, or lack review refs"
+review_gate = "implementation-independent-review required before dispatch"
 resume_instructions = "resume by calling get_next and checking dependency and review refs"
 
 [[steps]]
@@ -90,10 +96,13 @@ agent = "implementation-worker"
 depends_on = ["select-ready-tasks"]
 description = "Run bounded implementation workers only for selected ready tasks using permission snapshots and task metadata."
 evidence_needed = ["automation-run-ref", "permission-snapshot-ref", "changed-files-ref", "worker-evidence-ref"]
+files_to_read = []
+files_to_edit = []
 likely_files_affected = ["internal", "cmd", "configs", "docs", ".ai"]
 verification_requirement = "workers may run only task-scoped checks; orchestrator runs focused and full tests"
 expected_output = "changed files, evidence refs, risks, and tests not run for each task"
 failure_criteria = "block if worker uses hidden context, runs full suite, edits out of scope, or lacks evidence"
+review_gate = "implementation-independent-review required before task completion"
 resume_instructions = "resume from automation run refs, changed files, evidence refs, and task statuses"
 max_parallel_tasks = 2
 
@@ -105,6 +114,8 @@ agent = "implementation-reviewer"
 depends_on = ["run-implementation-batch"]
 description = "Review each worker result independently before any task can be marked done."
 evidence_needed = ["changed-files-ref", "worker-evidence-ref", "verifier-ref", "review-result-ref"]
+files_to_read = []
+files_to_edit = []
 likely_files_affected = ["internal", "cmd", "configs", "docs", ".ai"]
 verification_requirement = "attach review_result_ref for every implementation task"
 expected_output = "approved, rejected, needs_changes, or blocked review decisions"
@@ -119,15 +130,18 @@ agent = "implementation-orchestrator"
 depends_on = ["review-implementation-batch"]
 description = "Run focused tests first, then broader tests when focused checks pass, and attach verifier refs before completion."
 evidence_needed = ["focused-test-ref", "full-test-ref", "diff-check-ref", "review-result-ref"]
+files_to_read = ["configs/workflows/governed-workplan-implementation.toml"]
+files_to_edit = []
 likely_files_affected = []
 verification_requirement = "run focused tests, then go test ./... if focused tests pass, then git diff --check"
 expected_output = "verifier refs attached to reviewed tasks"
 failure_criteria = "block if focused tests fail, review is missing, or diff check fails"
+review_gate = "implementation-independent-review required before verifier refs complete the task"
 resume_instructions = "resume by rerunning failed narrow verifier and checking attached review refs"
 
 [[review_gates]]
 id = "implementation-independent-review"
-applies_to = ["run-implementation-batch", "orchestrator-verification"]
+applies_to = ["select-ready-tasks", "run-implementation-batch", "orchestrator-verification"]
 reviewer_agent = "implementation-reviewer"
 required = true
 independent_from_owner = true

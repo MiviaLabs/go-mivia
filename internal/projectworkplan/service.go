@@ -564,6 +564,50 @@ func (svc *Service) UpdateWorkTaskStatus(ctx context.Context, input UpdateWorkTa
 	return svc.transitionTask(ctx, input.WorkTaskActionInput, next)
 }
 
+func (svc *Service) ExpandWorkTaskScope(ctx context.Context, input ExpandWorkTaskScopeInput) (WorkTask, error) {
+	projectID, taskID, err := safeProjectObject(input.ProjectID, input.TaskID, "task_id")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	filesToEdit, err := safePathList(input.FilesToEdit, "files_to_edit")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	if len(filesToEdit) == 0 {
+		return WorkTask{}, fmt.Errorf("%w: files_to_edit is required", ErrInvalidInput)
+	}
+	resume, err := safeResumeInstructions(input.ResumeInstructions, "resume_instructions")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	runID, err := safeOptionalRef(input.RunID, "run_id")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	traceID, err := safeOptionalRef(input.TraceID, "trace_id")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	task, err := svc.store.GetWorkTask(ctx, projectID, taskID)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	for _, path := range filesToEdit {
+		task.FilesToEdit = appendUnique(task.FilesToEdit, path)
+	}
+	if resume != "" {
+		task.ResumeInstructions = resume
+	}
+	if runID != "" {
+		task.AgentRunIDs = appendUnique(task.AgentRunIDs, runID)
+	}
+	if traceID != "" {
+		task.TraceID = traceID
+	}
+	task.UpdatedAt = svc.now()
+	return svc.store.UpdateWorkTask(ctx, task)
+}
+
 func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInput, next string) (WorkTask, error) {
 	projectID, taskID, err := safeProjectObject(input.ProjectID, input.TaskID, "task_id")
 	if err != nil {

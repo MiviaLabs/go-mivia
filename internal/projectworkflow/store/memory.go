@@ -168,6 +168,8 @@ func cloneSteps(steps []projectworkflow.WorkflowStep) []projectworkflow.Workflow
 		out[i].DependsOn = append([]string(nil), out[i].DependsOn...)
 		out[i].EvidenceNeeded = append([]string(nil), out[i].EvidenceNeeded...)
 		out[i].ContextPackRefs = append([]string(nil), out[i].ContextPackRefs...)
+		out[i].FilesToRead = append([]string(nil), out[i].FilesToRead...)
+		out[i].FilesToEdit = append([]string(nil), out[i].FilesToEdit...)
 		out[i].LikelyFilesAffected = append([]string(nil), out[i].LikelyFilesAffected...)
 	}
 	return out

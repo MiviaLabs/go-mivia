@@ -9,6 +9,7 @@ status = "enabled"
 id = "code-review-scanner"
 display_name = "Code Review Scanner"
 purpose = "Inspects bounded changed files, source anchors, tests, and docs to propose candidate defects with evidence refs only."
+instructions = "Report only concrete candidate bugs with source anchors, impact, falsification notes, and bounded evidence refs. Do not report style-only or speculative risks."
 allowed_skills = ["mivia-mcp", "mivialabs-code-review"]
 allowed_tools = [
   "projects.get",
@@ -35,6 +36,7 @@ max_retries = 1
 id = "bug-finding-reviewer"
 display_name = "Bug Finding Reviewer"
 purpose = "Independently validates or rejects candidate findings using source anchors and safe evidence refs."
+instructions = "Independently falsify each candidate against current source. Approve only confirmed behavioral bugs with bounded evidence and reject duplicates or weak claims."
 allowed_skills = ["mivia-mcp", "mivialabs-code-review"]
 allowed_tools = [
   "projects.workspace.file_read",
@@ -55,6 +57,7 @@ max_retries = 0
 id = "bug-plan-orchestrator"
 display_name = "Bug Plan Orchestrator"
 purpose = "Deduplicates confirmed bugs and creates one governed bug-fix Work Plan with isolated tasks for each confirmed finding."
+instructions = "Create bug-fix Work Plans only for independently confirmed findings. Include regression-test expectations when feasible and keep implementation automation manual unless explicitly approved."
 allowed_skills = ["mivia-mcp", "plan-task"]
 allowed_tools = [
   "projects.work_plans.create",
@@ -81,10 +84,19 @@ title = "Collect Review Scope"
 agent = "code-review-scanner"
 description = "Collect bounded review scope for a manual code review run, including git status/diff refs, changed-file refs, context health, relevant source anchors, and test/doc context."
 evidence_needed = ["review-request-ref", "git-status-ref", "git-diff-ref", "context-health-ref", "changed-file-refs"]
+files_to_read = [
+  ".ai/INDEX.md",
+  ".ai/rules/00-operating-doctrine.md",
+  ".ai/rules/10-security-privacy.md",
+  ".ai/skills/mivia-mcp/SKILL.md",
+  "configs/workflows/governed-code-review-bug-planning.toml"
+]
+files_to_edit = []
 likely_files_affected = []
 verification_requirement = "orchestrator confirms review scope refs exist and only bounded metadata refs are stored"
 expected_output = "bounded review scope refs and source-anchor refs"
 failure_criteria = "block if review scope is missing, too broad, stale, or would require storing unbounded review material"
+review_gate = "scanner-output-review required before scope task is done"
 resume_instructions = "resume by reading review-request-ref, git-status-ref, git-diff-ref, context-health-ref, and changed-file refs"
 
 [[steps]]
@@ -95,10 +107,19 @@ agent = "code-review-scanner"
 depends_on = ["collect-review-scope"]
 description = "Review bounded changed files for concrete behavioral defects only. Candidate findings must include evidence refs, file/symbol anchors, impact summary, repro or reasoning, and falsification notes."
 evidence_needed = ["review-scope-ref", "source-anchor-refs", "candidate-finding-refs", "falsification-notes-ref"]
+files_to_read = [
+  ".ai/INDEX.md",
+  ".ai/rules/00-operating-doctrine.md",
+  ".ai/rules/10-security-privacy.md",
+  ".ai/skills/mivia-mcp/SKILL.md",
+  "configs/workflows/governed-code-review-bug-planning.toml"
+]
+files_to_edit = []
 likely_files_affected = []
 verification_requirement = "orchestrator confirms every candidate has source anchors, impact, and falsification notes"
 expected_output = "candidate finding refs or no-confirmed-candidate note"
 failure_criteria = "block or reject speculative style issues, weak risks, missing anchors, or findings without falsification"
+review_gate = "scanner-output-review required before candidate scan is done"
 resume_instructions = "resume by reading candidate finding refs, source anchors, and falsification notes"
 max_parallel_tasks = 1
 
@@ -110,6 +131,8 @@ agent = "code-review-scanner"
 depends_on = ["collect-review-scope"]
 description = "Automatically run the bounded review-scope collection task when it is ready."
 evidence_needed = ["automation-ref", "permission-snapshot-ref", "review-request-ref"]
+files_to_read = ["configs/workflows/governed-code-review-bug-planning.toml"]
+files_to_edit = []
 verification_requirement = "executor may queue only the collect-review-scope task when it is ready"
 expected_output = "queued automatic review-scope run"
 failure_criteria = "block if review scope task is not ready or lacks permission snapshot metadata"
@@ -126,6 +149,8 @@ agent = "code-review-scanner"
 depends_on = ["scan-for-candidate-bugs"]
 description = "Automatically run the candidate bug scan after review-scope collection is complete."
 evidence_needed = ["automation-ref", "permission-snapshot-ref", "review-scope-ref"]
+files_to_read = ["configs/workflows/governed-code-review-bug-planning.toml"]
+files_to_edit = []
 verification_requirement = "executor may queue only the scan-for-candidate-bugs task when dependencies are complete"
 expected_output = "queued automatic candidate scan run"
 failure_criteria = "block if scan task is not ready, dependencies are incomplete, or scope refs are missing"
@@ -142,6 +167,8 @@ agent = "bug-finding-reviewer"
 depends_on = ["scan-for-candidate-bugs"]
 description = "Independently review each candidate defect. Confirm only bugs that survive direct source falsification and have bounded evidence refs."
 evidence_needed = ["candidate-finding-refs", "source-anchor-refs", "review-result-ref", "rejected-finding-refs"]
+files_to_read = ["configs/workflows/governed-code-review-bug-planning.toml"]
+files_to_edit = []
 likely_files_affected = []
 verification_requirement = "attach review_result_ref with approved, rejected, needs_changes, or blocked status for each candidate"
 expected_output = "confirmed-bug refs and rejected-finding refs"
@@ -156,6 +183,8 @@ agent = "bug-finding-reviewer"
 depends_on = ["review-candidate-bugs"]
 description = "Automatically run independent candidate finding review after candidate scan completes."
 evidence_needed = ["automation-ref", "permission-snapshot-ref", "candidate-finding-refs"]
+files_to_read = ["configs/workflows/governed-code-review-bug-planning.toml"]
+files_to_edit = []
 verification_requirement = "executor may queue only the review-candidate-bugs task when dependencies are complete"
 expected_output = "queued automatic candidate review run"
 failure_criteria = "block on self-review, missing candidate refs, or incomplete dependencies"
@@ -172,6 +201,13 @@ agent = "bug-plan-orchestrator"
 depends_on = ["review-candidate-bugs"]
 description = "Create one governed Work Plan per confirmed bug and decompose it into isolated bug-fix Work Tasks: reproduce or anchor evidence, implement fix, add a focused regression test when feasible, independent review, and orchestrator verification."
 evidence_needed = ["confirmed-bug-refs", "dedupe-key-refs", "review-result-ref", "bug-work-plan-refs"]
+files_to_read = [
+  ".ai/INDEX.md",
+  ".ai/skills/mivia-mcp/SKILL.md",
+  "configs/workflows/governed-code-review-bug-planning.toml",
+  "configs/workflows/governed-decomposition-planning.toml"
+]
+files_to_edit = []
 likely_files_affected = []
 verification_requirement = "orchestrator confirms every created bug Work Plan has isolated tasks, focused regression-test expectations where feasible, verifier requirements, review gates, dependencies, and resume instructions"
 expected_output = "bug Work Plan refs with ready or planned Work Task refs, including regression-test scope or a concrete not-feasible reason"
@@ -186,6 +222,8 @@ agent = "bug-plan-orchestrator"
 depends_on = ["create-confirmed-bug-work-plans"]
 description = "Automatically create governed bug Work Plans after candidate bugs have independent confirmation."
 evidence_needed = ["automation-ref", "permission-snapshot-ref", "confirmed-bug-refs", "review-result-ref"]
+files_to_read = ["configs/workflows/governed-code-review-bug-planning.toml"]
+files_to_edit = []
 verification_requirement = "executor may queue only the create-confirmed-bug-work-plans task when confirmed bug review refs exist"
 expected_output = "queued automatic bug Work Plan creation run"
 failure_criteria = "block if no independently confirmed bug refs exist or dependencies are incomplete"
@@ -202,11 +240,23 @@ agent = "bug-plan-orchestrator"
 depends_on = ["create-confirmed-bug-work-plans"]
 description = "Optionally create automation metadata for confirmed bug Work Plans only. Manual mode leaves implementation unqueued unless the orchestrator explicitly runs automation."
 evidence_needed = ["bug-work-plan-refs", "permission-snapshot-ref", "automation-ref", "human-approval-or-manual-run-ref"]
+files_to_read = ["configs/workflows/governed-code-review-bug-planning.toml"]
+files_to_edit = []
 likely_files_affected = []
 verification_requirement = "orchestrator confirms automation is metadata-only and targets existing ready Work Tasks only"
 expected_output = "automation ref or explicit manual-not-queued note"
 failure_criteria = "block if automation would run without confirmed findings, ready tasks, independent review refs, or explicit manual run decision"
 resume_instructions = "resume from bug Work Plan refs, automation ref, and manual run decision"
+
+[[review_gates]]
+id = "scanner-output-review"
+applies_to = ["collect-review-scope", "scan-for-candidate-bugs"]
+reviewer_agent = "bug-finding-reviewer"
+required = true
+independent_from_owner = true
+required_artifacts = ["review-scope-ref", "source-anchor-refs", "falsification-notes-ref"]
+allowed_actions = ["approved", "rejected", "needs_changes", "blocked"]
+instructions = "Approve scanner output only if scope is bounded, source anchors exist, and candidate notes include falsification evidence."
 
 [[review_gates]]
 id = "scanner-automation-review"

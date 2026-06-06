@@ -61,6 +61,10 @@ type workTaskStatusUpdater interface {
 	UpdateWorkTaskStatus(context.Context, projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error)
 }
 
+type workTaskScopeExpander interface {
+	ExpandWorkTaskScope(context.Context, projectworkplan.ExpandWorkTaskScopeInput) (projectworkplan.WorkTask, error)
+}
+
 type remediationWorkPlanAPI interface {
 	CreateWorkPlan(context.Context, projectworkplan.CreateWorkPlanInput) (projectworkplan.WorkPlan, error)
 	ListWorkPlans(context.Context, projectworkplan.WorkPlanFilter) ([]projectworkplan.WorkPlan, error)
@@ -176,6 +180,7 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 	if len(likelyFiles) == 0 {
 		likelyFiles = append([]string(nil), filesToEdit...)
 	}
+	filesToEdit = remediationEditScope(filesToEdit, likelyFiles)
 	evidenceRefs, err := safeRefList(input.EvidenceRefs, "evidence_refs")
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
@@ -391,6 +396,7 @@ func New(store Store, workTasks WorkTaskAPI, options Options) *Service {
 	}
 	agents := append([]AutomationAgent(nil), options.Agents...)
 	options.Agents = agents
+	options.DirtyScopeRecovery.AllowedSupportPathspecs = safeTaskPathspecs(options.DirtyScopeRecovery.AllowedSupportPathspecs)
 	startedAt := time.Now().UTC()
 	return &Service{
 		store:     store,
@@ -886,6 +892,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
 	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
@@ -893,6 +902,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		return ClaimedRun{}, err
 	}
 	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
 	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
@@ -935,6 +947,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
 	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
@@ -942,6 +957,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		return ClaimedRun{}, err
 	}
 	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
 	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
@@ -1067,6 +1085,13 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
 		if err != nil || !preExecutionRecoveryTaskMatchesRun(task, run) || !svc.dependenciesDone(ctx, task) {
+			continue
+		}
+		task, _, blocked, err := svc.expandOrBlockPreExecutionDirtyScope(ctx, run, task, dirtyPathsFromEvidenceRefs(task.EvidenceRefs))
+		if err != nil {
+			return ClaimedRun{}, false, err
+		}
+		if blocked {
 			continue
 		}
 		task, err = svc.prepareTaskForPreExecutionRecovery(ctx, run, task)
@@ -1261,7 +1286,7 @@ func (svc *Service) reconcileExhaustedGitOpsRecoveryRuns(ctx context.Context, pr
 		if !taskOwnsGitOpsRecoveryRun(task, run) {
 			continue
 		}
-		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory); err != nil {
+		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory, nil); err != nil {
 			return err
 		}
 	}
@@ -1290,7 +1315,7 @@ func (svc *Service) reconcileExhaustedPreExecutionRecoveryRuns(ctx context.Conte
 		default:
 			continue
 		}
-		if _, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory); err != nil {
+		if _, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, task.EvidenceRefs); err != nil {
 			return err
 		}
 	}
@@ -1560,7 +1585,7 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		run.Status = RunStatusTimeout
 	case RunStatusFailed:
 		if strings.TrimSpace(run.SafeSummary) == RunSafeSummaryGitOpsPostTaskRecovery && isGitOpsRecoveryFailure(failureCategory) {
-			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory)
+			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory, evidenceRefs)
 		}
 		run.Status = RunStatusFailed
 	default:
@@ -1735,7 +1760,7 @@ func recoveryResumeInstructions(sentence string) string {
 	return strings.TrimSpace(sentence[:projectworkplan.MaxResumeInstructionsLength])
 }
 
-func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, run AutomationRun, category string, evidenceRefs []string) (AutomationRun, error) {
 	updater, ok := svc.workTasks.(workTaskStatusUpdater)
 	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
 		run.Status = RunStatusFailed
@@ -1752,6 +1777,28 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
 	}
+	dirtyPaths := dirtyPathsFromEvidenceRefs(evidenceRefs)
+	if strings.TrimSpace(category) == "gitops_dirty_worktree_scope" && len(dirtyPaths) > 0 {
+		expandScopes, outsidePaths := svc.classifyDirtyScopePaths(run.ProjectID, task, dirtyPaths)
+		if len(outsidePaths) > 0 {
+			return svc.blockTaskAfterOutOfScopeDirtyPaths(ctx, updater, run, task, outsidePaths)
+		}
+		if len(expandScopes) > 0 {
+			if expander, ok := svc.workTasks.(workTaskScopeExpander); ok && expander != nil {
+				expanded, err := expander.ExpandWorkTaskScope(ctx, projectworkplan.ExpandWorkTaskScopeInput{
+					ProjectID:          task.ProjectID,
+					TaskID:             task.ID,
+					FilesToEdit:        expandScopes,
+					RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+					TraceID:            firstNonEmpty(run.TraceID, run.ID),
+					ResumeInstructions: recoveryResumeInstructions("GitOps dirty paths were inside likely_files_affected and files_to_edit was expanded for retry: " + strings.Join(dirtyPaths, ", ")),
+				})
+				if err == nil {
+					task = expanded
+				}
+			}
+		}
+	}
 	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
 		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
 			ProjectID:          task.ProjectID,
@@ -1759,7 +1806,7 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 			SafeNextAction:     "gitops_recovery_failed_requeue_implementation",
 			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
 			TraceID:            firstNonEmpty(run.TraceID, run.ID),
-			ResumeInstructions: recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; rerun implementation to fix verification, generated artifacts, commit scope, or PR readiness before GitOps post-task is retried."),
+			ResumeInstructions: gitOpsRecoveryResumeInstructions(category, dirtyPaths),
 		},
 		Status: projectworkplan.WorkTaskStatusReady,
 	})
@@ -1797,6 +1844,81 @@ func gitOpsRecoveryRequeueSummary(category string) string {
 	return RunSafeSummaryGitOpsRecoveryRequeuedImplementation + "_after_" + category
 }
 
+func (svc *Service) blockTaskAfterOutOfScopeDirtyPaths(ctx context.Context, updater workTaskStatusUpdater, run AutomationRun, task projectworkplan.WorkTask, dirtyPaths []string) (AutomationRun, error) {
+	reason := dirtyPathsBlockedReason(dirtyPaths)
+	blockedTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "gitops_dirty_scope_requires_new_plan",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			BlockedReason:      reason,
+			ResumeInstructions: recoveryResumeInstructions(reason + "; create a new Work Plan or update likely_files_affected before rerunning."),
+		},
+		Status: projectworkplan.WorkTaskStatusBlocked,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = blockedTask.Status
+	run.FailureCategory = "gitops_dirty_worktree_scope_requires_plan"
+	run.SafeSummary = "gitops_recovery_blocked_after_out_of_scope_dirty_paths"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	return svc.store.UpdateRun(ctx, run)
+}
+
+func dirtyPathsBlockedReason(dirtyPaths []string) string {
+	const maxBlockedReasonLength = 500
+	prefix := "GitOps dirty paths outside likely_files_affected require a new plan: "
+	if len(dirtyPaths) == 0 {
+		return strings.TrimSpace(prefix)
+	}
+	paths := uniqueRefs(dirtyPaths)
+	reason := prefix
+	added := 0
+	for i, path := range paths {
+		remaining := len(paths) - i
+		suffix := ""
+		if remaining > 1 {
+			suffix = fmt.Sprintf(", and %d more", remaining-1)
+		}
+		separator := ""
+		if added > 0 {
+			separator = ", "
+		}
+		candidate := reason + separator + path + suffix
+		if len(candidate) > maxBlockedReasonLength {
+			break
+		}
+		reason += separator + path
+		added++
+	}
+	omitted := len(paths) - added
+	if omitted > 0 {
+		suffix := fmt.Sprintf(", and %d more", omitted)
+		if len(reason)+len(suffix) <= maxBlockedReasonLength {
+			reason += suffix
+		}
+	}
+	if len(reason) > maxBlockedReasonLength {
+		return strings.TrimSpace(reason[:maxBlockedReasonLength])
+	}
+	return reason
+}
+
+func gitOpsRecoveryResumeInstructions(category string, dirtyPaths []string) string {
+	if len(dirtyPaths) > 0 {
+		return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; dirty paths: " + strings.Join(dirtyPaths, ", ") + ". Rerun implementation after files_to_edit scope is corrected.")
+	}
+	return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; rerun implementation to fix verification, generated artifacts, commit scope, or PR readiness before GitOps post-task is retried.")
+}
+
 func preExecutionRecoveryRequeueSummary(category string) string {
 	category = safeFailure(category)
 	if category == "" {
@@ -1805,7 +1927,51 @@ func preExecutionRecoveryRequeueSummary(category string) string {
 	return "pre_execution_recovery_requeued_implementation_after_" + category
 }
 
-func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+func preExecutionRecoveryResumeInstructions(category string, dirtyPaths []string) string {
+	if len(dirtyPaths) > 0 {
+		return recoveryResumeInstructions("Pre-execution recovery failed with " + safeFailure(category) + "; dirty paths: " + strings.Join(dirtyPaths, ", ") + ". Rerun implementation after files_to_edit scope is corrected.")
+	}
+	return recoveryResumeInstructions("Pre-execution recovery failed with " + safeFailure(category) + "; rerun implementation after resolving worktree, GitOps pre-task, or dirty-worktree scope setup before execution is retried.")
+}
+
+func (svc *Service) expandOrBlockPreExecutionDirtyScope(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask, dirtyPaths []string) (projectworkplan.WorkTask, AutomationRun, bool, error) {
+	if strings.TrimSpace(run.FailureCategory) != "gitops_dirty_worktree_scope" || len(dirtyPaths) == 0 {
+		return task, run, false, nil
+	}
+	expandScopes, outsidePaths := svc.classifyDirtyScopePaths(run.ProjectID, task, dirtyPaths)
+	if len(outsidePaths) > 0 {
+		updater, ok := svc.workTasks.(workTaskStatusUpdater)
+		if !ok || updater == nil {
+			return task, run, false, nil
+		}
+		blockedRun, err := svc.blockTaskAfterOutOfScopeDirtyPaths(ctx, updater, run, task, outsidePaths)
+		if err != nil {
+			return task, run, false, err
+		}
+		return task, blockedRun, true, nil
+	}
+	if len(expandScopes) == 0 {
+		return task, run, false, nil
+	}
+	expander, ok := svc.workTasks.(workTaskScopeExpander)
+	if !ok || expander == nil {
+		return task, run, false, nil
+	}
+	expanded, err := expander.ExpandWorkTaskScope(ctx, projectworkplan.ExpandWorkTaskScopeInput{
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		FilesToEdit:        expandScopes,
+		RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+		TraceID:            firstNonEmpty(run.TraceID, run.ID),
+		ResumeInstructions: recoveryResumeInstructions("Pre-execution dirty paths were inside likely_files_affected and files_to_edit was expanded for retry: " + strings.Join(dirtyPaths, ", ")),
+	})
+	if err != nil {
+		return task, run, false, err
+	}
+	return expanded, run, false, nil
+}
+
+func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Context, run AutomationRun, category string, evidenceRefs []string) (AutomationRun, error) {
 	updater, ok := svc.workTasks.(workTaskStatusUpdater)
 	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
 		run.Status = RunStatusFailed
@@ -1822,6 +1988,14 @@ func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Cont
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
 	}
+	dirtyPaths := dirtyPathsFromEvidenceRefs(evidenceRefs)
+	task, blockedRun, blocked, err := svc.expandOrBlockPreExecutionDirtyScope(ctx, run, task, dirtyPaths)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if blocked {
+		return blockedRun, nil
+	}
 	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
 		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
 			ProjectID:          task.ProjectID,
@@ -1829,7 +2003,7 @@ func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Cont
 			SafeNextAction:     "pre_execution_recovery_failed_requeue_implementation",
 			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
 			TraceID:            firstNonEmpty(run.TraceID, run.ID),
-			ResumeInstructions: recoveryResumeInstructions("Pre-execution recovery failed with " + safeFailure(category) + "; rerun implementation after resolving worktree, GitOps pre-task, or dirty-worktree scope setup before execution is retried."),
+			ResumeInstructions: preExecutionRecoveryResumeInstructions(category, dirtyPaths),
 		},
 		Status: projectworkplan.WorkTaskStatusReady,
 	})
@@ -2030,6 +2204,17 @@ func (svc *Service) requeueAbandonedRunningRun(ctx context.Context, run Automati
 	if !ok {
 		return run, nil
 	}
+	current, err := svc.store.GetRun(ctx, run.ProjectID, run.ID)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if current.Status != run.Status || current.ClaimID != run.ClaimID || current.RunnerID != run.RunnerID || !current.LeaseExpiresAt.Equal(run.LeaseExpiresAt) {
+		return current, nil
+	}
+	if current.Status != RunStatusClaiming && current.Status != RunStatusStarting && current.Status != RunStatusRunning {
+		return current, nil
+	}
+	run = current
 	now := svc.now()
 	run.Status = RunStatusTimeout
 	run.WorkTaskStatus = task.Status
@@ -2067,6 +2252,113 @@ func (svc *Service) requeueAbandonedRunningRun(ctx context.Context, run Automati
 		return updated, nil
 	}
 	return updated, nil
+}
+
+func (svc *Service) reconcileInterruptedRunsWithProgressedTasks(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" {
+		return nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusTimeout})
+	if err != nil {
+		return err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.FailureCategory) != "external_runner_interrupted" || run.TaskID == "" {
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+			continue
+		}
+		if task.Status == projectworkplan.WorkTaskStatusDone {
+			if _, err := svc.completeRunAfterTaskDone(ctx, run, task); err != nil {
+				return err
+			}
+			continue
+		}
+		if isTerminalIncompleteTaskStatus(task.Status) {
+			if _, err := svc.finishRunAfterTaskTerminal(ctx, run, task); err != nil {
+				return err
+			}
+			continue
+		}
+		if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
+			continue
+		}
+		now := svc.now()
+		run.Status = RunStatusVerifying
+		run.WorkTaskStatus = task.Status
+		run.SafeSummary = "external_runner_timeout_task_progressed_verification_required"
+		run.FailureCategory = ""
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		updated, err := svc.store.UpdateRun(ctx, run)
+		if err != nil {
+			return err
+		}
+		if _, err := svc.reconcileVerifyingRun(ctx, updated); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) reconcileRecoveryRunsWithStaleReadyTasks(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" {
+		return nil
+	}
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil {
+		return nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
+	if err != nil {
+		return err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" || run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+			continue
+		}
+		switch strings.TrimSpace(run.FailureCategory) {
+		case "gitops_recovery_failed_requires_implementation", "pre_execution_recovery_failed_requires_implementation":
+		default:
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID || task.Status == projectworkplan.WorkTaskStatusReady {
+			continue
+		}
+		switch task.Status {
+		case projectworkplan.WorkTaskStatusDone, projectworkplan.WorkTaskStatusFailed, projectworkplan.WorkTaskStatusBlocked, projectworkplan.WorkTaskStatusCancelled, projectworkplan.WorkTaskStatusSuperseded:
+			continue
+		}
+		readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+			WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+				ProjectID:          task.ProjectID,
+				TaskID:             task.ID,
+				SafeNextAction:     "recovery_run_ready_status_repair",
+				RunID:              firstNonEmpty(run.ID, task.ClaimedByRunID),
+				TraceID:            firstNonEmpty(run.TraceID, run.ID),
+				ResumeInstructions: task.ResumeInstructions,
+			},
+			Status: projectworkplan.WorkTaskStatusReady,
+		})
+		if err != nil {
+			return err
+		}
+		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+		if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+			continue
+		}
+		if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun) (AutomationRun, error) {
@@ -2440,6 +2732,10 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 			return nil
 		}
 	}
+	task, err = svc.markTaskAfterRecoverableDirtyScopeConfig(ctx, task, existing)
+	if err != nil {
+		return err
+	}
 	if countTerminalReplacementFailures(existing, task) >= defaultAutomationMaxReplacementRunsPerTask {
 		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
 		return err
@@ -2471,6 +2767,40 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 	}
 	_, err = svc.store.CreateRun(ctx, run)
 	return err
+}
+
+const dirtyScopeConfigRecoveryRunID = "orchestrator-system-fix-dirty-scope-config"
+
+func (svc *Service) markTaskAfterRecoverableDirtyScopeConfig(ctx context.Context, task projectworkplan.WorkTask, existing []AutomationRun) (projectworkplan.WorkTask, error) {
+	if svc == nil || svc.workTasks == nil || task.Status != projectworkplan.WorkTaskStatusReady || taskHasSystemFixRecoveryMarker(task) {
+		return task, nil
+	}
+	if countTerminalReplacementFailures(existing, task) < defaultAutomationMaxReplacementRunsPerTask {
+		return task, nil
+	}
+	dirtyPaths := dirtyPathsFromEvidenceRefs(task.EvidenceRefs)
+	if len(dirtyPaths) == 0 {
+		return task, nil
+	}
+	expandScopes, outsidePaths := svc.classifyDirtyScopePaths(task.ProjectID, task, dirtyPaths)
+	if len(outsidePaths) > 0 || len(expandScopes) == 0 {
+		return task, nil
+	}
+	if expander, ok := svc.workTasks.(workTaskScopeExpander); ok && expander != nil {
+		expanded, err := expander.ExpandWorkTaskScope(ctx, projectworkplan.ExpandWorkTaskScopeInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			FilesToEdit:        expandScopes,
+			RunID:              dirtyScopeConfigRecoveryRunID,
+			TraceID:            dirtyScopeConfigRecoveryRunID,
+			ResumeInstructions: recoveryResumeInstructions("Configured dirty-scope recovery now covers previous dirty paths: " + strings.Join(dirtyPaths, ", ") + ". Requeue implementation once under the refreshed scope."),
+		})
+		if err != nil {
+			return projectworkplan.WorkTask{}, err
+		}
+		return expanded, nil
+	}
+	return task, nil
 }
 
 func (svc *Service) replacementRetryLimitReached(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (bool, error) {
@@ -2534,7 +2864,8 @@ func countTerminalReplacementFailures(runs []AutomationRun, task projectworkplan
 
 func taskHasSystemFixRecoveryMarker(task projectworkplan.WorkTask) bool {
 	for _, ref := range task.AgentRunIDs {
-		if strings.HasPrefix(strings.TrimSpace(ref), "orchestrator-system-fix-") {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "orchestrator-system-fix-") || strings.HasPrefix(ref, "orchestrator-requeue-") {
 			return true
 		}
 	}
@@ -2588,6 +2919,16 @@ func shouldQueueReplacementRun(run AutomationRun) bool {
 
 func shouldQueueReplacementRunForTask(run AutomationRun, task projectworkplan.WorkTask) bool {
 	if shouldQueueReplacementRun(run) {
+		return true
+	}
+	if run.Status == RunStatusPolicyDenied &&
+		task.Status == projectworkplan.WorkTaskStatusReady &&
+		strings.Contains(strings.TrimSpace(run.FailureCategory), "task_not_ready") {
+		return true
+	}
+	if run.Status == RunStatusFailed &&
+		task.Status == projectworkplan.WorkTaskStatusReady &&
+		strings.TrimSpace(run.FailureCategory) == "gitops_dirty_worktree_scope_requires_plan" {
 		return true
 	}
 	return run.Status == RunStatusBlocked &&
@@ -3538,7 +3879,7 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 
 func isRecoverablePreExecutionFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "worktree_resolve_failed", "worktree_prepare_failed", "claim_failed", "start_failed", "gitops_pre_task_failed", "gitops_dirty_worktree":
+	case "worktree_resolve_failed", "worktree_prepare_failed", "claim_failed", "start_failed", "gitops_pre_task_failed", "gitops_dirty_worktree", "gitops_dirty_worktree_scope":
 		return true
 	default:
 		return false
@@ -3800,6 +4141,104 @@ func safeFileList(values []string, field string) ([]string, error) {
 		out = append(out, trimmed)
 	}
 	return out, nil
+}
+
+func remediationEditScope(filesToEdit []string, likelyFiles []string) []string {
+	return uniqueRefs(append(append([]string{}, filesToEdit...), likelyFiles...))
+}
+
+func dirtyPathsFromEvidenceRefs(refs []string) []string {
+	const prefix = "gitops-dirty-path:"
+	out := make([]string, 0)
+	for _, ref := range refs {
+		path := filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(ref, prefix)))
+		if path == ref || !isSafeTaskPath(path) {
+			continue
+		}
+		out = append(out, path)
+		if len(out) >= 20 {
+			break
+		}
+	}
+	return uniqueRefs(out)
+}
+
+func (svc *Service) classifyDirtyScopePaths(projectID string, task projectworkplan.WorkTask, dirtyPaths []string) ([]string, []string) {
+	likely := safeTaskPathspecs(task.LikelyFilesAffected)
+	supportScopes := svc.automationSupportPathspecs(projectID)
+	if len(likely) == 0 && len(supportScopes) == 0 {
+		return nil, dirtyPaths
+	}
+	current := safeTaskPathspecs(task.FilesToEdit)
+	var expand []string
+	var outside []string
+	for _, path := range dirtyPaths {
+		if !isSafeTaskPath(path) {
+			outside = append(outside, "unsafe-path")
+			continue
+		}
+		if taskPathMatchesAny(path, current) {
+			continue
+		}
+		scope := firstMatchingTaskScope(path, likely)
+		if scope == "" {
+			scope = firstMatchingTaskScope(path, supportScopes)
+		}
+		if scope == "" {
+			outside = append(outside, path)
+			continue
+		}
+		expand = append(expand, scope)
+	}
+	return uniqueRefs(expand), uniqueRefs(outside)
+}
+
+func (svc *Service) automationSupportPathspecs(projectID string) []string {
+	scopes := append([]string(nil), svc.options.DirtyScopeRecovery.AllowedSupportPathspecs...)
+	if svc.options.DirtyScopeRecovery.PathspecResolver != nil {
+		scopes = append(scopes, svc.options.DirtyScopeRecovery.PathspecResolver(projectID)...)
+	}
+	return safeTaskPathspecs(scopes)
+}
+
+func safeTaskPathspecs(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		path := filepath.ToSlash(strings.TrimSpace(value))
+		if isSafeTaskPath(path) {
+			out = append(out, strings.TrimSuffix(path, "/"))
+		}
+	}
+	return uniqueRefs(out)
+}
+
+func taskPathMatchesAny(path string, scopes []string) bool {
+	for _, scope := range scopes {
+		if taskPathMatchesScope(path, scope) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstMatchingTaskScope(path string, scopes []string) string {
+	for _, scope := range scopes {
+		if taskPathMatchesScope(path, scope) {
+			return scope
+		}
+	}
+	return ""
+}
+
+func taskPathMatchesScope(path string, scope string) bool {
+	path = strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(path)), "/")
+	scope = strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(scope)), "/")
+	return path == scope || strings.HasPrefix(path, scope+"/")
+}
+
+func isSafeTaskPath(path string) bool {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	return path != "" && len(path) <= 300 && !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "\\") && !strings.Contains(path, "..") && !strings.Contains(path, ":") && !strings.ContainsAny(path, "\x00\r\n\\")
 }
 
 func safeRequiredText(value, field string, max int) (string, error) {

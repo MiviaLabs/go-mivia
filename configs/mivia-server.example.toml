@@ -142,6 +142,13 @@ commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
 # github_token_env = "GITHUB_TOKEN"
 github_cli_path = "gh"
 
+[git_operations.dirty_scope_recovery]
+# Project-specific automation support/control-surface paths that dirty-scope
+# recovery may add to files_to_edit before retry. Keep this empty globally
+# unless every configured project owns the same support paths. Forbidden even
+# when listed: .git, .mivia-worktrees, and .ai/tasks.
+allowed_support_pathspecs = []
+
 [git_operations.conventions]
 # All templates use fixed safe placeholders only. Available placeholders:
 # project_id, work_plan_id, work_task_id, work_task_ref, work_task_title,
@@ -191,6 +198,19 @@ always_before_pr = []
 # [projects.git_operations]
 # branch_prefix = ""
 # branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-MASS-[0-9]+(-[a-z0-9-]+)*$"
+#
+# [projects.git_operations.dirty_scope_recovery]
+# allowed_support_pathspecs = [
+#   ".agentic",
+#   ".audit",
+#   ".claude",
+#   ".codex",
+#   ".cursor",
+#   ".devcontainer",
+#   ".github",
+#   ".vscode",
+#   ".windsurf",
+# ]
 #
 # [projects.git_operations.conventions]
 # commit_type = "chore"
@@ -268,6 +288,9 @@ sensitive_marker_policy = "skip_file"
 # [projects.git_operations]
 # branch_prefix = ""
 # branch_name_pattern = "^(feat|fix|docs)-ABC-[0-9]+(-[a-z0-9-]+)*$"
+#
+# [projects.git_operations.dirty_scope_recovery]
+# allowed_support_pathspecs = [".claude", ".codex", ".github"]
 #
 # [projects.git_operations.conventions]
 # commit_type = "docs"
