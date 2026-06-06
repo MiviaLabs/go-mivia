@@ -2130,6 +2130,11 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 	if err != nil {
 		return err
 	}
+	for _, run := range existing {
+		if run.TaskID == task.ID && isActiveAutomationRunStatus(run.Status) && !isQueuedReplacementRun(run) {
+			return nil
+		}
+	}
 	if countTerminalReplacementFailures(existing, task.ID) >= defaultAutomationMaxReplacementRunsPerTask {
 		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
 		return err

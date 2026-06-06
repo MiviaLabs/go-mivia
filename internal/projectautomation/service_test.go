@@ -863,6 +863,63 @@ func TestClaimNextRunAllowsExplicitQueuedRunAfterReplacementRetryLimit(t *testin
 	}
 }
 
+func TestClaimNextRunDoesNotBlockExplicitQueuedRunDuringReadyReconcileAfterReplacementRetryLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "fix-a", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{task.PlanID: {
+			ID:        task.PlanID,
+			ProjectID: task.ProjectID,
+			Status:    projectworkplan.WorkPlanStatusActive,
+		}},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	for i := 0; i < defaultAutomationMaxReplacementRunsPerTask; i++ {
+		if _, err := store.CreateRun(ctx, AutomationRun{
+			ID:              fmt.Sprintf("failed-run-%d", i),
+			ProjectID:       automation.ProjectID,
+			AutomationID:    automation.ID,
+			AgentID:         automation.AgentID,
+			PlanID:          task.PlanID,
+			TaskID:          task.ID,
+			Status:          RunStatusFailed,
+			RunnerKind:      RunnerKindCodexCLI,
+			FailureCategory: "gitops_recovery_failed_requires_implementation",
+			SafeSummary:     "replacement_terminal_failure",
+		}); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:                "operator-rerun",
+		ProjectID:         automation.ProjectID,
+		AutomationID:      automation.ID,
+		AgentID:           automation.AgentID,
+		PlanID:            task.PlanID,
+		TaskID:            task.ID,
+		Status:            RunStatusQueued,
+		RunnerKind:        RunnerKindCodexCLI,
+		OrchestratorRunID: "operator-rerun-after-fix",
+		SafeSummary:       "external_runner_queued",
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != "operator-rerun" || claimed.Run.Status != RunStatusRunning {
+		t.Fatalf("expected explicit rerun to be claimed, got %#v", claimed.Run)
+	}
+	if updatedTask := fake.tasks[task.ID]; updatedTask.Status != projectworkplan.WorkTaskStatusInProgress || updatedTask.ClaimedByRunID != "operator-rerun" {
+		t.Fatalf("expected task claimed by explicit rerun, got %#v", updatedTask)
+	}
+}
+
 func TestClaimNextRunReconcilesExhaustedPreExecutionRecoveryForAdvancedTaskStates(t *testing.T) {
 	for _, status := range []string{projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying, projectworkplan.WorkTaskStatusDone} {
 		t.Run(status, func(t *testing.T) {
