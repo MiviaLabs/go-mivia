@@ -148,12 +148,15 @@ type WorkPlanFilter struct {
 }
 
 type UpdateWorkPlanStatusInput struct {
-	ProjectID     string `json:"project_id,omitempty"`
-	PlanID        string `json:"plan_id"`
-	Status        string `json:"status"`
-	ResumeSummary string `json:"resume_summary,omitempty"`
-	Outcome       string `json:"outcome,omitempty"`
-	CurrentTaskID string `json:"current_task_id,omitempty"`
+	ProjectID      string `json:"project_id,omitempty"`
+	PlanID         string `json:"plan_id"`
+	Status         string `json:"status"`
+	SafeNextAction string `json:"safe_next_action,omitempty"`
+	ResumeSummary  string `json:"resume_summary,omitempty"`
+	Outcome        string `json:"outcome,omitempty"`
+	CurrentTaskID  string `json:"current_task_id,omitempty"`
+	RunID          string `json:"run_id,omitempty"`
+	TraceID        string `json:"trace_id,omitempty"`
 }
 
 type ResumeWorkPlanInput struct {

@@ -217,6 +217,9 @@ type codexLaunchOptions struct {
 }
 
 func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg config.Config, projectID string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
+	gitOpsOptions := gitOpsOptionsForProject(cfg, projectID)
+	cleanupTerminalProjectWorktrees(ctx, client, gitOpsOptions, projectID, strings.TrimSpace(codexOptions.WorkDir))
+
 	claimed, ok, err := client.claimNext(ctx, projectID, agentID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "claim failed: %v\n", err)
@@ -246,7 +249,6 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	runCodexOptions.WorkDir = runWorkDir
 	claimed.CodexInput.MCPServerURL = client.baseURL
 	claimed.CodexInput.RunnerInstructions = append(claimed.CodexInput.RunnerInstructions, verificationInstructionsForProject(cfg, projectID)...)
-	gitOpsOptions := gitOpsOptionsForProject(cfg, projectID)
 	gitOps := projectgitops.New(gitOpsOptions)
 	readOnlyReviewRun := isReadOnlyReviewRun(claimed)
 	taskMetadata, taskMetadataErr := runnerWorkTaskMetadata{}, error(nil)
@@ -322,7 +324,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 			if err != nil {
 				status = projectautomation.RunStatusFailed
-				failureCategory = projectgitops.FailureCategory(err)
+				failureCategory = projectgitops.FailureCategoryWithDetail(err)
 			} else {
 				evidenceRefs = append(evidenceRefs, gitResult.EvidenceRefs...)
 				for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
@@ -358,7 +360,7 @@ func shouldRunGitOpsForTask(task runnerWorkTaskMetadata) bool {
 
 func shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed projectautomation.ClaimedRun, task runnerWorkTaskMetadata) bool {
 	switch strings.TrimSpace(claimed.Run.SafeSummary) {
-	case "dependency_ready_automation_queued", "pre_execution_recovery":
+	case "dependency_ready_automation_queued", "pre_execution_recovery", "external_runner_queued":
 	default:
 		return false
 	}
@@ -396,7 +398,7 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 	}
 	gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 	if err != nil {
-		return projectautomation.RunStatusFailed, projectgitops.FailureCategory(err), time.Since(started).Milliseconds(), nil
+		return projectautomation.RunStatusFailed, projectgitops.FailureCategoryWithDetail(err), time.Since(started).Milliseconds(), nil
 	}
 	evidenceRefs := append([]string(nil), gitResult.EvidenceRefs...)
 	for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
@@ -777,6 +779,11 @@ type projectListItem struct {
 	Enabled bool   `json:"enabled"`
 }
 
+type runnerWorkPlanListResponse struct {
+	WorkPlans     []runnerWorkPlan `json:"work_plans"`
+	NextPageToken string           `json:"next_page_token,omitempty"`
+}
+
 type runnerWorkPlan struct {
 	ID             string `json:"id"`
 	ProjectID      string `json:"project_id"`
@@ -1004,6 +1011,92 @@ func (client *runnerClient) getWorkPlan(ctx context.Context, projectID string, p
 	return plan, err
 }
 
+func (client *runnerClient) listWorkPlans(ctx context.Context, projectID string) ([]runnerWorkPlan, error) {
+	var plans []runnerWorkPlan
+	pageToken := ""
+	seenPageTokens := map[string]struct{}{}
+	for {
+		query := url.Values{}
+		query.Set("page_size", "100")
+		if pageToken != "" {
+			if _, seen := seenPageTokens[pageToken]; seen {
+				return nil, fmt.Errorf("%w: repeated work plan page token", projectautomation.ErrInvalidInput)
+			}
+			seenPageTokens[pageToken] = struct{}{}
+			query.Set("page_token", pageToken)
+		}
+		var output runnerWorkPlanListResponse
+		_, err := client.get(ctx, fmt.Sprintf("/api/v1/projects/%s/work-plans?%s", url.PathEscape(projectID), query.Encode()), &output)
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, output.WorkPlans...)
+		pageToken = strings.TrimSpace(output.NextPageToken)
+		if pageToken == "" {
+			return plans, nil
+		}
+	}
+}
+
+func cleanupTerminalProjectWorktrees(ctx context.Context, client *runnerClient, options projectgitops.Options, projectID string, baseWorkDir string) {
+	if !options.CleanupWorktreeAfterPlanDone || strings.TrimSpace(baseWorkDir) == "" {
+		return
+	}
+	plans, err := client.listWorkPlans(ctx, projectID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "terminal worktree cleanup skipped for project %s: %v\n", projectID, err)
+		return
+	}
+	protectedPaths := map[string]struct{}{}
+	for _, plan := range plans {
+		if strings.TrimSpace(plan.IsolationMode) != "dedicated_worktree" || strings.TrimSpace(plan.GitWorktreeRef) == "" {
+			continue
+		}
+		expected, err := dedicatedWorktreePath(baseWorkDir, projectID, plan.GitWorktreeRef)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "worktree cleanup skipped for plan %s: %v\n", plan.ID, err)
+			continue
+		}
+		if !isTerminalPlanStatus(plan.Status) {
+			protectedPaths[filepath.Clean(expected)] = struct{}{}
+			continue
+		}
+		if err := removeDedicatedWorktree(ctx, baseWorkDir, expected); err != nil {
+			fmt.Fprintf(os.Stderr, "worktree cleanup skipped for plan %s: %v\n", plan.ID, err)
+		}
+	}
+	cleanupOrphanProjectWorktrees(ctx, projectID, baseWorkDir, protectedPaths)
+}
+
+func cleanupOrphanProjectWorktrees(ctx context.Context, projectID string, baseWorkDir string, protectedPaths map[string]struct{}) {
+	projectSegment, err := safeProjectWorktreeSegment(projectID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orphan worktree cleanup skipped for project %s: %v\n", projectID, err)
+		return
+	}
+	root := filepath.Join(filepath.Clean(strings.TrimSpace(baseWorkDir)), ".mivia-worktrees", projectSegment)
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orphan worktree cleanup skipped for project %s: %v\n", projectID, err)
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Clean(filepath.Join(root, entry.Name()))
+		if _, protected := protectedPaths[path]; protected {
+			continue
+		}
+		if err := removeDedicatedWorktree(ctx, baseWorkDir, path); err != nil {
+			fmt.Fprintf(os.Stderr, "orphan worktree cleanup skipped for %s: %v\n", path, err)
+		}
+	}
+}
+
 func cleanupTerminalPlanWorktree(ctx context.Context, client *runnerClient, options projectgitops.Options, projectID string, planID string, baseWorkDir string, runWorkDir string) {
 	if !options.CleanupWorktreeAfterPlanDone {
 		return
@@ -1060,7 +1153,7 @@ func removeDedicatedWorktree(ctx context.Context, baseWorkDir string, runWorkDir
 	}
 	remove := exec.CommandContext(ctx, "git", "-C", baseWorkDir, "worktree", "remove", "--force", runWorkDir)
 	if err := remove.Run(); err != nil {
-		if _, statErr := os.Stat(filepath.Join(runWorkDir, ".git")); statErr == nil {
+		if _, statErr := os.Stat(filepath.Join(runWorkDir, ".git")); statErr == nil && isRegisteredGitWorktree(ctx, baseWorkDir, runWorkDir) {
 			return fmt.Errorf("git worktree remove failed: %w", err)
 		}
 		if err := os.RemoveAll(runWorkDir); err != nil {
@@ -1070,6 +1163,25 @@ func removeDedicatedWorktree(ctx context.Context, baseWorkDir string, runWorkDir
 	prune := exec.CommandContext(ctx, "git", "-C", baseWorkDir, "worktree", "prune", "--expire", "now")
 	_ = prune.Run()
 	return nil
+}
+
+func isRegisteredGitWorktree(ctx context.Context, baseWorkDir string, runWorkDir string) bool {
+	list := exec.CommandContext(ctx, "git", "-C", baseWorkDir, "worktree", "list", "--porcelain")
+	output, err := list.Output()
+	if err != nil {
+		return false
+	}
+	cleanRunWorkDir := filepath.Clean(runWorkDir)
+	for _, line := range strings.Split(string(output), "\n") {
+		path, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		if filepath.Clean(strings.TrimSpace(path)) == cleanRunWorkDir {
+			return true
+		}
+	}
+	return false
 }
 
 func (client *runnerClient) getWorkTaskMetadata(ctx context.Context, projectID string, taskID string) (runnerWorkTaskMetadata, error) {

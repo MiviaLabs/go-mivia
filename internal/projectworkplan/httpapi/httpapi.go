@@ -71,7 +71,7 @@ func createWorkPlanHandler(svc *projectworkplan.Service) http.Handler {
 		}
 		var input projectworkplan.CreateWorkPlanInput
 		if err := decodeJSON(r, &input); err != nil {
-			writeInvalidJSON(w)
+			writeDecodeError(w, err)
 			return
 		}
 		input.ProjectID = projectID(r)
@@ -115,7 +115,7 @@ func updateWorkPlanStatusHandler(svc *projectworkplan.Service) http.Handler {
 		}
 		var input projectworkplan.UpdateWorkPlanStatusInput
 		if err := decodeJSON(r, &input); err != nil {
-			writeInvalidJSON(w)
+			writeDecodeError(w, err)
 			return
 		}
 		input.ProjectID = projectID(r)
@@ -142,7 +142,7 @@ func createWorkTaskHandler(svc *projectworkplan.Service) http.Handler {
 		}
 		var input projectworkplan.CreateWorkTaskInput
 		if err := decodeJSON(r, &input); err != nil {
-			writeInvalidJSON(w)
+			writeDecodeError(w, err)
 			return
 		}
 		input.ProjectID = projectID(r)
@@ -393,7 +393,7 @@ func actionHandler(call func(actionContext, *http.Request) (any, error)) http.Ha
 		}
 		body, err := call(actionContext{projectID: projectID(r), taskID: taskID(r)}, r)
 		if err != nil && isJSONDecodeError(err) {
-			writeInvalidJSON(w)
+			writeDecodeError(w, err)
 			return
 		}
 		writeResult(w, body, err, http.StatusOK)
@@ -407,7 +407,7 @@ func attachHandler(call func(actionContext, *http.Request) (any, error)) http.Ha
 		}
 		body, err := call(actionContext{projectID: projectID(r), taskID: taskID(r)}, r)
 		if err != nil && isJSONDecodeError(err) {
-			writeInvalidJSON(w)
+			writeDecodeError(w, err)
 			return
 		}
 		writeResult(w, body, err, http.StatusCreated)
@@ -449,8 +449,19 @@ func writeInvalidJSON(w http.ResponseWriter) {
 	httpserver.WriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
 }
 
+func writeDecodeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, projectworkplan.ErrInvalidInput) {
+		writeResult(w, nil, err, http.StatusOK)
+		return
+	}
+	writeInvalidJSON(w)
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	if err := httpserver.DecodeJSON(r, dst); err != nil {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			return fmt.Errorf("%w: request body contains unsupported field", projectworkplan.ErrInvalidInput)
+		}
 		return errInvalidJSON
 	}
 	return nil

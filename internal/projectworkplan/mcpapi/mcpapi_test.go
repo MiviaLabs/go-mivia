@@ -366,6 +366,28 @@ func TestToolDefinitionsLifecycleSchemasExposeActionableEnums(t *testing.T) {
 	}
 }
 
+func TestWorkPlanUpdateStatusSchemaAcceptsCorrelationFieldsWithoutRequiringAction(t *testing.T) {
+	t.Parallel()
+	schema := toolSchema(t, "projects.work_plans.update_status")
+	required, ok := schema["required"].([]string)
+	if !ok {
+		t.Fatalf("expected required fields, got %#v", schema["required"])
+	}
+	for _, want := range []string{"id", "plan_id", "status"} {
+		if !stringSliceContains(required, want) {
+			t.Fatalf("expected required field %q in %#v", want, required)
+		}
+	}
+	if stringSliceContains(required, "safe_next_action") {
+		t.Fatalf("safe_next_action must be accepted metadata, not required: %#v", required)
+	}
+	for _, field := range []string{"safe_next_action", "run_id", "trace_id"} {
+		if propertySchema(t, schema, field)["type"] != "string" {
+			t.Fatalf("expected %s to be accepted string metadata", field)
+		}
+	}
+}
+
 func TestMCPWorkTaskSchemaDoesNotCapResumeInstructionsAt1200(t *testing.T) {
 	t.Parallel()
 	for _, toolName := range []string{"projects.work_tasks.create", "projects.work_tasks.update_status", "projects.work_tasks.block"} {
@@ -407,6 +429,15 @@ func propertySchema(t *testing.T, schema map[string]any, name string) map[string
 		t.Fatalf("missing schema property %s in %#v", name, properties)
 	}
 	return property
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func enumContains(schema map[string]any, want string) bool {

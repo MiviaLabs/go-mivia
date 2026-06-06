@@ -201,6 +201,22 @@ func (svc *Service) UpdateWorkPlanStatus(ctx context.Context, input UpdateWorkPl
 			return WorkPlan{}, err
 		}
 	}
+	if input.SafeNextAction != "" {
+		if _, err := safeOptionalText(input.SafeNextAction, "safe_next_action", 500); err != nil {
+			return WorkPlan{}, err
+		}
+	}
+	if input.RunID != "" {
+		if _, err := safeOptionalRef(input.RunID, "run_id"); err != nil {
+			return WorkPlan{}, err
+		}
+	}
+	if input.TraceID != "" {
+		plan.TraceID, err = safeOptionalRef(input.TraceID, "trace_id")
+		if err != nil {
+			return WorkPlan{}, err
+		}
+	}
 	oldStatus := plan.Status
 	plan.Status = next
 	plan.UpdatedAt = svc.now()
@@ -692,6 +708,10 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 	now := svc.now()
 	task.Status = next
 	task.UpdatedAt = now
+	if next != WorkTaskStatusBlocked {
+		task.BlockedReason = ""
+		task.BlockedByTaskIDs = nil
+	}
 	switch next {
 	case WorkTaskStatusClaimed:
 		task.ClaimedAt = now

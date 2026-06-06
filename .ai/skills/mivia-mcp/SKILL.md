@@ -132,6 +132,12 @@ resume/create plan
 
 Work Plan and Work Task metadata must stay metadata-only. Never store raw prompts, completions, source dumps, raw stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
 
+Work Plan status update payload notes:
+
+- `projects.work_plans.update_status` and `POST /api/v1/projects/{id}/work-plans/{plan_id}/status` accept only safe lifecycle metadata: `status`, optional `safe_next_action`, `resume_summary`, `outcome`, `current_task_id`, `run_id`, and `trace_id`.
+- Do not add undocumented fields to Work Plan status updates. Unknown REST fields are rejected by the server's strict JSON decoder.
+- Use `safe_next_action`, `run_id`, and `trace_id` only as bounded correlation metadata. They must not contain raw prompts, source dumps, logs, provider payloads, roots, secrets, or PII.
+
 ### Parallel Work Plan Isolation
 
 When `projects.workspace.git_status` or equivalent MCP workspace git support is available, every write-capable Work Plan MUST carry a dedicated worktree binding on `projects.work_plans.create`, even when only one worker or one Work Plan is expected. Parallel execution makes this mandatory, but single write-capable implementation plans must use the same isolation by default.
@@ -139,7 +145,7 @@ When `projects.workspace.git_status` or equivalent MCP workspace git support is 
 - `isolation_mode=dedicated_worktree`
 - `parallel_group_ref=<shared orchestration ref>`
 - `workspace_ref=<opaque workspace ref>`
-- `git_base_ref=<base ref>`
+- `git_base_ref=<verified project default branch/base ref, or omit it so workspace creation uses HEAD>`
 - `git_branch_ref=<per-plan branch ref using the mivia/ prefix>`
 - `git_worktree_ref=<opaque per-plan worktree ref>`
 
@@ -148,6 +154,8 @@ All new repository branches, including automation-created task branches, MUST us
 Use `isolation_mode=dedicated_worktree` for automated Work Plans, including read-only audits and inspections, so runners read fresh default-branch code instead of a dirty live checkout. Use `isolation_mode=shared` only for direct human/orchestrator metadata inspection that will not execute through automation. Do not use `shared` for implementation, generated-file writes, config changes, docs changes, test changes, automation writes, automated audits, or any task that may modify the workspace. Use `isolation_mode=unavailable` only when git isolation is genuinely unavailable and report the risk before execution. These are refs, not filesystem locations. Do not run two Work Plans in the same worktree ref when likely affected files, artifacts, verifier scope, or promotion scope overlap. The orchestrator owns parallel scheduling and final verification.
 
 When `projects.workspace.git_worktree_create` is exposed, the orchestrator MUST call it before assigning executable write-capable Work Tasks for a new Work Plan. The tool creates the dedicated worktree from `worktree_ref`, `branch_ref`, and optional `base_ref`, and returns metadata refs only. Agents must use the returned `isolation_ref`/`worktree_ref` in Work Plan metadata and automation refs. Do not create worktrees with raw shell commands when the MCP tool is available.
+
+Do not guess `git_base_ref`. Discover the target repository's actual default/base ref from project context or git state first. If the ref is not verified, omit `git_base_ref`; the workspace worktree creator will use `HEAD`. Never hard-code `main` for repositories that use `master` or another default branch.
 
 Dedicated worktrees are lifecycle resources. When a write-capable Work Plan reaches a terminal status (`done`, `failed`, `cancelled`, or `superseded`), the orchestrator or automation cleanup path must remove the dedicated worktree after verifier/review evidence is preserved and only when no active runs, unpreserved changes, or dependent review gates still need it. If cleanup tooling is missing, record the cleanup gap in the Work Plan/final report instead of leaving it implicit.
 
@@ -176,6 +184,12 @@ Mandatory rules:
 16. Any reusable conclusion from automation must be represented as Evidence Graph metadata, scored by Confidence Engine when knowledge may be reused, and promoted only through `projects.work_tasks.promote_knowledge_candidate` plus `projects.knowledge.*` gates.
 17. Confirmed review findings may create remediation Work Plans only through `projects.automations.create_remediation_from_finding`. The finding must be independently confirmed, represented by safe refs and bounded summaries, and may activate the generated Work Plan so the status trigger queues implementation. Suspected or speculative findings must not create implementation automations. The generated implementation task must require a focused regression test when feasible; if a regression test is not feasible in scope, the task outcome must record the concrete reason. The tool must produce both an implementation Work Task/automation and a separate independent review Work Task/automation. After the implementation runner completes and the implementation task is `needs_review`, the server must ready and queue the review automation automatically. Post-implementation review automation is read-only: it reviews the implementation worktree, attaches review refs, and must not create commits, pushes, or PRs. Once required verifier refs and independent review refs or an allowed review-task exemption exist, runner polling must reconcile `verifying` runs by completing the Work Task, marking the automation run `completed`, and completing the Work Plan when no open tasks remain. Do not manually call `projects.automations.run` in normal flow; the Work Plan status trigger, post-implementation review queueing, and runner-poll closeout reconciliation are responsible for automation, and the runner is responsible only for executing queued runs.
 18. Repository-specific CI and generated-artifact requirements must be encoded in `[verification]` or `[projects.verification]`. Work Tasks should mention the expected gates, but the runner must enforce lint/typecheck/test/generated-artifact commands before GitOps commit, push, or draft PR.
+
+Automation creation payload notes:
+
+- For ordinary Work Task automations, do not send `source_kind`, `source`, `source_type`, or `work_task` source metadata. The current REST service accepts only omitted/default source, `manual`, or `workflow`; `work_task` is invalid.
+- Bind automations to tasks with `plan_id`, `allowed_task_refs`, `trigger_kind=automatic`, and `schedule_policy=on-ready-task`.
+- The MCP `projects.automations.create` schema intentionally does not expose `source_kind`; do not invent unsupported fields when using REST fallback.
 
 GitOps output rules:
 

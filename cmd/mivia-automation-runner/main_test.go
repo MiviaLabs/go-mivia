@@ -363,6 +363,181 @@ func TestCleanupTerminalPlanWorktreeRemovesDedicatedWorktree(t *testing.T) {
 	}
 }
 
+func TestCleanupTerminalProjectWorktreesRemovesDonePlanWithoutActiveRun(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	runWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-workflow-audit")
+	if err := os.MkdirAll(runWorkDir, 0o700); err != nil {
+		t.Fatalf("create worktree dir: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans":
+			writeJSON(t, w, runnerWorkPlanListResponse{WorkPlans: []runnerWorkPlan{{
+				ID:             "plan-1",
+				ProjectID:      "project-1",
+				Status:         "done",
+				IsolationMode:  "dedicated_worktree",
+				GitWorktreeRef: "workflow/audit",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	cleanupTerminalProjectWorktrees(t.Context(), client, projectgitops.Options{CleanupWorktreeAfterPlanDone: true}, "project-1", baseWorkDir)
+	if _, err := os.Stat(runWorkDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected reconciled dedicated worktree cleanup, stat err=%v", err)
+	}
+}
+
+func TestCleanupTerminalProjectWorktreesLeavesBlockedPlans(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	runWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-workflow-blocked")
+	if err := os.MkdirAll(runWorkDir, 0o700); err != nil {
+		t.Fatalf("create worktree dir: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans":
+			writeJSON(t, w, runnerWorkPlanListResponse{WorkPlans: []runnerWorkPlan{{
+				ID:             "plan-1",
+				ProjectID:      "project-1",
+				Status:         "blocked",
+				IsolationMode:  "dedicated_worktree",
+				GitWorktreeRef: "workflow/blocked",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	cleanupTerminalProjectWorktrees(t.Context(), client, projectgitops.Options{CleanupWorktreeAfterPlanDone: true}, "project-1", baseWorkDir)
+	if _, err := os.Stat(runWorkDir); err != nil {
+		t.Fatalf("expected blocked dedicated worktree to remain: %v", err)
+	}
+}
+
+func TestCleanupTerminalProjectWorktreesLeavesActivePlans(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	runWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-workflow-audit")
+	if err := os.MkdirAll(runWorkDir, 0o700); err != nil {
+		t.Fatalf("create worktree dir: %v", err)
+	}
+	orphanWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-old-run")
+	if err := os.MkdirAll(orphanWorkDir, 0o700); err != nil {
+		t.Fatalf("create orphan worktree dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanWorkDir, ".git"), []byte("gitdir: stale\n"), 0o600); err != nil {
+		t.Fatalf("create stale git marker: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans":
+			writeJSON(t, w, runnerWorkPlanListResponse{WorkPlans: []runnerWorkPlan{{
+				ID:             "plan-1",
+				ProjectID:      "project-1",
+				Status:         "active",
+				IsolationMode:  "dedicated_worktree",
+				GitWorktreeRef: "workflow/audit",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	cleanupTerminalProjectWorktrees(t.Context(), client, projectgitops.Options{CleanupWorktreeAfterPlanDone: true}, "project-1", baseWorkDir)
+	if _, err := os.Stat(runWorkDir); err != nil {
+		t.Fatalf("expected active plan worktree to remain: %v", err)
+	}
+	if _, err := os.Stat(orphanWorkDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected orphan project worktree cleanup, stat err=%v", err)
+	}
+}
+
+func TestCleanupTerminalProjectWorktreesProtectsPaginatedActiveAndBlockedPlans(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	activeWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-workflow-active")
+	blockedWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-workflow-blocked")
+	orphanWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-old-run")
+	for _, dir := range []string{activeWorkDir, blockedWorkDir, orphanWorkDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("create worktree dir: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(orphanWorkDir, ".git"), []byte("gitdir: stale\n"), 0o600); err != nil {
+		t.Fatalf("create stale git marker: %v", err)
+	}
+
+	var pageRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans":
+			if got := r.URL.Query().Get("page_size"); got != "100" {
+				t.Fatalf("expected page_size=100, got %q", got)
+			}
+			pageRequests.Add(1)
+			switch r.URL.Query().Get("page_token") {
+			case "":
+				writeJSON(t, w, runnerWorkPlanListResponse{
+					WorkPlans: []runnerWorkPlan{{
+						ID:             "plan-done",
+						ProjectID:      "project-1",
+						Status:         "done",
+						IsolationMode:  "dedicated_worktree",
+						GitWorktreeRef: "workflow/done",
+					}},
+					NextPageToken: "1",
+				})
+			case "1":
+				writeJSON(t, w, runnerWorkPlanListResponse{
+					WorkPlans: []runnerWorkPlan{{
+						ID:             "plan-active",
+						ProjectID:      "project-1",
+						Status:         "active",
+						IsolationMode:  "dedicated_worktree",
+						GitWorktreeRef: "workflow/active",
+					}, {
+						ID:             "plan-blocked",
+						ProjectID:      "project-1",
+						Status:         "blocked",
+						IsolationMode:  "dedicated_worktree",
+						GitWorktreeRef: "workflow/blocked",
+					}},
+					NextPageToken: "2",
+				})
+			case "2":
+				writeJSON(t, w, runnerWorkPlanListResponse{WorkPlans: []runnerWorkPlan{}})
+			default:
+				t.Fatalf("unexpected page_token %q", r.URL.Query().Get("page_token"))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	cleanupTerminalProjectWorktrees(t.Context(), client, projectgitops.Options{CleanupWorktreeAfterPlanDone: true}, "project-1", baseWorkDir)
+	if got := pageRequests.Load(); got != 3 {
+		t.Fatalf("expected all work plan pages to be fetched, got %d", got)
+	}
+	if _, err := os.Stat(activeWorkDir); err != nil {
+		t.Fatalf("expected paginated active plan worktree to remain: %v", err)
+	}
+	if _, err := os.Stat(blockedWorkDir); err != nil {
+		t.Fatalf("expected paginated blocked plan worktree to remain: %v", err)
+	}
+	if _, err := os.Stat(orphanWorkDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected orphan project worktree cleanup, stat err=%v", err)
+	}
+}
+
 func TestRemoveDedicatedWorktreeRejectsPathOutsideMiviaWorktrees(t *testing.T) {
 	baseWorkDir := filepath.Join(t.TempDir(), "repo")
 	outside := filepath.Join(baseWorkDir, "not-a-worktree")
@@ -473,6 +648,10 @@ func TestShouldAllowScopedDirtyWorktreeForExistingImplementation(t *testing.T) {
 	claimed.Run.SafeSummary = "pre_execution_recovery"
 	if !shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
 		t.Fatal("expected recovered blocked retry with implementation evidence to allow scoped dirty pre-task")
+	}
+	claimed.Run.SafeSummary = "external_runner_queued"
+	if !shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
+		t.Fatal("expected explicit rerun with implementation evidence to allow scoped dirty pre-task")
 	}
 	if shouldAllowScopedDirtyWorktreeForExistingImplementation(projectautomation.ClaimedRun{}, task) {
 		t.Fatal("fresh or non-replacement runs must require clean pre-task")

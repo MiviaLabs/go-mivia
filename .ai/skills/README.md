@@ -9,6 +9,8 @@ Available skills:
 - `project-review`
 - `security-review`
 - `mivia-mcp`
+- `automation-bug-audit-planning`
+- `automated-workplan`
 
 Metadata:
 
@@ -21,3 +23,6 @@ Usage rules:
 - Keep work phase-scoped.
 - Do not copy repository-specific rules from other projects.
 - Write durable handoffs for any incomplete or multi-phase work.
+- For automation skills, verify the target repository base branch with git; never assume `main` or `master`.
+- For write-capable automation, validate dedicated worktree creation before activating a Work Plan.
+- Runner GitOps owns automation commits, pushes, and draft PRs. Chat/orchestrator agents must not manually substitute GitOps.

@@ -37,8 +37,8 @@ func TestWorkPlanRoutesLifecycle(t *testing.T) {
 	}
 	assertDoesNotLeak(t, getRes.Body.String(), "raw_prompt", "raw completion", "provider_payload", "token=", "/home/")
 
-	active := postJSON[projectworkplan.WorkPlan](t, mux, "/api/v1/projects/"+projectID+"/work-plans/"+plan.ID+"/status", `{"status":"active","resume_summary":"ready for task execution"}`, http.StatusOK)
-	if active.Status != "active" {
+	active := postJSON[projectworkplan.WorkPlan](t, mux, "/api/v1/projects/"+projectID+"/work-plans/"+plan.ID+"/status", `{"status":"active","safe_next_action":"get next ready task","resume_summary":"ready for task execution","run_id":"agent_run_status","trace_id":"trace_status"}`, http.StatusOK)
+	if active.Status != "active" || active.TraceID != "trace_status" {
 		t.Fatalf("expected active status, got %#v", active)
 	}
 
@@ -157,6 +157,12 @@ func TestWorkPlanRoutesRejectUnsafeInputs(t *testing.T) {
 	mux.ServeHTTP(invalidJSON, req)
 	if invalidJSON.Code != http.StatusBadRequest || !strings.Contains(invalidJSON.Body.String(), "invalid_json") {
 		t.Fatalf("expected invalid json rejection, got %d: %s", invalidJSON.Code, invalidJSON.Body.String())
+	}
+
+	plan := createPlan(t, mux, "example-service")
+	unknownStatusField := postRaw(t, mux, "/api/v1/projects/example-service/work-plans/"+plan.ID+"/status", `{"status":"active","raw_prompt":"secret"}`)
+	if unknownStatusField.Code != http.StatusBadRequest || !strings.Contains(unknownStatusField.Body.String(), "invalid_project_workplan_request") || strings.Contains(unknownStatusField.Body.String(), "invalid_json") {
+		t.Fatalf("expected unsupported status field to be invalid request, got %d: %s", unknownStatusField.Code, unknownStatusField.Body.String())
 	}
 
 	unsupported := httptest.NewRecorder()

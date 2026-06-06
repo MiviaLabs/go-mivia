@@ -54,6 +54,39 @@ func TestServiceCreateWorkPlanValidation(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateWorkPlanStatusAcceptsCorrelationMetadata(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-status")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	updated, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         plan.ID,
+		Status:         projectworkplan.WorkPlanStatusActive,
+		SafeNextAction: "get next ready task",
+		RunID:          "agent_run_status",
+		TraceID:        "trace_status",
+	})
+	if err != nil {
+		t.Fatalf("update status with correlation metadata: %v", err)
+	}
+	if updated.Status != projectworkplan.WorkPlanStatusActive || updated.TraceID != "trace_status" {
+		t.Fatalf("expected active status with trace metadata, got %+v", updated)
+	}
+	if _, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         updated.ID,
+		Status:         projectworkplan.WorkPlanStatusDone,
+		SafeNextAction: "raw_prompt",
+	}); err == nil {
+		t.Fatal("expected unsafe safe_next_action to fail")
+	}
+}
+
 func TestServiceMCPInvalidArgumentDiagnostics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -272,6 +305,37 @@ func TestServiceTaskTransitions(t *testing.T) {
 	}
 	if _, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: blockTarget.ID, BlockedReason: "missing dependency"}); err == nil {
 		t.Fatal("expected block without resume instructions to fail")
+	}
+	blocked, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             blockTarget.ID,
+		BlockedReason:      "waiting for dependency",
+		ResumeInstructions: "retry after dependency is ready",
+		BlockedByTaskIDs:   []string{task.ID},
+	})
+	if err != nil {
+		t.Fatalf("block target: %v", err)
+	}
+	if blocked.BlockedReason == "" || len(blocked.BlockedByTaskIDs) != 1 {
+		t.Fatalf("expected blocker metadata to persist while blocked, got %#v", blocked)
+	}
+	unblocked, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: blockTarget.ID})
+	if err != nil {
+		t.Fatalf("release blocked target: %v", err)
+	}
+	if unblocked.Status != projectworkplan.WorkTaskStatusReady || unblocked.BlockedReason != "" || len(unblocked.BlockedByTaskIDs) != 0 {
+		t.Fatalf("expected release to clear blocker metadata, got %#v", unblocked)
+	}
+	reclaimed, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: blockTarget.ID, RunID: "run-block-retry"})
+	if err != nil {
+		t.Fatalf("claim unblocked target: %v", err)
+	}
+	started, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: reclaimed.ID, RunID: "run-block-retry"})
+	if err != nil {
+		t.Fatalf("start unblocked target: %v", err)
+	}
+	if started.BlockedReason != "" || len(started.BlockedByTaskIDs) != 0 {
+		t.Fatalf("expected active task to stay clear of blocker metadata, got %#v", started)
 	}
 }
 
