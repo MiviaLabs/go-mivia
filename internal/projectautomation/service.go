@@ -2656,7 +2656,8 @@ func countTerminalReplacementFailures(runs []AutomationRun, task projectworkplan
 
 func taskHasSystemFixRecoveryMarker(task projectworkplan.WorkTask) bool {
 	for _, ref := range task.AgentRunIDs {
-		if strings.HasPrefix(strings.TrimSpace(ref), "orchestrator-system-fix-") {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "orchestrator-system-fix-") || strings.HasPrefix(ref, "orchestrator-requeue-") {
 			return true
 		}
 	}

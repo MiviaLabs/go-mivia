@@ -938,6 +938,48 @@ func TestQueueReadyDependentAutomationIgnoresOldFailuresAfterSystemFixRecoveryMa
 	}
 }
 
+func TestQueueReadyDependentAutomationIgnoresOldFailuresAfterOrchestratorRequeueMarker(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "fix-a", []string{"internal/foo.go"})
+	task.UpdatedAt = time.Date(2026, 6, 6, 17, 16, 0, 0, time.UTC)
+	task.AgentRunIDs = []string{"orchestrator-requeue-sos-recovery-automation-20260607"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	for i := 0; i < defaultAutomationMaxReplacementRunsPerTask; i++ {
+		if _, err := store.CreateRun(ctx, AutomationRun{
+			ID:              fmt.Sprintf("failed-run-%d", i),
+			ProjectID:       automation.ProjectID,
+			AutomationID:    automation.ID,
+			AgentID:         automation.AgentID,
+			PlanID:          task.PlanID,
+			TaskID:          task.ID,
+			Status:          RunStatusFailed,
+			RunnerKind:      RunnerKindCodexCLI,
+			FailureCategory: "gitops_recovery_failed_requires_implementation",
+			SafeSummary:     "replacement_terminal_failure",
+			UpdatedAt:       task.UpdatedAt.Add(-time.Minute),
+		}); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+
+	if err := svc.queueReadyDependentAutomation(ctx, automation, task); err != nil {
+		t.Fatalf("queueReadyDependentAutomation returned error: %v", err)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != defaultAutomationMaxReplacementRunsPerTask+1 {
+		t.Fatalf("expected fresh replacement run after orchestrator requeue marker, got %d runs", len(runs))
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected task to remain ready after orchestrator requeue marker, got %#v", fake.tasks[task.ID])
+	}
+}
+
 func TestQueueReadyDependentAutomationDoesNotBlockAfterExternalRunnerInterruptions(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
