@@ -780,7 +780,8 @@ type projectListItem struct {
 }
 
 type runnerWorkPlanListResponse struct {
-	WorkPlans []runnerWorkPlan `json:"work_plans"`
+	WorkPlans     []runnerWorkPlan `json:"work_plans"`
+	NextPageToken string           `json:"next_page_token,omitempty"`
 }
 
 type runnerWorkPlan struct {
@@ -1011,9 +1012,30 @@ func (client *runnerClient) getWorkPlan(ctx context.Context, projectID string, p
 }
 
 func (client *runnerClient) listWorkPlans(ctx context.Context, projectID string) ([]runnerWorkPlan, error) {
-	var output runnerWorkPlanListResponse
-	_, err := client.get(ctx, fmt.Sprintf("/api/v1/projects/%s/work-plans?page_size=100", url.PathEscape(projectID)), &output)
-	return output.WorkPlans, err
+	var plans []runnerWorkPlan
+	pageToken := ""
+	seenPageTokens := map[string]struct{}{}
+	for {
+		query := url.Values{}
+		query.Set("page_size", "100")
+		if pageToken != "" {
+			if _, seen := seenPageTokens[pageToken]; seen {
+				return nil, fmt.Errorf("%w: repeated work plan page token", projectautomation.ErrInvalidInput)
+			}
+			seenPageTokens[pageToken] = struct{}{}
+			query.Set("page_token", pageToken)
+		}
+		var output runnerWorkPlanListResponse
+		_, err := client.get(ctx, fmt.Sprintf("/api/v1/projects/%s/work-plans?%s", url.PathEscape(projectID), query.Encode()), &output)
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, output.WorkPlans...)
+		pageToken = strings.TrimSpace(output.NextPageToken)
+		if pageToken == "" {
+			return plans, nil
+		}
+	}
 }
 
 func cleanupTerminalProjectWorktrees(ctx context.Context, client *runnerClient, options projectgitops.Options, projectID string, baseWorkDir string) {
@@ -1103,7 +1125,7 @@ func cleanupTerminalPlanWorktree(ctx context.Context, client *runnerClient, opti
 
 func isTerminalPlanStatus(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "done", "failed", "blocked", "cancelled", "superseded":
+	case "done", "failed", "cancelled", "superseded":
 		return true
 	default:
 		return false
