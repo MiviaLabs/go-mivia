@@ -358,7 +358,7 @@ func shouldRunGitOpsForTask(task runnerWorkTaskMetadata) bool {
 
 func shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed projectautomation.ClaimedRun, task runnerWorkTaskMetadata) bool {
 	switch strings.TrimSpace(claimed.Run.SafeSummary) {
-	case "dependency_ready_automation_queued", "pre_execution_recovery":
+	case "dependency_ready_automation_queued", "pre_execution_recovery", "external_runner_queued":
 	default:
 		return false
 	}

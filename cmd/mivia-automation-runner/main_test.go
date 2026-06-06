@@ -474,6 +474,10 @@ func TestShouldAllowScopedDirtyWorktreeForExistingImplementation(t *testing.T) {
 	if !shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
 		t.Fatal("expected recovered blocked retry with implementation evidence to allow scoped dirty pre-task")
 	}
+	claimed.Run.SafeSummary = "external_runner_queued"
+	if !shouldAllowScopedDirtyWorktreeForExistingImplementation(claimed, task) {
+		t.Fatal("expected explicit rerun with implementation evidence to allow scoped dirty pre-task")
+	}
 	if shouldAllowScopedDirtyWorktreeForExistingImplementation(projectautomation.ClaimedRun{}, task) {
 		t.Fatal("fresh or non-replacement runs must require clean pre-task")
 	}
