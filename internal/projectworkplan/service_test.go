@@ -54,6 +54,39 @@ func TestServiceCreateWorkPlanValidation(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateWorkPlanStatusAcceptsCorrelationMetadata(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-status")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	updated, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         plan.ID,
+		Status:         projectworkplan.WorkPlanStatusActive,
+		SafeNextAction: "get next ready task",
+		RunID:          "agent_run_status",
+		TraceID:        "trace_status",
+	})
+	if err != nil {
+		t.Fatalf("update status with correlation metadata: %v", err)
+	}
+	if updated.Status != projectworkplan.WorkPlanStatusActive || updated.TraceID != "trace_status" {
+		t.Fatalf("expected active status with trace metadata, got %+v", updated)
+	}
+	if _, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         updated.ID,
+		Status:         projectworkplan.WorkPlanStatusDone,
+		SafeNextAction: "raw_prompt",
+	}); err == nil {
+		t.Fatal("expected unsafe safe_next_action to fail")
+	}
+}
+
 func TestServiceMCPInvalidArgumentDiagnostics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

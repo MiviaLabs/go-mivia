@@ -36,7 +36,7 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 		if err := decodeMCP(arguments, &input); err != nil {
 			return nil, mcpInvalidArgumentsError("work plan", err)
 		}
-		return svc.UpdateWorkPlanStatus(ctx, UpdateWorkPlanStatusInput{ProjectID: input.projectID(), PlanID: input.PlanID, Status: input.Status, ResumeSummary: input.ResumeSummary, Outcome: input.Outcome})
+		return svc.UpdateWorkPlanStatus(ctx, UpdateWorkPlanStatusInput{ProjectID: input.projectID(), PlanID: input.PlanID, Status: input.Status, SafeNextAction: input.SafeNextAction, ResumeSummary: input.ResumeSummary, Outcome: input.Outcome, RunID: input.RunID, TraceID: input.TraceID})
 	case "projects.work_plans.resume":
 		var input resumePlanInput
 		if err := decodeMCP(arguments, &input); err != nil {

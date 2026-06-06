@@ -118,21 +118,21 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		return PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}, nil
 	}
 
-	verificationRefs, verificationTests, err := svc.runVerification(ctx, workDir)
+	preCommitVerificationRefs, preCommitVerificationTests, err := svc.runPreCommitVerification(ctx, workDir)
 	if err != nil {
 		return PostTaskResult{}, err
 	}
-	if len(verificationTests) > 0 {
-		input.TestResults = append(input.TestResults, verificationTests...)
+	if len(preCommitVerificationTests) > 0 {
+		input.TestResults = append(input.TestResults, preCommitVerificationTests...)
 	}
-	if len(verificationRefs) > 0 {
+	if len(preCommitVerificationRefs) > 0 {
 		status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
 		if err != nil {
 			return PostTaskResult{}, err
 		}
 		if strings.TrimSpace(status.Stdout) == "" {
 			result := PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}
-			result.EvidenceRefs = append(result.EvidenceRefs, verificationRefs...)
+			result.EvidenceRefs = append(result.EvidenceRefs, preCommitVerificationRefs...)
 			return result, nil
 		}
 	}
@@ -183,13 +183,27 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if _, err := svc.git(ctx, workDir, env, "commit", "--no-verify", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
 		return PostTaskResult{}, err
 	}
+	postCommitVerificationRefs, postCommitVerificationTests, err := svc.runPostCommitVerification(ctx, workDir)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	if len(postCommitVerificationTests) > 0 {
+		input.TestResults = append(input.TestResults, postCommitVerificationTests...)
+		rendered, err = Render(input, svc.options.Conventions)
+		if err != nil {
+			return PostTaskResult{}, err
+		}
+		if _, err := svc.git(ctx, workDir, env, "commit", "--amend", "--no-verify", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
+			return PostTaskResult{}, err
+		}
+	}
 	sha, err := svc.git(ctx, workDir, nil, "rev-parse", "--short=12", "HEAD")
 	if err != nil {
 		return PostTaskResult{}, err
 	}
 	result := PostTaskResult{
 		CommitRef:    "git-commit-" + strings.TrimSpace(sha.Stdout),
-		EvidenceRefs: append([]string{"git-commit-created"}, verificationRefs...),
+		EvidenceRefs: append(append([]string{"git-commit-created"}, preCommitVerificationRefs...), postCommitVerificationRefs...),
 	}
 	if svc.options.PushAfterTask {
 		branch := strings.TrimSpace(input.BranchName)
@@ -257,9 +271,8 @@ func FailureCategoryWithDetail(err error) string {
 	return category
 }
 
-func (svc *Service) runVerification(ctx context.Context, workDir string) ([]string, []string, error) {
+func (svc *Service) runPreCommitVerification(ctx context.Context, workDir string) ([]string, []string, error) {
 	if len(svc.options.Verification.BootstrapCommands) == 0 &&
-		len(svc.options.Verification.AlwaysBeforePR) == 0 &&
 		len(svc.options.Verification.GeneratedArtifacts) == 0 {
 		return nil, nil, nil
 	}
@@ -275,13 +288,6 @@ func (svc *Service) runVerification(ctx context.Context, workDir string) ([]stri
 		refs = append(refs, "verify-bootstrap-"+safeHash(command))
 		tests = append(tests, safeTestResult(command, "passed"))
 	}
-	for _, command := range svc.options.Verification.AlwaysBeforePR {
-		if err := svc.runVerifierCommand(ctx, workDir, command); err != nil {
-			return nil, nil, err
-		}
-		refs = append(refs, "verify-project-"+safeHash(command))
-		tests = append(tests, safeTestResult(command, "passed"))
-	}
 	for _, generated := range svc.options.Verification.GeneratedArtifacts {
 		if !generated.RequiredBeforePR {
 			continue
@@ -291,6 +297,28 @@ func (svc *Service) runVerification(ctx context.Context, workDir string) ([]stri
 		}
 		refs = append(refs, "verify-generated-"+safeHash(generated.Command))
 		tests = append(tests, safeTestResult(generated.Command, "passed"))
+	}
+	if len(refs) > 0 {
+		refs = append(refs, "project-verification-passed")
+	}
+	return refs, tests, nil
+}
+
+func (svc *Service) runPostCommitVerification(ctx context.Context, workDir string) ([]string, []string, error) {
+	if len(svc.options.Verification.AlwaysBeforePR) == 0 {
+		return nil, nil, nil
+	}
+	if err := svc.configureVerifierSafeDirectory(ctx, workDir); err != nil {
+		return nil, nil, err
+	}
+	refs := make([]string, 0)
+	tests := make([]string, 0)
+	for _, command := range svc.options.Verification.AlwaysBeforePR {
+		if err := svc.runVerifierCommand(ctx, workDir, command); err != nil {
+			return nil, nil, err
+		}
+		refs = append(refs, "verify-project-"+safeHash(command))
+		tests = append(tests, safeTestResult(command, "passed"))
 	}
 	if len(refs) > 0 {
 		refs = append(refs, "project-verification-passed")
@@ -359,9 +387,6 @@ func (svc *Service) generatedArtifactPathspecs() []string {
 
 func safeTestResult(command string, status string) string {
 	summary := strings.TrimSpace(command)
-	if len(summary) > 120 {
-		summary = summary[:120]
-	}
 	return summary + ": " + status
 }
 

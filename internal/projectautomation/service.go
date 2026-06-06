@@ -877,6 +877,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err != nil {
 		return ClaimedRun{}, err
 	}
+	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
+		return claimed, err
+	}
 	if err := svc.reconcileRunningRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
@@ -899,6 +902,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		return claimed, err
 	}
 	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
+		return claimed, err
+	}
+	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, err
 	}
 	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
@@ -941,6 +947,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
+	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
+		return claimed, err
+	}
 	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
@@ -964,6 +973,76 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, nil
 	}
 	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
+}
+
+func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, error) {
+	runs := make([]AutomationRun, 0)
+	for _, status := range []string{RunStatusClaiming, RunStatusStarting} {
+		statusRuns, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: status})
+		if err != nil {
+			return ClaimedRun{}, false, err
+		}
+		runs = append(runs, statusRuns...)
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" {
+			continue
+		}
+		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
+			continue
+		}
+		if !run.ClaimedAt.IsZero() || !run.LastHeartbeatAt.IsZero() || !run.LeaseExpiresAt.IsZero() {
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+			continue
+		}
+		switch task.Status {
+		case projectworkplan.WorkTaskStatusReady, projectworkplan.WorkTaskStatusClaimed, projectworkplan.WorkTaskStatusInProgress:
+		default:
+			continue
+		}
+		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+		if err != nil {
+			continue
+		}
+		if err := svc.validateAutomationPolicy(ctx, automation, run.RunnerKind, run.TaskID, run.AgentID); err != nil {
+			continue
+		}
+		if !svc.isAutomationReviewTask(automation, run.TaskID) {
+			if err := svc.validateRequiredAutomationReviews(ctx, automation); err != nil {
+				continue
+			}
+		}
+		if task.Status != projectworkplan.WorkTaskStatusInProgress {
+			startedTask, err := svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: run.ProjectID, TaskID: task.ID, OwnerAgent: run.AgentID, RunID: run.ID, TraceID: run.TraceID})
+			if err != nil {
+				continue
+			}
+			task = startedTask
+		}
+		now := svc.now()
+		run.Status = RunStatusRunning
+		run.WorkTaskStatus = task.Status
+		run.AttemptCount++
+		run.StartedAt = now
+		run.FinishedAt = time.Time{}
+		run.FailureCategory = ""
+		svc.applyExternalClaim(&run, runnerID, now)
+		run.UpdatedAt = now
+		claimed, err := svc.store.UpdateRun(ctx, run)
+		if err != nil {
+			return ClaimedRun{}, false, err
+		}
+		if claimed.Status != RunStatusRunning || !claimed.StartedAt.Equal(now) {
+			continue
+		}
+		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
+		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+	}
+	return ClaimedRun{}, false, nil
 }
 
 func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, error) {
@@ -1389,6 +1468,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if status == RunStatusFailed && svc.failedAttemptMatchesAdvancedTask(ctx, run) {
 			return run, nil
 		}
+		if status == RunStatusCompleted && terminalAuditRemediationFailureAlreadyRecorded(run) && claimMatchesTerminalRun(run, claimID, runnerID) {
+			return run, nil
+		}
 		if svc.externallyClaimedTaskOwnsRun(ctx, run) && (run.Status == RunStatusClaiming || run.Status == RunStatusStarting) {
 			// The external runner may fail while resolving its worktree or GitOps
 			// setup. At that point the Work Task is already owned by this run,
@@ -1499,6 +1581,23 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		return svc.reconcileVerifyingRun(ctx, durable)
 	}
 	return durable, nil
+}
+
+func terminalAuditRemediationFailureAlreadyRecorded(run AutomationRun) bool {
+	return run.Status == RunStatusFailed && strings.TrimSpace(run.FailureCategory) == "confirmed_finding_remediation_missing"
+}
+
+func claimMatchesTerminalRun(run AutomationRun, claimID string, runnerID string) bool {
+	if run.ClaimID != "" && claimID != "" && run.ClaimID != claimID {
+		return false
+	}
+	if run.RunnerID != "" && runnerID != "" && run.RunnerID != runnerID {
+		return false
+	}
+	if run.ClaimID != "" {
+		return claimID == run.ClaimID
+	}
+	return true
 }
 
 func (svc *Service) HeartbeatRun(ctx context.Context, input HeartbeatRunInput) (AutomationRun, error) {
@@ -1847,6 +1946,14 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 		return run, nil
 	}
 	if auditTaskHasConfirmedFindingWithoutRemediation(task) {
+		if svc.externalClaimStillActive(run) {
+			if run.WorkTaskStatus != task.Status {
+				run.WorkTaskStatus = task.Status
+				run.UpdatedAt = svc.now()
+				return svc.store.UpdateRun(ctx, run)
+			}
+			return run, nil
+		}
 		return svc.failRunningAuditWithoutRemediation(ctx, run, task)
 	}
 	now := svc.now()
@@ -1901,6 +2008,13 @@ func (svc *Service) externalRunLeaseExpired(run AutomationRun) bool {
 		return false
 	}
 	return !svc.now().Before(run.LeaseExpiresAt)
+}
+
+func (svc *Service) externalClaimStillActive(run AutomationRun) bool {
+	if svc == nil || run.ClaimID == "" || run.LeaseExpiresAt.IsZero() {
+		return false
+	}
+	return svc.now().Before(run.LeaseExpiresAt)
 }
 
 func (svc *Service) requeueAbandonedRunningRun(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
@@ -2427,7 +2541,7 @@ func isTerminalReplacementFailure(run AutomationRun) bool {
 			return false
 		}
 	case RunStatusTimeout:
-		return strings.TrimSpace(run.FailureCategory) == "external_runner_interrupted"
+		return false
 	default:
 		return false
 	}

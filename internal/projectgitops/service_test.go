@@ -356,9 +356,10 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 		{Stdout: " M packages/contracts/src/schemas/auth.ts\n"},
 		{},
 		{},
-		{},
 		{Stdout: " M packages/contracts/src/schemas/auth.ts\n M packages/contracts/dist/openapi.json\n M packages/contracts/dist/openapi.yaml\n"},
 		{Stdout: "fix-MASS-0000-contracts\n"},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -402,30 +403,38 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 	if got := strings.Join(runner.commands[2].Args, " "); !strings.Contains(got, "config --global --add safe.directory /tmp/worktree") {
 		t.Fatalf("expected verifier safe.directory command, got %q", got)
 	}
-	if got := strings.Join(runner.commands[3].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
-		t.Fatalf("expected lint verifier command, got %q", got)
-	}
-	if got := strings.Join(runner.commands[3].Env, "\n"); !strings.Contains(got, "XDG_CONFIG_HOME=") || !strings.Contains(got, "BFF_ADMIN_URL=http://localhost:3000") || !strings.Contains(got, "SESSION_PASSWORD=test-secret") {
-		t.Fatalf("expected sorted verifier env, got %q", got)
-	}
-	if got := strings.Join(runner.commands[4].Args, " "); got != "-lc pnpm -s nx run contracts:verify-openapi" {
+	if got := strings.Join(runner.commands[3].Args, " "); got != "-lc pnpm -s nx run contracts:verify-openapi" {
 		t.Fatalf("expected openapi verifier command, got %q", got)
 	}
-	addArgs := strings.Join(runner.commands[7].Args, "\n")
+	addArgs := strings.Join(runner.commands[6].Args, "\n")
 	for _, want := range []string{"packages/contracts/src/schemas/auth.ts", "packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"} {
 		if !strings.Contains(addArgs, want) {
 			t.Fatalf("expected staged generated artifact %q in add args %q", want, addArgs)
 		}
 	}
+	if got := strings.Join(runner.commands[10].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
+		t.Fatalf("expected post-commit lint verifier command, got %q", got)
+	}
+	if got := strings.Join(runner.commands[10].Env, "\n"); !strings.Contains(got, "XDG_CONFIG_HOME=") || !strings.Contains(got, "BFF_ADMIN_URL=http://localhost:3000") || !strings.Contains(got, "SESSION_PASSWORD=test-secret") {
+		t.Fatalf("expected sorted verifier env, got %q", got)
+	}
+	if got := strings.Join(runner.commands[11].Args, " "); !strings.Contains(got, "commit --amend --no-verify") {
+		t.Fatalf("expected commit amended with post-commit verification results, got %q", got)
+	}
 }
 
-func TestPostTaskFailsBeforeCommitWhenVerificationFails(t *testing.T) {
+func TestPostTaskFailsBeforePushWhenPostCommitVerificationFails(t *testing.T) {
 	runner := &recordingRunner{
 		results: []CommandResult{
 			{},
 			{Stdout: " M packages/contracts/src/schemas/auth.ts\n"},
+			{Stdout: "fix-MASS-0000-contracts\n"},
 		},
 		errs: []error{
+			nil,
+			nil,
+			nil,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -455,8 +464,25 @@ func TestPostTaskFailsBeforeCommitWhenVerificationFails(t *testing.T) {
 	if !errors.Is(err, ErrVerificationFailed) {
 		t.Fatalf("expected verification failure, got %v", err)
 	}
-	if len(runner.commands) != 4 {
-		t.Fatalf("expected no commands after failed verifier, got %d", len(runner.commands))
+	if len(runner.commands) != 8 {
+		t.Fatalf("expected no push or PR commands after failed verifier, got %d", len(runner.commands))
+	}
+	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit --no-verify") {
+		t.Fatalf("expected local commit before CI-equivalent verification, got %q", got)
+	}
+	if got := strings.Join(runner.commands[7].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
+		t.Fatalf("expected post-commit lint verifier command, got %q", got)
+	}
+}
+
+func TestSafeTestResultPreservesLongVerifierCommand(t *testing.T) {
+	command := "pnpm exec nx affected -t lint --base=origin/main --head=HEAD --exclude=mass-core,tag:platform:mobile,tag:platform:web --parallel=4 --max-warnings=0"
+	got := safeTestResult(command, "passed")
+	if !strings.Contains(got, "tag:platform:web") || !strings.Contains(got, "--max-warnings=0") {
+		t.Fatalf("expected full verifier command preserved, got %q", got)
+	}
+	if strings.Contains(got, "tag:platform:w: passed") {
+		t.Fatalf("expected verifier command not to be truncated, got %q", got)
 	}
 }
 
