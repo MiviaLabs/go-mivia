@@ -599,6 +599,34 @@ func TestRemoveDedicatedWorktreeRejectsPathOutsideMiviaWorktrees(t *testing.T) {
 	}
 }
 
+func TestGitArgsWithSafeDirectoriesPrecedesWorktreeRemove(t *testing.T) {
+	baseWorkDir := filepath.Join(t.TempDir(), "repo")
+	runWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-run")
+	args := gitArgsWithSafeDirectories([]string{baseWorkDir, runWorkDir, baseWorkDir}, "-C", baseWorkDir, "worktree", "remove", "--force", runWorkDir)
+	wantPrefix := []string{
+		"-c", "safe.directory=" + filepath.Clean(baseWorkDir),
+		"-c", "safe.directory=" + filepath.Clean(runWorkDir),
+		"-C", baseWorkDir,
+	}
+	if len(args) < len(wantPrefix) {
+		t.Fatalf("expected safe.directory prefix, got %#v", args)
+	}
+	for index, want := range wantPrefix {
+		if args[index] != want {
+			t.Fatalf("arg %d: expected %q, got %q in %#v", index, want, args[index], args)
+		}
+	}
+	gotBaseSafeDir := 0
+	for _, arg := range args {
+		if arg == "safe.directory="+filepath.Clean(baseWorkDir) {
+			gotBaseSafeDir++
+		}
+	}
+	if gotBaseSafeDir != 1 {
+		t.Fatalf("expected base safe.directory once, got %d in %#v", gotBaseSafeDir, args)
+	}
+}
+
 func TestGetWorkTaskMetadataReadsReviewAndVerifierRefs(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

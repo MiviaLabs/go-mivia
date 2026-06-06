@@ -1198,7 +1198,7 @@ func removeDedicatedWorktree(ctx context.Context, baseWorkDir string, runWorkDir
 	} else if err != nil {
 		return err
 	}
-	remove := exec.CommandContext(ctx, "git", "-C", baseWorkDir, "worktree", "remove", "--force", runWorkDir)
+	remove := exec.CommandContext(ctx, "git", gitArgsWithSafeDirectories([]string{baseWorkDir, runWorkDir}, "-C", baseWorkDir, "worktree", "remove", "--force", runWorkDir)...)
 	if err := remove.Run(); err != nil {
 		if _, statErr := os.Stat(filepath.Join(runWorkDir, ".git")); statErr == nil && isRegisteredGitWorktree(ctx, baseWorkDir, runWorkDir) {
 			return fmt.Errorf("git worktree remove failed: %w", err)
@@ -1207,13 +1207,13 @@ func removeDedicatedWorktree(ctx context.Context, baseWorkDir string, runWorkDir
 			return err
 		}
 	}
-	prune := exec.CommandContext(ctx, "git", "-C", baseWorkDir, "worktree", "prune", "--expire", "now")
+	prune := exec.CommandContext(ctx, "git", gitArgsWithSafeDirectories([]string{baseWorkDir}, "-C", baseWorkDir, "worktree", "prune", "--expire", "now")...)
 	_ = prune.Run()
 	return nil
 }
 
 func isRegisteredGitWorktree(ctx context.Context, baseWorkDir string, runWorkDir string) bool {
-	list := exec.CommandContext(ctx, "git", "-C", baseWorkDir, "worktree", "list", "--porcelain")
+	list := exec.CommandContext(ctx, "git", gitArgsWithSafeDirectories([]string{baseWorkDir, runWorkDir}, "-C", baseWorkDir, "worktree", "list", "--porcelain")...)
 	output, err := list.Output()
 	if err != nil {
 		return false
@@ -1229,6 +1229,25 @@ func isRegisteredGitWorktree(ctx context.Context, baseWorkDir string, runWorkDir
 		}
 	}
 	return false
+}
+
+func gitArgsWithSafeDirectories(safeDirectories []string, args ...string) []string {
+	out := make([]string, 0, len(args)+(len(safeDirectories)*2))
+	seen := map[string]struct{}{}
+	for _, dir := range safeDirectories {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		clean := filepath.Clean(dir)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, "-c", "safe.directory="+clean)
+	}
+	out = append(out, args...)
+	return out
 }
 
 func (client *runnerClient) getWorkTaskMetadata(ctx context.Context, projectID string, taskID string) (runnerWorkTaskMetadata, error) {
