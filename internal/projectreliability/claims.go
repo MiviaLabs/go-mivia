@@ -238,6 +238,9 @@ func shouldIgnoreToolClaim(tool string, knownTools map[string]struct{}) bool {
 	if looksLikeFilenameClaim(tool) {
 		return true
 	}
+	if isProjectConfigSectionClaim(tool) {
+		return true
+	}
 	if _, ok := knownTools[tool]; ok {
 		return false
 	}
@@ -250,6 +253,15 @@ func shouldIgnoreToolClaim(tool string, knownTools map[string]struct{}) bool {
 		}
 	}
 	return false
+}
+
+func isProjectConfigSectionClaim(tool string) bool {
+	switch strings.TrimSpace(tool) {
+	case "projects.git_operations", "projects.git_operations.conventions", "projects.verification", "projects.verification.generated_artifacts":
+		return true
+	default:
+		return false
+	}
 }
 
 func looksLikeProjectConfigClaim(tool string) bool {
