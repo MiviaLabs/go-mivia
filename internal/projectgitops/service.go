@@ -247,6 +247,9 @@ func (svc *Service) runVerification(ctx context.Context, workDir string) ([]stri
 		len(svc.options.Verification.GeneratedArtifacts) == 0 {
 		return nil, nil, nil
 	}
+	if err := svc.configureVerifierSafeDirectory(ctx, workDir); err != nil {
+		return nil, nil, err
+	}
 	refs := make([]string, 0)
 	tests := make([]string, 0)
 	for _, command := range svc.options.Verification.BootstrapCommands {
@@ -277,6 +280,15 @@ func (svc *Service) runVerification(ctx context.Context, workDir string) ([]stri
 		refs = append(refs, "project-verification-passed")
 	}
 	return refs, tests, nil
+}
+
+func (svc *Service) configureVerifierSafeDirectory(ctx context.Context, workDir string) error {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" || !filepath.IsAbs(workDir) || strings.ContainsAny(workDir, "\x00\r\n") {
+		return fmt.Errorf("%w: workdir must be absolute and safe", ErrInvalidInput)
+	}
+	_, err := svc.git(ctx, workDir, nil, "config", "--global", "--add", "safe.directory", workDir)
+	return err
 }
 
 func (svc *Service) runVerifierCommand(ctx context.Context, workDir string, command string) error {

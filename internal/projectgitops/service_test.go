@@ -349,6 +349,7 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 		{Stdout: " M packages/contracts/src/schemas/auth.ts\n"},
 		{},
 		{},
+		{},
 		{Stdout: " M packages/contracts/src/schemas/auth.ts\n M packages/contracts/dist/openapi.json\n M packages/contracts/dist/openapi.yaml\n"},
 		{Stdout: "fix-MASS-0000-contracts\n"},
 		{},
@@ -391,16 +392,19 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 	if !containsString(result.EvidenceRefs, "project-verification-passed") {
 		t.Fatalf("expected verification evidence ref, got %+v", result.EvidenceRefs)
 	}
-	if got := strings.Join(runner.commands[2].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
+	if got := strings.Join(runner.commands[2].Args, " "); !strings.Contains(got, "config --global --add safe.directory /tmp/worktree") {
+		t.Fatalf("expected verifier safe.directory command, got %q", got)
+	}
+	if got := strings.Join(runner.commands[3].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
 		t.Fatalf("expected lint verifier command, got %q", got)
 	}
-	if got := strings.Join(runner.commands[2].Env, "\n"); got != "BFF_ADMIN_URL=http://localhost:3000\nSESSION_PASSWORD=test-secret" {
+	if got := strings.Join(runner.commands[3].Env, "\n"); got != "BFF_ADMIN_URL=http://localhost:3000\nSESSION_PASSWORD=test-secret" {
 		t.Fatalf("expected sorted verifier env, got %q", got)
 	}
-	if got := strings.Join(runner.commands[3].Args, " "); got != "-lc pnpm -s nx run contracts:verify-openapi" {
+	if got := strings.Join(runner.commands[4].Args, " "); got != "-lc pnpm -s nx run contracts:verify-openapi" {
 		t.Fatalf("expected openapi verifier command, got %q", got)
 	}
-	addArgs := strings.Join(runner.commands[6].Args, "\n")
+	addArgs := strings.Join(runner.commands[7].Args, "\n")
 	for _, want := range []string{"packages/contracts/src/schemas/auth.ts", "packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"} {
 		if !strings.Contains(addArgs, want) {
 			t.Fatalf("expected staged generated artifact %q in add args %q", want, addArgs)
@@ -415,6 +419,7 @@ func TestPostTaskFailsBeforeCommitWhenVerificationFails(t *testing.T) {
 			{Stdout: " M packages/contracts/src/schemas/auth.ts\n"},
 		},
 		errs: []error{
+			nil,
 			nil,
 			nil,
 			errors.New("lint failed"),
@@ -443,7 +448,7 @@ func TestPostTaskFailsBeforeCommitWhenVerificationFails(t *testing.T) {
 	if !errors.Is(err, ErrVerificationFailed) {
 		t.Fatalf("expected verification failure, got %v", err)
 	}
-	if len(runner.commands) != 3 {
+	if len(runner.commands) != 4 {
 		t.Fatalf("expected no commands after failed verifier, got %d", len(runner.commands))
 	}
 }
