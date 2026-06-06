@@ -715,6 +715,58 @@ func TestRequeuePreExecutionRecoveryBlocksDirtyPathsOutsideLikelyFiles(t *testin
 	}
 }
 
+func TestRequeuePreExecutionRecoveryBoundsDirtyPathBlockedReason(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"apps/domain/src/service.ts"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	task.LikelyFilesAffected = []string{"apps/domain/src"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries,
+		SafeSummary:     "pre_execution_recovery",
+		FailureCategory: "gitops_dirty_worktree_scope",
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	refs := make([]string, 0, 20)
+	for i := 0; i < 20; i++ {
+		refs = append(refs, fmt.Sprintf("gitops-dirty-path:.claude/skills/flutter-generated-long-path-%02d/SKILL.md", i))
+	}
+
+	updated, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, refs)
+	if err != nil {
+		t.Fatalf("requeueTaskAfterPreExecutionRecoveryFailure returned error: %v", err)
+	}
+	if updated.FailureCategory != "gitops_dirty_worktree_scope_requires_plan" {
+		t.Fatalf("expected dirty scope to require a plan, got %+v", updated)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if len(blockedTask.BlockedReason) > 500 {
+		t.Fatalf("expected blocked reason within service limit, got length %d: %q", len(blockedTask.BlockedReason), blockedTask.BlockedReason)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, ".claude/skills/flutter-generated-long-path-00/SKILL.md") {
+		t.Fatalf("expected blocked reason to include the first dirty path, got %q", blockedTask.BlockedReason)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "more") {
+		t.Fatalf("expected blocked reason to summarize omitted paths, got %q", blockedTask.BlockedReason)
+	}
+}
+
 func TestClaimNextRunRequeuesExhaustedPreExecutionDirtyScopeWithTaskEvidence(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "fix-a", []string{"apps/domain/src/service.ts"})

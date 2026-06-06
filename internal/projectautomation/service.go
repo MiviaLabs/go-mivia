@@ -1832,7 +1832,7 @@ func gitOpsRecoveryRequeueSummary(category string) string {
 }
 
 func (svc *Service) blockTaskAfterOutOfScopeDirtyPaths(ctx context.Context, updater workTaskStatusUpdater, run AutomationRun, task projectworkplan.WorkTask, dirtyPaths []string) (AutomationRun, error) {
-	reason := recoveryResumeInstructions("GitOps dirty paths outside likely_files_affected require a new plan: " + strings.Join(dirtyPaths, ", "))
+	reason := dirtyPathsBlockedReason(dirtyPaths)
 	blockedTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
 		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
 			ProjectID:          task.ProjectID,
@@ -1858,6 +1858,45 @@ func (svc *Service) blockTaskAfterOutOfScopeDirtyPaths(ctx context.Context, upda
 	}
 	run.UpdatedAt = now
 	return svc.store.UpdateRun(ctx, run)
+}
+
+func dirtyPathsBlockedReason(dirtyPaths []string) string {
+	const maxBlockedReasonLength = 500
+	prefix := "GitOps dirty paths outside likely_files_affected require a new plan: "
+	if len(dirtyPaths) == 0 {
+		return strings.TrimSpace(prefix)
+	}
+	paths := uniqueRefs(dirtyPaths)
+	reason := prefix
+	added := 0
+	for i, path := range paths {
+		remaining := len(paths) - i
+		suffix := ""
+		if remaining > 1 {
+			suffix = fmt.Sprintf(", and %d more", remaining-1)
+		}
+		separator := ""
+		if added > 0 {
+			separator = ", "
+		}
+		candidate := reason + separator + path + suffix
+		if len(candidate) > maxBlockedReasonLength {
+			break
+		}
+		reason += separator + path
+		added++
+	}
+	omitted := len(paths) - added
+	if omitted > 0 {
+		suffix := fmt.Sprintf(", and %d more", omitted)
+		if len(reason)+len(suffix) <= maxBlockedReasonLength {
+			reason += suffix
+		}
+	}
+	if len(reason) > maxBlockedReasonLength {
+		return strings.TrimSpace(reason[:maxBlockedReasonLength])
+	}
+	return reason
 }
 
 func gitOpsRecoveryResumeInstructions(category string, dirtyPaths []string) string {
