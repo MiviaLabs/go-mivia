@@ -810,6 +810,27 @@ func TestGitOpsTaskPathspecsPreferFilesToEditOverBroadLikelyFiles(t *testing.T) 
 	}
 }
 
+func TestPreTaskWithinScopeReportsDirtyPathEvidence(t *testing.T) {
+	runner := &gitOpsRecordingRunner{results: []projectgitops.CommandResult{
+		{},
+		{Stdout: " M apps/domain/src/service.ts\n M apps/domain/src/module.ts\n"},
+	}}
+	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+		Enabled:                true,
+		CommitAfterTask:        true,
+		RequireCleanBeforeTask: true,
+	}, runner)
+
+	err := gitOps.PreTaskWithinScope(t.Context(), "/tmp/worktree", []string{"apps/domain/src/service.ts"})
+	if !errors.Is(err, projectgitops.ErrDirtyWorktreeScope) {
+		t.Fatalf("expected scoped dirty worktree, got %v", err)
+	}
+	refs := gitOpsDirtyScopeEvidenceRefs(err)
+	if strings.Join(refs, ",") != "gitops-dirty-path:apps/domain/src/module.ts" {
+		t.Fatalf("expected exact dirty-path evidence ref, got %+v", refs)
+	}
+}
+
 func TestGitOpsOptionsFromConfigMapsConventions(t *testing.T) {
 	options := gitOpsOptionsFromConfig(config.GitOperations{
 		Enabled:         true,

@@ -622,6 +622,233 @@ func TestClaimNextRunRequeuesExhaustedPreExecutionRecoveryClaimedByFailedRun(t *
 	}
 }
 
+func TestRequeuePreExecutionRecoveryExpandsScopeForDirtyPathsUnderLikelyFiles(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"apps/domain/src/service.ts"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	task.LikelyFilesAffected = []string{"apps/domain/src"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries,
+		SafeSummary:     "pre_execution_recovery",
+		FailureCategory: "gitops_dirty_worktree_scope",
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, []string{"gitops-dirty-path:apps/domain/src/module.ts"})
+	if err != nil {
+		t.Fatalf("requeueTaskAfterPreExecutionRecoveryFailure returned error: %v", err)
+	}
+	if updated.Status != RunStatusFailed || updated.FailureCategory != "pre_execution_recovery_failed_requires_implementation" {
+		t.Fatalf("expected implementation requeue failure marker, got %+v", updated)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusReady || requeuedTask.ClaimedByRunID != "" {
+		t.Fatalf("expected ready task after pre-execution requeue, got %+v", requeuedTask)
+	}
+	if !containsString(requeuedTask.FilesToEdit, "apps/domain/src") {
+		t.Fatalf("expected likely directory to be added to files_to_edit, got %+v", requeuedTask.FilesToEdit)
+	}
+	if !strings.Contains(requeuedTask.ResumeInstructions, "apps/domain/src/module.ts") {
+		t.Fatalf("expected resume instructions to name dirty path, got %q", requeuedTask.ResumeInstructions)
+	}
+}
+
+func TestRequeuePreExecutionRecoveryBlocksDirtyPathsOutsideLikelyFiles(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"apps/domain/src/service.ts"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	task.LikelyFilesAffected = []string{"apps/domain/src"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries,
+		SafeSummary:     "pre_execution_recovery",
+		FailureCategory: "gitops_dirty_worktree_scope",
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, []string{"gitops-dirty-path:apps/other/src/module.ts"})
+	if err != nil {
+		t.Fatalf("requeueTaskAfterPreExecutionRecoveryFailure returned error: %v", err)
+	}
+	if updated.Status != RunStatusFailed || updated.FailureCategory != "gitops_dirty_worktree_scope_requires_plan" {
+		t.Fatalf("expected dirty scope to require a plan, got %+v", updated)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected task blocked, got %+v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "apps/other/src/module.ts") || !strings.Contains(blockedTask.ResumeInstructions, "new plan") {
+		t.Fatalf("expected exact path and new-plan instructions, reason=%q resume=%q", blockedTask.BlockedReason, blockedTask.ResumeInstructions)
+	}
+}
+
+func TestClaimNextRunRequeuesExhaustedPreExecutionDirtyScopeWithTaskEvidence(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"apps/domain/src/service.ts"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	task.LikelyFilesAffected = []string{"apps/domain/src"}
+	task.EvidenceRefs = []string{"automation_run:run-a", "gitops-dirty-path:apps/domain/src/module.ts"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries,
+		SafeSummary:     "pre_execution_recovery",
+		FailureCategory: "gitops_dirty_worktree_scope",
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-1"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID == "run-a" || claimed.Run.TaskID != task.ID || claimed.Run.Status != RunStatusRunning {
+		t.Fatalf("expected replacement implementation run to be claimed, got %+v", claimed.Run)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if !containsString(requeuedTask.FilesToEdit, "apps/domain/src") {
+		t.Fatalf("expected dirty path under likely scope to expand files_to_edit, got %+v", requeuedTask.FilesToEdit)
+	}
+	if !strings.Contains(requeuedTask.ResumeInstructions, "apps/domain/src/module.ts") {
+		t.Fatalf("expected resume instructions to name dirty path, got %q", requeuedTask.ResumeInstructions)
+	}
+}
+
+func TestClaimNextRunExpandsPreExecutionDirtyScopeBeforeRetry(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"apps/domain/src/service.ts"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	task.LikelyFilesAffected = []string{"apps/domain/src"}
+	task.EvidenceRefs = []string{"automation_run:run-a", "gitops-dirty-path:apps/domain/src/module.ts"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    1,
+		SafeSummary:     "dependency_ready_automation_queued",
+		FailureCategory: "gitops_dirty_worktree_scope",
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-1"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != "run-a" || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != "pre_execution_recovery" {
+		t.Fatalf("expected same run to be retried through pre-execution recovery, got %+v", claimed.Run)
+	}
+	retryingTask := fake.tasks[task.ID]
+	if !containsString(retryingTask.FilesToEdit, "apps/domain/src") {
+		t.Fatalf("expected dirty path under likely scope to expand files_to_edit before retry, got %+v", retryingTask.FilesToEdit)
+	}
+}
+
+func TestClaimNextRunBlocksPreExecutionDirtyScopeOutsideLikelyBeforeRetry(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"apps/domain/src/service.ts"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	task.LikelyFilesAffected = []string{"apps/domain/src"}
+	task.EvidenceRefs = []string{"automation_run:run-a", "gitops-dirty-path:apps/other/src/module.ts"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    1,
+		SafeSummary:     "dependency_ready_automation_queued",
+		FailureCategory: "gitops_dirty_worktree_scope",
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-1"}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected dirty path outside likely scope to block without claiming a run, got %v", err)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected task blocked, got %+v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "apps/other/src/module.ts") {
+		t.Fatalf("expected blocked reason to name dirty path, got %q", blockedTask.BlockedReason)
+	}
+}
+
 func TestQueueReadyDependentAutomationBlocksAfterReplacementRetryLimit(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()

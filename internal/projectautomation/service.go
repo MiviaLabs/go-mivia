@@ -1074,6 +1074,13 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 		if err != nil || !preExecutionRecoveryTaskMatchesRun(task, run) || !svc.dependenciesDone(ctx, task) {
 			continue
 		}
+		task, _, blocked, err := svc.expandOrBlockPreExecutionDirtyScope(ctx, run, task, dirtyPathsFromEvidenceRefs(task.EvidenceRefs))
+		if err != nil {
+			return ClaimedRun{}, false, err
+		}
+		if blocked {
+			continue
+		}
 		task, err = svc.prepareTaskForPreExecutionRecovery(ctx, run, task)
 		if err != nil {
 			continue
@@ -1295,7 +1302,7 @@ func (svc *Service) reconcileExhaustedPreExecutionRecoveryRuns(ctx context.Conte
 		default:
 			continue
 		}
-		if _, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory); err != nil {
+		if _, err := svc.requeueTaskAfterPreExecutionRecoveryFailure(ctx, run, run.FailureCategory, task.EvidenceRefs); err != nil {
 			return err
 		}
 	}
@@ -1868,7 +1875,51 @@ func preExecutionRecoveryRequeueSummary(category string) string {
 	return "pre_execution_recovery_requeued_implementation_after_" + category
 }
 
-func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+func preExecutionRecoveryResumeInstructions(category string, dirtyPaths []string) string {
+	if len(dirtyPaths) > 0 {
+		return recoveryResumeInstructions("Pre-execution recovery failed with " + safeFailure(category) + "; dirty paths: " + strings.Join(dirtyPaths, ", ") + ". Rerun implementation after files_to_edit scope is corrected.")
+	}
+	return recoveryResumeInstructions("Pre-execution recovery failed with " + safeFailure(category) + "; rerun implementation after resolving worktree, GitOps pre-task, or dirty-worktree scope setup before execution is retried.")
+}
+
+func (svc *Service) expandOrBlockPreExecutionDirtyScope(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask, dirtyPaths []string) (projectworkplan.WorkTask, AutomationRun, bool, error) {
+	if strings.TrimSpace(run.FailureCategory) != "gitops_dirty_worktree_scope" || len(dirtyPaths) == 0 {
+		return task, run, false, nil
+	}
+	expandScopes, outsidePaths := classifyDirtyScopePaths(task, dirtyPaths)
+	if len(outsidePaths) > 0 {
+		updater, ok := svc.workTasks.(workTaskStatusUpdater)
+		if !ok || updater == nil {
+			return task, run, false, nil
+		}
+		blockedRun, err := svc.blockTaskAfterOutOfScopeDirtyPaths(ctx, updater, run, task, outsidePaths)
+		if err != nil {
+			return task, run, false, err
+		}
+		return task, blockedRun, true, nil
+	}
+	if len(expandScopes) == 0 {
+		return task, run, false, nil
+	}
+	expander, ok := svc.workTasks.(workTaskScopeExpander)
+	if !ok || expander == nil {
+		return task, run, false, nil
+	}
+	expanded, err := expander.ExpandWorkTaskScope(ctx, projectworkplan.ExpandWorkTaskScopeInput{
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		FilesToEdit:        expandScopes,
+		RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+		TraceID:            firstNonEmpty(run.TraceID, run.ID),
+		ResumeInstructions: recoveryResumeInstructions("Pre-execution dirty paths were inside likely_files_affected and files_to_edit was expanded for retry: " + strings.Join(dirtyPaths, ", ")),
+	})
+	if err != nil {
+		return task, run, false, err
+	}
+	return expanded, run, false, nil
+}
+
+func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Context, run AutomationRun, category string, evidenceRefs []string) (AutomationRun, error) {
 	updater, ok := svc.workTasks.(workTaskStatusUpdater)
 	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
 		run.Status = RunStatusFailed
@@ -1885,6 +1936,14 @@ func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Cont
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
 	}
+	dirtyPaths := dirtyPathsFromEvidenceRefs(evidenceRefs)
+	task, blockedRun, blocked, err := svc.expandOrBlockPreExecutionDirtyScope(ctx, run, task, dirtyPaths)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if blocked {
+		return blockedRun, nil
+	}
 	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
 		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
 			ProjectID:          task.ProjectID,
@@ -1892,7 +1951,7 @@ func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Cont
 			SafeNextAction:     "pre_execution_recovery_failed_requeue_implementation",
 			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
 			TraceID:            firstNonEmpty(run.TraceID, run.ID),
-			ResumeInstructions: recoveryResumeInstructions("Pre-execution recovery failed with " + safeFailure(category) + "; rerun implementation after resolving worktree, GitOps pre-task, or dirty-worktree scope setup before execution is retried."),
+			ResumeInstructions: preExecutionRecoveryResumeInstructions(category, dirtyPaths),
 		},
 		Status: projectworkplan.WorkTaskStatusReady,
 	})
@@ -3601,7 +3660,7 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 
 func isRecoverablePreExecutionFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "worktree_resolve_failed", "worktree_prepare_failed", "claim_failed", "start_failed", "gitops_pre_task_failed", "gitops_dirty_worktree":
+	case "worktree_resolve_failed", "worktree_prepare_failed", "claim_failed", "start_failed", "gitops_pre_task_failed", "gitops_dirty_worktree", "gitops_dirty_worktree_scope":
 		return true
 	default:
 		return false

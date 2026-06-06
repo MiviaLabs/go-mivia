@@ -294,7 +294,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 					if prepareErr := prepareRunWorktree(ctx, runWorkDir); prepareErr != nil {
 						preTaskErr = prepareErr
 					} else {
-						preTaskErr = gitOps.PreTask(ctx, runWorkDir)
+						preTaskErr = gitOps.PreTaskWithinScope(ctx, runWorkDir, gitOpsTaskPathspecs(claimed, taskMetadata))
 					}
 				}
 			}
