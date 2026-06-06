@@ -52,6 +52,13 @@ const SVGNS = "http://www.w3.org/2000/svg";
 const POLL_MS = 3000;
 const ACTIVE_HEALTH = new Set(["syncing", "running", "warming_up"]);
 const ACTIVE_RUN = new Set(["running", "queued", "pending", "syncing"]);
+const STATUS_GROUPS = {
+  active: new Set(["active", "claimed", "claiming", "in_progress", "running", "starting", "verifying"]),
+  blocked: new Set(["blocked", "policy_denied", "runner_unavailable"]),
+  failed: new Set(["failed", "timeout"]),
+  completed: new Set(["completed", "done", "verified", "success", "succeeded"]),
+  waiting: new Set(["planned", "ready", "queued", "needs_review", "draft", "enabled", "paused"]),
+};
 const ACTIVITY_EVENT_TYPES = ["mcp_activity", "policy_event", "agent_run_started", "agent_step", "agent_promotion", "agent_run_completed"];
 let pollHandle = null;
 let activitySource = null;
@@ -1433,7 +1440,9 @@ async function loadWorkPlanView(projectID, state, nodes) {
   state.blockedTasks = blockedTasks;
   state.automationRuns = automationRuns;
   if (planRecords.length && !planRecords.some((plan) => workPlanID(plan) === state.selectedPlanID)) {
-    const current = planRecords.find((plan) => ["active", "needs_review"].includes(workStatus(plan))) || planRecords[0];
+    const current = planRecords.find((plan) => workStatusGroup(plan) === "active") ||
+      planRecords.find((plan) => workStatusGroup(plan) === "waiting") ||
+      planRecords[0];
     state.selectedPlanID = workPlanID(current);
   }
 
@@ -1481,12 +1490,15 @@ async function loadWorkPlanView(projectID, state, nodes) {
 }
 
 function workPlanCurrent(plans, nextTask) {
-  const current = plans.find((plan) => ["active", "in_progress", "current"].includes(workStatus(plan))) || plans[0] || {};
+  const current = plans.find((plan) => workStatusGroup(plan) === "active") ||
+    plans.find((plan) => workStatusGroup(plan) === "waiting") ||
+    plans[0] ||
+    {};
   if (!plans.length && !nextTask) return emptyText("No current work plan metadata returned.");
   return el("div", { class: "work-plan-current__body" },
     infoList([
       ["Plan", safeWorkText(current.plan_ref || current.id || current.work_plan_id) || "unknown"],
-      ["Status", safeWorkText(current.status) || "unknown"],
+      ["Status", statusGroupLabel(current.status)],
       ["Owner", safeWorkText(current.owner_agent || current.owner) || "unassigned"],
       ["Isolation", safeWorkText(current.isolation_mode) || "unspecified"],
       ["Worktree", safeWorkText(current.git_worktree_ref) || "none"],
@@ -1518,7 +1530,7 @@ function workPlanButton(projectID, plan, state, planTasksNode, detailNode) {
   },
     el("div", { class: "work-task-row__head" },
       el("strong", { text: safeWorkText(plan.title || plan.plan_ref || planID) || "work plan" }),
-      pill(safeWorkText(plan.status) || "status unknown", workTaskTone(plan.status)),
+      pill(statusGroupLabel(plan.status), workTaskTone(plan.status)),
     ),
     el("span", { text: compactJoin([planID, plan.plan_ref, plan.owner_agent || plan.created_by_run_id, plan.isolation_mode, plan.git_worktree_ref, formatDate(plan.updated_at || plan.created_at)]) }),
   );
@@ -1547,7 +1559,7 @@ function workPlanTaskDecomposition(projectID, plan, tasks, state, detailNode) {
     infoList([
       ["Plan", workPlanID(plan) || "unknown"],
       ["Plan Ref", safeWorkText(plan.plan_ref) || "unknown"],
-      ["Status", safeWorkText(plan.status) || "unknown"],
+      ["Status", statusGroupLabel(plan.status)],
       ["Owner", safeWorkText(plan.owner_agent || plan.created_by_run_id) || "unassigned"],
       ["Isolation", safeWorkText(plan.isolation_mode) || "unspecified"],
       ["Parallel group", safeWorkText(plan.parallel_group_ref) || "none"],
@@ -1580,7 +1592,7 @@ function workTaskButton(projectID, task, state, detailNode) {
   },
     el("div", { class: "work-task-row__head" },
       el("strong", { text: safeWorkText(task.title || task.task_ref || taskID) || "work task" }),
-      pill(safeWorkText(task.status) || "status unknown", workTaskTone(task.status)),
+      pill(statusGroupLabel(task.status), workTaskTone(task.status)),
     ),
     el("span", { text: compactJoin([taskID, task.owner_agent || task.claimed_by_run_id, task.verification_requirement]) }),
   );
@@ -1613,7 +1625,7 @@ function workTaskDetail(projectID, task, emptyMessage) {
   return el("div", { class: "work-task-detail__body" },
     infoList([
       ["Task", taskID || "unknown"],
-      ["Status", safeWorkText(task.status) || "unknown"],
+      ["Status", statusGroupLabel(task.status)],
       ["Owner agent", safeWorkText(task.owner_agent || task.claimed_by_run_id) || "unassigned"],
       ["Updated", formatDate(task.updated_at || task.last_updated_at)],
     ]),
@@ -1669,8 +1681,9 @@ function automationRunMetadata(run) {
 
 function automationRunStatus(run) {
   return compactJoin([
-    safeWorkText(run.status) || "unknown",
-    run.work_task_status ? `task ${run.work_task_status}` : "",
+    statusGroupLabel(run.status),
+    apparentAutomationRunLeaseState(run),
+    run.work_task_status ? `task ${statusGroupLabel(run.work_task_status)}` : "",
   ]);
 }
 
@@ -1706,7 +1719,7 @@ function workTaskGraph(projectID, tasks, state, detailNode) {
       },
         [
           taskID || "unknown",
-          safeWorkText(task.status) || "unknown",
+          statusGroupLabel(task.status),
           safeWorkText(task.owner_agent || task.claimed_by_run_id) || "unassigned",
           workRefs(task.dependency_task_ids || task.dependencies || task.blocked_by_task_ids).join(", ") || "none",
           workRefs(task.evidence_refs || task.evidence_needed).join(", ") || "none",
@@ -1793,14 +1806,48 @@ function workPlanID(plan) {
   return safeWorkText(plan?.id || plan?.work_plan_id || plan?.plan_id);
 }
 
-function workStatus(task) {
-  return safeWorkText(task?.status).toLowerCase();
+function statusGroup(status) {
+  const value = safeWorkText(status).toLowerCase();
+  if (!value) return "unknown";
+  for (const [group, statuses] of Object.entries(STATUS_GROUPS)) {
+    if (statuses.has(value)) return group;
+  }
+  return "unknown";
+}
+
+function workStatusGroup(record) {
+  return statusGroup(record?.status ?? record);
+}
+
+function automationRunStatusGroup(run) {
+  return statusGroup(run?.status);
+}
+
+function statusGroupLabel(status) {
+  const value = safeWorkText(status) || "unknown";
+  const group = statusGroup(status);
+  return group === "unknown" ? value : `${value} (${group})`;
+}
+
+function apparentAutomationRunLeaseState(run) {
+  if (automationRunStatusGroup(run) !== "active") return "";
+  const expiresAt = safeWorkDate(run?.lease_expires_at);
+  if (!expiresAt) return "";
+  return expiresAt.getTime() < Date.now() ? "stale lease" : "";
+}
+
+function safeWorkDate(value) {
+  const text = safeWorkText(value);
+  if (!text) return null;
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() <= 1) return null;
+  return date;
 }
 
 function workTaskTone(status) {
-  const value = safeWorkText(status).toLowerCase();
-  if (["blocked", "failed"].includes(value)) return "warn";
-  if (["completed", "done", "verified"].includes(value)) return "ok";
+  const group = statusGroup(status);
+  if (["active", "blocked", "failed"].includes(group)) return "warn";
+  if (group === "completed") return "ok";
   return "muted";
 }
 
