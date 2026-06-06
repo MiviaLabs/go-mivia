@@ -124,6 +124,8 @@ If any item fails, mark the plan `blocked` or keep it `planned`. Do not activate
 
 Automation-created implementation PRs must be draft PRs created by runner GitOps, not by the chat/orchestrator agent.
 
+Repository-specific PR policy belongs in the project's GitOps config. Do not let workers create or edit PRs manually. For MASS-style repositories, runner GitOps must render the configured branch name policy, Conventional Commit title, required Agent workflow body declarations, ticket reference, review refs, verifier refs, and test results before opening the draft PR.
+
 Title:
 
 ```text
@@ -139,6 +141,12 @@ Tests
 ```
 
 PR metadata must be short and evidence-based. Do not include raw prompts, raw source dumps, raw stderr, secrets, credentials, roots, provider payloads, or PII.
+
+## CI Parity
+
+Before any runner-created commit, push, or draft PR, the configured project verification profile must be at least as strict as the repository's required CI path. For MASS-style Nx repositories, this includes affected lint/typecheck/test or generated-artifact checks with CI-equivalent base/head arguments, repository exclusions, and `--max-warnings=0` where CI uses it.
+
+Do not treat a focused task test as enough when repository CI also runs affected lint/typecheck/build/generated-artifact checks. If the work changes imports, project graph edges, generated artifacts, or package boundaries, affected lint must be part of runner GitOps verification so PRs with Nx module-boundary failures are blocked before GitHub.
 
 ## Stop Conditions
 

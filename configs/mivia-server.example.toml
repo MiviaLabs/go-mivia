@@ -185,6 +185,46 @@ always_before_pr = []
 # ]
 # command = "pnpm -s nx run contracts:verify-openapi"
 # required_before_pr = true
+#
+# MASS automation profile example:
+#
+# [projects.git_operations]
+# branch_prefix = ""
+# branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-MASS-[0-9]+(-[a-z0-9-]+)*$"
+#
+# [projects.git_operations.conventions]
+# commit_type = "chore"
+# commit_scope = ""
+# commit_summary_template = "complete {{work_task_ref}}"
+# pull_request_title_template = "chore({{ticket_ref}}): complete {{work_task_ref}}"
+# what_changed_template = "Jira: https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}\n\nSummary:\n- Completed {{work_task_title}}.\n\nWork Item:\n- {{work_task_ref}}\n\nType of Change:\n- Automation task"
+# how_verified_template = "Agent workflow:\n- plan-task: yes (https://rimthan-lab.atlassian.net/browse/{{ticket_ref}})\n- pr-audit: N/A\n\nProject ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}\n\nHAI Handoff Package:\n- Automation metadata is attached through Mivia Work Plan and Work Task refs.\n\nCI/CD Reference:\n- Draft PR created by Mivia GitOps automation."
+# tests_template = "Testing:\n{{test_results}}\n\nCompliance Checklist:\n- [ ] Human reviewer confirms repository-specific acceptance criteria.\n- [ ] CI passes before merge."
+#
+# [projects.verification]
+# bootstrap_commands = [
+#   "git fetch origin main",
+#   "pnpm install --frozen-lockfile --prefer-offline --ignore-scripts",
+# ]
+# always_before_pr = [
+#   "pnpm exec nx affected -t lint --base=origin/main --head=HEAD --exclude=mass-core,tag:platform:mobile,tag:platform:web --parallel=4 --max-warnings=0",
+#   "pnpm exec nx affected -t typecheck --base=origin/main --head=HEAD --exclude=mass-core,tag:platform:mobile,tag:platform:web --parallel=4",
+#   "pnpm exec tsc -p tsconfig.docker.json --noEmit",
+#   "semgrep scan --config policies/semgrep/rules/ --error apps/ libs/ packages/",
+# ]
+#
+# [projects.verification.env]
+# CI = "true"
+# BFF_ADMIN_URL = "http://localhost:3000"
+# SESSION_PASSWORD = "0000000000000000000000000000000000000000000000000000000000000000"
+#
+# [[projects.verification.generated_artifacts]]
+# paths = [
+#   "packages/contracts/dist/openapi.json",
+#   "packages/contracts/dist/openapi.yaml",
+# ]
+# command = "pnpm exec nx run contracts:verify-openapi"
+# required_before_pr = true
 
 [[projects]]
 id = "example-service"
