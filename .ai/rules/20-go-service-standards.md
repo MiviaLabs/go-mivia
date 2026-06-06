@@ -34,5 +34,8 @@ Logging:
 Testing:
 
 - Unit tests first for config, health checks, redaction, state transitions, and migration runners.
+- Bug fixes must add the narrowest focused regression test first when feasible, naming the failing behavior instead of only covering the patched helper.
+- Regression tests must exercise the public boundary or smallest stable internal contract that proves the bug, not a mocked path that can pass while the bug remains.
+- If a bug is confirmed but cannot be covered by an automated test in scope, document the concrete reason and run the smallest reproducible manual or package verifier.
 - Integration tests must be opt-in; local Compose services may be used only after the runtime dependency is approved.
 - No live internet in unit tests.

@@ -15,11 +15,13 @@ Workflow:
 2. Inspect current repository files and committed state.
 3. Separate verified facts from assumptions.
 4. Identify affected security, privacy, data, and operational domains.
-5. Add a `Documentation impact` decision: stable docs to update, new diagrams/docs needed, or `None - reason`.
-6. Add Mermaid flow, sequence, or architecture diagrams when the task changes architecture, workflow, data flow, or user flow.
-7. Break work into phases that can be implemented independently.
-8. Add acceptance criteria, verification commands, residual risks, and owner decisions.
-9. Include a copy-paste handoff prompt for each phase.
+5. For bug-fix plans, include a `Confirmed bug evidence` section with the current code path, failing behavior, expected behavior, and evidence source. If the bug is not confirmed, stop the plan at `Not confirmed` and list missing evidence.
+6. For bug-fix plans, require the first implementation step to add or identify the narrowest regression test or reproducible verifier before changing production code.
+7. Add a `Documentation impact` decision: stable docs to update, new diagrams/docs needed, or `None - reason`.
+8. Add Mermaid flow, sequence, or architecture diagrams when the task changes architecture, workflow, data flow, or user flow.
+9. Break work into phases that can be implemented independently.
+10. Add acceptance criteria, verification commands, residual risks, and owner decisions.
+11. Include a copy-paste handoff prompt for each phase.
 
 Output location:
 
