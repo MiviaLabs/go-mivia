@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
@@ -71,7 +72,7 @@ func run(args []string) int {
 		return 1
 	}
 	runnerID := defaultRunnerID()
-	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: &http.Client{Timeout: normalizedRequestTimeout(*requestTimeout)}, runnerID: runnerID, heartbeatInterval: normalizedHeartbeatInterval(*heartbeatInterval)}
+	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: &http.Client{Timeout: normalizedRequestTimeout(*requestTimeout)}, runnerID: runnerID, heartbeatInterval: normalizedHeartbeatInterval(*heartbeatInterval), projectCleanupInterval: defaultProjectCleanupInterval}
 	var idleSince time.Time
 	for {
 		projectIDs, err := runnerProjectIDs(context.Background(), client, strings.TrimSpace(*projectID))
@@ -218,7 +219,9 @@ type codexLaunchOptions struct {
 
 func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg config.Config, projectID string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
 	gitOpsOptions := gitOpsOptionsForProject(cfg, projectID)
-	cleanupTerminalProjectWorktrees(ctx, client, gitOpsOptions, projectID, strings.TrimSpace(codexOptions.WorkDir))
+	if client.shouldRunProjectCleanup(projectID, strings.TrimSpace(codexOptions.WorkDir)) {
+		cleanupTerminalProjectWorktrees(ctx, client, gitOpsOptions, projectID, strings.TrimSpace(codexOptions.WorkDir))
+	}
 
 	claimed, ok, err := client.claimNext(ctx, projectID, agentID)
 	if err != nil {
@@ -356,6 +359,31 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		return 0, true, true
 	}
 	return 1, true, true
+}
+
+const defaultProjectCleanupInterval = 5 * time.Minute
+
+func (client *runnerClient) shouldRunProjectCleanup(projectID string, baseWorkDir string) bool {
+	baseWorkDir = strings.TrimSpace(baseWorkDir)
+	if baseWorkDir == "" {
+		return false
+	}
+	interval := client.projectCleanupInterval
+	if interval <= 0 {
+		interval = defaultProjectCleanupInterval
+	}
+	key := strings.TrimSpace(projectID) + "\x00" + filepath.Clean(baseWorkDir)
+	now := time.Now()
+	client.projectCleanupMu.Lock()
+	defer client.projectCleanupMu.Unlock()
+	if client.projectCleanupLast == nil {
+		client.projectCleanupLast = map[string]time.Time{}
+	}
+	if last, ok := client.projectCleanupLast[key]; ok && now.Sub(last) < interval {
+		return false
+	}
+	client.projectCleanupLast[key] = now
+	return true
 }
 
 func shouldRunGitOpsForTask(task runnerWorkTaskMetadata) bool {
@@ -811,10 +839,13 @@ func writeCodexInput(input projectautomation.CodexTaskInput) (string, func(), er
 }
 
 type runnerClient struct {
-	baseURL           string
-	http              *http.Client
-	runnerID          string
-	heartbeatInterval time.Duration
+	baseURL                string
+	http                   *http.Client
+	runnerID               string
+	heartbeatInterval      time.Duration
+	projectCleanupInterval time.Duration
+	projectCleanupMu       sync.Mutex
+	projectCleanupLast     map[string]time.Time
 }
 
 type projectListResponse struct {
@@ -1179,6 +1210,8 @@ func isTerminalPlanStatus(status string) bool {
 	}
 }
 
+var errDirtyDedicatedWorktree = errors.New("dirty dedicated worktree")
+
 func removeDedicatedWorktree(ctx context.Context, baseWorkDir string, runWorkDir string) error {
 	baseWorkDir = filepath.Clean(strings.TrimSpace(baseWorkDir))
 	runWorkDir = filepath.Clean(strings.TrimSpace(runWorkDir))
@@ -1198,10 +1231,20 @@ func removeDedicatedWorktree(ctx context.Context, baseWorkDir string, runWorkDir
 	} else if err != nil {
 		return err
 	}
+	registered := isRegisteredGitWorktree(ctx, baseWorkDir, runWorkDir)
+	if registered {
+		if dirty, err := gitWorktreeDirty(ctx, baseWorkDir, runWorkDir); err != nil {
+			return err
+		} else if dirty {
+			return fmt.Errorf("%w: %s", errDirtyDedicatedWorktree, runWorkDir)
+		}
+	}
 	remove := exec.CommandContext(ctx, "git", gitArgsWithSafeDirectories([]string{baseWorkDir, runWorkDir}, "-C", baseWorkDir, "worktree", "remove", "--force", runWorkDir)...)
+	var removeStderr bytes.Buffer
+	remove.Stderr = &removeStderr
 	if err := remove.Run(); err != nil {
-		if _, statErr := os.Stat(filepath.Join(runWorkDir, ".git")); statErr == nil && isRegisteredGitWorktree(ctx, baseWorkDir, runWorkDir) {
-			return fmt.Errorf("git worktree remove failed: %w", err)
+		if _, statErr := os.Stat(filepath.Join(runWorkDir, ".git")); statErr == nil && registered {
+			return fmt.Errorf("git worktree remove failed: %w: %s", err, strings.TrimSpace(removeStderr.String()))
 		}
 		if err := os.RemoveAll(runWorkDir); err != nil {
 			return err
@@ -1210,6 +1253,17 @@ func removeDedicatedWorktree(ctx context.Context, baseWorkDir string, runWorkDir
 	prune := exec.CommandContext(ctx, "git", gitArgsWithSafeDirectories([]string{baseWorkDir}, "-C", baseWorkDir, "worktree", "prune", "--expire", "now")...)
 	_ = prune.Run()
 	return nil
+}
+
+func gitWorktreeDirty(ctx context.Context, baseWorkDir string, runWorkDir string) (bool, error) {
+	status := exec.CommandContext(ctx, "git", gitArgsWithSafeDirectories([]string{baseWorkDir, runWorkDir}, "-C", runWorkDir, "status", "--porcelain")...)
+	var stderr bytes.Buffer
+	status.Stderr = &stderr
+	output, err := status.Output()
+	if err != nil {
+		return false, fmt.Errorf("git worktree status failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(string(output)) != "", nil
 }
 
 func isRegisteredGitWorktree(ctx context.Context, baseWorkDir string, runWorkDir string) bool {

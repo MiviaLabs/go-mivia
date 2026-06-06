@@ -599,6 +599,22 @@ func TestRemoveDedicatedWorktreeRejectsPathOutsideMiviaWorktrees(t *testing.T) {
 	}
 }
 
+func TestRemoveDedicatedWorktreePreservesDirtyRegisteredWorktree(t *testing.T) {
+	baseWorkDir := initRunnerGitRepo(t)
+	runWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-dirty-run")
+	runGit(t, baseWorkDir, "worktree", "add", "-B", "mivia/dirty-run", runWorkDir, "main")
+	if err := os.WriteFile(filepath.Join(runWorkDir, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("dirty worktree: %v", err)
+	}
+	err := removeDedicatedWorktree(t.Context(), baseWorkDir, runWorkDir)
+	if !errors.Is(err, errDirtyDedicatedWorktree) {
+		t.Fatalf("expected dirty worktree preservation, got %v", err)
+	}
+	if _, statErr := os.Stat(runWorkDir); statErr != nil {
+		t.Fatalf("expected dirty worktree to remain, stat err=%v", statErr)
+	}
+}
+
 func TestGitArgsWithSafeDirectoriesPrecedesWorktreeRemove(t *testing.T) {
 	baseWorkDir := filepath.Join(t.TempDir(), "repo")
 	runWorkDir := filepath.Join(baseWorkDir, ".mivia-worktrees", "project-1", "project-1-run")
@@ -624,6 +640,19 @@ func TestGitArgsWithSafeDirectoriesPrecedesWorktreeRemove(t *testing.T) {
 	}
 	if gotBaseSafeDir != 1 {
 		t.Fatalf("expected base safe.directory once, got %d in %#v", gotBaseSafeDir, args)
+	}
+}
+
+func TestRunnerClientThrottlesProjectCleanup(t *testing.T) {
+	client := &runnerClient{projectCleanupInterval: time.Hour}
+	if !client.shouldRunProjectCleanup("project-1", "/tmp/repo") {
+		t.Fatal("expected first cleanup to run")
+	}
+	if client.shouldRunProjectCleanup("project-1", "/tmp/repo") {
+		t.Fatal("expected repeated cleanup to be throttled")
+	}
+	if !client.shouldRunProjectCleanup("project-2", "/tmp/repo") {
+		t.Fatal("expected different project cleanup to run")
 	}
 }
 
