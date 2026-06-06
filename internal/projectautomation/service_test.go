@@ -3510,6 +3510,68 @@ func TestReconcileInterruptedRunWithProgressedTaskMovesToVerifying(t *testing.T)
 	}
 }
 
+func TestReconcileRecoveryRunWithStaleReadyTaskRepairsAndQueues(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-confirmed-bug", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/fix-confirmed-bug",
+		Title:           "Fix confirmed bug",
+		Purpose:         "Repair stale ready status",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "implementation-automation",
+		PlanID:          task.PlanID,
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  projectworkplan.WorkTaskStatusReady,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		FailureCategory: "gitops_recovery_failed_requires_implementation",
+		SafeSummary:     RunSafeSummaryGitOpsRecoveryRequeuedImplementation,
+		FinishedAt:      time.Unix(200, 0).UTC(),
+		UpdatedAt:       time.Unix(200, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, "project-1"); err != nil {
+		t.Fatalf("reconcileRecoveryRunsWithStaleReadyTasks returned error: %v", err)
+	}
+	repaired := fake.tasks[task.ID]
+	if repaired.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected task repaired to ready, got %#v", repaired)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID, PlanID: task.PlanID, Status: RunStatusQueued})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].TaskID != task.ID {
+		t.Fatalf("expected one queued replacement run for task, got %#v", runs)
+	}
+}
+
 func TestClaimNextRunRequeuesAbandonedClaimingRunAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "create-confirmed-bug-work-plans", []string{"packages/contracts"})

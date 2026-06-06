@@ -903,6 +903,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
 	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, err
 	}
@@ -953,6 +956,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		return ClaimedRun{}, err
 	}
 	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
+	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
 	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
@@ -2293,6 +2299,61 @@ func (svc *Service) reconcileInterruptedRunsWithProgressedTasks(ctx context.Cont
 			return err
 		}
 		if _, err := svc.reconcileVerifyingRun(ctx, updated); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) reconcileRecoveryRunsWithStaleReadyTasks(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" {
+		return nil
+	}
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil {
+		return nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
+	if err != nil {
+		return err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for _, run := range runs {
+		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" || run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+			continue
+		}
+		switch strings.TrimSpace(run.FailureCategory) {
+		case "gitops_recovery_failed_requires_implementation", "pre_execution_recovery_failed_requires_implementation":
+		default:
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID || task.Status == projectworkplan.WorkTaskStatusReady {
+			continue
+		}
+		switch task.Status {
+		case projectworkplan.WorkTaskStatusDone, projectworkplan.WorkTaskStatusFailed, projectworkplan.WorkTaskStatusBlocked, projectworkplan.WorkTaskStatusCancelled, projectworkplan.WorkTaskStatusSuperseded:
+			continue
+		}
+		readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+			WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+				ProjectID:          task.ProjectID,
+				TaskID:             task.ID,
+				SafeNextAction:     "recovery_run_ready_status_repair",
+				RunID:              firstNonEmpty(run.ID, task.ClaimedByRunID),
+				TraceID:            firstNonEmpty(run.TraceID, run.ID),
+				ResumeInstructions: task.ResumeInstructions,
+			},
+			Status: projectworkplan.WorkTaskStatusReady,
+		})
+		if err != nil {
+			return err
+		}
+		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+		if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+			continue
+		}
+		if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
 			return err
 		}
 	}
