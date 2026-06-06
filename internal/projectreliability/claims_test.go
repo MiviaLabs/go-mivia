@@ -141,7 +141,7 @@ func TestClaimChecker_VerifiesWorkPlanToolsRoutesAndAliases(t *testing.T) {
 		IncludeVerified: true,
 		Documents: []ClaimDocument{{
 			Path: "api/mcp/agent-control.v1.md",
-			Text: "Use projects.work_plans.create, projects_work_plans_resume, projects.work_tasks.get, projects.work_tasks.get_next, projects_work_tasks_attach_verifier_result, POST /api/v1/projects/{id}/work-plans/{plan_id}/resume, POST /api/v1/projects/example-service/work-tasks/task-123/claim, GET /api/v1/projects/example-service/work-tasks/next, and POST /api/v1/projects/{id}/work-tasks/{task_id}/knowledge-candidates.",
+			Text: "Use projects.work_plans.create, projects_work_plans_resume, projects.work_tasks.get, projects.work_tasks.list, projects.work_tasks.get_next, projects_work_tasks_attach_verifier_result, POST /api/v1/projects/{id}/work-plans/{plan_id}/resume, POST /api/v1/projects/example-service/work-tasks/task-123/claim, GET /api/v1/projects/example-service/work-tasks/next, and POST /api/v1/projects/{id}/work-tasks/{task_id}/knowledge-candidates.",
 		}},
 	})
 	if err != nil {
@@ -151,6 +151,7 @@ func TestClaimChecker_VerifiesWorkPlanToolsRoutesAndAliases(t *testing.T) {
 		"projects.work_plans.create",
 		"projects_work_plans_resume",
 		"projects.work_tasks.get",
+		"projects.work_tasks.list",
 		"projects.work_tasks.get_next",
 		"projects_work_tasks_attach_verifier_result",
 		"/api/v1/projects/{id}/work-plans/{plan_id}/resume",
@@ -196,7 +197,7 @@ func TestClaimChecker_VerifiesAutomationToolsRoutesAndAliases(t *testing.T) {
 		IncludeVerified: true,
 		Documents: []ClaimDocument{{
 			Path: "api/mcp/agent-control.v1.md",
-			Text: "Use projects.automations.create, projects.automations.update_status, projects_automations_run_parallel_batch, projects.automation_runs.list, projects.automation_runs.claim_next, projects_automation_runs_complete_attempt, GET /api/v1/projects/{id}/automations/{automation_id}, POST /api/v1/projects/{id}/automations/{automation_id}/status, POST /api/v1/projects/{id}/automations/{automation_id}/runs, POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches, GET /api/v1/projects/{id}/automation-runs, POST /api/v1/projects/{id}/automation-runs/claim-next, GET /api/v1/projects/{id}/automation-runs/{run_id}, and POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result.",
+			Text: "Use projects.automations.create, projects.automations.create_remediation_from_finding, projects.automations.update_status, projects_automations_create_remediation_from_finding, projects_automations_run_parallel_batch, projects.automation_runs.list, projects.automation_runs.claim_next, projects_automation_runs_complete_attempt, GET /api/v1/projects/{id}/automations/{automation_id}, POST /api/v1/projects/{id}/automations/{automation_id}/status, POST /api/v1/projects/{id}/automations/{automation_id}/runs, POST /api/v1/projects/{id}/automations/{automation_id}/parallel-batches, GET /api/v1/projects/{id}/automation-runs, POST /api/v1/projects/{id}/automation-runs/claim-next, GET /api/v1/projects/{id}/automation-runs/{run_id}, and POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result.",
 		}},
 	})
 	if err != nil {
@@ -204,7 +205,9 @@ func TestClaimChecker_VerifiesAutomationToolsRoutesAndAliases(t *testing.T) {
 	}
 	for _, claim := range []string{
 		"projects.automations.create",
+		"projects.automations.create_remediation_from_finding",
 		"projects.automations.update_status",
+		"projects_automations_create_remediation_from_finding",
 		"projects_automations_run_parallel_batch",
 		"projects.automation_runs.list",
 		"projects.automation_runs.claim_next",
@@ -219,6 +222,31 @@ func TestClaimChecker_VerifiesAutomationToolsRoutesAndAliases(t *testing.T) {
 		"/api/v1/projects/{id}/automation-runs/{run_id}/attempt-result",
 	} {
 		assertClaimStatus(t, result, claim, "verified")
+	}
+}
+
+func TestClaimChecker_IgnoresProjectAutomationConfigSections(t *testing.T) {
+	result, err := NewClaimChecker(nil).Check(context.Background(), ClaimCheckRequest{
+		ProjectID:       "example-service",
+		IncludeVerified: true,
+		Documents: []ClaimDocument{{
+			Path: "docs/automation-runner.md",
+			Text: "Runner config supports [projects.git_operations] and [projects.git_operations.conventions]. Verification uses [projects.verification] and [[projects.verification.generated_artifacts]].",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("check claims: %v", err)
+	}
+	for _, claim := range []string{
+		"projects.git_operations",
+		"projects.git_operations.conventions",
+		"projects.verification",
+		"projects.verification.generated_artifacts",
+	} {
+		assertNoClaim(t, result, claim)
+	}
+	if result.Summary.Total != 0 {
+		t.Fatalf("expected config sections to be ignored, got %#v", result.Claims)
 	}
 }
 
