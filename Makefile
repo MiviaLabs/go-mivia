@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: check lint secret-scan test test-integration tidy
+.PHONY: check dashboard-test lint secret-scan test test-integration tidy
 
 check: lint test
 
@@ -9,6 +9,10 @@ lint:
 
 test:
 	bash scripts/test.sh
+
+dashboard-test:
+	go test ./cmd/mivia-dashboard ./internal/dashboardapp/config ./internal/dashboardapp/proxy ./internal/dashboardapp/httpapi
+	go test ./cmd/mivia-server ./internal/dashboard/httpapi
 
 tidy:
 	go mod tidy

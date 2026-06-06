@@ -7,6 +7,7 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-server ./cmd/mivia-server \
+    && CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-dashboard ./cmd/mivia-dashboard \
     && CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mivia-automation-runner ./cmd/mivia-automation-runner
 
 FROM node:24-bookworm-slim AS codex-cli
@@ -37,6 +38,7 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin mivia \
     && chown -R mivia:mivia /var/lib/mivia /app
 
 COPY --from=build /out/mivia-server /usr/local/bin/mivia-server
+COPY --from=build /out/mivia-dashboard /usr/local/bin/mivia-dashboard
 COPY --from=build /out/mivia-automation-runner /usr/local/bin/mivia-automation-runner
 COPY --from=build /usr/local/go /usr/local/go
 COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
@@ -70,7 +72,7 @@ ENV MIVIA_PUBLIC_PORT=8080
 ENV MIVIA_LADYBUG_PATH=/var/lib/mivia/mivialabs.lbug
 ENV MIVIA_SQLITE_PATH=/var/lib/mivia/mivialabs-config.sqlite
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=6 \
     CMD curl -fsS "http://${MIVIA_INTERNAL_ADDR}/readyz" >/dev/null || exit 1

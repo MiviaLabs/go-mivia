@@ -1,0 +1,19 @@
+# Copy this file to configs/mivia-dashboard.local.toml for a separate local
+# dashboard shell. Local config files are ignored and must not contain secrets,
+# tokens, PII, raw prompts, raw source content, provider payloads, or personal data.
+
+version = 1
+
+[server]
+# The dashboard service must stay loopback-only until authn/authz and origin
+# policy are approved. Compose uses an internal loopback listener plus a local
+# host-bound TCP forwarder, matching the mivia-server container boundary.
+http_addr = "127.0.0.1:8081"
+upstream_url = "http://127.0.0.1:8080"
+# Optional directory for built dashboard assets. When omitted or missing assets,
+# the service serves a read-only fallback shell from the binary.
+# static_dir = "internal/dashboard/httpapi/assets"
+max_request_bytes = 1048576
+request_timeout = "10s"
+read_header_timeout = "5s"
+shutdown_timeout = "10s"
