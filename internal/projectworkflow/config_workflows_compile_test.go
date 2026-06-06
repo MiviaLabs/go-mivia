@@ -91,6 +91,13 @@ func TestConfigWorkflowDefinitionsCompileCreatesGovernedObjects(t *testing.T) {
 				if result.WorkPlanID == "" || len(result.WorkTaskIDs) == 0 || len(result.PermissionSnapshotIDs) == 0 {
 					t.Fatalf("compile workflow %s returned incomplete refs: %#v", workflow.ID, result)
 				}
+				plan, err := workPlans.GetWorkPlan(ctx, workflow.ProjectID, result.WorkPlanID)
+				if err != nil {
+					t.Fatalf("get compiled work plan %s: %v", result.WorkPlanID, err)
+				}
+				if plan.GitBaseRef != "" {
+					t.Fatalf("compile workflow %s must omit unverified git base ref, got %q", workflow.ID, plan.GitBaseRef)
+				}
 			}
 		})
 	}
