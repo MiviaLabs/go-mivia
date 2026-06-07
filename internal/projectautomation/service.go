@@ -926,7 +926,7 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err != nil {
 		return ClaimedRun{}, err
 	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.Before(runs[j].CreatedAt) })
+	svc.sortQueuedRunsForClaim(ctx, runs)
 	for _, run := range runs {
 		if run.RunnerKind != RunnerKindCodexCLI {
 			continue
@@ -975,7 +975,7 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err != nil {
 		return ClaimedRun{}, err
 	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.Before(runs[j].CreatedAt) })
+	svc.sortQueuedRunsForClaim(ctx, runs)
 	for _, run := range runs {
 		if run.RunnerKind != RunnerKindCodexCLI {
 			continue
@@ -1131,6 +1131,31 @@ func (svc *Service) recoverablePreExecutionRuns(ctx context.Context, projectID s
 		return nil, err
 	}
 	return append(failed, blocked...), nil
+}
+
+func (svc *Service) sortQueuedRunsForClaim(ctx context.Context, runs []AutomationRun) {
+	if len(runs) < 2 || svc == nil || svc.store == nil {
+		sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.Before(runs[j].CreatedAt) })
+		return
+	}
+	tracePriority := make(map[string]int, len(runs))
+	for _, run := range runs {
+		priority := 1
+		if strings.TrimSpace(run.TraceID) != "" {
+			priority = 0
+		} else if automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID); err == nil && strings.TrimSpace(automation.TraceID) != "" {
+			priority = 0
+		}
+		tracePriority[run.ID] = priority
+	}
+	sort.SliceStable(runs, func(i, j int) bool {
+		left := tracePriority[runs[i].ID]
+		right := tracePriority[runs[j].ID]
+		if left != right {
+			return left < right
+		}
+		return runs[i].CreatedAt.Before(runs[j].CreatedAt)
+	})
 }
 
 func (svc *Service) reconcileRecoverablePreExecutionRuns(ctx context.Context, projectID string) error {
@@ -2412,6 +2437,13 @@ func (svc *Service) reconcileRecoveryRunsWithStaleReadyTasks(ctx context.Context
 		if !isRecoverableRecoveryFailure(run.FailureCategory) && !isRecoverableCodexExecutionFailure(run.FailureCategory) && !isRecoverableGovernedCloseoutFailure(run.FailureCategory) {
 			continue
 		}
+		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+		if err != nil {
+			continue
+		}
+		if automation.SourceKind == AutomationSourceWorkflow && strings.TrimSpace(automation.TraceID) == "" {
+			continue
+		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
 		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID || task.Status == projectworkplan.WorkTaskStatusReady {
 			continue
@@ -2434,7 +2466,6 @@ func (svc *Service) reconcileRecoveryRunsWithStaleReadyTasks(ctx context.Context
 		if err != nil {
 			return err
 		}
-		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
 		if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
 			continue
 		}

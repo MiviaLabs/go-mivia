@@ -426,6 +426,10 @@ func TestClaimNextRunRecoversFailedWorktreeResolveForInProgressTaskClaimedByRun(
 	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
 	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
 	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	automation.TraceID = "trace-current-chain"
+	if _, err := store.UpdateAutomation(ctx, automation); err != nil {
+		t.Fatalf("UpdateAutomation returned error: %v", err)
+	}
 	if _, err := store.CreateRun(ctx, AutomationRun{
 		ID: "run-a", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
 		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusFailed, RunnerKind: RunnerKindCodexCLI,
@@ -513,6 +517,128 @@ func TestClaimNextRunRequeuesFailedGovernedCloseoutForInProgressTaskClaimedByRun
 	}
 	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusInProgress || fake.tasks[task.ID].ClaimedByRunID != claimed.Run.ID {
 		t.Fatalf("expected replacement claim to own task, got %#v", fake.tasks[task.ID])
+	}
+}
+
+func TestClaimNextRunDoesNotRequeueUntracedLegacyGovernedCloseoutFailure(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "decompose-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	automation.SourceKind = AutomationSourceWorkflow
+	if _, err := store.UpdateAutomation(ctx, automation); err != nil {
+		t.Fatalf("UpdateAutomation returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-a", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusFailed, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus:  projectworkplan.WorkTaskStatusInProgress,
+		FailureCategory: "governed_closeout_apply_failed",
+		SafeSummary:     "dependency_ready_automation_queued",
+		CreatedAt:       time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected untraced legacy recovery to stay idle, got %v", err)
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusInProgress || fake.tasks[task.ID].ClaimedByRunID != "run-a" {
+		t.Fatalf("expected untraced legacy task to remain unchanged, got %#v", fake.tasks[task.ID])
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected no replacement run for untraced legacy failure, got %#v", runs)
+	}
+}
+
+func TestClaimNextRunPrefersTracedQueuedRunOverOlderUntracedHistory(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	legacyTask := readyTask("task-legacy", "legacy", []string{"internal/legacy.go"})
+	currentTask := readyTask("task-current", "current", []string{"internal/current.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		legacyTask.ID:  legacyTask,
+		currentTask.ID: currentTask,
+	}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	legacyAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "legacy/ref",
+		Title:           "Legacy Automation",
+		Purpose:         "Old queued history",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "agent-1",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{legacyTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation legacy returned error: %v", err)
+	}
+	currentAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "current/ref",
+		Title:           "Current Automation",
+		Purpose:         "Current traced workflow",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "agent-1",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{currentTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+		TraceID:         "trace-current-chain",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation current returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:                "legacy-run",
+		ProjectID:         "project-1",
+		AutomationID:      legacyAutomation.ID,
+		AgentID:           legacyAutomation.AgentID,
+		PlanID:            legacyTask.PlanID,
+		TaskID:            legacyTask.ID,
+		Status:            RunStatusQueued,
+		RunnerKind:        RunnerKindCodexCLI,
+		CreatedAt:         time.Unix(100, 0).UTC(),
+		UpdatedAt:         time.Unix(100, 0).UTC(),
+		SafeSummary:       "dependency_ready_automation_queued",
+		OrchestratorRunID: dependencyReadyRunID(legacyTask, legacyAutomation),
+	}); err != nil {
+		t.Fatalf("CreateRun legacy returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:                "current-run",
+		ProjectID:         "project-1",
+		AutomationID:      currentAutomation.ID,
+		AgentID:           currentAutomation.AgentID,
+		PlanID:            currentTask.PlanID,
+		TaskID:            currentTask.ID,
+		Status:            RunStatusQueued,
+		RunnerKind:        RunnerKindCodexCLI,
+		CreatedAt:         time.Unix(200, 0).UTC(),
+		UpdatedAt:         time.Unix(200, 0).UTC(),
+		SafeSummary:       "dependency_ready_automation_queued",
+		OrchestratorRunID: dependencyReadyRunID(currentTask, currentAutomation),
+	}); err != nil {
+		t.Fatalf("CreateRun current returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != "current-run" {
+		t.Fatalf("expected traced current run to be claimed before older legacy run, got %#v", claimed.Run)
 	}
 }
 
