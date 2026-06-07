@@ -1154,6 +1154,9 @@ func (svc *Service) sortQueuedRunsForClaim(ctx context.Context, runs []Automatio
 		if left != right {
 			return left < right
 		}
+		if left == 0 {
+			return runs[i].CreatedAt.After(runs[j].CreatedAt)
+		}
 		return runs[i].CreatedAt.Before(runs[j].CreatedAt)
 	})
 }
