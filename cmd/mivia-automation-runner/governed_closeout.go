@@ -137,8 +137,10 @@ func parseGovernedCloseoutOutput(message string) (governedCloseoutOutput, error)
 	if err != nil {
 		return governedCloseoutOutput{}, governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
+	if err := validateGovernedCloseoutTopLevelFields(jsonText); err != nil {
+		return governedCloseoutOutput{}, err
+	}
 	decoder := json.NewDecoder(strings.NewReader(jsonText))
-	decoder.DisallowUnknownFields()
 	var output governedCloseoutOutput
 	if err := decoder.Decode(&output); err != nil {
 		return governedCloseoutOutput{}, governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
@@ -150,6 +152,29 @@ func parseGovernedCloseoutOutput(message string) (governedCloseoutOutput, error)
 		return governedCloseoutOutput{}, governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
 	return output, nil
+}
+
+func validateGovernedCloseoutTopLevelFields(jsonText string) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(jsonText), &fields); err != nil {
+		return governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
+	}
+	allowed := map[string]struct{}{
+		"closeout_action":      {},
+		"outcome":              {},
+		"safe_next_action":     {},
+		"evidence_refs":        {},
+		"verifier_result_refs": {},
+		"child_tasks":          {},
+		"block_reason":         {},
+		"failure_reason":       {},
+	}
+	for field := range fields {
+		if _, ok := allowed[field]; !ok {
+			return governedCloseoutError{category: governedCloseoutInvalidJSON, err: fmt.Errorf("unknown top-level field %q", field)}
+		}
+	}
+	return nil
 }
 
 func extractSingleJSONObject(message string) (string, error) {

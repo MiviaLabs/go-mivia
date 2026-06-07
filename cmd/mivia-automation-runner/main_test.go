@@ -1319,6 +1319,17 @@ func TestParseGovernedCloseoutAcceptsWrappedSingleJSONObject(t *testing.T) {
 	}
 }
 
+func TestParseGovernedCloseoutAllowsExtraChildTaskGovernanceFields(t *testing.T) {
+	payload := strings.Replace(governedCloseoutFixtureJSON(), `"decomposition_quality":"ready"`, `"decomposition_quality":"ready","acceptance_criteria":["works from source evidence"],"stop_conditions":["missing verifier"],"verifier_ladder":["focused go test"],"regression_test_applicability":"required"`, 1)
+	output, err := parseGovernedCloseoutOutput(payload)
+	if err != nil {
+		t.Fatalf("extra child task governance fields must not fail JSON parsing: %v", err)
+	}
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("runner validation should accept otherwise valid child task: %v", err)
+	}
+}
+
 func TestApplyGovernedCloseoutCreatesChildTasksAndMovesWrapperToNeedsReview(t *testing.T) {
 	var childCreated atomic.Int32
 	var evidenceAttached atomic.Int32
