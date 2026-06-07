@@ -3616,6 +3616,9 @@ func governedWorkflowCloseoutInstructions(stepInstructions []string) []string {
 		"For this governed workflow wrapper, you must perform explicit MCP closeout before exiting successfully; do not rely on the runner to auto-close this task.",
 		"Successful closeout requires at least one bounded evidence ref on this wrapper task and projects.work_tasks.update_status moving this Work Task out of in_progress, normally to needs_review. If the required work cannot be completed, call projects.work_tasks.block or projects.work_tasks.fail with the concrete reason.",
 		"When native MCP tools are unavailable, use the Mivia MCP server URL with JSON-RPC tools/call for projects.work_tasks.create, projects.work_tasks.attach_evidence, projects.work_tasks.update_status, projects.work_tasks.block, or projects.work_tasks.fail as applicable.",
+		"JSON-RPC call shape: POST the MCP server URL with method=tools/call and params.name set to the exact tool name; params.arguments must include id=<Project ID> plus the required tool arguments. Headers must include Content-Type application/json, Accept application/json, text/event-stream, and MCP-Protocol-Version 2025-06-18.",
+		"After every governed closeout, call projects.work_tasks.get for this Work Task ID and confirm the returned status is no longer in_progress before exiting successfully.",
+		"Do not merely describe the tasks or closeout steps in your final text. The required MCP calls must be performed in the system.",
 		"The runner will fail this automation with automation_task_closeout_missing if this wrapper task is still in_progress after your process exits.",
 	)
 }

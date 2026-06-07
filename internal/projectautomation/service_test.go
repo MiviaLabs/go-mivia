@@ -122,6 +122,9 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 			"implementation-ready",
 			"must perform explicit MCP closeout",
 			"automation_task_closeout_missing",
+			"method=tools/call",
+			"projects.work_tasks.get",
+			"Do not merely describe the tasks",
 		},
 		"mark-ready-after-review": {
 			"must inspect child Work Tasks",
