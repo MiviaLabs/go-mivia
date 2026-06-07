@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -51,6 +52,28 @@ func TestConfigWorkflowDefinitionsDryRunCompile(t *testing.T) {
 				if _, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: workflow.ProjectID, WorkflowID: workflow.ID, DryRun: true}); err != nil {
 					t.Fatalf("dry-run compile workflow %s: %v", workflow.ID, err)
 				}
+			}
+		})
+	}
+}
+
+func TestConfigWorkflowPathsAreTrackedFixtures(t *testing.T) {
+	paths, err := configWorkflowPaths()
+	if err != nil {
+		t.Fatalf("glob workflow definitions: %v", err)
+	}
+	for _, path := range paths {
+		t.Run(filepath.ToSlash(path), func(t *testing.T) {
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatalf("stat workflow fixture: %v", err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				t.Fatalf("workflow fixture must be a tracked repo file, not a symlink: %s", path)
+			}
+			cmd := exec.Command("git", "ls-files", "--error-unmatch", filepath.ToSlash(path))
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("workflow fixture must be tracked by git: %s: %s", path, strings.TrimSpace(string(output)))
 			}
 		})
 	}
@@ -266,6 +289,69 @@ func TestConfigWorkflowReviewGateCoverage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigWorkflowTaskProducingStepsHaveGateOrReviewerRole(t *testing.T) {
+	paths, err := configWorkflowPaths()
+	if err != nil {
+		t.Fatalf("glob workflow definitions: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("expected at least one workflow definition")
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			if !strings.Contains(filepath.ToSlash(path), "/mass/") {
+				t.Skip("MASS workflow gate coverage invariant")
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read workflow definition: %v", err)
+			}
+			defs, _, err := projectworkflow.ParseWorkflowTOML(data)
+			if err != nil {
+				t.Fatalf("parse workflow definition: %v", err)
+			}
+			for _, workflow := range defs {
+				requiredGateByID := map[string]projectworkflow.WorkflowReviewGate{}
+				requiredReviewerAgents := map[string]bool{}
+				for _, gate := range workflow.ReviewGates {
+					if !gate.Required {
+						continue
+					}
+					requiredGateByID[gate.ID] = gate
+					requiredReviewerAgents[gate.ReviewerAgent] = true
+				}
+				if len(requiredGateByID) == 0 {
+					continue
+				}
+				for _, step := range workflow.Steps {
+					if step.Kind != "work_task" && step.Kind != "automation_batch" {
+						continue
+					}
+					if len(stepReviewGateIDs(step.ReviewGate, requiredGateByID)) > 0 {
+						continue
+					}
+					if stepCoveredByRequiredGate(step.ID, requiredGateByID) {
+						continue
+					}
+					if requiredReviewerAgents[step.Agent] {
+						continue
+					}
+					t.Fatalf("workflow %s step %s produces work without a required review gate or reviewer-owner exemption", workflow.WorkflowRef, step.ID)
+				}
+			}
+		})
+	}
+}
+
+func stepCoveredByRequiredGate(stepID string, requiredGateByID map[string]projectworkflow.WorkflowReviewGate) bool {
+	for _, gate := range requiredGateByID {
+		if containsConfigString(gate.AppliesTo, stepID) {
+			return true
+		}
+	}
+	return false
 }
 
 func stepReviewGateIDs(reviewGate string, requiredGateByID map[string]projectworkflow.WorkflowReviewGate) []string {

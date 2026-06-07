@@ -260,7 +260,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 }
 
 func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string, input PostTaskInput, result PostTaskResult) (PostTaskResult, error) {
-	if !svc.options.PushAfterTask || !svc.options.DraftPRAfterPush || !svc.branchHasCommitsAhead(ctx, workDir) {
+	if !svc.options.PushAfterTask || !svc.options.DraftPRAfterPush || !svc.branchHasCommitsAhead(ctx, workDir, input.BaseRef) {
 		return result, nil
 	}
 	branch := strings.TrimSpace(input.BranchName)
@@ -318,12 +318,19 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 	return result, nil
 }
 
-func (svc *Service) branchHasCommitsAhead(ctx context.Context, workDir string) bool {
+func (svc *Service) branchHasCommitsAhead(ctx context.Context, workDir string, baseRef string) bool {
 	remote := strings.TrimSpace(svc.options.RemoteName)
 	if remote == "" {
 		remote = "origin"
 	}
-	result, err := svc.git(ctx, workDir, nil, "rev-list", "--count", remote+"/main..HEAD")
+	base := strings.TrimSpace(baseRef)
+	if base == "" {
+		base = "main"
+	}
+	if strings.HasPrefix(base, remote+"/") {
+		base = strings.TrimPrefix(base, remote+"/")
+	}
+	result, err := svc.git(ctx, workDir, nil, "rev-list", "--count", remote+"/"+base+"..HEAD")
 	if err != nil {
 		return false
 	}

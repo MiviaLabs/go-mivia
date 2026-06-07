@@ -163,6 +163,78 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 	}
 }
 
+func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testing.T) {
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{},
+			{Stdout: "1\n"},
+			{},
+			{},
+			{},
+			{},
+			{},
+			{Stdout: "https://github.com/example/repo/pull/456\n"},
+		},
+		errs: []error{
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			errors.New("no existing pr"),
+		},
+	}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		DraftPRAfterPush:     true,
+		RemoteName:           "origin",
+		BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+		SSHPrivateKeyPath:    "/tmp/id_ed25519",
+		SSHKnownHostsPath:    "/tmp/known_hosts",
+		GitHubTokenEnv:       "GITHUB_TOKEN",
+		GitHubCLIPath:        "gh",
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+	}, runner)
+	t.Setenv("GITHUB_TOKEN", "token")
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:         "/tmp/worktree",
+		ProjectID:       "mass-monorepo",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "workflow-chain-finalize",
+		TaskTitle:       "jira:MASS-1044 final GitOps",
+		BranchName:      "chore-MASS-1044-governed-workplan-implementation",
+		BaseRef:         "release/mass-2026-06",
+		AutomationID:    "workflow-chain-gitops",
+		AutomationRunID: "workflow_chain_run_1",
+		OperatorID:      "mivia-workflow-chain",
+		ReviewRefs:      []string{"review/ref"},
+		VerifierRefs:    []string{"verifier/ref"},
+		TestResults:     []string{"post-validation completed"},
+	})
+	if err != nil {
+		t.Fatalf("expected clean ahead branch PR finalization to succeed: %v", err)
+	}
+	if result.NoChanges || result.PullRequestRef == "" {
+		t.Fatalf("expected draft PR refs, got %#v", result)
+	}
+	joined := commandArgs(runner.commands)
+	if !strings.Contains(joined, "rev-list --count origin/release/mass-2026-06..HEAD") {
+		t.Fatalf("expected configured base ref in rev-list, got %q", joined)
+	}
+	if strings.Contains(joined, "rev-list --count origin/main..HEAD") {
+		t.Fatalf("must not hard-code origin/main for configured base ref, got %q", joined)
+	}
+}
+
 func commandArgs(commands []Command) string {
 	var out []string
 	for _, command := range commands {

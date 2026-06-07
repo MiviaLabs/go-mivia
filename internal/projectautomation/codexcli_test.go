@@ -94,3 +94,27 @@ func TestRunCodexCommandClassifiesUsageLimitFailure(t *testing.T) {
 		t.Fatalf("expected codex_usage_limit_reached, got %q", result.SafeFailureCategory)
 	}
 }
+
+func TestRunCodexCommandClassifiesOutputSchemaFailure(t *testing.T) {
+	inputPath := filepath.Join(t.TempDir(), "task.txt")
+	if err := os.WriteFile(inputPath, []byte("safe prompt"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	binary := filepath.Join(t.TempDir(), "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"ERROR: Invalid schema for response_format 'final_answer': In context=('properties','child_tasks','items'), 'required' is required to be supplied and to be an array including every key in properties.\" >&2\nexit 1\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	command, err := BuildCodexCommand(CodexCommandInput{BinaryPath: binary, InputPath: inputPath, Timeout: time.Minute})
+	if err != nil {
+		t.Fatalf("BuildCodexCommand returned error: %v", err)
+	}
+
+	result, err := RunCodexCommand(t.Context(), command, 1024)
+	if err == nil {
+		t.Fatal("expected fake codex failure")
+	}
+	if result.SafeFailureCategory != "codex_output_schema_invalid" {
+		t.Fatalf("expected codex_output_schema_invalid, got %q", result.SafeFailureCategory)
+	}
+}

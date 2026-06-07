@@ -2029,13 +2029,13 @@ func containsAnySchemaString(values []any, wants []string) bool {
 	return false
 }
 
-func TestDecomposeCloseoutUsesStrictSchemaAndRunnerValidation(t *testing.T) {
+func TestGovernedCloseoutUsesRunnerValidationWithoutCodexOutputSchema(t *testing.T) {
 	task := runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}
 	if !taskRequiresExplicitGovernedCloseout(task) {
 		t.Fatal("decompose-work-plan must require explicit governed closeout")
 	}
-	if !shouldUseCodexOutputSchemaForGovernedCloseout(task) {
-		t.Fatal("decompose-work-plan must use Codex output-schema to force parseable closeout JSON")
+	if shouldUseCodexOutputSchemaForGovernedCloseout(task) {
+		t.Fatal("decompose-work-plan must not use Codex output-schema; runner validation owns child task governance")
 	}
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	if err := validateGovernedCloseoutOutput(output, task); err != nil {
@@ -2045,6 +2045,28 @@ func TestDecomposeCloseoutUsesStrictSchemaAndRunnerValidation(t *testing.T) {
 	invalid.ChildTasks[0].EvidenceNeeded = nil
 	if err := validateGovernedCloseoutOutput(invalid, task); !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutValidationFailed) {
 		t.Fatalf("invalid child_tasks must be rejected by runner validation, got %v", err)
+	}
+}
+
+func TestGovernedCloseoutTasksDoNotUseCodexOutputSchema(t *testing.T) {
+	for _, taskRef := range []string{
+		"decompose-work-plan",
+		"mark-ready-after-review",
+		"select-ready-tasks",
+		"run-implementation-batch",
+		"review-implementation-batch",
+		"orchestrator-verification",
+		"pr-gitops-readiness",
+	} {
+		t.Run(taskRef, func(t *testing.T) {
+			task := runnerWorkTaskMetadata{TaskRef: taskRef}
+			if !taskRequiresExplicitGovernedCloseout(task) {
+				t.Fatalf("%s must require explicit governed closeout", taskRef)
+			}
+			if shouldUseCodexOutputSchemaForGovernedCloseout(task) {
+				t.Fatalf("%s must rely on runner closeout validation, not Codex output-schema", taskRef)
+			}
+		})
 	}
 }
 

@@ -143,6 +143,9 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 func safeCodexFailureCategory(output string) string {
 	normalized := strings.ToLower(output)
 	switch {
+	case (strings.Contains(normalized, "invalid schema") && strings.Contains(normalized, "response_format")) ||
+		(strings.Contains(normalized, "output schema") && strings.Contains(normalized, "invalid")):
+		return "codex_output_schema_invalid"
 	case strings.Contains(normalized, "usage limit"):
 		return "codex_usage_limit_reached"
 	case strings.Contains(normalized, "failed to read config file") && strings.Contains(normalized, "permission denied"):

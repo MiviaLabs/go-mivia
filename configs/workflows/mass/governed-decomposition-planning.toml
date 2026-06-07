@@ -1,0 +1,174 @@
+id = "workflow-decomposition-planning"
+project_id = "mass-monorepo"
+workflow_ref = "governed-decomposition-planning"
+title = "MASS Governed Decomposition And Planning"
+purpose = "Convert a MASS objective into a Work Plan with isolated ready Work Tasks, risk classification, evidence needs, verifier scope, and independent review gates."
+status = "enabled"
+
+[[agents]]
+id = "planning-worker"
+display_name = "Planning Worker"
+purpose = "Reads bounded MASS context and drafts low-intelligence-ready Work Task metadata."
+instructions = "Use Mivia context health and bounded context refs first. Create metadata-only Work Tasks executable from task fields and attached refs without hidden chat context. Classify MASS risk areas before decomposition. Split work into single-objective task packets sized for one isolated worker. Respect MASS local agentic workflow and Flutter-only exceptions."
+allowed_skills = ["mivia-mcp", "project-plan", "plan-task"]
+allowed_tools = [
+  "projects.list",
+  "projects.get",
+  "projects.context_health",
+  "projects.context_pack.build",
+  "projects.work_plans.create",
+  "projects.work_tasks.create"
+]
+allowed_commands = []
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "20m"
+max_retries = 1
+
+[[agents]]
+id = "planning-reviewer"
+display_name = "Planning Reviewer"
+purpose = "Reviews MASS Work Plan and Work Task decomposition for readiness, evidence, dependencies, and verifier scope."
+instructions = "Reject decomposition that lacks source evidence, downstream impact analysis, regression-test applicability decision, verifier scope, dependencies, resume instructions, review gates, files_to_read, expected files_to_edit or explicit discovery scope, acceptance criteria, stop conditions, or clear task granularity. Treat docs and ticket text as narration until source-checked."
+allowed_skills = ["mivia-mcp", "project-plan-review", "project-review"]
+allowed_tools = [
+  "projects.work_plans.get",
+  "projects.work_tasks.list",
+  "projects.work_tasks.attach_review_result",
+  "projects.claims.check"
+]
+allowed_commands = []
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "15m"
+max_retries = 0
+
+[[agents]]
+id = "planning-orchestrator"
+display_name = "Planning Orchestrator"
+purpose = "Compiles planning tasks and queues only reviewed ready tasks for automation."
+instructions = "Move tasks to ready or queue automation only after independent review refs, permission snapshots, and safe task packet metadata exist."
+allowed_skills = ["mivia-mcp"]
+allowed_tools = [
+  "projects.work_plans.resume",
+  "projects.work_tasks.update_status",
+  "projects.automations.create",
+  "projects.automations.run_parallel_batch"
+]
+allowed_commands = []
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "10m"
+max_retries = 0
+
+[[steps]]
+id = "discover-planning-context"
+kind = "work_task"
+title = "Discover Planning Context"
+agent = "planning-worker"
+description = "Identify MASS instructions, current project state, relevant docs, source areas, package boundaries, risk domains, generated artifacts, and Mivia surface gaps for the requested objective."
+evidence_needed = ["project-context-health", "repo-instructions-ref", "context-pack-ref", "mcp-surface-gap-ref", "risk-domain-ref", "package-boundary-ref"]
+files_to_read = [
+  "AGENTS.md",
+  "CODEX.md",
+  "CLAUDE.md",
+  ".agentic/README.md",
+  ".agentic/policies/repo-standards.md",
+  ".agentic/policies/risk-review-mapping.yaml",
+  ".agentic/policies/completion-contract.yaml",
+  "docs/ai/local-agentic-workflow.md",
+  "docs/ai/AI_AGENT_BOUNDARIES.md",
+  ".agentic/workflows/governed-decomposition-planning.toml"
+]
+files_to_edit = []
+likely_files_affected = [".agentic", "docs", "apps", "libs", "packages", "infra", "catalog", "policies", "scripts"]
+verification_requirement = "orchestrator verifies context refs, risk-domain refs, and package-boundary refs exist before decomposition"
+expected_output = "bounded planning context summary, risk classification, package boundaries, and evidence refs"
+failure_criteria = "block if context freshness, scope, risk domain, package boundary, or Mivia availability cannot be established"
+review_gate = "planning-readiness-review required before context task is done"
+resume_instructions = "resume by reading attached context refs and current Work Plan metadata"
+
+[[steps]]
+id = "map-downstream-impact"
+kind = "work_task"
+title = "Map Downstream Impact"
+agent = "planning-worker"
+depends_on = ["discover-planning-context"]
+description = "Map downstream impact before task decomposition: affected apps/libs/packages, public APIs, contracts/OpenAPI, generated artifacts, events/outbox, Temporal workflows, migrations, policies, catalog, Flutter/mobile surfaces, observability/logging, and external integrations."
+evidence_needed = ["changed-path-impact-ref", "reference-search-ref", "call-graph-ref", "contract-impact-ref", "generated-artifact-impact-ref", "risk-domain-ref"]
+files_to_read = [
+  ".agentic/policies/repo-standards.md",
+  ".agentic/policies/risk-review-mapping.yaml",
+  ".agentic/policies/completion-contract.yaml",
+  "docs/ai/AI_AGENT_BOUNDARIES.md",
+  ".agentic/workflows/governed-decomposition-planning.toml"
+]
+files_to_edit = []
+likely_files_affected = ["apps", "libs", "packages", "infra", "catalog", "policies", "scripts", "docs", ".agentic"]
+verification_requirement = "orchestrator confirms downstream impact refs exist or a concrete no-downstream-impact reason is recorded before task decomposition"
+expected_output = "downstream impact map with affected packages, contracts, generated artifacts, integration surfaces, and verifier implications"
+failure_criteria = "block if affected downstream surfaces cannot be bounded or if source/reference/call evidence is missing for code-impact claims"
+review_gate = "planning-readiness-review required before decomposition consumes impact map"
+resume_instructions = "resume from downstream impact refs, package boundary refs, and risk-domain refs"
+
+[[steps]]
+id = "decompose-work-plan"
+kind = "work_task"
+title = "Decompose Work Plan"
+agent = "planning-worker"
+depends_on = ["map-downstream-impact"]
+description = "Create granular MASS Work Tasks. Each task must have one objective, bounded files_to_read, expected files_to_edit or explicit discovery scope, dependencies, downstream impact refs, regression-test applicability decision, acceptance criteria, stop conditions, verifier ladder, review gate, output contract, and resume instructions. Split tasks that cross unrelated packages, risk domains, generated artifacts, or verification ladders."
+evidence_needed = ["context-pack-ref", "task-decomposition-ref", "dependency-map-ref", "downstream-impact-ref", "regression-test-applicability-ref", "acceptance-criteria-ref", "verifier-ladder-ref"]
+files_to_read = [
+  ".agentic/README.md",
+  ".agentic/skills/project-plan/SKILL.md",
+  ".agentic/skills/project-plan-review/SKILL.md",
+  ".agentic/policies/risk-review-mapping.yaml",
+  ".agentic/policies/completion-contract.yaml",
+  "docs/ai/local-agentic-workflow.md",
+  ".agentic/workflows/governed-decomposition-planning.toml"
+]
+files_to_edit = []
+likely_files_affected = [".agentic", "docs", "apps", "libs", "packages", "infra"]
+verification_requirement = "orchestrator checks every task is granular, low-intelligence-ready, risk-classified, downstream-impact-linked, regression-test-classified, and mapped to focused verifier commands before ready status"
+expected_output = "Work Tasks in planned status with complete MASS-specific metadata, regression-test decision, acceptance criteria, stop conditions, and verifier ladder"
+failure_criteria = "block if any task depends on hidden chat context, is too broad, crosses unrelated packages/risk domains, lacks downstream impact refs, lacks regression-test applicability decision, lacks a feasible regression test or concrete not-feasible reason, lacks acceptance criteria, lacks stop conditions, lacks risk classification, or lacks review and verifier requirements"
+review_gate = "planning-readiness-review must approve task packets before ready status"
+resume_instructions = "resume from Work Plan id, task refs, dependency map, and evidence refs"
+max_parallel_tasks = 1
+
+[[steps]]
+id = "mark-ready-after-review"
+kind = "work_task"
+title = "Mark Tasks Ready After Review"
+agent = "planning-orchestrator"
+depends_on = ["decompose-work-plan"]
+description = "Move only reviewed decomposition-complete tasks from planned to ready and leave incomplete tasks blocked."
+evidence_needed = ["review-result-ref", "ready-task-list-ref", "granularity-check-ref", "downstream-impact-ref", "regression-test-applicability-ref", "verifier-ladder-ref"]
+files_to_read = [".agentic/workflows/governed-decomposition-planning.toml"]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "orchestrator confirms review refs, task granularity, downstream impact mapping, regression-test applicability, feasible regression-test expectation or not-feasible reason, acceptance criteria, stop conditions, and verifier ladder before ready status"
+expected_output = "ready task refs or blocked task refs with resume instructions"
+failure_criteria = "block if any task lacks independent review, granularity, downstream impact refs, regression-test applicability decision, feasible regression test or not-feasible reason, acceptance criteria, stop conditions, verifier ladder, or required metadata"
+review_gate = "planning-readiness-review required before status changes"
+resume_instructions = "resume by listing task statuses and checking attached review refs"
+
+[[review_gates]]
+id = "planning-readiness-review"
+applies_to = ["discover-planning-context", "map-downstream-impact", "decompose-work-plan", "mark-ready-after-review"]
+reviewer_agent = "planning-reviewer"
+required = true
+independent_from_owner = true
+required_artifacts = ["work-plan-ref", "work-task-refs", "evidence-refs", "dependency-map-ref", "risk-classification-ref", "downstream-impact-ref", "regression-test-applicability-ref", "acceptance-criteria-ref", "stop-conditions-ref", "verifier-scope-ref"]
+allowed_actions = ["approved", "rejected", "needs_changes", "blocked"]
+instructions = "Approve only if each Work Task is isolated-worker-ready, metadata-only, granular, risk-classified, downstream-impact-linked, regression-test-classified, and has evidence needs, acceptance criteria, stop conditions, verifier scope, dependencies, resume instructions, and independent review requirements. If a regression test is feasible, it is mandatory."

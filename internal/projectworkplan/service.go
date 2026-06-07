@@ -183,6 +183,11 @@ func (svc *Service) UpdateWorkPlanStatus(ctx context.Context, input UpdateWorkPl
 	if err := validatePlanTransition(plan.Status, next); err != nil {
 		return WorkPlan{}, err
 	}
+	if next == WorkPlanStatusDone {
+		if err := svc.ensurePlanHasNoOpenTasks(ctx, projectID, planID); err != nil {
+			return WorkPlan{}, err
+		}
+	}
 	if input.ResumeSummary != "" {
 		plan.ResumeSummary, err = safeOptionalText(input.ResumeSummary, "resume_summary", 500)
 		if err != nil {
@@ -238,6 +243,19 @@ func (svc *Service) UpdateWorkPlanStatus(ctx context.Context, input UpdateWorkPl
 		}
 	}
 	return updated, nil
+}
+
+func (svc *Service) ensurePlanHasNoOpenTasks(ctx context.Context, projectID, planID string) error {
+	tasks, err := svc.store.ListWorkTasks(ctx, WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if !isTerminalTaskStatus(task.Status) {
+			return fmt.Errorf("%w: work plan cannot be marked done while task %s is %s", ErrInvalidInput, task.ID, task.Status)
+		}
+	}
+	return nil
 }
 
 func (svc *Service) ResumeWorkPlan(ctx context.Context, input ResumeWorkPlanInput) (WorkPlan, error) {

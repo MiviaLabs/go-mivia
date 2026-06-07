@@ -87,6 +87,80 @@ func TestServiceUpdateWorkPlanStatusAcceptsCorrelationMetadata(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateWorkPlanStatusRejectsDoneWithOpenTasks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-open-tasks")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	plan, err = svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID: "project-1",
+		PlanID:    plan.ID,
+		Status:    projectworkplan.WorkPlanStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("activate plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-open"))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	if _, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID: "project-1",
+		PlanID:    plan.ID,
+		Status:    projectworkplan.WorkPlanStatusDone,
+	}); err == nil || !strings.Contains(err.Error(), "cannot be marked done") {
+		t.Fatalf("expected done with open task to fail, got %v", err)
+	}
+
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID: "project-1",
+		TaskID:    task.ID,
+		RunID:     "run-open-task",
+	}); err != nil {
+		t.Fatalf("claim task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID: "project-1",
+		TaskID:    task.ID,
+		RunID:     "run-open-task",
+	}); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	if _, err := svc.AttachVerifierResult(ctx, projectworkplan.AttachInput{
+		ProjectID:       "project-1",
+		TaskID:          task.ID,
+		Ref:             "test:focused",
+		AttachedByRunID: "run-open-task",
+	}); err != nil {
+		t.Fatalf("attach verifier result: %v", err)
+	}
+	if _, err := svc.AttachReviewResult(ctx, projectworkplan.AttachInput{
+		ProjectID:       "project-1",
+		TaskID:          task.ID,
+		Ref:             "review:independent",
+		AttachedByRunID: "run-review",
+	}); err != nil {
+		t.Fatalf("attach review result: %v", err)
+	}
+	if _, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID: "project-1",
+		TaskID:    task.ID,
+	}); err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+	if _, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID: "project-1",
+		PlanID:    plan.ID,
+		Status:    projectworkplan.WorkPlanStatusDone,
+	}); err != nil {
+		t.Fatalf("expected done with terminal tasks to pass: %v", err)
+	}
+}
+
 func TestServiceMCPInvalidArgumentDiagnostics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

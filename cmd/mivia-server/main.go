@@ -557,6 +557,7 @@ func (finalizer serverWorkflowChainGitOpsFinalizer) FinalizeWorkflowChain(ctx co
 		TaskRef:         "workflow-chain-finalize",
 		TaskTitle:       input.InputRef + " workflow chain final GitOps",
 		BranchName:      input.WorkPlan.GitBranchRef,
+		BaseRef:         input.WorkPlan.GitBaseRef,
 		AutomationID:    "workflow-chain-gitops",
 		AutomationRunID: input.ChainRunID,
 		OperatorID:      "mivia-workflow-chain",

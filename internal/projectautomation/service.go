@@ -1756,6 +1756,11 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if strings.TrimSpace(run.SafeSummary) == RunSafeSummaryGitOpsPostTaskRecovery && isGitOpsRecoveryFailure(failureCategory) {
 			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory, evidenceRefs)
 		}
+		if isRecoverableGitOpsPostTaskFailure(failureCategory) {
+			run.Status = RunStatusFailed
+			run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
+			break
+		}
 		if isRecoverableCodexExecutionFailure(failureCategory) {
 			return svc.requeueTaskAfterCodexExecutionFailure(ctx, run, failureCategory)
 		}
@@ -1765,7 +1770,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if isRecoverableGovernedCloseoutFailure(failureCategory) {
 			return svc.requeueTaskAfterGovernedCloseoutFailure(ctx, run, failureCategory)
 		}
-		run.Status = RunStatusFailed
+		return svc.failTaskAfterTerminalAttempt(ctx, run, failureCategory)
+	case RunStatusBlocked:
+		return svc.blockTaskAfterTerminalAttempt(ctx, run, failureCategory)
 	default:
 		run.Status = status
 	}
@@ -1784,6 +1791,97 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		return svc.reconcileVerifyingRun(ctx, durable)
 	}
 	return durable, nil
+}
+
+func (svc *Service) blockTaskAfterTerminalAttempt(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	run.Status = RunStatusBlocked
+	run.FailureCategory = category
+	run.SafeSummary = "external_codex_cli_blocked"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return updated, nil
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return updated, nil
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		return updated, nil
+	}
+	reason := "External Codex runner blocked task."
+	if strings.TrimSpace(category) != "" {
+		reason = "External Codex runner blocked task with " + safeFailure(category) + "."
+	}
+	blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		SafeNextAction:     "external_runner_blocked",
+		RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+		TraceID:            firstNonEmpty(run.TraceID, run.ID),
+		BlockedReason:      reason,
+		ResumeInstructions: "Inspect the automation run evidence and resume only after the blocker is resolved.",
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	updated.WorkTaskStatus = blocked.Status
+	if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+		return updated, err
+	}
+	return svc.store.UpdateRun(ctx, updated)
+}
+
+func (svc *Service) failTaskAfterTerminalAttempt(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	run.Status = RunStatusFailed
+	run.FailureCategory = category
+	run.SafeSummary = "external_codex_cli_failed"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return updated, nil
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return updated, nil
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		return updated, nil
+	}
+	outcome := "External Codex runner failed task."
+	if strings.TrimSpace(category) != "" {
+		outcome = "External Codex runner failed task with " + safeFailure(category) + "."
+	}
+	failed, err := svc.workTasks.FailWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:      task.ProjectID,
+		TaskID:         task.ID,
+		SafeNextAction: "external_runner_failed",
+		RunID:          firstNonEmpty(task.ClaimedByRunID, run.ID),
+		TraceID:        firstNonEmpty(run.TraceID, run.ID),
+		Outcome:        outcome,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	updated.WorkTaskStatus = failed.Status
+	if err := svc.updatePlanAfterTerminalTask(ctx, failed); err != nil {
+		return updated, err
+	}
+	return svc.store.UpdateRun(ctx, updated)
 }
 
 func terminalAuditRemediationFailureAlreadyRecorded(run AutomationRun) bool {
@@ -3480,7 +3578,7 @@ func isRecoverableCodexExecutionFailure(category string) bool {
 
 func isNonRetryableCodexExecutionFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "codex_usage_limit_reached":
+	case "codex_output_schema_invalid", "codex_usage_limit_reached":
 		return true
 	default:
 		return false
@@ -3524,6 +3622,8 @@ func codexExecutionFailureResumeInstructions(category string) string {
 
 func nonRetryableCodexBlockedReason(category string) string {
 	switch strings.TrimSpace(category) {
+	case "codex_output_schema_invalid":
+		return "Codex output schema is invalid for the configured runner; automation cannot continue until the schema or runner invocation is corrected."
 	case "codex_usage_limit_reached":
 		return "Codex usage limit reached; automation cannot continue until quota or credits are available."
 	default:
@@ -3533,6 +3633,8 @@ func nonRetryableCodexBlockedReason(category string) string {
 
 func nonRetryableCodexResumeInstructions(category string) string {
 	switch strings.TrimSpace(category) {
+	case "codex_output_schema_invalid":
+		return "Correct the runner output-schema configuration, then explicitly requeue this Work Task; do not retry automatically while the schema is invalid."
 	case "codex_usage_limit_reached":
 		return "Restore Codex quota or credits, then explicitly requeue this Work Task; do not retry automatically while the usage limit is active."
 	default:

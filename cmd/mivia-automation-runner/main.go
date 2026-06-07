@@ -1586,7 +1586,7 @@ func taskRequiresExplicitGovernedCloseout(task runnerWorkTaskMetadata) bool {
 }
 
 func shouldUseCodexOutputSchemaForGovernedCloseout(task runnerWorkTaskMetadata) bool {
-	return taskRequiresExplicitGovernedCloseout(task)
+	return false
 }
 
 func metadataOnlyCloseoutOutcome(reviewTask bool) string {
