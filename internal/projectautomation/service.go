@@ -959,6 +959,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileQueuedRunsFromTerminalPlans(ctx, projectID); err != nil {
+		return ClaimedRun{}, err
+	}
 	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, err
 	}
@@ -1087,6 +1090,29 @@ func claimSkipReason(run AutomationRun, err error) string {
 		reason = strings.TrimSpace(reason[idx+1:])
 	}
 	return safeFailure(reason)
+}
+
+func (svc *Service) reconcileQueuedRunsFromTerminalPlans(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil {
+		return nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if strings.TrimSpace(run.PlanID) == "" {
+			continue
+		}
+		err := svc.validatePlanExecutable(ctx, run.ProjectID, run.PlanID)
+		if err == nil || runPlanFailureCategory(err) != "work_plan_terminal" {
+			continue
+		}
+		if _, err := svc.failRun(ctx, run, RunStatusBlocked, "work_plan_terminal"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, error) {
