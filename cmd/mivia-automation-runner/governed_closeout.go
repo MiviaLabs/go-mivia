@@ -381,6 +381,15 @@ func validateGovernedCloseoutOutput(output governedCloseoutOutput, wrapper runne
 	if unsafeText(output.Outcome) || unsafeText(output.SafeNextAction) || unsafeText(output.BlockReason) || unsafeText(output.FailureReason) {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("unsafe closeout text")}
 	}
+	if err := validateGovernedCloseoutTextLimit(output.Outcome, "outcome"); err != nil {
+		return err
+	}
+	if err := validateGovernedCloseoutTextLimit(output.BlockReason, "block_reason"); err != nil {
+		return err
+	}
+	if err := validateGovernedCloseoutTextLimit(output.FailureReason, "failure_reason"); err != nil {
+		return err
+	}
 	if action == "block" && strings.TrimSpace(output.BlockReason) == "" {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("block_reason required")}
 	}
@@ -402,6 +411,13 @@ func validateGovernedCloseoutOutput(output governedCloseoutOutput, wrapper runne
 		if err := validateGovernedChildTask(task); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateGovernedCloseoutTextLimit(value string, name string) error {
+	if len(strings.TrimSpace(value)) > closeoutWorkTaskTextMax {
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("%s is too long", name)}
 	}
 	return nil
 }

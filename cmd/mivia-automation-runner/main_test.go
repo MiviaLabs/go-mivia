@@ -2338,6 +2338,20 @@ func TestBuildRunnerCodexCommandSupportsBypassMode(t *testing.T) {
 	}
 }
 
+func TestValidateGovernedCloseoutRejectsServerInvalidBlockReason(t *testing.T) {
+	err := validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "block",
+		BlockReason:   strings.Repeat("a", 501),
+		SafeNextAction: "retry with bounded evidence",
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err == nil || !strings.Contains(err.Error(), "block_reason is too long") {
+		t.Fatalf("expected runner validation to reject over-limit block_reason before REST closeout, got %v", err)
+	}
+	if category := governedCloseoutFailureCategory(err); category != "governed_closeout_validation_failed_block_reason_is_too_long" {
+		t.Fatalf("expected validation failure category, got %q", category)
+	}
+}
+
 func testCodexInput(runID string) projectautomation.CodexTaskInput {
 	return projectautomation.CodexTaskInput{
 		SchemaVersion:           1,
