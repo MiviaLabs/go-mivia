@@ -1263,9 +1263,9 @@ func TestParseGovernedCloseoutRejectsMissingAndUnsafeOutput(t *testing.T) {
 		t.Fatalf("expected missing output category, got %v", err)
 	}
 	for name, payload := range map[string]string{
-		"trailing_json":  `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""} {"extra":true}`,
-		"trailing_prose": `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""} done`,
-		"unknown_field":  `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":"","raw_log":"secret"}`,
+		"trailing_json":   `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""} {"extra":true}`,
+		"unknown_field":   `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":"","raw_log":"secret"}`,
+		"multiple_fences": "First:\n```json\n" + `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""}` + "\n```\nSecond:\n```json\n" + `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""}` + "\n```",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseGovernedCloseoutOutput(payload); governedCloseoutFailureCategory(err) != governedCloseoutInvalidJSON {
@@ -1280,6 +1280,24 @@ func TestParseGovernedCloseoutRejectsMissingAndUnsafeOutput(t *testing.T) {
 	if err == nil {
 		// parse alone should allow the JSON shape; validation owns semantic safety.
 		return
+	}
+}
+
+func TestParseGovernedCloseoutAcceptsWrappedSingleJSONObject(t *testing.T) {
+	base := `{"closeout_action":"block","outcome":"ok with braces {inside} string","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""}`
+	for name, payload := range map[string]string{
+		"single_fence_with_intro":  "Closeout:\n```json\n" + base + "\n```",
+		"single_object_with_intro": "Closeout:\n" + base,
+	} {
+		t.Run(name, func(t *testing.T) {
+			output, err := parseGovernedCloseoutOutput(payload)
+			if err != nil {
+				t.Fatalf("parse wrapped closeout: %v", err)
+			}
+			if output.CloseoutAction != "block" || output.BlockReason != "missing evidence" {
+				t.Fatalf("unexpected parsed closeout: %+v", output)
+			}
+		})
 	}
 }
 

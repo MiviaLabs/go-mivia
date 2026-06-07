@@ -104,19 +104,86 @@ func extractSingleJSONObject(message string) (string, error) {
 	if strings.HasPrefix(message, "{") && strings.HasSuffix(message, "}") {
 		return message, nil
 	}
-	if strings.HasPrefix(message, "```") {
-		lines := strings.Split(message, "\n")
-		if len(lines) >= 3 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
-			body := strings.Join(lines[1:len(lines)-1], "\n")
-			body = strings.TrimSpace(body)
-			if strings.HasPrefix(strings.ToLower(lines[0]), "```json") || strings.TrimSpace(lines[0]) == "```" {
-				if strings.HasPrefix(body, "{") && strings.HasSuffix(body, "}") {
-					return body, nil
-				}
+	fenced := extractFencedJSONObjects(message)
+	if len(fenced) == 1 {
+		return fenced[0], nil
+	}
+	if len(fenced) > 1 {
+		return "", errors.New("final message contains multiple json fences")
+	}
+	objects := extractBalancedJSONObjects(message)
+	if len(objects) == 1 {
+		return objects[0], nil
+	}
+	if len(objects) > 1 {
+		return "", errors.New("final message contains multiple json objects")
+	}
+	return "", errors.New("final message must contain exactly one json object")
+}
+
+func extractFencedJSONObjects(message string) []string {
+	lines := strings.Split(message, "\n")
+	var objects []string
+	for i := 0; i < len(lines); i++ {
+		open := strings.TrimSpace(lines[i])
+		if open != "```" && !strings.HasPrefix(strings.ToLower(open), "```json") {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			if strings.TrimSpace(lines[j]) != "```" {
+				continue
+			}
+			body := strings.TrimSpace(strings.Join(lines[i+1:j], "\n"))
+			if strings.HasPrefix(body, "{") && strings.HasSuffix(body, "}") {
+				objects = append(objects, body)
+			}
+			i = j
+			break
+		}
+	}
+	return objects
+}
+
+func extractBalancedJSONObjects(message string) []string {
+	var objects []string
+	inString := false
+	escaped := false
+	depth := 0
+	start := -1
+	for i, r := range message {
+		if depth > 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if r == '\\' {
+				escaped = true
+				continue
+			}
+			if r == '"' {
+				inString = !inString
+				continue
+			}
+			if inString {
+				continue
+			}
+		}
+		if r == '{' && !inString {
+			if depth == 0 {
+				start = i
+			}
+			depth++
+			continue
+		}
+		if r == '}' && depth > 0 && !inString {
+			depth--
+			if depth == 0 && start >= 0 {
+				objects = append(objects, message[start:i+1])
+				start = -1
 			}
 		}
 	}
-	return "", errors.New("final message must be a single json object")
+	return objects
 }
 
 func validateGovernedCloseoutOutput(output governedCloseoutOutput, wrapper runnerWorkTaskMetadata) error {
