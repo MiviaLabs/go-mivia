@@ -2377,6 +2377,51 @@ func TestParseGovernedCloseoutRejectsChildTaskObjectStringFieldAsValidation(t *t
 	}
 }
 
+func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T) {
+	task := validGovernedCloseoutChildTaskForTest()
+	task.EvidenceNeeded = []string{strings.Repeat("a", 201)}
+	err := validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err == nil || !strings.Contains(err.Error(), "child task evidence_needed exceeds Work Task REST limits") {
+		t.Fatalf("expected runner validation to reject server-invalid evidence_needed, got %v", err)
+	}
+
+	task = validGovernedCloseoutChildTaskForTest()
+	task.FilesToRead = []string{strings.Repeat("a", 301)}
+	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err == nil || !strings.Contains(err.Error(), "child task path exceeds Work Task REST limits") {
+		t.Fatalf("expected runner validation to reject server-invalid path, got %v", err)
+	}
+}
+
+func validGovernedCloseoutChildTaskForTest() governedCloseoutWorkTask {
+	return governedCloseoutWorkTask{
+		TaskRef:                 "implement-mass-1044",
+		Title:                   "Implement MASS-1044",
+		Description:             "Implement bounded change",
+		EvidenceNeeded:          []string{"source-evidence"},
+		FilesToRead:             []string{"apps/domain/file.ts"},
+		VerificationRequirement: "run focused verifier",
+		ExpectedOutput:          "implementation complete",
+		FailureCriteria:         "block on missing evidence",
+		ResumeInstructions:      "resume from task refs",
+		DecompositionQuality:    "ready",
+		AcceptanceCriteria:      []string{"acceptance is source verified"},
+		StopConditions:          []string{"stop on missing evidence"},
+		VerifierLadder:          []string{"focused verifier"},
+		RegressionApplicability: "required",
+		DownstreamImpactRefs:    []string{"downstream-impact-ref"},
+		OutputContract:          "bounded implementation output",
+	}
+}
+
 func testCodexInput(runID string) projectautomation.CodexTaskInput {
 	return projectautomation.CodexTaskInput{
 		SchemaVersion:           1,

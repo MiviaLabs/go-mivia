@@ -25,6 +25,8 @@ const (
 
 	closeoutChildTaskDescriptionMax = 1000
 	closeoutWorkTaskTextMax         = 500
+	closeoutWorkTaskShortTextMax    = 200
+	closeoutWorkTaskPathMax         = 300
 )
 
 type governedCloseoutError struct {
@@ -493,6 +495,18 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 	if len(task.EvidenceNeeded) == 0 {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task evidence_needed required")}
 	}
+	if err := validateGovernedChildTextList(task.EvidenceNeeded, "evidence_needed", closeoutWorkTaskShortTextMax); err != nil {
+		return err
+	}
+	if err := validateGovernedChildTextList(task.AcceptanceCriteria, "acceptance_criteria", closeoutWorkTaskTextMax); err != nil {
+		return err
+	}
+	if err := validateGovernedChildTextList(task.StopConditions, "stop_conditions", closeoutWorkTaskTextMax); err != nil {
+		return err
+	}
+	if err := validateGovernedChildTextList(task.VerifierLadder, "verifier_ladder", closeoutWorkTaskTextMax); err != nil {
+		return err
+	}
 	if len(task.AcceptanceCriteria) == 0 || len(task.StopConditions) == 0 || len(task.VerifierLadder) == 0 ||
 		strings.TrimSpace(task.RegressionApplicability) == "" || len(task.DownstreamImpactRefs) == 0 ||
 		strings.TrimSpace(task.OutputContract) == "" {
@@ -502,18 +516,33 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task requires files_to_read, files_to_edit, or explicit discovery scope")}
 	}
 	for _, value := range append(append(append([]string{}, task.FilesToRead...), task.FilesToEdit...), task.LikelyFilesAffected...) {
+		if len(strings.TrimSpace(value)) > closeoutWorkTaskPathMax {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task path exceeds Work Task REST limits")}
+		}
 		if !safeProjectPath(value) {
 			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("unsafe child task path %q", value)}
 		}
 	}
 	for _, ref := range append(append([]string{}, task.ContextPackRefs...), task.DependencyTaskIDs...) {
-		if strings.TrimSpace(ref) != "" && unsafeText(ref) {
+		if strings.TrimSpace(ref) != "" && !safeCloseoutRef(ref) {
 			return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("unsafe child task ref")}
 		}
 	}
 	for _, ref := range task.DownstreamImpactRefs {
 		if !safeCloseoutRef(ref) {
 			return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("unsafe child task downstream impact ref")}
+		}
+	}
+	return nil
+}
+
+func validateGovernedChildTextList(values []string, name string, max int) error {
+	for _, value := range values {
+		if len(strings.TrimSpace(value)) > max {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("child task %s exceeds Work Task REST limits", name)}
+		}
+		if unsafeText(value) {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("unsafe child task %s", name)}
 		}
 	}
 	return nil
