@@ -281,7 +281,50 @@ func validateGovernedCloseoutTopLevelFields(jsonText string) error {
 			return governedCloseoutError{category: governedCloseoutInvalidJSON, err: fmt.Errorf("unknown top-level field %q", field)}
 		}
 	}
+	if raw, ok := fields["child_tasks"]; ok {
+		if err := validateGovernedCloseoutChildTaskFieldTypes(raw); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validateGovernedCloseoutChildTaskFieldTypes(raw json.RawMessage) error {
+	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
+		return nil
+	}
+	var tasks []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &tasks); err != nil {
+		return governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
+	}
+	stringFields := []string{
+		"task_ref",
+		"title",
+		"description",
+		"status",
+		"owner_agent",
+		"verification_requirement",
+		"expected_output",
+		"failure_criteria",
+		"review_gate",
+		"resume_instructions",
+		"decomposition_quality",
+		"regression_test_applicability",
+		"output_contract",
+	}
+	for _, task := range tasks {
+		for _, field := range stringFields {
+			if rawField, ok := task[field]; ok && !rawJSONValueIsStringOrNull(rawField) {
+				return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("child_tasks.%s must be string", field)}
+			}
+		}
+	}
+	return nil
+}
+
+func rawJSONValueIsStringOrNull(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || trimmed[0] == '"'
 }
 
 func extractSingleJSONObject(message string) (string, error) {

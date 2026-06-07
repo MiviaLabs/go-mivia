@@ -2352,6 +2352,31 @@ func TestValidateGovernedCloseoutRejectsServerInvalidBlockReason(t *testing.T) {
 	}
 }
 
+func TestParseGovernedCloseoutRejectsChildTaskObjectStringFieldAsValidation(t *testing.T) {
+	_, err := parseGovernedCloseoutOutput(`{
+		"closeout_action":"needs_review",
+		"outcome":"decomposed",
+		"safe_next_action":"review child tasks",
+		"evidence_refs":["task-decomposition-ref"],
+		"child_tasks":[{
+			"task_ref":"implement-mass-1044",
+			"title":"Implement MASS-1044",
+			"description":"Implement bounded change",
+			"verification_requirement":{"command":"go test ./..."},
+			"expected_output":"implementation complete",
+			"failure_criteria":"block on missing evidence",
+			"resume_instructions":"resume from task refs",
+			"decomposition_quality":"ready"
+		}]
+	}`)
+	if err == nil {
+		t.Fatal("expected object-valued child task string field to be rejected")
+	}
+	if category := governedCloseoutFailureCategory(err); !strings.HasPrefix(category, "governed_closeout_validation_failed_child_tasks_verification_requirement_must_be_string") {
+		t.Fatalf("expected child task field validation category, got %q (%v)", category, err)
+	}
+}
+
 func testCodexInput(runID string) projectautomation.CodexTaskInput {
 	return projectautomation.CodexTaskInput{
 		SchemaVersion:           1,
