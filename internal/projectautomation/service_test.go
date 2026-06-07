@@ -480,6 +480,165 @@ func TestClaimNextRunRequeuesFailedCodexCLIForInProgressTaskClaimedByRun(t *test
 	}
 }
 
+func TestClaimNextRunRequeuesFailedGovernedCloseoutForInProgressTaskClaimedByRun(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "decompose-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-a", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusFailed, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus:  projectworkplan.WorkTaskStatusInProgress,
+		FailureCategory: "governed_closeout_apply_failed",
+		SafeSummary:     "dependency_ready_automation_queued",
+		CreatedAt:       time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID == "run-a" {
+		t.Fatalf("expected a replacement run, got original failed run: %#v", claimed.Run)
+	}
+	if claimed.Run.Status != RunStatusRunning || claimed.Run.TaskID != "task-a" || claimed.Run.AttemptCount != 1 || claimed.Run.FailureCategory != "" {
+		t.Fatalf("expected replacement run to be claimed, got %#v", claimed.Run)
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusInProgress || fake.tasks[task.ID].ClaimedByRunID != claimed.Run.ID {
+		t.Fatalf("expected replacement claim to own task, got %#v", fake.tasks[task.ID])
+	}
+}
+
+func TestCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "decompose-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-a", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress,
+		ClaimID:        "claim-a",
+		RunnerID:       "runner-a",
+		AttemptCount:   1,
+		CreatedAt:      time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:          "project-1",
+		RunID:              "run-a",
+		Status:             RunStatusFailed,
+		FailureCategory:    "governed_closeout_apply_failed",
+		ClaimID:            "claim-a",
+		RunnerID:           "runner-a",
+		EvidenceRefs:       []string{"closeout:governed-closeout-apply-failed"},
+		VerifierResultRefs: nil,
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if updated.Status != RunStatusFailed || updated.FailureCategory != "governed_closeout_apply_failed" {
+		t.Fatalf("expected governed closeout run to be failed durably, got %#v", updated)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusReady || requeuedTask.ClaimedByRunID != "" {
+		t.Fatalf("expected task ready after governed closeout failure, got %#v", requeuedTask)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	var replacementCount int
+	for _, run := range runs {
+		if run.ID != "run-a" && run.TaskID == task.ID && run.Status == RunStatusQueued {
+			replacementCount++
+		}
+	}
+	if replacementCount != 1 {
+		t.Fatalf("expected one queued replacement run, got %d runs=%#v", replacementCount, runs)
+	}
+}
+
+func TestCompleteAttemptBlocksFailedGovernedCloseoutAfterReplacementRetryLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "decompose-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-2"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	for i := 0; i < defaultAutomationMaxReplacementRunsPerTask-1; i++ {
+		if _, err := store.CreateRun(ctx, AutomationRun{
+			ID:              fmt.Sprintf("failed-run-%d", i),
+			ProjectID:       automation.ProjectID,
+			AutomationID:    automation.ID,
+			AgentID:         automation.AgentID,
+			PlanID:          task.PlanID,
+			TaskID:          task.ID,
+			Status:          RunStatusFailed,
+			RunnerKind:      RunnerKindCodexCLI,
+			FailureCategory: "governed_closeout_validation_failed",
+			SafeSummary:     "governed_closeout_failed_requeue_implementation",
+		}); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-2", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress,
+		ClaimID:        "claim-2",
+		RunnerID:       "runner-2",
+		AttemptCount:   1,
+		CreatedAt:      time.Unix(200, 0).UTC(), UpdatedAt: time.Unix(200, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       "project-1",
+		RunID:           "run-2",
+		Status:          RunStatusFailed,
+		FailureCategory: "governed_closeout_apply_failed",
+		ClaimID:         "claim-2",
+		RunnerID:        "runner-2",
+	}); err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked || blockedTask.ClaimedByRunID != "" {
+		t.Fatalf("expected task blocked after governed closeout retry limit, got %#v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "replacement retry limit") {
+		t.Fatalf("expected explicit retry-limit blocked reason, got %q", blockedTask.BlockedReason)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	for _, run := range runs {
+		if run.ID != "run-2" && run.Status == RunStatusQueued {
+			t.Fatalf("expected no queued replacement after retry limit, got %#v", run)
+		}
+	}
+}
+
 func TestClaimNextRunRecoversGitOpsPreTaskFailureForReadyTask(t *testing.T) {
 	for _, category := range []string{"worktree_prepare_failed", "gitops_pre_task_failed", "gitops_dirty_worktree"} {
 		t.Run(category, func(t *testing.T) {

@@ -1587,6 +1587,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if strings.TrimSpace(run.SafeSummary) == RunSafeSummaryGitOpsPostTaskRecovery && isGitOpsRecoveryFailure(failureCategory) {
 			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory, evidenceRefs)
 		}
+		if isRecoverableGovernedCloseoutFailure(failureCategory) {
+			return svc.requeueTaskAfterGovernedCloseoutFailure(ctx, run, failureCategory)
+		}
 		run.Status = RunStatusFailed
 	default:
 		run.Status = status
@@ -2033,6 +2036,86 @@ func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Cont
 	return updated, nil
 }
 
+func (svc *Service) requeueTaskAfterGovernedCloseoutFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = "governed_closeout_failed_requeue_unavailable"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = "governed_closeout_failed_requeue_unavailable"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusReady, projectworkplan.WorkTaskStatusClaimed, projectworkplan.WorkTaskStatusInProgress:
+	default:
+		run.Status = RunStatusFailed
+		run.WorkTaskStatus = task.Status
+		run.FailureCategory = category
+		run.SafeSummary = "governed_closeout_failed_task_advanced"
+		now := svc.now()
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		return svc.store.UpdateRun(ctx, run)
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		run.Status = RunStatusFailed
+		run.WorkTaskStatus = task.Status
+		run.FailureCategory = category
+		run.SafeSummary = "governed_closeout_failed_task_claimed_by_other_run"
+		now := svc.now()
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		return svc.store.UpdateRun(ctx, run)
+	}
+	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "governed_closeout_failed_requeue_implementation",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			ResumeInstructions: governedCloseoutRecoveryResumeInstructions(category),
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = readyTask.Status
+	run.FailureCategory = category
+	run.SafeSummary = "governed_closeout_failed_requeue_implementation"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+		return updated, nil
+	}
+	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+		return updated, nil
+	}
+	return updated, nil
+}
+
 func (svc *Service) reconcileVerifyingRuns(ctx context.Context, projectID string) error {
 	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" {
 		return nil
@@ -2323,10 +2406,10 @@ func (svc *Service) reconcileRecoveryRunsWithStaleReadyTasks(ctx context.Context
 		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" {
 			continue
 		}
-		if run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady && !isRecoverableCodexExecutionFailure(run.FailureCategory) {
+		if run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady && !isRecoverableCodexExecutionFailure(run.FailureCategory) && !isRecoverableGovernedCloseoutFailure(run.FailureCategory) {
 			continue
 		}
-		if !isRecoverableRecoveryFailure(run.FailureCategory) && !isRecoverableCodexExecutionFailure(run.FailureCategory) {
+		if !isRecoverableRecoveryFailure(run.FailureCategory) && !isRecoverableCodexExecutionFailure(run.FailureCategory) && !isRecoverableGovernedCloseoutFailure(run.FailureCategory) {
 			continue
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
@@ -2931,7 +3014,7 @@ func isActiveAutomationRunStatus(status string) bool {
 func isTerminalReplacementFailure(run AutomationRun) bool {
 	switch run.Status {
 	case RunStatusFailed:
-		if isRecoverableRecoveryFailure(run.FailureCategory) || isRecoverableCodexExecutionFailure(run.FailureCategory) {
+		if isRecoverableRecoveryFailure(run.FailureCategory) || isRecoverableCodexExecutionFailure(run.FailureCategory) || isRecoverableGovernedCloseoutFailure(run.FailureCategory) {
 			return true
 		}
 		return false
@@ -2949,7 +3032,8 @@ func shouldQueueReplacementRun(run AutomationRun) bool {
 			isRecoverableGitOpsPostTaskFailure(run.FailureCategory) ||
 			isRecoverableReviewGitOpsFailure(run.FailureCategory) ||
 			isRecoverableRecoveryFailure(run.FailureCategory) ||
-			isRecoverableCodexExecutionFailure(run.FailureCategory)
+			isRecoverableCodexExecutionFailure(run.FailureCategory) ||
+			isRecoverableGovernedCloseoutFailure(run.FailureCategory)
 	case RunStatusTimeout:
 		return strings.TrimSpace(run.FailureCategory) == "external_runner_interrupted"
 	default:
@@ -2973,6 +3057,30 @@ func isRecoverableCodexExecutionFailure(category string) bool {
 	default:
 		return false
 	}
+}
+
+func isRecoverableGovernedCloseoutFailure(category string) bool {
+	switch strings.TrimSpace(category) {
+	case "automation_task_closeout_failed",
+		"automation_task_closeout_missing",
+		"governed_closeout_apply_failed",
+		"governed_closeout_invalid_json",
+		"governed_closeout_output_missing",
+		"governed_closeout_readback_failed",
+		"governed_closeout_schema_create_failed",
+		"governed_closeout_validation_failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func governedCloseoutRecoveryResumeInstructions(category string) string {
+	category = strings.TrimSpace(category)
+	if category == "" {
+		category = "governed_closeout_failed"
+	}
+	return "Governed closeout failed with " + category + ". Inspect the automation run evidence and retry the same bounded task; do not bypass child task, review gate, verifier, or stop-condition requirements."
 }
 
 func (svc *Service) shouldQueueReplacementRunForTask(ctx context.Context, automation Automation, run AutomationRun, task projectworkplan.WorkTask) bool {
