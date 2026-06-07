@@ -25,6 +25,7 @@ type API interface {
 var chainTools = []string{
 	"projects.workflow_chains.start",
 	"projects.workflow_chains.get",
+	"projects.workflow_chains.retry_gitops",
 	"projects.workflow_chains.list",
 }
 
@@ -38,6 +39,7 @@ func ToolDefinitions() []map[string]any {
 	return []map[string]any{
 		tool("projects.workflow_chains.start", "Start Project Workflow Chain", "MUST start only a configured metadata-only workflow chain from one bounded input string. Creates safe chain state, Work Plan refs, Work Task refs, automation refs, and context refs only; never stores raw prompts, source, stderr, provider payloads, secrets, roots, external URLs, or PII, and never runs shell or live Jira/Confluence connectors.", schema(map[string]any{"id": ref, "chain_ref": ref, "input_text": text, "created_by_run_id": ref, "trace_id": ref, "dry_run": map[string]any{"type": "boolean"}}, []string{"id", "chain_ref", "input_text"})),
 		tool("projects.workflow_chains.get", "Get Project Workflow Chain Run", "Fetch safe workflow-chain run metadata by id. Returns refs and lifecycle state only; no raw input, prompts, source, stderr, provider payloads, secrets, roots, URLs, or PII.", schema(map[string]any{"id": ref, "chain_run_id": ref}, []string{"id", "chain_run_id"})),
+		tool("projects.workflow_chains.retry_gitops", "Retry Project Workflow Chain GitOps", "Retry final draft-PR GitOps for a blocked workflow-chain run that is already gitops_ready. Returns metadata only; never stores raw prompts, source, stderr, provider payloads, secrets, roots, URLs, or PII.", schema(map[string]any{"id": ref, "chain_run_id": ref}, []string{"id", "chain_run_id"})),
 		tool("projects.workflow_chains.list", "List Project Workflow Chains", "List configured workflow chains and safe run metadata. Use before creating duplicates or selecting a chain. Returns metadata only.", schema(merge(map[string]any{"id": ref, "chain_ref": ref, "status": ref}, pageFields), []string{})),
 	}
 }
@@ -70,6 +72,8 @@ func validateArguments(name string, arguments json.RawMessage) error {
 	case "projects.workflow_chains.start":
 		value = &startInput{}
 	case "projects.workflow_chains.get":
+		value = &getInput{}
+	case "projects.workflow_chains.retry_gitops":
 		value = &getInput{}
 	case "projects.workflow_chains.list":
 		value = &listInput{}

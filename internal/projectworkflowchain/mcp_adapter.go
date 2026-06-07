@@ -22,6 +22,12 @@ func (svc *Service) CallWorkflowChainTool(ctx context.Context, name string, argu
 			return nil, fmt.Errorf("%w: invalid workflow chain arguments", ErrInvalidInput)
 		}
 		return svc.Get(ctx, input.ID, input.ChainRunID)
+	case "projects.workflow_chains.retry_gitops":
+		var input getMCPInput
+		if err := decodeMCP(arguments, &input); err != nil {
+			return nil, fmt.Errorf("%w: invalid workflow chain arguments", ErrInvalidInput)
+		}
+		return svc.RetryGitOps(ctx, input.ID, input.ChainRunID)
 	case "projects.workflow_chains.list":
 		var input listMCPInput
 		if err := decodeMCP(arguments, &input); err != nil {

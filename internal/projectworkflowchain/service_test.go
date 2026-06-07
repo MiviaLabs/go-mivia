@@ -3,6 +3,7 @@ package projectworkflowchain
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
@@ -101,12 +102,14 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	}
 }
 
-func TestHandleWorkPlanStatusChangedMarksGitOpsReadyAfterPostValidationDone(t *testing.T) {
+func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
 	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
 	workPlans := &fakeWorkPlans{}
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/MASS-1044"}}
+	svc.SetGitOpsFinalizer(finalizer)
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
 	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
@@ -122,11 +125,98 @@ func TestHandleWorkPlanStatusChangedMarksGitOpsReadyAfterPostValidationDone(t *t
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
-	if run.Status != ChainStatusPostValidationPassed || !run.GitOpsReady {
-		t.Fatalf("expected post-validation GitOps-ready chain, got %#v", run)
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/MASS-1044" {
+		t.Fatalf("expected completed chain with draft PR ref, got %#v", run)
 	}
 	if run.StageRuns[2].Status != StageStatusCompleted || run.NextAction == "" {
 		t.Fatalf("expected completed post-validation stage with next action: %#v", run)
+	}
+	if len(finalizer.inputs) != 1 || finalizer.inputs[0].WorkPlan.ID != "plan-implementation" {
+		t.Fatalf("expected one GitOps finalization with implementation plan, got %#v", finalizer.inputs)
+	}
+
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("idempotent post-validation event: %v", err)
+	}
+	if len(finalizer.inputs) != 1 {
+		t.Fatalf("expected no duplicate GitOps finalization, got %d", len(finalizer.inputs))
+	}
+}
+
+func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizationFails(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.SetGitOpsFinalizer(&fakeGitOpsFinalizer{err: errors.New("gitops failed")})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, planID := range []string{"plan-decomposition", "plan-implementation"} {
+		if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err == nil {
+		t.Fatalf("expected GitOps finalization failure")
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != ChainStatusBlocked || !run.GitOpsReady || !strings.HasPrefix(run.StageRuns[2].BlockedReason, "gitops_finalize_failed") {
+		t.Fatalf("expected blocked chain after GitOps failure, got %#v", run)
+	}
+}
+
+func TestHandleWorkPlanStatusChangedRetriesBlockedDraftPRFinalization(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	finalizer := &fakeGitOpsFinalizer{err: errors.New("git worktree failed: unsafe path")}
+	svc.SetGitOpsFinalizer(finalizer)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, planID := range []string{"plan-decomposition", "plan-implementation"} {
+		if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err == nil {
+		t.Fatalf("expected first GitOps finalization failure")
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get blocked run: %v", err)
+	}
+	if run.Status != ChainStatusBlocked || !strings.HasPrefix(run.StageRuns[2].BlockedReason, "gitops_finalize_failed_git_worktree_failed") {
+		t.Fatalf("expected blocked run with safe reason, got %#v", run)
+	}
+
+	finalizer.err = nil
+	finalizer.result = GitOpsFinalizeResult{PullRequestRef: "pr/MASS-1044"}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("retry GitOps finalization: %v", err)
+	}
+	run, err = svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get completed run: %v", err)
+	}
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/MASS-1044" {
+		t.Fatalf("expected retry to complete chain with PR ref, got %#v", run)
+	}
+	if len(finalizer.inputs) != 2 || finalizer.inputs[1].WorkPlan.ID != "plan-implementation" {
+		t.Fatalf("expected retry to finalize implementation plan, got %#v", finalizer.inputs)
 	}
 }
 
@@ -233,6 +323,10 @@ type fakeWorkPlans struct {
 	released    []string
 }
 
+func (fake *fakeWorkPlans) GetWorkPlan(_ context.Context, projectID string, planID string) (projectworkplan.WorkPlan, error) {
+	return projectworkplan.WorkPlan{ID: planID, ProjectID: projectID, Status: projectworkplan.WorkPlanStatusDone}, nil
+}
+
 func (fake *fakeWorkPlans) UpdateWorkPlanStatus(_ context.Context, input projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error) {
 	fake.activations = append(fake.activations, input.PlanID)
 	return projectworkplan.WorkPlan{ID: input.PlanID, ProjectID: input.ProjectID, Status: input.Status}, nil
@@ -273,6 +367,20 @@ func deterministicIDs(values ...string) func(string) string {
 		i++
 		return value
 	}
+}
+
+type fakeGitOpsFinalizer struct {
+	result GitOpsFinalizeResult
+	err    error
+	inputs []GitOpsFinalizeInput
+}
+
+func (fake *fakeGitOpsFinalizer) FinalizeWorkflowChain(_ context.Context, input GitOpsFinalizeInput) (GitOpsFinalizeResult, error) {
+	fake.inputs = append(fake.inputs, input)
+	if fake.err != nil {
+		return GitOpsFinalizeResult{}, fake.err
+	}
+	return fake.result, nil
 }
 
 type testChainStore struct {

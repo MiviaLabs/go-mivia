@@ -69,6 +69,7 @@ type ChainRun struct {
 	CreatedByRunID string     `json:"created_by_run_id,omitempty"`
 	TraceID        string     `json:"trace_id,omitempty"`
 	GitOpsReady    bool       `json:"gitops_ready,omitempty"`
+	PullRequestRef string     `json:"pull_request_ref,omitempty"`
 	NextAction     string     `json:"next_action,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
@@ -97,16 +98,17 @@ type StartInput struct {
 }
 
 type StartResult struct {
-	ProjectID     string     `json:"project_id"`
-	ChainRef      string     `json:"chain_ref"`
-	InputRef      string     `json:"input_ref"`
-	Status        string     `json:"status"`
-	ChainRunID    string     `json:"chain_run_id,omitempty"`
-	StageRuns     []StageRun `json:"stage_runs,omitempty"`
-	WorkPlanIDs   []string   `json:"work_plan_ids,omitempty"`
-	AutomationIDs []string   `json:"automation_ids,omitempty"`
-	DryRun        bool       `json:"dry_run,omitempty"`
-	NextAction    string     `json:"next_action"`
+	ProjectID      string     `json:"project_id"`
+	ChainRef       string     `json:"chain_ref"`
+	InputRef       string     `json:"input_ref"`
+	Status         string     `json:"status"`
+	ChainRunID     string     `json:"chain_run_id,omitempty"`
+	StageRuns      []StageRun `json:"stage_runs,omitempty"`
+	WorkPlanIDs    []string   `json:"work_plan_ids,omitempty"`
+	AutomationIDs  []string   `json:"automation_ids,omitempty"`
+	DryRun         bool       `json:"dry_run,omitempty"`
+	NextAction     string     `json:"next_action"`
+	PullRequestRef string     `json:"pull_request_ref,omitempty"`
 }
 
 type ChainFilter struct {

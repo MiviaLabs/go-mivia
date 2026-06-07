@@ -245,6 +245,9 @@ func (svc *Service) ResumeWorkPlan(ctx context.Context, input ResumeWorkPlanInpu
 }
 
 func (svc *Service) CreateWorkTask(ctx context.Context, input CreateWorkTaskInput) (WorkTask, error) {
+	if svc.store == nil {
+		return WorkTask{}, fmt.Errorf("%w: store is required", ErrInvalidInput)
+	}
 	projectID, planID, err := safeProjectObject(input.ProjectID, input.PlanID, "plan_id")
 	if err != nil {
 		return WorkTask{}, err
@@ -281,6 +284,17 @@ func (svc *Service) CreateWorkTask(ctx context.Context, input CreateWorkTaskInpu
 		return WorkTask{}, err
 	}
 	return svc.store.CreateWorkTask(ctx, task)
+}
+
+func (svc *Service) UpdateWorkTask(ctx context.Context, task WorkTask) (WorkTask, error) {
+	if svc.store == nil {
+		return WorkTask{}, fmt.Errorf("%w: store is required", ErrInvalidInput)
+	}
+	if _, _, err := safeProjectObject(task.ProjectID, task.ID, "task_id"); err != nil {
+		return WorkTask{}, err
+	}
+	task.UpdatedAt = svc.now()
+	return svc.store.UpdateWorkTask(ctx, task)
 }
 
 func (svc *Service) buildTask(projectID, planID, taskRef, title, description, owner, runID, traceID string, input CreateWorkTaskInput) (WorkTask, error) {

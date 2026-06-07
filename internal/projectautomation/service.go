@@ -2506,6 +2506,9 @@ func (svc *Service) completeRunAfterTaskDone(ctx context.Context, run Automation
 	if err := svc.reconcileReadyDependentAutomations(ctx, task.ProjectID, task.PlanID, task.ID); err != nil {
 		return updated, nil
 	}
+	if err := svc.completePlanIfNoOpenTasks(ctx, task.ProjectID, task.PlanID, task.ID); err != nil {
+		return updated, nil
+	}
 	return updated, nil
 }
 
@@ -2744,7 +2747,7 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 		if run.TaskID != task.ID {
 			continue
 		}
-		if shouldQueueReplacementRunForTask(run, task) {
+		if svc.shouldQueueReplacementRunForTask(ctx, automation, run, task) {
 			continue
 		}
 		return nil
@@ -2917,7 +2920,7 @@ func shouldQueueReplacementRun(run AutomationRun) bool {
 	}
 }
 
-func shouldQueueReplacementRunForTask(run AutomationRun, task projectworkplan.WorkTask) bool {
+func (svc *Service) shouldQueueReplacementRunForTask(ctx context.Context, automation Automation, run AutomationRun, task projectworkplan.WorkTask) bool {
 	if shouldQueueReplacementRun(run) {
 		return true
 	}
@@ -2930,6 +2933,11 @@ func shouldQueueReplacementRunForTask(run AutomationRun, task projectworkplan.Wo
 		task.Status == projectworkplan.WorkTaskStatusReady &&
 		strings.TrimSpace(run.FailureCategory) == "gitops_dirty_worktree_scope_requires_plan" {
 		return true
+	}
+	if run.Status == RunStatusBlocked &&
+		task.Status == projectworkplan.WorkTaskStatusReady &&
+		strings.TrimSpace(run.FailureCategory) == "automation_review_gate_open" {
+		return len(automation.RequiredReviewTaskIDs) > 0 && svc.validateRequiredAutomationReviews(ctx, automation) == nil
 	}
 	return run.Status == RunStatusBlocked &&
 		strings.TrimSpace(run.FailureCategory) == "work_task_blocked" &&

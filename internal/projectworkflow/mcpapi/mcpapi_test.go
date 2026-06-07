@@ -356,7 +356,7 @@ func TestCallToolCompileCreatesGovernedRefs(t *testing.T) {
 		t.Fatalf("compile workflow: %v", err)
 	}
 	compiled := result["structuredContent"].(projectworkflow.WorkflowCompileResult)
-	if compiled.WorkPlanID == "" || len(compiled.WorkTaskIDs) != 1 || len(compiled.ReviewerTaskIDs) != 2 || len(compiled.AutomationIDs) != 2 {
+	if compiled.WorkPlanID == "" || len(compiled.WorkTaskIDs) != 1 || len(compiled.ReviewerTaskIDs) != 2 || len(compiled.AutomationIDs) != 4 {
 		t.Fatalf("unexpected compile result: %#v", compiled)
 	}
 	autos, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: "project-1"})
@@ -372,8 +372,8 @@ func TestCallToolCompileCreatesGovernedRefs(t *testing.T) {
 			reviewAutomationCount++
 		}
 	}
-	if len(autos) != 2 || reviewAutomationCount != 1 {
-		t.Fatalf("expected executor and ready-task review automations, got %#v", autos)
+	if len(autos) != 4 || reviewAutomationCount != 1 {
+		t.Fatalf("expected executor, fallback task, task-review, and ready-task review automations, got %#v", autos)
 	}
 }
 

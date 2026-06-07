@@ -37,6 +37,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectevidence"
 	evidencehttpapi "github.com/MiviaLabs/go-mivia/internal/projectevidence/httpapi"
 	evidencestore "github.com/MiviaLabs/go-mivia/internal/projectevidence/store"
+	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 	"github.com/MiviaLabs/go-mivia/internal/projectingestion"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	integrationconfluence "github.com/MiviaLabs/go-mivia/internal/projectintegrations/confluence"
@@ -267,6 +268,7 @@ func run() error {
 		ProjectIDs:            automationProjectIDs(projectRegistry.List()),
 	})
 	projectWorkflowService.SetCompilerDependencies(projectWorkPlanService, projectAutomationService)
+	projectWorkflowService.SetCompileOptionsByProject(workflowCompileOptions(cfg))
 	if err := loadConfiguredWorkflows(ctx, cfg, projectWorkflowService, logger); err != nil {
 		return err
 	}
@@ -292,6 +294,7 @@ func run() error {
 	if cfg.Workspace.Enabled {
 		projectWorkspaceService = projectworkspace.NewService(projectRegistry, projectIngestionScheduler, projectworkspace.Options{Enabled: true})
 	}
+	projectWorkflowChainService.SetGitOpsFinalizer(serverWorkflowChainGitOpsFinalizer{cfg: cfg, registry: projectRegistry, workspace: projectWorkspaceService})
 	projectReliabilityService := projectreliability.NewServiceFromAPIs(projectRegistry, projectIngestionScheduler, projectWorkspaceService, projectreliability.Options{})
 	projectConfidenceInputs := projectconfidence.NewReliabilityInputAdapter(
 		projectEvidenceService,
@@ -502,6 +505,305 @@ func workflowChainConfigs(cfg config.Config) []projectworkflowchain.Config {
 		}
 	}
 	return out
+}
+
+func workflowCompileOptions(cfg config.Config) map[string]projectworkflow.CompileOptions {
+	options := map[string]projectworkflow.CompileOptions{}
+	for _, project := range cfg.Projects {
+		gitops := cfg.GitOperations
+		if project.GitOperations != nil {
+			gitops = mergeServerGitOps(gitops, *project.GitOperations)
+		}
+		options[project.ID] = projectworkflow.CompileOptions{
+			BranchPrefix:          gitops.BranchPrefix,
+			BranchSummaryTemplate: workflowCompileBranchTemplate(project.ID, gitops),
+		}
+	}
+	return options
+}
+
+func workflowCompileBranchTemplate(projectID string, gitops config.GitOperations) string {
+	if strings.TrimSpace(gitops.BranchNamePattern) == "" {
+		return ""
+	}
+	if strings.Contains(gitops.BranchNamePattern, "MASS-") || projectID == "mass-monorepo" {
+		return "chore-{{ticket_ref}}-{{workflow_ref}}"
+	}
+	return "{{token}}"
+}
+
+type serverWorkflowChainGitOpsFinalizer struct {
+	cfg       config.Config
+	registry  *projectregistry.Registry
+	workspace projectworkspace.API
+}
+
+func (finalizer serverWorkflowChainGitOpsFinalizer) FinalizeWorkflowChain(ctx context.Context, input projectworkflowchain.GitOpsFinalizeInput) (projectworkflowchain.GitOpsFinalizeResult, error) {
+	project, ok := finalizer.registry.Get(input.ProjectID)
+	if !ok {
+		return projectworkflowchain.GitOpsFinalizeResult{}, projectregistry.ErrProjectNotFound
+	}
+	workDir, err := finalizer.workflowChainGitOpsWorkDir(ctx, project, input.WorkPlan)
+	if err != nil {
+		return projectworkflowchain.GitOpsFinalizeResult{}, err
+	}
+	options := gitOpsOptionsForServerProject(finalizer.cfg, input.ProjectID)
+	options.Verification = gitOpsVerificationForServerProject(finalizer.cfg, input.ProjectID)
+	result, err := projectgitops.New(options).PostTask(ctx, projectgitops.PostTaskInput{
+		WorkDir:         workDir,
+		ProjectID:       input.ProjectID,
+		PlanID:          input.WorkPlan.ID,
+		TaskID:          firstChainTaskID(input),
+		TaskRef:         "workflow-chain-finalize",
+		TaskTitle:       input.InputRef + " workflow chain final GitOps",
+		BranchName:      input.WorkPlan.GitBranchRef,
+		AutomationID:    "workflow-chain-gitops",
+		AutomationRunID: input.ChainRunID,
+		OperatorID:      "mivia-workflow-chain",
+		ReviewRefs:      []string{"workflow-chain-post-validation-passed"},
+		VerifierRefs:    []string{"workflow-chain-post-validation-passed"},
+		TestResults:     []string{"post-validation workflow chain stage completed"},
+	})
+	if err != nil {
+		return projectworkflowchain.GitOpsFinalizeResult{}, err
+	}
+	return projectworkflowchain.GitOpsFinalizeResult{
+		CommitRef:      result.CommitRef,
+		PushRef:        result.PushRef,
+		PullRequestRef: result.PullRequestRef,
+		EvidenceRefs:   append([]string(nil), result.EvidenceRefs...),
+		NoChanges:      result.NoChanges,
+		Skipped:        result.Skipped,
+	}, nil
+}
+
+func (finalizer serverWorkflowChainGitOpsFinalizer) workflowChainGitOpsWorkDir(ctx context.Context, project projectregistry.Project, plan projectworkplan.WorkPlan) (string, error) {
+	root := strings.TrimSpace(project.CanonicalRootPath)
+	if root == "" {
+		root = strings.TrimSpace(project.RootPath)
+	}
+	if strings.TrimSpace(plan.IsolationMode) != projectworkplan.WorkPlanIsolationDedicatedWorktree || strings.TrimSpace(plan.GitWorktreeRef) == "" {
+		return root, nil
+	}
+	if finalizer.workspace == nil {
+		return "", projectworkspace.ErrWorkspaceDisabled
+	}
+	if _, err := finalizer.workspace.GitCreateWorktree(ctx, project.ID, projectworkspace.GitCreateWorktreeOptions{
+		WorktreeRef: plan.GitWorktreeRef,
+		BranchRef:   plan.GitBranchRef,
+		BaseRef:     plan.GitBaseRef,
+	}); err != nil {
+		return "", err
+	}
+	return managedWorktreePath(root, project.ID, plan.GitWorktreeRef)
+}
+
+func firstChainTaskID(input projectworkflowchain.GitOpsFinalizeInput) string {
+	for i := len(input.StageRuns) - 1; i >= 0; i-- {
+		if len(input.StageRuns[i].WorkTaskIDs) > 0 {
+			return input.StageRuns[i].WorkTaskIDs[0]
+		}
+	}
+	return input.ChainRunID
+}
+
+func gitOpsOptionsForServerProject(cfg config.Config, projectID string) projectgitops.Options {
+	gitops := cfg.GitOperations
+	for _, project := range cfg.Projects {
+		if project.ID == projectID && project.GitOperations != nil {
+			gitops = mergeServerGitOps(gitops, *project.GitOperations)
+			break
+		}
+	}
+	return projectgitops.Options{
+		Enabled:                      gitops.Enabled,
+		CommitAfterTask:              gitops.CommitAfterTask,
+		PushAfterTask:                gitops.PushAfterTask,
+		DraftPRAfterPush:             gitops.DraftPRAfterPush,
+		RequireCleanBeforeTask:       gitops.RequireCleanBeforeTask,
+		CleanupWorktreeAfterPlanDone: gitops.CleanupWorktreeAfterPlanDone,
+		RemoteName:                   gitops.RemoteName,
+		BranchPrefix:                 gitops.BranchPrefix,
+		BranchNamePattern:            gitops.BranchNamePattern,
+		CommitAuthorName:             gitops.CommitAuthorName,
+		CommitAuthorEmailEnv:         gitops.CommitAuthorEmailEnv,
+		CommitAuthorEmailFile:        gitops.CommitAuthorEmailFile,
+		SSHPrivateKeyPath:            gitops.SSHPrivateKeyPath,
+		SSHPublicKeyPath:             gitops.SSHPublicKeyPath,
+		SSHKnownHostsPath:            gitops.SSHKnownHostsPath,
+		GitHubTokenEnv:               gitops.GitHubTokenEnv,
+		GitHubTokenFile:              gitops.GitHubTokenFile,
+		GitHubCLIPath:                gitops.GitHubCLIPath,
+		Conventions: projectgitops.Conventions{
+			CommitType:               gitops.Conventions.CommitType,
+			CommitScope:              gitops.Conventions.CommitScope,
+			CommitSummaryTemplate:    gitops.Conventions.CommitSummaryTemplate,
+			PullRequestTitleTemplate: gitops.Conventions.PullRequestTitleTemplate,
+			WhatChangedTemplate:      gitops.Conventions.WhatChangedTemplate,
+			HowVerifiedTemplate:      gitops.Conventions.HowVerifiedTemplate,
+			TestsTemplate:            gitops.Conventions.TestsTemplate,
+		},
+	}
+}
+
+func mergeServerGitOps(base config.GitOperations, override config.GitOperations) config.GitOperations {
+	merged := base
+	if override.Enabled {
+		merged.Enabled = true
+	}
+	if override.CommitAfterTask {
+		merged.CommitAfterTask = true
+	}
+	if override.PushAfterTask {
+		merged.PushAfterTask = true
+	}
+	if override.DraftPRAfterPush {
+		merged.DraftPRAfterPush = true
+	}
+	if override.RequireCleanBeforeTask {
+		merged.RequireCleanBeforeTask = true
+	}
+	if override.CleanupWorktreeAfterPlanDone {
+		merged.CleanupWorktreeAfterPlanDone = true
+	}
+	if strings.TrimSpace(override.RemoteName) != "" {
+		merged.RemoteName = override.RemoteName
+	}
+	if strings.TrimSpace(override.BranchPrefix) != "" || override.BranchPrefix == "" {
+		merged.BranchPrefix = override.BranchPrefix
+	}
+	if strings.TrimSpace(override.BranchNamePattern) != "" {
+		merged.BranchNamePattern = override.BranchNamePattern
+	}
+	if strings.TrimSpace(override.CommitAuthorName) != "" {
+		merged.CommitAuthorName = override.CommitAuthorName
+	}
+	if strings.TrimSpace(override.CommitAuthorEmailEnv) != "" {
+		merged.CommitAuthorEmailEnv = override.CommitAuthorEmailEnv
+	}
+	if strings.TrimSpace(override.CommitAuthorEmailFile) != "" {
+		merged.CommitAuthorEmailFile = override.CommitAuthorEmailFile
+	}
+	if strings.TrimSpace(override.SSHPrivateKeyPath) != "" {
+		merged.SSHPrivateKeyPath = override.SSHPrivateKeyPath
+	}
+	if strings.TrimSpace(override.SSHPublicKeyPath) != "" {
+		merged.SSHPublicKeyPath = override.SSHPublicKeyPath
+	}
+	if strings.TrimSpace(override.SSHKnownHostsPath) != "" {
+		merged.SSHKnownHostsPath = override.SSHKnownHostsPath
+	}
+	if strings.TrimSpace(override.GitHubTokenEnv) != "" {
+		merged.GitHubTokenEnv = override.GitHubTokenEnv
+	}
+	if strings.TrimSpace(override.GitHubTokenFile) != "" {
+		merged.GitHubTokenFile = override.GitHubTokenFile
+	}
+	if strings.TrimSpace(override.GitHubCLIPath) != "" {
+		merged.GitHubCLIPath = override.GitHubCLIPath
+	}
+	merged.Conventions = mergeServerGitOpsConventions(merged.Conventions, override.Conventions)
+	return merged
+}
+
+func mergeServerGitOpsConventions(base config.GitOpsConventions, override config.GitOpsConventions) config.GitOpsConventions {
+	merged := base
+	if strings.TrimSpace(override.CommitType) != "" {
+		merged.CommitType = override.CommitType
+	}
+	if strings.TrimSpace(override.CommitScope) != "" {
+		merged.CommitScope = override.CommitScope
+	}
+	if strings.TrimSpace(override.CommitSummaryTemplate) != "" {
+		merged.CommitSummaryTemplate = override.CommitSummaryTemplate
+	}
+	if strings.TrimSpace(override.PullRequestTitleTemplate) != "" {
+		merged.PullRequestTitleTemplate = override.PullRequestTitleTemplate
+	}
+	if strings.TrimSpace(override.WhatChangedTemplate) != "" {
+		merged.WhatChangedTemplate = override.WhatChangedTemplate
+	}
+	if strings.TrimSpace(override.HowVerifiedTemplate) != "" {
+		merged.HowVerifiedTemplate = override.HowVerifiedTemplate
+	}
+	if strings.TrimSpace(override.TestsTemplate) != "" {
+		merged.TestsTemplate = override.TestsTemplate
+	}
+	return merged
+}
+
+func gitOpsVerificationForServerProject(cfg config.Config, projectID string) projectgitops.VerificationProfile {
+	verification := cfg.Verification
+	for _, project := range cfg.Projects {
+		if project.ID == projectID && project.Verification != nil {
+			verification = *project.Verification
+			break
+		}
+	}
+	generated := make([]projectgitops.GeneratedArtifactVerifier, 0, len(verification.GeneratedArtifacts))
+	for _, item := range verification.GeneratedArtifacts {
+		generated = append(generated, projectgitops.GeneratedArtifactVerifier{
+			Paths:            append([]string(nil), item.Paths...),
+			Command:          item.Command,
+			RequiredBeforePR: item.RequiredBeforePR,
+		})
+	}
+	return projectgitops.VerificationProfile{
+		BootstrapCommands:  append([]string(nil), verification.BootstrapCommands...),
+		AlwaysBeforePR:     append([]string(nil), verification.AlwaysBeforePR...),
+		GeneratedArtifacts: generated,
+		Env:                cloneServerStringMap(verification.Env),
+	}
+}
+
+func cloneServerStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func managedWorktreePath(root string, projectID string, worktreeRef string) (string, error) {
+	if strings.TrimSpace(root) == "" || !filepath.IsAbs(root) {
+		return "", projectworkspace.ErrInvalidInput
+	}
+	projectSegment := safeWorktreeSegment(projectID)
+	worktreeSegment := safeWorktreeSegment(projectID + "-" + worktreeRef)
+	if projectSegment == "" || worktreeSegment == "" {
+		return "", projectworkspace.ErrInvalidInput
+	}
+	base := filepath.Clean(filepath.Join(root, ".mivia-worktrees", projectSegment))
+	target := filepath.Clean(filepath.Join(base, worktreeSegment))
+	rel, err := filepath.Rel(base, target)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", projectworkspace.ErrInvalidInput
+	}
+	return target, nil
+}
+
+func safeWorktreeSegment(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var builder strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '-', r == '_', r == '.':
+			builder.WriteRune(r)
+		case r == '/':
+			builder.WriteByte('-')
+		default:
+			builder.WriteByte('-')
+		}
+	}
+	return strings.Trim(builder.String(), "-.")
 }
 
 func resolveWorkflowDefinitionPath(configPath string, path string) (string, error) {

@@ -3326,6 +3326,130 @@ func TestReconcileReadyDependentAutomationsReadiesAndQueuesNextTask(t *testing.T
 	}
 }
 
+func TestReconcileReadyAutomationsQueuesReplacementAfterReviewGateCompletes(t *testing.T) {
+	ctx := context.Background()
+	reviewTask := readyTask("review-task", "review-run-planning-automation", nil)
+	reviewTask.Status = projectworkplan.WorkTaskStatusDone
+	workerTask := readyTask("task-a", "create-work-plan", []string{"docs"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		reviewTask.ID: reviewTask,
+		workerTask.ID: workerTask,
+	}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.now = func() time.Time { return time.Unix(600, 0).UTC() }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:             "project-1",
+		AutomationRef:         "auto/planning-worker",
+		Title:                 "Planning worker",
+		Purpose:               "Run planning after automation review",
+		Status:                AutomationStatusEnabled,
+		AgentID:               "planning-worker",
+		PlanID:                "plan-1",
+		AllowedTaskRefs:       []string{workerTask.ID, workerTask.TaskRef},
+		RequiredReviewTaskIDs: []string{reviewTask.ID},
+		TriggerKind:           TriggerKindAutomatic,
+		PermissionRef:         "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	blocked := AutomationRun{
+		ID:              "run-blocked-review-gate",
+		ProjectID:       "project-1",
+		AutomationID:    automation.ID,
+		AgentID:         "planning-worker",
+		PlanID:          "plan-1",
+		TaskID:          workerTask.ID,
+		Status:          RunStatusBlocked,
+		RunnerKind:      RunnerKindCodexCLI,
+		FailureCategory: "automation_review_gate_open",
+		SafeSummary:     "dependency_ready_automation_queued",
+		CreatedAt:       time.Unix(500, 0).UTC(),
+		UpdatedAt:       time.Unix(500, 0).UTC(),
+	}
+	if _, err := store.CreateRun(ctx, blocked); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.reconcileReadyAutomationsForPlan(ctx, "project-1", "plan-1", reviewTask.ID); err != nil {
+		t.Fatalf("reconcileReadyAutomationsForPlan returned error: %v", err)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected blocked run plus queued replacement, got %#v", runs)
+	}
+	var replacement AutomationRun
+	for _, run := range runs {
+		if run.ID != blocked.ID && run.Status == RunStatusQueued {
+			replacement = run
+			break
+		}
+	}
+	if replacement.ID == "" || replacement.TaskID != workerTask.ID {
+		t.Fatalf("expected queued replacement for worker task, got %#v", runs)
+	}
+}
+
+func TestReconcileReadyAutomationsIgnoresTasklessPreflightDenial(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("review-task", "review-run-planning-automation", nil)
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review-planning",
+		Title:           "Review planning",
+		Purpose:         "Review planning automation metadata",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "planning-reviewer",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "on-ready-task",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	preflight := AutomationRun{
+		ID:              "run-taskless-preflight-denied",
+		ProjectID:       "project-1",
+		AutomationID:    automation.ID,
+		AgentID:         "planning-reviewer",
+		PlanID:          "plan-1",
+		Status:          RunStatusPolicyDenied,
+		FailureCategory: "invalid_project_automation_input:_codex_cli_unavailable",
+		CreatedAt:       time.Unix(500, 0).UTC(),
+		UpdatedAt:       time.Unix(500, 0).UTC(),
+	}
+	if _, err := store.CreateRun(ctx, preflight); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.reconcileReadyAutomationsForPlan(ctx, "project-1", "plan-1", ""); err != nil {
+		t.Fatalf("reconcileReadyAutomationsForPlan returned error: %v", err)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	var queued AutomationRun
+	for _, run := range runs {
+		if run.TaskID == task.ID && run.Status == RunStatusQueued {
+			queued = run
+			break
+		}
+	}
+	if queued.ID == "" {
+		t.Fatalf("expected task-specific queued run after taskless preflight denial, got %#v", runs)
+	}
+}
+
 func TestReconcileReadyDependentAutomationsDoesNotReadyPlannedTaskWithoutDependencies(t *testing.T) {
 	ctx := context.Background()
 	reviewTask := readyTask("task-review", "review-fix-confirmed-bug", []string{"apps"})

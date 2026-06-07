@@ -27,22 +27,53 @@ type WorkflowAPI interface {
 }
 
 type WorkPlanAPI interface {
+	GetWorkPlan(context.Context, string, string) (projectworkplan.WorkPlan, error)
 	ListOpenWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error)
 	UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
 	UpdateWorkTaskStatus(context.Context, projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error)
 }
 
+type GitOpsFinalizer interface {
+	FinalizeWorkflowChain(context.Context, GitOpsFinalizeInput) (GitOpsFinalizeResult, error)
+}
+
+type GitOpsFinalizeInput struct {
+	ProjectID      string
+	ChainRunID     string
+	ChainRef       string
+	InputRef       string
+	WorkPlan       projectworkplan.WorkPlan
+	StageRuns      []StageRun
+	AutomationIDs  []string
+	CreatedByRunID string
+	TraceID        string
+}
+
+type GitOpsFinalizeResult struct {
+	CommitRef      string
+	PushRef        string
+	PullRequestRef string
+	EvidenceRefs   []string
+	NoChanges      bool
+	Skipped        bool
+}
+
 type Service struct {
-	store     Store
-	workflows WorkflowAPI
-	workPlans WorkPlanAPI
-	configs   []Config
-	now       func() time.Time
-	newID     func(string) string
+	store           Store
+	workflows       WorkflowAPI
+	workPlans       WorkPlanAPI
+	gitOpsFinalizer GitOpsFinalizer
+	configs         []Config
+	now             func() time.Time
+	newID           func(string) string
 }
 
 func New(store Store, workflows WorkflowAPI, workPlans WorkPlanAPI, configs []Config) *Service {
 	return &Service{store: store, workflows: workflows, workPlans: workPlans, configs: cloneConfigs(configs), now: func() time.Time { return time.Now().UTC() }, newID: newID}
+}
+
+func (svc *Service) SetGitOpsFinalizer(finalizer GitOpsFinalizer) {
+	svc.gitOpsFinalizer = finalizer
 }
 
 func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, error) {
@@ -129,6 +160,24 @@ func (svc *Service) Get(ctx context.Context, projectID, chainRunID string) (Chai
 	return svc.store.GetChainRun(ctx, projectID, chainRunID)
 }
 
+func (svc *Service) RetryGitOps(ctx context.Context, projectID, chainRunID string) (ChainRun, error) {
+	projectID, chainRunID, err := safeProjectObject(projectID, chainRunID, "chain_run_id")
+	if err != nil {
+		return ChainRun{}, err
+	}
+	run, err := svc.store.GetChainRun(ctx, projectID, chainRunID)
+	if err != nil {
+		return ChainRun{}, err
+	}
+	if run.Status != ChainStatusBlocked || !run.GitOpsReady || !allStagesCompleted(run) {
+		return ChainRun{}, fmt.Errorf("%w: chain is not ready for GitOps retry", ErrInvalidInput)
+	}
+	if err := svc.retryBlockedGitOps(ctx, run); err != nil {
+		return ChainRun{}, err
+	}
+	return svc.store.GetChainRun(ctx, projectID, chainRunID)
+}
+
 func (svc *Service) List(ctx context.Context, filter ChainFilter) (ListResult, error) {
 	projectID, err := safeOptionalRef(filter.ProjectID, "project_id")
 	if err != nil {
@@ -180,6 +229,9 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 	if err != nil {
 		return nil
 	}
+	if run.Status == ChainStatusBlocked && run.GitOpsReady && allStagesCompleted(run) {
+		return svc.retryBlockedGitOps(ctx, run)
+	}
 	cfg, err := svc.config(run.ProjectID, run.ChainRef)
 	if err != nil {
 		return err
@@ -220,9 +272,16 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 		run.NextAction = "next stage automation will run when lifecycle gates are satisfied"
 	} else if allStagesCompleted(run) {
 		if cfg.GitOpsMode == GitOpsModeDraftPRAfterValidation {
-			run.Status = ChainStatusPostValidationPassed
-			run.GitOpsReady = true
-			run.NextAction = "draft PR GitOps is allowed after configured GitOps checks pass"
+			if err := svc.finalizeGitOps(ctx, &run); err != nil {
+				run.Status = ChainStatusBlocked
+				run.GitOpsReady = true
+				run.NextAction = "chain blocked while creating draft PR GitOps output"
+				if len(run.StageRuns) > 0 {
+					run.StageRuns[len(run.StageRuns)-1].BlockedReason = gitOpsBlockedReason(err)
+				}
+				_, _ = svc.store.UpdateChainRun(ctx, run)
+				return err
+			}
 		} else {
 			run.Status = ChainStatusCompleted
 			run.NextAction = "workflow chain completed"
@@ -231,6 +290,123 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 	run.UpdatedAt = svc.now()
 	_, err = svc.store.UpdateChainRun(ctx, run)
 	return err
+}
+
+func (svc *Service) retryBlockedGitOps(ctx context.Context, run ChainRun) error {
+	if err := svc.finalizeGitOps(ctx, &run); err != nil {
+		run.Status = ChainStatusBlocked
+		run.GitOpsReady = true
+		run.NextAction = "chain blocked while creating draft PR GitOps output"
+		if len(run.StageRuns) > 0 {
+			run.StageRuns[len(run.StageRuns)-1].BlockedReason = gitOpsBlockedReason(err)
+		}
+		run.UpdatedAt = svc.now()
+		_, _ = svc.store.UpdateChainRun(ctx, run)
+		return err
+	}
+	run.UpdatedAt = svc.now()
+	_, err := svc.store.UpdateChainRun(ctx, run)
+	return err
+}
+
+func (svc *Service) finalizeGitOps(ctx context.Context, run *ChainRun) error {
+	if run == nil {
+		return fmt.Errorf("%w: chain run is required", ErrInvalidInput)
+	}
+	if svc.gitOpsFinalizer == nil {
+		run.Status = ChainStatusPostValidationPassed
+		run.GitOpsReady = true
+		run.NextAction = "draft PR GitOps is allowed after configured GitOps checks pass"
+		return nil
+	}
+	if strings.TrimSpace(run.PullRequestRef) != "" {
+		run.Status = ChainStatusCompleted
+		run.GitOpsReady = false
+		run.NextAction = "workflow chain completed with draft PR GitOps output"
+		return nil
+	}
+	if svc.workPlans == nil {
+		return fmt.Errorf("%w: work plan service is required for GitOps finalization", ErrInvalidInput)
+	}
+	planID := gitOpsSourceWorkPlanID(*run)
+	if planID == "" {
+		return fmt.Errorf("%w: final stage Work Plan is required for GitOps finalization", ErrInvalidInput)
+	}
+	plan, err := svc.workPlans.GetWorkPlan(ctx, run.ProjectID, planID)
+	if err != nil {
+		return err
+	}
+	result, err := svc.gitOpsFinalizer.FinalizeWorkflowChain(ctx, GitOpsFinalizeInput{
+		ProjectID:      run.ProjectID,
+		ChainRunID:     run.ID,
+		ChainRef:       run.ChainRef,
+		InputRef:       run.InputRef,
+		WorkPlan:       plan,
+		StageRuns:      append([]StageRun(nil), run.StageRuns...),
+		AutomationIDs:  append([]string(nil), run.AutomationIDs...),
+		CreatedByRunID: run.CreatedByRunID,
+		TraceID:        run.TraceID,
+	})
+	if err != nil {
+		return err
+	}
+	if result.Skipped || result.NoChanges || strings.TrimSpace(result.PullRequestRef) == "" {
+		return fmt.Errorf("%w: GitOps finalization did not create a draft PR", ErrInvalidInput)
+	}
+	run.PullRequestRef = result.PullRequestRef
+	run.Status = ChainStatusCompleted
+	run.GitOpsReady = false
+	run.NextAction = "workflow chain completed with draft PR GitOps output"
+	return nil
+}
+
+func gitOpsBlockedReason(err error) string {
+	if err == nil {
+		return "gitops_finalize_failed"
+	}
+	reason := strings.TrimSpace(err.Error())
+	if reason == "" {
+		return "gitops_finalize_failed"
+	}
+	reason = strings.ToLower(reason)
+	var b strings.Builder
+	for _, r := range reason {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '-':
+			b.WriteRune(r)
+		case r == ':' || r == '/' || r == '\\' || r == ' ' || r == '\t' || r == '\n':
+			if b.Len() > 0 && !strings.HasSuffix(b.String(), "_") {
+				b.WriteByte('_')
+			}
+		}
+		if b.Len() >= 80 {
+			break
+		}
+	}
+	safe := strings.Trim(b.String(), "_-")
+	if safe == "" {
+		return "gitops_finalize_failed"
+	}
+	return "gitops_finalize_failed_" + safe
+}
+
+func gitOpsSourceWorkPlanID(run ChainRun) string {
+	for i := len(run.StageRuns) - 1; i >= 0; i-- {
+		if run.StageRuns[i].StageRef == "implementation" && strings.TrimSpace(run.StageRuns[i].WorkPlanID) != "" {
+			return run.StageRuns[i].WorkPlanID
+		}
+	}
+	for i := len(run.StageRuns) - 1; i >= 0; i-- {
+		if strings.TrimSpace(run.StageRuns[i].WorkPlanID) != "" {
+			return run.StageRuns[i].WorkPlanID
+		}
+	}
+	if len(run.WorkPlanIDs) == 0 {
+		return ""
+	}
+	return run.WorkPlanIDs[len(run.WorkPlanIDs)-1]
 }
 
 func (svc *Service) dryRunStart(ctx context.Context, cfg Config, inputRef string, runID string, traceID string) (StartResult, error) {
@@ -412,16 +588,17 @@ func allStagesCompleted(run ChainRun) bool {
 
 func startResult(run ChainRun, dryRun bool) StartResult {
 	return StartResult{
-		ProjectID:     run.ProjectID,
-		ChainRef:      run.ChainRef,
-		InputRef:      run.InputRef,
-		Status:        run.Status,
-		ChainRunID:    run.ID,
-		StageRuns:     append([]StageRun(nil), run.StageRuns...),
-		WorkPlanIDs:   append([]string(nil), run.WorkPlanIDs...),
-		AutomationIDs: append([]string(nil), run.AutomationIDs...),
-		DryRun:        dryRun,
-		NextAction:    run.NextAction,
+		ProjectID:      run.ProjectID,
+		ChainRef:       run.ChainRef,
+		InputRef:       run.InputRef,
+		Status:         run.Status,
+		ChainRunID:     run.ID,
+		StageRuns:      append([]StageRun(nil), run.StageRuns...),
+		WorkPlanIDs:    append([]string(nil), run.WorkPlanIDs...),
+		AutomationIDs:  append([]string(nil), run.AutomationIDs...),
+		DryRun:         dryRun,
+		NextAction:     run.NextAction,
+		PullRequestRef: run.PullRequestRef,
 	}
 }
 

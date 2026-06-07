@@ -18,7 +18,7 @@ func TestToolDefinitionsExposeWorkflowChainTools(t *testing.T) {
 		description, _ := definition["description"].(string)
 		seen[name] = description
 	}
-	for _, name := range []string{"projects.workflow_chains.start", "projects.workflow_chains.get", "projects.workflow_chains.list"} {
+	for _, name := range []string{"projects.workflow_chains.start", "projects.workflow_chains.get", "projects.workflow_chains.retry_gitops", "projects.workflow_chains.list"} {
 		if seen[name] == "" {
 			t.Fatalf("missing tool %s", name)
 		}
@@ -70,6 +70,20 @@ func TestCallToolAcceptsUnderscoreAlias(t *testing.T) {
 	}
 }
 
+func TestCallToolRetryGitOpsUsesSafeRefsOnly(t *testing.T) {
+	result, err := CallTool(context.Background(), fakeChainAPI{}, "projects.workflow_chains.retry_gitops", mustArgs(t, map[string]any{
+		"id":           "project-1",
+		"chain_run_id": "workflow_chain_run_1",
+	}))
+	if err != nil {
+		t.Fatalf("retry gitops: %v", err)
+	}
+	structured := result["structuredContent"].(projectworkflowchain.ChainRun)
+	if structured.PullRequestRef != "pr/MASS-1044" {
+		t.Fatalf("unexpected structured result: %#v", structured)
+	}
+}
+
 func TestCallToolStartReturnsSafeRefsOnly(t *testing.T) {
 	result, err := CallTool(context.Background(), fakeChainAPI{}, "projects.workflow_chains.start", mustArgs(t, map[string]any{
 		"id":         "project-1",
@@ -93,6 +107,9 @@ func TestCallToolStartReturnsSafeRefsOnly(t *testing.T) {
 type fakeChainAPI struct{}
 
 func (fakeChainAPI) CallWorkflowChainTool(_ context.Context, name string, _ json.RawMessage) (any, error) {
+	if name == "projects.workflow_chains.retry_gitops" {
+		return projectworkflowchain.ChainRun{ID: "workflow_chain_run_1", ProjectID: "project-1", PullRequestRef: "pr/MASS-1044"}, nil
+	}
 	if name != "projects.workflow_chains.start" {
 		return nil, projectworkflowchain.ErrInvalidInput
 	}
