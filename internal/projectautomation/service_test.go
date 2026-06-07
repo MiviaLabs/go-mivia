@@ -5015,6 +5015,147 @@ func TestClaimNextRunReclaimsStartingRunWithClaimedTask(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunBlocksQueuedRunFromTerminalPlanAndClaimsFreshRun(t *testing.T) {
+	ctx := context.Background()
+	oldTask := readyTask("work_task_old", "discover-planning-context", []string{"docs/old.md"})
+	oldTask.PlanID = "plan-old"
+	freshTask := readyTask("work_task_fresh", "discover-planning-context", []string{"docs/fresh.md"})
+	freshTask.PlanID = "plan-fresh"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"plan-old":   {ID: "plan-old", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusBlocked},
+			"plan-fresh": {ID: "plan-fresh", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{
+			oldTask.ID:   oldTask,
+			freshTask.ID: freshTask,
+		},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.now = func() time.Time { return time.Unix(210, 0).UTC() }
+	oldAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/old",
+		Title:           "Old automation",
+		Purpose:         "Old blocked plan automation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "planning-worker",
+		PlanID:          oldTask.PlanID,
+		AllowedTaskRefs: []string{oldTask.ID, oldTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation old returned error: %v", err)
+	}
+	freshAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/fresh",
+		Title:           "Fresh automation",
+		Purpose:         "Fresh active plan automation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "planning-worker",
+		PlanID:          freshTask.PlanID,
+		AllowedTaskRefs: []string{freshTask.ID, freshTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation fresh returned error: %v", err)
+	}
+	oldRun := AutomationRun{
+		ID:                "automation_run_old",
+		ProjectID:         "project-1",
+		AutomationID:      oldAutomation.ID,
+		AgentID:           "planning-worker",
+		PlanID:            oldTask.PlanID,
+		TaskID:            oldTask.ID,
+		Status:            RunStatusQueued,
+		RunnerKind:        RunnerKindCodexCLI,
+		OrchestratorRunID: "dependency-ready:old",
+		CreatedAt:         time.Unix(100, 0).UTC(),
+		UpdatedAt:         time.Unix(100, 0).UTC(),
+	}
+	if _, err := store.CreateRun(ctx, oldRun); err != nil {
+		t.Fatalf("CreateRun old returned error: %v", err)
+	}
+	freshRun := AutomationRun{
+		ID:                "automation_run_fresh",
+		ProjectID:         "project-1",
+		AutomationID:      freshAutomation.ID,
+		AgentID:           "planning-worker",
+		PlanID:            freshTask.PlanID,
+		TaskID:            freshTask.ID,
+		Status:            RunStatusQueued,
+		RunnerKind:        RunnerKindCodexCLI,
+		OrchestratorRunID: "dependency-ready:fresh",
+		CreatedAt:         time.Unix(200, 0).UTC(),
+		UpdatedAt:         time.Unix(200, 0).UTC(),
+	}
+	if _, err := store.CreateRun(ctx, freshRun); err != nil {
+		t.Fatalf("CreateRun fresh returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", AgentID: "planning-worker", RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-1"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != freshRun.ID {
+		t.Fatalf("expected fresh run claimed after terminal old plan was blocked, got %#v", claimed.Run)
+	}
+	blockedOld, err := store.GetRun(ctx, "project-1", oldRun.ID)
+	if err != nil {
+		t.Fatalf("GetRun old returned error: %v", err)
+	}
+	if blockedOld.Status != RunStatusBlocked || blockedOld.FailureCategory != "work_plan_terminal" {
+		t.Fatalf("expected old terminal-plan run blocked with explicit reason, got %#v", blockedOld)
+	}
+	if fake.tasks[oldTask.ID].Status != projectworkplan.WorkTaskStatusReady || fake.tasks[oldTask.ID].ClaimedByRunID != "" {
+		t.Fatalf("old terminal-plan task must not be claimed, got %#v", fake.tasks[oldTask.ID])
+	}
+	if fake.tasks[freshTask.ID].Status != projectworkplan.WorkTaskStatusInProgress || fake.tasks[freshTask.ID].ClaimedByRunID != freshRun.ID {
+		t.Fatalf("fresh task should be claimed and started, got %#v", fake.tasks[freshTask.ID])
+	}
+}
+
+func TestSubmitRunRejectsTerminalPlanAutomation(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("work_task_old", "discover-planning-context", []string{"docs/old.md"})
+	task.PlanID = "plan-old"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"plan-old": {ID: "plan-old", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusBlocked},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/old",
+		Title:           "Old automation",
+		Purpose:         "Old blocked plan automation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "planning-worker",
+		PlanID:          task.PlanID,
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+
+	run, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: "project-1", AutomationID: automation.ID, PlanID: task.PlanID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun should persist explicit rejected run, got error: %v", err)
+	}
+	if run.Status != RunStatusBlocked || run.FailureCategory != "work_plan_terminal" {
+		t.Fatalf("expected terminal plan run blocked with explicit reason, got %#v", run)
+	}
+}
+
 func TestClaimNextRunRecoversMissingPostImplementationReview(t *testing.T) {
 	ctx := context.Background()
 	implementationTask := readyTask("task-a", "fix-finding-a", []string{"internal/foo.go"})
@@ -7108,6 +7249,16 @@ func (fake *fakeWorkTasks) ListWorkPlans(_ context.Context, filter projectworkpl
 		out = append(out, plan)
 	}
 	return out, nil
+}
+
+func (fake *fakeWorkTasks) GetWorkPlan(_ context.Context, projectID string, planID string) (projectworkplan.WorkPlan, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	plan, ok := fake.plans[planID]
+	if !ok || plan.ProjectID != projectID {
+		return projectworkplan.WorkPlan{ID: planID, ProjectID: projectID, Status: projectworkplan.WorkPlanStatusActive}, nil
+	}
+	return plan, nil
 }
 
 func (fake *fakeWorkTasks) CreateWorkTask(_ context.Context, input projectworkplan.CreateWorkTaskInput) (projectworkplan.WorkTask, error) {

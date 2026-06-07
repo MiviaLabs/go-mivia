@@ -45,6 +45,7 @@ type Store interface {
 }
 
 type WorkTaskAPI interface {
+	GetWorkPlan(context.Context, string, string) (projectworkplan.WorkPlan, error)
 	GetWorkTask(context.Context, string, string) (projectworkplan.WorkTask, error)
 	ListOpenWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error)
 	ClaimWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
@@ -595,12 +596,27 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	if !svc.requiredAutomationReviewsDone(ctx, automation) {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "automation_review_gate_open")
 	}
-	if taskID == "" && automation.TriggerKind == TriggerKindAutomatic && svc.workTasks != nil {
-		task, err := svc.resolveTask(ctx, AutomationRun{ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID, RunnerKind: runnerKind}, automation)
-		if err != nil {
-			return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "task_unavailable")
+	var resolvedTask projectworkplan.WorkTask
+	if svc.workTasks != nil {
+		if taskID == "" && automation.TriggerKind == TriggerKindAutomatic {
+			task, err := svc.resolveTask(ctx, AutomationRun{ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID, RunnerKind: runnerKind}, automation)
+			if err != nil {
+				return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "task_unavailable")
+			}
+			taskID = task.ID
+			resolvedTask = task
+		} else if taskID != "" {
+			task, err := svc.workTasks.GetWorkTask(ctx, projectID, taskID)
+			if err != nil {
+				return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "task_unavailable")
+			}
+			resolvedTask = task
 		}
-		taskID = task.ID
+		if strings.TrimSpace(resolvedTask.ID) != "" {
+			if err := svc.validateRunPlanExecutable(ctx, AutomationRun{ProjectID: projectID, PlanID: planID}, resolvedTask); err != nil {
+				return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, runPlanFailureCategory(err))
+			}
+		}
 	}
 	if err := svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID, owner); err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
@@ -1104,6 +1120,10 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 		if err := svc.validateAutomationPolicy(ctx, automation, run.RunnerKind, run.TaskID, run.AgentID); err != nil {
 			continue
 		}
+		if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+			_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
+			continue
+		}
 		if !svc.isAutomationReviewTask(automation, run.TaskID) {
 			if err := svc.validateRequiredAutomationReviews(ctx, automation); err != nil {
 				continue
@@ -1160,6 +1180,10 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
 		if err != nil || !preExecutionRecoveryTaskMatchesRun(task, run) || !svc.dependenciesDone(ctx, task) {
+			continue
+		}
+		if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+			_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
 			continue
 		}
 		task, _, blocked, err := svc.expandOrBlockPreExecutionDirtyScope(ctx, run, task, dirtyPathsFromEvidenceRefs(task.EvidenceRefs))
@@ -1341,6 +1365,10 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 		if !taskOwnsGitOpsRecoveryRun(task, run) {
 			continue
 		}
+		if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+			_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
+			continue
+		}
 		now := svc.now()
 		run.Status = RunStatusRunning
 		run.WorkTaskStatus = task.Status
@@ -1450,6 +1478,10 @@ func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, p
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
 		if err != nil || task.Status == projectworkplan.WorkTaskStatusDone {
+			continue
+		}
+		if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+			_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
 			continue
 		}
 		now := svc.now()
@@ -3728,6 +3760,10 @@ func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRu
 		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "task_unavailable")
 		return updated, projectworkplan.WorkTask{}, err
 	}
+	if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
+		return updated, projectworkplan.WorkTask{}, err
+	}
 	if reached, err := svc.replacementRetryLimitReached(ctx, run, task); err != nil {
 		return run, projectworkplan.WorkTask{}, err
 	} else if reached {
@@ -3806,6 +3842,44 @@ func (svc *Service) candidateTasks(ctx context.Context, projectID string, planID
 		return out, nil
 	}
 	return svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+}
+
+func (svc *Service) validateRunPlanExecutable(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) error {
+	planID := firstNonEmpty(task.PlanID, run.PlanID)
+	if strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	plan, err := svc.workTasks.GetWorkPlan(ctx, run.ProjectID, planID)
+	if err != nil {
+		return fmt.Errorf("%w: work_plan_unavailable", ErrInvalidInput)
+	}
+	if isTerminalWorkPlanStatus(plan.Status) {
+		return fmt.Errorf("%w: work_plan_terminal", ErrInvalidInput)
+	}
+	return nil
+}
+
+func runPlanFailureCategory(err error) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(err.Error(), "work_plan_unavailable") {
+		return "work_plan_unavailable"
+	}
+	return "work_plan_terminal"
+}
+
+func isTerminalWorkPlanStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case projectworkplan.WorkPlanStatusDone,
+		projectworkplan.WorkPlanStatusBlocked,
+		projectworkplan.WorkPlanStatusFailed,
+		projectworkplan.WorkPlanStatusCancelled,
+		projectworkplan.WorkPlanStatusSuperseded:
+		return true
+	default:
+		return false
+	}
 }
 
 func (svc *Service) resolveRunnerKind(requested string) (string, error) {

@@ -158,6 +158,10 @@ type fakeWorkTasks struct {
 	task projectworkplan.WorkTask
 }
 
+func (fake *fakeWorkTasks) GetWorkPlan(_ context.Context, projectID string, planID string) (projectworkplan.WorkPlan, error) {
+	return projectworkplan.WorkPlan{ID: planID, ProjectID: projectID, Status: projectworkplan.WorkPlanStatusActive}, nil
+}
+
 func (fake *fakeWorkTasks) GetWorkTask(_ context.Context, _ string, taskID string) (projectworkplan.WorkTask, error) {
 	if fake.task.ID != taskID {
 		return projectworkplan.WorkTask{}, errors.New("not found")
