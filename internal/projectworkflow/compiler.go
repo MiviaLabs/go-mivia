@@ -133,6 +133,9 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 	reviewTaskIDsByAutomationStep := map[string][]string{}
 	automationReviews := []plannedAutomationReview{}
 	for _, step := range graph.automationSteps {
+		if isTaskProducingWorkflowStep(step) {
+			continue
+		}
 		for _, gate := range graph.gatesByStep[step.ID] {
 			reviewer, err := svc.workPlans.CreateWorkTask(ctx, svc.reviewAutomationTaskInput(workflow, plan.ID, step, gate, runID, traceID))
 			if err != nil {
@@ -200,9 +203,9 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 	}
 	coveredTaskRefs := map[string]bool{}
 	for _, step := range graph.automationSteps {
-		refs := allowedTaskRefs(step, graph.stepsByID, taskByStep)
-		stepStatus := firstNonEmpty(step.AutomationStatus, projectautomation.AutomationStatusDraft)
-		stepTrigger := firstNonEmpty(step.TriggerKind, projectautomation.TriggerKindManual)
+		refs := automationStepAllowedTaskRefs(step, graph.stepsByID, taskByStep)
+		stepStatus := workflowAutomationStatus(step)
+		stepTrigger := workflowAutomationTrigger(step)
 		if stepStatus == projectautomation.AutomationStatusEnabled && stepTrigger == projectautomation.TriggerKindAutomatic {
 			for _, ref := range refs {
 				coveredTaskRefs[ref] = true
@@ -214,13 +217,13 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 			AutomationRef:         compileAutomationRef(plan.PlanRef, step.ID),
 			Title:                 step.Title,
 			Purpose:               firstNonEmpty(step.Description, "Run workflow automation step "+step.ID),
-			Status:                firstNonEmpty(step.AutomationStatus, projectautomation.AutomationStatusDraft),
+			Status:                stepStatus,
 			AgentID:               step.Agent,
 			PlanID:                plan.ID,
 			AllowedTaskRefs:       refs,
-			RequiredReviewTaskIDs: reviewTaskIDsByAutomationStep[step.ID],
-			TriggerKind:           firstNonEmpty(step.TriggerKind, projectautomation.TriggerKindManual),
-			SchedulePolicy:        step.SchedulePolicy,
+			RequiredReviewTaskIDs: automationRequiredReviewTaskIDs(step.ID, reviewTaskIDsByReviewedStep, reviewTaskIDsByAutomationStep),
+			TriggerKind:           stepTrigger,
+			SchedulePolicy:        workflowAutomationSchedulePolicy(step),
 			PermissionRef:         "permission_snapshot:" + snapshot.ID,
 			SourceKind:            projectautomation.AutomationSourceWorkflow,
 			CreatedByRunID:        firstNonEmpty(runID, workflow.CreatedByRunID),
@@ -300,7 +303,7 @@ func (svc *Service) planCompileGraph(workflow WorkflowDefinition) (compileGraph,
 			return fmt.Errorf("%w: workflow task dependency cycle", ErrInvalidInput)
 		}
 		step, ok := graph.stepsByID[stepID]
-		if !ok || step.Kind != WorkflowStepKindWorkTask {
+		if !ok || !isTaskProducingWorkflowStep(step) {
 			return nil
 		}
 		visiting[stepID] = true
@@ -337,6 +340,9 @@ func (svc *Service) dryRunCompileResult(workflow WorkflowDefinition, graph compi
 		}
 	}
 	for _, step := range graph.automationSteps {
+		if isTaskProducingWorkflowStep(step) {
+			continue
+		}
 		for range graph.gatesByStep[step.ID] {
 			result.ReviewerTaskIDs = append(result.ReviewerTaskIDs, svc.newID("work_task"))
 			result.AutomationIDs = append(result.AutomationIDs, svc.newID("automation"))
@@ -347,10 +353,10 @@ func (svc *Service) dryRunCompileResult(workflow WorkflowDefinition, graph compi
 	}
 	coveredTaskRefs := map[string]bool{}
 	for _, step := range graph.automationSteps {
-		stepStatus := firstNonEmpty(step.AutomationStatus, projectautomation.AutomationStatusDraft)
-		stepTrigger := firstNonEmpty(step.TriggerKind, projectautomation.TriggerKindManual)
+		stepStatus := workflowAutomationStatus(step)
+		stepTrigger := workflowAutomationTrigger(step)
 		if stepStatus == projectautomation.AutomationStatusEnabled && stepTrigger == projectautomation.TriggerKindAutomatic {
-			for _, ref := range allowedTaskRefs(step, graph.stepsByID, map[string]projectworkplan.WorkTask{}) {
+			for _, ref := range dryRunAutomationStepAllowedTaskRefs(step, graph.stepsByID) {
 				coveredTaskRefs[ref] = true
 			}
 		}
@@ -382,7 +388,16 @@ func (svc *Service) ensureCompileSnapshots(ctx context.Context, workflow Workflo
 		}
 		if existing := byAgent[agent.ID]; existing.ID != "" {
 			if existing.ContentHash != expected.ContentHash {
-				return nil, fmt.Errorf("%w: permission snapshot %s does not match agent definition", ErrInvalidInput, existing.ID)
+				expected.CreatedAt = existing.CreatedAt
+				if expected.CreatedAt.IsZero() {
+					expected.CreatedAt = svc.now()
+				}
+				expected.UpdatedAt = svc.now()
+				updated, err := svc.store.UpdatePermissionSnapshot(ctx, expected)
+				if err != nil {
+					return nil, err
+				}
+				byAgent[agent.ID] = updated
 			}
 			continue
 		}
@@ -506,7 +521,7 @@ func allowedTaskRefs(step WorkflowStep, stepsByID map[string]WorkflowStep, taskB
 			out = append(out, task.TaskRef)
 			return
 		}
-		if depStep.Kind == WorkflowStepKindWorkTask {
+		if isTaskProducingWorkflowStep(depStep) {
 			out = append(out, depStep.ID)
 		}
 	}
@@ -514,6 +529,53 @@ func allowedTaskRefs(step WorkflowStep, stepsByID map[string]WorkflowStep, taskB
 		visit(dep)
 	}
 	return out
+}
+
+func automationStepAllowedTaskRefs(step WorkflowStep, stepsByID map[string]WorkflowStep, taskByStep map[string]projectworkplan.WorkTask) []string {
+	if isTaskProducingWorkflowStep(step) {
+		if task := taskByStep[step.ID]; task.TaskRef != "" {
+			return []string{task.TaskRef}
+		}
+		return []string{step.ID}
+	}
+	return allowedTaskRefs(step, stepsByID, taskByStep)
+}
+
+func dryRunAutomationStepAllowedTaskRefs(step WorkflowStep, stepsByID map[string]WorkflowStep) []string {
+	if isTaskProducingWorkflowStep(step) {
+		return []string{step.ID}
+	}
+	return allowedTaskRefs(step, stepsByID, map[string]projectworkplan.WorkTask{})
+}
+
+func workflowAutomationStatus(step WorkflowStep) string {
+	if strings.TrimSpace(step.AutomationStatus) != "" {
+		return step.AutomationStatus
+	}
+	if isTaskProducingWorkflowStep(step) {
+		return projectautomation.AutomationStatusEnabled
+	}
+	return projectautomation.AutomationStatusDraft
+}
+
+func workflowAutomationTrigger(step WorkflowStep) string {
+	if strings.TrimSpace(step.TriggerKind) != "" {
+		return step.TriggerKind
+	}
+	if isTaskProducingWorkflowStep(step) {
+		return projectautomation.TriggerKindAutomatic
+	}
+	return projectautomation.TriggerKindManual
+}
+
+func workflowAutomationSchedulePolicy(step WorkflowStep) string {
+	if strings.TrimSpace(step.SchedulePolicy) != "" {
+		return step.SchedulePolicy
+	}
+	if isTaskProducingWorkflowStep(step) {
+		return "on-ready-task"
+	}
+	return ""
 }
 
 func compiledDependencyTaskIDs(step WorkflowStep, stepsByID map[string]WorkflowStep, taskByStep map[string]projectworkplan.WorkTask, reviewTaskIDsByReviewedStep map[string][]string, reviewTaskIDsByAutomationStep map[string][]string) []string {
@@ -530,11 +592,14 @@ func compiledDependencyTaskIDs(step WorkflowStep, stepsByID map[string]WorkflowS
 	}
 	for _, depID := range step.DependsOn {
 		depStep := stepsByID[depID]
+		if task := taskByStep[depID]; task.ID != "" {
+			add(task.ID)
+			for _, reviewTaskID := range reviewTaskIDsByReviewedStep[depID] {
+				add(reviewTaskID)
+			}
+		}
 		switch depStep.Kind {
 		case WorkflowStepKindWorkTask:
-			if task := taskByStep[depID]; task.ID != "" {
-				add(task.ID)
-			}
 		case WorkflowStepKindAutomation, WorkflowStepKindAutomationBatch:
 			for _, reviewTaskID := range reviewTaskIDsByAutomationStep[depID] {
 				add(reviewTaskID)
@@ -549,6 +614,12 @@ func compiledDependencyTaskIDs(step WorkflowStep, stepsByID map[string]WorkflowS
 			}
 		}
 	}
+	return out
+}
+
+func automationRequiredReviewTaskIDs(stepID string, reviewTaskIDsByReviewedStep map[string][]string, reviewTaskIDsByAutomationStep map[string][]string) []string {
+	out := append([]string(nil), reviewTaskIDsByAutomationStep[stepID]...)
+	out = append(out, reviewTaskIDsByReviewedStep[stepID]...)
 	return out
 }
 
@@ -695,11 +766,15 @@ func truncateRef(value string) string {
 
 func hasTaskProducingDependency(step WorkflowStep, stepsByID map[string]WorkflowStep) bool {
 	for _, dep := range step.DependsOn {
-		if stepsByID[dep].Kind == WorkflowStepKindWorkTask {
+		if isTaskProducingWorkflowStep(stepsByID[dep]) {
 			return true
 		}
 	}
 	return false
+}
+
+func isTaskProducingWorkflowStep(step WorkflowStep) bool {
+	return step.Kind == WorkflowStepKindWorkTask || step.Kind == WorkflowStepKindAutomationBatch
 }
 
 func reviewerEvidence(gate WorkflowReviewGate, reviewedTaskID string) []string {

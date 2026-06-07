@@ -16,6 +16,7 @@ type Store interface {
 	ListWorkflows(context.Context, WorkflowFilter) ([]projectworkflow.WorkflowDefinition, error)
 	UpdateWorkflow(context.Context, projectworkflow.WorkflowDefinition) (projectworkflow.WorkflowDefinition, error)
 	CreatePermissionSnapshot(context.Context, projectworkflow.WorkflowPermissionSnapshot) (projectworkflow.WorkflowPermissionSnapshot, error)
+	UpdatePermissionSnapshot(context.Context, projectworkflow.WorkflowPermissionSnapshot) (projectworkflow.WorkflowPermissionSnapshot, error)
 	GetPermissionSnapshot(context.Context, string, string) (projectworkflow.WorkflowPermissionSnapshot, error)
 	ListPermissionSnapshots(context.Context, PermissionSnapshotFilter) ([]projectworkflow.WorkflowPermissionSnapshot, error)
 }

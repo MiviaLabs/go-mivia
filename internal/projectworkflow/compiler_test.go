@@ -191,6 +191,30 @@ func TestCompileWorkflowUsesProjectBranchPolicyOptions(t *testing.T) {
 	}
 }
 
+func TestCompileWorkflowRefreshesChangedPermissionSnapshot(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, _, _ := newCompileFixture()
+	workflow := baseCompileWorkflow()
+	workflowStore.seedWorkflow(workflow)
+	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "request-1"}); err != nil {
+		t.Fatalf("initial compile workflow: %v", err)
+	}
+	initial := snapshotForAgent(t, workflowStore.snapshotList(), "worker")
+
+	workflow.Agents[0].AllowedTools = append(workflow.Agents[0].AllowedTools, "projects.workspace.git_diff")
+	workflowStore.seedWorkflow(workflow)
+	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "request-2"}); err != nil {
+		t.Fatalf("compile after permission change: %v", err)
+	}
+	updated := snapshotForAgent(t, workflowStore.snapshotList(), "worker")
+	if initial.ID != updated.ID {
+		t.Fatalf("expected stable snapshot id, got first=%q updated=%q", initial.ID, updated.ID)
+	}
+	if initial.ContentHash == updated.ContentHash || !containsString(updated.AllowedTools, "projects.workspace.git_diff") {
+		t.Fatalf("expected compile to refresh changed snapshot: initial=%#v updated=%#v", initial, updated)
+	}
+}
+
 func TestCompileWorkflowDryRunPersistsNothing(t *testing.T) {
 	ctx := context.Background()
 	svc, workflowStore, workPlans, automations := newCompileFixture()
@@ -268,6 +292,70 @@ func TestCompileWorkflowMaterializesAutomationStepDependencies(t *testing.T) {
 	}
 	if markReadyAutomation.ID == "" || markReadyAutomation.Status != projectautomation.AutomationStatusEnabled || markReadyAutomation.TriggerKind != projectautomation.TriggerKindAutomatic {
 		t.Fatalf("uncovered workflow task must get enabled automatic task automation, got %#v", markReadyAutomation)
+	}
+}
+
+func TestCompileWorkflowMaterializesAutomationBatchAsExecutableTask(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, workPlans, automations := newCompileFixture()
+	workflow := baseCompileWorkflow()
+	workflow.Steps[1].Kind = WorkflowStepKindAutomationBatch
+	workflow.Steps[1].ID = "run-implementation-batch"
+	workflow.Steps[1].Title = "Run Implementation Batch"
+	workflow.Steps = append(workflow.Steps, WorkflowStep{
+		ID:                      "orchestrator-verification",
+		Kind:                    WorkflowStepKindWorkTask,
+		Title:                   "Orchestrator Verification",
+		Agent:                   "automation",
+		DependsOn:               []string{"run-implementation-batch"},
+		Description:             "Verify only after implementation batch execution and review.",
+		EvidenceNeeded:          []string{"focused-test-ref", "review-result-ref"},
+		FilesToRead:             []string{"internal/projectworkflow/compiler.go"},
+		VerificationRequirement: "run focused verifier after implementation review",
+		ReviewGate:              "review-implement approval required before verification completion",
+		ResumeInstructions:      "resume from implementation batch refs and review refs",
+	})
+	workflow.ReviewGates[1].AppliesTo = []string{"run-implementation-batch"}
+	workflow.ReviewGates[0].AppliesTo = append(workflow.ReviewGates[0].AppliesTo, "orchestrator-verification")
+	workflowStore.seedWorkflow(workflow)
+
+	result, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "request-1", CreatedByRunID: "run-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+
+	tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: result.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	batch := taskByRef(t, tasks, "run-implementation-batch")
+	batchReview := taskByRef(t, tasks, "review-run-implementation-batch-review-automation")
+	verification := taskByRef(t, tasks, "orchestrator-verification")
+	if batch.OwnerAgent != "automation" || batch.VerificationRequirement == "" {
+		t.Fatalf("automation batch must compile into executable task metadata, got %#v", batch)
+	}
+	if len(batchReview.DependencyTaskIDs) != 1 || batchReview.DependencyTaskIDs[0] != batch.ID {
+		t.Fatalf("automation batch review must depend on concrete batch task, got %#v", batchReview)
+	}
+	for _, required := range []string{batch.ID, batchReview.ID} {
+		if !containsString(verification.DependencyTaskIDs, required) {
+			t.Fatalf("verification must wait for batch execution and review %s, got %#v", required, verification.DependencyTaskIDs)
+		}
+	}
+
+	var batchAutomation projectautomation.Automation
+	for _, automationID := range result.AutomationIDs {
+		automation, err := automations.GetAutomation(ctx, "project-1", automationID)
+		if err != nil {
+			t.Fatalf("get automation %s: %v", automationID, err)
+		}
+		if containsString(automation.AllowedTaskRefs, batch.TaskRef) && automation.AgentID == "automation" {
+			batchAutomation = automation
+			break
+		}
+	}
+	if batchAutomation.ID == "" || batchAutomation.Status != projectautomation.AutomationStatusEnabled || batchAutomation.TriggerKind != projectautomation.TriggerKindAutomatic {
+		t.Fatalf("automation batch task must have enabled automatic execution metadata, got %#v", batchAutomation)
 	}
 }
 
@@ -380,7 +468,7 @@ func TestCompileWorkflowAllowsRepeatedRuns(t *testing.T) {
 	}
 }
 
-func TestCompileWorkflowRejectsStalePermissionSnapshot(t *testing.T) {
+func TestCompileWorkflowRefreshesStalePermissionSnapshot(t *testing.T) {
 	ctx := context.Background()
 	svc, workflowStore, _, _ := newCompileFixture()
 	workflow := baseCompileWorkflow()
@@ -394,8 +482,12 @@ func TestCompileWorkflowRejectsStalePermissionSnapshot(t *testing.T) {
 		ContentHash: "sha256-stale",
 	}
 
-	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1"}); err == nil || !strings.Contains(err.Error(), "does not match agent definition") {
-		t.Fatalf("expected stale permission snapshot rejection, got %v", err)
+	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1"}); err != nil {
+		t.Fatalf("compile should refresh stale permission snapshot: %v", err)
+	}
+	updated := snapshotForAgent(t, workflowStore.snapshotList(), "worker")
+	if updated.ContentHash == "sha256-stale" {
+		t.Fatalf("stale permission snapshot was not refreshed: %#v", updated)
 	}
 }
 
@@ -560,6 +652,23 @@ func (store *compilerWorkflowStore) UpdateWorkflow(_ context.Context, workflow W
 func (store *compilerWorkflowStore) CreatePermissionSnapshot(_ context.Context, snapshot WorkflowPermissionSnapshot) (WorkflowPermissionSnapshot, error) {
 	store.snapshots[snapshot.ProjectID+"\x00"+snapshot.ID] = cloneTestSnapshot(snapshot)
 	return cloneTestSnapshot(snapshot), nil
+}
+
+func (store *compilerWorkflowStore) UpdatePermissionSnapshot(_ context.Context, snapshot WorkflowPermissionSnapshot) (WorkflowPermissionSnapshot, error) {
+	key := snapshot.ProjectID + "\x00" + snapshot.ID
+	if _, ok := store.snapshots[key]; !ok {
+		return WorkflowPermissionSnapshot{}, errors.New("snapshot not found")
+	}
+	store.snapshots[key] = cloneTestSnapshot(snapshot)
+	return cloneTestSnapshot(snapshot), nil
+}
+
+func (store *compilerWorkflowStore) snapshotList() []WorkflowPermissionSnapshot {
+	out := make([]WorkflowPermissionSnapshot, 0, len(store.snapshots))
+	for _, snapshot := range store.snapshots {
+		out = append(out, cloneTestSnapshot(snapshot))
+	}
+	return out
 }
 
 func (store *compilerWorkflowStore) GetPermissionSnapshot(_ context.Context, projectID, snapshotID string) (WorkflowPermissionSnapshot, error) {

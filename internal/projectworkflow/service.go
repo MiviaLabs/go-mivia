@@ -24,6 +24,7 @@ type Store interface {
 	ListWorkflows(context.Context, WorkflowFilter) ([]WorkflowDefinition, error)
 	UpdateWorkflow(context.Context, WorkflowDefinition) (WorkflowDefinition, error)
 	CreatePermissionSnapshot(context.Context, WorkflowPermissionSnapshot) (WorkflowPermissionSnapshot, error)
+	UpdatePermissionSnapshot(context.Context, WorkflowPermissionSnapshot) (WorkflowPermissionSnapshot, error)
 	GetPermissionSnapshot(context.Context, string, string) (WorkflowPermissionSnapshot, error)
 	ListPermissionSnapshots(context.Context, PermissionSnapshotFilter) ([]WorkflowPermissionSnapshot, error)
 }
@@ -184,12 +185,37 @@ func (svc *Service) ImportWorkflowTOML(ctx context.Context, input ImportWorkflow
 
 	result := ImportWorkflowTOMLResult{ValidationIssues: issues}
 	for i, workflow := range prepared {
-		created, err := svc.store.CreateWorkflow(ctx, workflow)
+		stored, err := svc.store.GetWorkflow(ctx, workflow.ProjectID, workflow.ID)
+		if err == nil {
+			workflow.CreatedAt = stored.CreatedAt
+			if workflow.CreatedAt.IsZero() {
+				workflow.CreatedAt = svc.now()
+			}
+			workflow.UpdatedAt = svc.now()
+			stored, err = svc.store.UpdateWorkflow(ctx, workflow)
+		} else {
+			stored, err = svc.store.CreateWorkflow(ctx, workflow)
+		}
 		if err != nil {
 			return result, err
 		}
-		result.Workflows = append(result.Workflows, created)
+		result.Workflows = append(result.Workflows, stored)
 		for _, snapshot := range snapshotsByWorkflow[i] {
+			existing, err := svc.store.GetPermissionSnapshot(ctx, snapshot.ProjectID, snapshot.ID)
+			if err == nil {
+				snapshot.CreatedAt = existing.CreatedAt
+				if snapshot.CreatedAt.IsZero() {
+					snapshot.CreatedAt = svc.now()
+				}
+				snapshot.UpdatedAt = svc.now()
+				createdSnapshot, err := svc.store.UpdatePermissionSnapshot(ctx, snapshot)
+				if err != nil {
+					return result, err
+				}
+				result.PermissionSnapshots = append(result.PermissionSnapshots, createdSnapshot)
+				result.PermissionSnapshotIDs = append(result.PermissionSnapshotIDs, createdSnapshot.ID)
+				continue
+			}
 			createdSnapshot, err := svc.store.CreatePermissionSnapshot(ctx, snapshot)
 			if err != nil {
 				return result, err

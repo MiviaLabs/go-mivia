@@ -1,13 +1,14 @@
 package projectworkflow
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
 func TestConfigWorkflowDefinitionsParseAndValidate(t *testing.T) {
-	paths, err := filepath.Glob(filepath.Join("..", "..", "configs", "workflows", "*.toml"))
+	paths, err := configWorkflowPaths()
 	if err != nil {
 		t.Fatalf("glob workflow definitions: %v", err)
 	}
@@ -34,4 +35,20 @@ func TestConfigWorkflowDefinitionsParseAndValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func configWorkflowPaths() ([]string, error) {
+	root := filepath.Join("..", "..", "configs", "workflows")
+	paths := make([]string, 0)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".toml" {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	return paths, err
 }
