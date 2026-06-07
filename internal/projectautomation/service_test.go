@@ -82,6 +82,7 @@ func containsString(values []string, want string) bool {
 func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
 	prompt := RenderCodexTaskPrompt(CodexTaskInput{
 		ProjectID:               "project-1",
+		MCPServerURL:            "http://runtime-host:19090",
 		AutomationRunID:         "run-1",
 		PlanID:                  "plan-1",
 		TaskID:                  "task-1",
@@ -105,6 +106,10 @@ func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
 		"runner commits, pushes, and opens draft PRs",
 		"Implementation workers must not self-review.",
 		"Do not use colons, slashes, paths, commands, raw logs, or source snippets as refs.",
+		"Concrete REST closeout endpoints",
+		"http://runtime-host:19090/api/v1/projects/project-1/work-plans/plan-1/tasks",
+		"http://runtime-host:19090/api/v1/projects/project-1/work-tasks/task-1/status",
+		"http://runtime-host:19090/api/v1/projects/project-1/work-tasks/task-1",
 		"record governed system closeout",
 		"use direct HTTP REST against that exact runtime URL",
 		"Leave verifier execution and task completion to the orchestrator.",
@@ -130,6 +135,7 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 			"must perform explicit system closeout",
 			"automation_task_closeout_missing",
 			"exact Mivia server URL shown in this prompt",
+			"Concrete REST closeout endpoints",
 			"Do not hard-code hostnames or ports",
 			"POST /api/v1/projects/<project_id>/work-plans/<plan_id>/tasks",
 			"GET /api/v1/projects/<project_id>/work-tasks/<task_id>",
@@ -162,12 +168,16 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 	}
 	for taskRef, wants := range cases {
 		input := codexInputForRun(run, projectworkplan.WorkTask{ID: "task-1", PlanID: "plan-1", TaskRef: taskRef})
+		input.MCPServerURL = "http://runtime-host:19090"
 		prompt := RenderCodexTaskPrompt(input)
 		if strings.Contains(prompt, "Leave verifier execution and task completion to the orchestrator.") {
 			t.Fatalf("task %s prompt must not tell governed workflow wrappers to leave closeout to the orchestrator:\n%s", taskRef, prompt)
 		}
 		if strings.Contains(prompt, "http://mivia-server:8080") || strings.Contains(prompt, "method=tools/call") || strings.Contains(prompt, "JSON-RPC tools/call") || strings.Contains(prompt, "governed MCP closeout") {
 			t.Fatalf("task %s prompt must use runtime REST URL without hardcoded host/port or JSON-RPC dependency:\n%s", taskRef, prompt)
+		}
+		if !strings.Contains(prompt, "http://runtime-host:19090/api/v1/projects/mass-monorepo/work-tasks/task-1/status") {
+			t.Fatalf("task %s prompt missing concrete runtime closeout endpoint:\n%s", taskRef, prompt)
 		}
 		for _, want := range wants {
 			if !strings.Contains(prompt, want) {

@@ -3468,7 +3468,7 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	builder.WriteString("Perform the task now in the current repository workspace. Keep the change limited to the likely affected files. Do not run full test suites. Do not mark the Work Task done; the orchestrator will verify and complete it.\n\n")
 	builder.WriteString("Identifiers:\n")
 	writePromptLine(&builder, "- Project ID", input.ProjectID)
-	writePromptLine(&builder, "- Mivia MCP server URL", input.MCPServerURL)
+	writePromptLine(&builder, "- Mivia server URL", input.MCPServerURL)
 	writePromptLine(&builder, "- Automation run ID", input.AutomationRunID)
 	writePromptLine(&builder, "- Trace ID", input.TraceID)
 	writePromptLine(&builder, "- Work Plan ID", input.PlanID)
@@ -3484,6 +3484,7 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	writePromptLine(&builder, "- Expected output", input.ExpectedOutput)
 	writePromptLine(&builder, "- Failure criteria", input.FailureCriteria)
 	writePromptLine(&builder, "- Resume instructions", input.ResumeInstructions)
+	writeConcreteRESTCloseoutEndpoints(&builder, input)
 	builder.WriteString("\nRules:\n")
 	builder.WriteString("- Do not call projects.automation_runs.complete_attempt. The external runner owns automation run attempt reporting after your process exits.\n")
 	builder.WriteString("- Do not commit, push, or create pull requests when supervised runner GitOps is enabled. Modify task files only; the runner commits, pushes, and opens draft PRs after governed task closeout.\n")
@@ -3499,6 +3500,25 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	}
 	builder.WriteString("- Return a concise summary of changed files, evidence, risks, and tests not run.\n")
 	return builder.String()
+}
+
+func writeConcreteRESTCloseoutEndpoints(builder *strings.Builder, input CodexTaskInput) {
+	baseURL := strings.TrimRight(strings.TrimSpace(input.MCPServerURL), "/")
+	projectID := strings.TrimSpace(input.ProjectID)
+	planID := strings.TrimSpace(input.PlanID)
+	taskID := strings.TrimSpace(input.TaskID)
+	if baseURL == "" || projectID == "" || taskID == "" {
+		return
+	}
+	builder.WriteString("\nConcrete REST closeout endpoints:\n")
+	if planID != "" {
+		writePromptLine(builder, "- Create child Work Task", baseURL+"/api/v1/projects/"+projectID+"/work-plans/"+planID+"/tasks")
+	}
+	writePromptLine(builder, "- Attach wrapper evidence", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID+"/evidence")
+	writePromptLine(builder, "- Move wrapper status", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID+"/status")
+	writePromptLine(builder, "- Block wrapper", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID+"/block")
+	writePromptLine(builder, "- Fail wrapper", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID+"/fail")
+	writePromptLine(builder, "- Read wrapper back", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID)
 }
 
 func writePromptLine(builder *strings.Builder, label string, value string) {
