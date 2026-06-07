@@ -105,10 +105,17 @@ func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
 		"runner commits, pushes, and opens draft PRs",
 		"Implementation workers must not self-review.",
 		"Do not use colons, slashes, paths, commands, raw logs, or source snippets as refs.",
+		"record governed system closeout",
+		"use direct HTTP REST against that exact runtime URL",
 		"Leave verifier execution and task completion to the orchestrator.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("rendered prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"governed MCP closeout", "JSON-RPC tools/call"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("rendered prompt must not contain stale MCP closeout instruction %q:\n%s", forbidden, prompt)
 		}
 	}
 }
@@ -159,7 +166,7 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 		if strings.Contains(prompt, "Leave verifier execution and task completion to the orchestrator.") {
 			t.Fatalf("task %s prompt must not tell governed workflow wrappers to leave closeout to the orchestrator:\n%s", taskRef, prompt)
 		}
-		if strings.Contains(prompt, "http://mivia-server:8080") || strings.Contains(prompt, "method=tools/call") {
+		if strings.Contains(prompt, "http://mivia-server:8080") || strings.Contains(prompt, "method=tools/call") || strings.Contains(prompt, "JSON-RPC tools/call") || strings.Contains(prompt, "governed MCP closeout") {
 			t.Fatalf("task %s prompt must use runtime REST URL without hardcoded host/port or JSON-RPC dependency:\n%s", taskRef, prompt)
 		}
 		for _, want := range wants {

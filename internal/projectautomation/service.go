@@ -3490,10 +3490,10 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	builder.WriteString("- When attaching MCP evidence, claim, verifier, and knowledge refs, use short safe refs with only letters, numbers, dots, underscores, and hyphens. Do not use colons, slashes, paths, commands, raw logs, or source snippets as refs.\n")
 	builder.WriteString("- Do not attach review_result refs unless this task explicitly says you are the independent reviewer. Implementation workers must not self-review.\n")
 	builder.WriteString("- For confirmed bug fixes, add a focused regression test when feasible. If a regression test is not feasible in the task scope, record the concrete reason in the task outcome.\n")
-	builder.WriteString("- Before exiting successfully, record governed MCP closeout: attach bounded evidence and verifier refs, then move this Work Task out of in_progress, normally to needs_review. If blocked, use projects.work_tasks.block or fail.\n")
+	builder.WriteString("- Before exiting successfully, record governed system closeout: attach bounded evidence and verifier refs, then move this Work Task out of in_progress, normally to needs_review. If blocked, use projects.work_tasks.block or fail.\n")
 	builder.WriteString("- If you confirm a real bug and the task asks for automatic remediation, call projects.automations.create_remediation_from_finding with finding_status=confirmed and activate_plan=true. Do not call projects.automations.run.\n")
 	builder.WriteString("- If no bug is confirmed, attach a no-confirmed-bug evidence ref and move this Work Task to needs_review with that outcome.\n")
-	builder.WriteString("- If native MCP tools are unavailable and the Mivia MCP server URL is present, call the MCP endpoint with JSON-RPC tools/call, Content-Type application/json, Accept application/json, text/event-stream, and MCP-Protocol-Version 2025-06-18.\n")
+	builder.WriteString("- If native MCP tools are unavailable and the Mivia MCP server URL is present, use direct HTTP REST against that exact runtime URL. Do not hard-code hostnames or ports and do not depend on Codex MCP harness configuration.\n")
 	for _, instruction := range input.RunnerInstructions {
 		writePromptLine(&builder, "-", instruction)
 	}
