@@ -1143,7 +1143,7 @@ func TestRunOnceFailsGovernanceStepsWithoutExplicitCloseout(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 						t.Fatalf("decode attempt: %v", err)
 					}
-					if input.Status != projectautomation.RunStatusFailed || input.FailureCategory != "automation_task_closeout_missing" {
+					if input.Status != projectautomation.RunStatusFailed || input.FailureCategory != governedCloseoutOutputMissing {
 						t.Fatalf("expected governed closeout failure, got %+v", input)
 					}
 					completed.Add(1)
@@ -1255,6 +1255,128 @@ func TestRunOnceClosesOutReadOnlyReviewTaskAfterCodexSuccess(t *testing.T) {
 	}
 	if attemptCompleted.Load() != 1 || verifierAttached.Load() != 1 || taskVerifying.Load() != 1 || taskCompleted.Load() != 1 {
 		t.Fatalf("expected closeout calls and attempt completion, got attempt=%d verifier=%d verifying=%d task=%d", attemptCompleted.Load(), verifierAttached.Load(), taskVerifying.Load(), taskCompleted.Load())
+	}
+}
+
+func TestParseGovernedCloseoutRejectsMissingAndUnsafeOutput(t *testing.T) {
+	if _, err := parseGovernedCloseoutOutput(""); governedCloseoutFailureCategory(err) != governedCloseoutOutputMissing {
+		t.Fatalf("expected missing output category, got %v", err)
+	}
+	for name, payload := range map[string]string{
+		"trailing_json":  `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""} {"extra":true}`,
+		"trailing_prose": `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""} done`,
+		"unknown_field":  `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":"","raw_log":"secret"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseGovernedCloseoutOutput(payload); governedCloseoutFailureCategory(err) != governedCloseoutInvalidJSON {
+				t.Fatalf("expected invalid json category, got %v", err)
+			}
+		})
+	}
+	_, err := parseGovernedCloseoutOutput(`{"closeout_action":"needs_review","outcome":"ok","safe_next_action":"next","evidence_refs":["bad/ref"],"verifier_result_refs":[],"child_tasks":[]}`)
+	if governedCloseoutFailureCategory(validateGovernedCloseoutOutput(mustParseGovernedCloseout(t, `{"closeout_action":"needs_review","outcome":"ok","safe_next_action":"next","evidence_refs":["bad/ref"],"verifier_result_refs":[],"child_tasks":[]}`), runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})) != governedCloseoutValidationFailed {
+		t.Fatalf("expected unsafe ref validation failure")
+	}
+	if err == nil {
+		// parse alone should allow the JSON shape; validation owns semantic safety.
+		return
+	}
+}
+
+func TestApplyGovernedCloseoutCreatesChildTasksAndMovesWrapperToNeedsReview(t *testing.T) {
+	var childCreated atomic.Int32
+	var evidenceAttached atomic.Int32
+	var verifierAttached atomic.Int32
+	var statusMoved atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans/plan-1/tasks":
+			childCreated.Add(1)
+			writeJSON(t, w, map[string]string{"id": "child-1", "status": "planned"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/evidence":
+			evidenceAttached.Add(1)
+			writeJSON(t, w, map[string]string{"ref": "evidence.governed"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/verifier-results":
+			verifierAttached.Add(1)
+			writeJSON(t, w, map[string]string{"ref": "verifier.governed"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/status":
+			statusMoved.Add(1)
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}})
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			if statusMoved.Load() > 0 {
+				writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}, VerifierResultRefs: []string{"verifier.governed"}})
+				return
+			}
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "in_progress"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	err := client.applyGovernedCloseoutFromOutput(t.Context(), "project-1", projectautomation.ClaimedRun{
+		Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", PlanID: "plan-1", TaskID: "task-1", TraceID: "trace-1"},
+		CodexInput: projectautomation.CodexTaskInput{PlanID: "plan-1", TaskID: "task-1"},
+	}, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "in_progress"}, governedCloseoutFixtureJSON())
+	if err != nil {
+		t.Fatalf("apply governed closeout returned error: %v", err)
+	}
+	if childCreated.Load() != 1 || evidenceAttached.Load() != 1 || verifierAttached.Load() != 1 || statusMoved.Load() != 1 {
+		t.Fatalf("expected create/evidence/verifier/status calls, got child=%d evidence=%d verifier=%d status=%d", childCreated.Load(), evidenceAttached.Load(), verifierAttached.Load(), statusMoved.Load())
+	}
+}
+
+func TestRunOnceAppliesGovernedCloseoutFromCodexOutput(t *testing.T) {
+	setReadableCodexHome(t)
+	codexPath := fakeCodexWritingLastMessage(t, governedCloseoutFixtureJSON())
+	var childCreated atomic.Int32
+	var attemptCompleted projectautomation.CompleteAttemptInput
+	var statusMoved atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			input := testCodexInput("run-1")
+			input.TaskRef = "decompose-work-plan"
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", PlanID: "plan-1", TaskID: "task-1"},
+				CodexInput: input,
+				TimeoutMS:  1000,
+			})
+		case "/api/v1/projects/project-1/work-plans/plan-1":
+			writeJSON(t, w, runnerWorkPlan{ID: "plan-1", ProjectID: "project-1", IsolationMode: "shared"})
+		case "/api/v1/projects/project-1/work-plans/plan-1/tasks":
+			childCreated.Add(1)
+			writeJSON(t, w, map[string]string{"id": "child-1"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/evidence", "/api/v1/projects/project-1/work-tasks/task-1/verifier-results":
+			writeJSON(t, w, map[string]string{"ref": "ok"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/status":
+			statusMoved.Add(1)
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}})
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			if statusMoved.Load() > 0 {
+				writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}})
+				return
+			}
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "in_progress"})
+		case "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			if err := json.NewDecoder(r.Body).Decode(&attemptCompleted); err != nil {
+				t.Fatalf("decode attempt: %v", err)
+			}
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", Status: attemptCompleted.Status})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", codexPath})
+	if status != 0 {
+		t.Fatalf("expected runner success, got %d", status)
+	}
+	if childCreated.Load() != 1 || statusMoved.Load() != 1 {
+		t.Fatalf("expected runner-owned closeout calls, child=%d status=%d", childCreated.Load(), statusMoved.Load())
+	}
+	if attemptCompleted.Status != projectautomation.RunStatusCompleted || attemptCompleted.FailureCategory != "" {
+		t.Fatalf("expected completed attempt, got %+v", attemptCompleted)
 	}
 }
 
@@ -1702,6 +1824,17 @@ func fakeCodex(t *testing.T, execStatus int) string {
 	return binary
 }
 
+func fakeCodexWritingLastMessage(t *testing.T, message string) string {
+	t.Helper()
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-test; exit 0; fi\nout=''\nprev=''\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--output-last-message\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$out\" ]; then cat > \"$out\" <<'EOF'\n" + message + "\nEOF\nfi\nexit 0\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	return binary
+}
+
 func fakeCodexRecordingArgs(t *testing.T, argsPath string, execStatus int) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -1711,6 +1844,46 @@ func fakeCodexRecordingArgs(t *testing.T, argsPath string, execStatus int) strin
 		t.Fatalf("write fake codex: %v", err)
 	}
 	return binary
+}
+
+func governedCloseoutFixtureJSON() string {
+	return `{
+		"closeout_action":"needs_review",
+		"outcome":"decomposition produced implementation-ready child task metadata",
+		"safe_next_action":"review child implementation tasks",
+		"evidence_refs":["evidence.governed"],
+		"verifier_result_refs":["verifier.governed"],
+		"child_tasks":[{
+			"task_ref":"implement-ticket-slice",
+			"title":"Implement Ticket Slice",
+			"description":"Implement one bounded source-verified ticket slice.",
+			"status":"planned",
+			"owner_agent":"implementation-worker",
+			"evidence_needed":["source-evidence"],
+			"context_pack_refs":["context.pack"],
+			"files_to_read":["apps/example/file.ts"],
+			"files_to_edit":["apps/example/file.ts"],
+			"likely_files_affected":["apps/example"],
+			"dependency_task_ids":[],
+			"verification_requirement":"focused regression test",
+			"expected_output":"code change and focused test",
+			"failure_criteria":"block on missing source evidence",
+			"review_gate":"implementation-review",
+			"resume_instructions":"claim this task and inspect listed files",
+			"decomposition_quality":"ready"
+		}],
+		"block_reason":"",
+		"failure_reason":""
+	}`
+}
+
+func mustParseGovernedCloseout(t *testing.T, payload string) governedCloseoutOutput {
+	t.Helper()
+	output, err := parseGovernedCloseoutOutput(payload)
+	if err != nil {
+		t.Fatalf("parse governed closeout: %v", err)
+	}
+	return output
 }
 
 func initRunnerGitRepo(t *testing.T) string {
@@ -1774,10 +1947,15 @@ func shellQuoteForTest(value string) string {
 func TestBuildRunnerCodexCommandSupportsWindowsLauncher(t *testing.T) {
 	inputPath := filepath.Join(t.TempDir(), "codex-input.json")
 	originalConverter := windowsPathForRunner
+	t.Cleanup(func() { windowsPathForRunner = originalConverter })
+
+	outputPath := filepath.Join(t.TempDir(), "last-message.txt")
 	windowsPathForRunner = func(path string) (string, error) {
 		switch path {
 		case inputPath:
 			return `\\wsl.localhost\Ubuntu\tmp\codex-input.json`, nil
+		case outputPath:
+			return `\\wsl.localhost\Ubuntu\tmp\last-message.txt`, nil
 		case "/workspace/repo":
 			return `\\wsl.localhost\Ubuntu\workspace\repo`, nil
 		default:
@@ -1785,16 +1963,15 @@ func TestBuildRunnerCodexCommandSupportsWindowsLauncher(t *testing.T) {
 			return "", nil
 		}
 	}
-	t.Cleanup(func() { windowsPathForRunner = originalConverter })
 
-	command, err := buildRunnerCodexCommand(inputPath, time.Minute, codexLaunchOptions{Path: "codex", Launcher: "windows-cmd", WorkDir: "/workspace/repo", Sandbox: "workspace-write"})
+	command, err := buildRunnerCodexCommand(inputPath, outputPath, time.Minute, codexLaunchOptions{Path: "codex", Launcher: "windows-cmd", WorkDir: "/workspace/repo", Sandbox: "workspace-write"})
 	if err != nil {
 		t.Fatalf("buildRunnerCodexCommand returned error: %v", err)
 	}
 	if command.Path != "cmd.exe" {
 		t.Fatalf("expected cmd.exe launcher, got %q", command.Path)
 	}
-	want := []string{"/c", "type", `\\wsl.localhost\Ubuntu\tmp\codex-input.json`, "|", "codex", "exec", "--sandbox", "workspace-write", "--cd", `\\wsl.localhost\Ubuntu\workspace\repo`, "-"}
+	want := []string{"/c", "type", `\\wsl.localhost\Ubuntu\tmp\codex-input.json`, "|", "codex", "exec", "--sandbox", "workspace-write", "--output-last-message", `\\wsl.localhost\Ubuntu\tmp\last-message.txt`, "--cd", `\\wsl.localhost\Ubuntu\workspace\repo`, "-"}
 	if len(command.Args) != len(want) {
 		t.Fatalf("unexpected launcher args: %#v", command.Args)
 	}
@@ -1807,11 +1984,12 @@ func TestBuildRunnerCodexCommandSupportsWindowsLauncher(t *testing.T) {
 
 func TestBuildRunnerCodexCommandSupportsDirectLauncherWorkDir(t *testing.T) {
 	inputPath := filepath.Join(t.TempDir(), "codex-input.json")
-	command, err := buildRunnerCodexCommand(inputPath, time.Minute, codexLaunchOptions{Path: "/usr/local/bin/codex", Launcher: "direct", WorkDir: "/workspace/repo", Sandbox: "workspace-write"})
+	outputPath := filepath.Join(t.TempDir(), "last-message.txt")
+	command, err := buildRunnerCodexCommand(inputPath, outputPath, time.Minute, codexLaunchOptions{Path: "/usr/local/bin/codex", Launcher: "direct", WorkDir: "/workspace/repo", Sandbox: "workspace-write"})
 	if err != nil {
 		t.Fatalf("buildRunnerCodexCommand returned error: %v", err)
 	}
-	want := []string{"exec", "--sandbox", "workspace-write", "--cd", "/workspace/repo", "-"}
+	want := []string{"exec", "--sandbox", "workspace-write", "--output-last-message", outputPath, "--cd", "/workspace/repo", "-"}
 	if len(command.Args) != len(want) {
 		t.Fatalf("unexpected args: %#v", command.Args)
 	}
@@ -1827,11 +2005,12 @@ func TestBuildRunnerCodexCommandSupportsDirectLauncherWorkDir(t *testing.T) {
 
 func TestBuildRunnerCodexCommandSupportsBypassMode(t *testing.T) {
 	inputPath := filepath.Join(t.TempDir(), "codex-input.txt")
-	command, err := buildRunnerCodexCommand(inputPath, time.Minute, codexLaunchOptions{Path: "/usr/local/bin/codex", Launcher: "direct", WorkDir: "/workspace/repo", Sandbox: "workspace-write", BypassApprovalsAndSandbox: true})
+	outputPath := filepath.Join(t.TempDir(), "last-message.txt")
+	command, err := buildRunnerCodexCommand(inputPath, outputPath, time.Minute, codexLaunchOptions{Path: "/usr/local/bin/codex", Launcher: "direct", WorkDir: "/workspace/repo", Sandbox: "workspace-write", BypassApprovalsAndSandbox: true})
 	if err != nil {
 		t.Fatalf("buildRunnerCodexCommand returned error: %v", err)
 	}
-	want := []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "--cd", "/workspace/repo", "-"}
+	want := []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "--output-last-message", outputPath, "--cd", "/workspace/repo", "-"}
 	if len(command.Args) != len(want) {
 		t.Fatalf("unexpected args: %#v", command.Args)
 	}

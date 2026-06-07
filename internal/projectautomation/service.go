@@ -3484,17 +3484,19 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	writePromptLine(&builder, "- Expected output", input.ExpectedOutput)
 	writePromptLine(&builder, "- Failure criteria", input.FailureCriteria)
 	writePromptLine(&builder, "- Resume instructions", input.ResumeInstructions)
-	writeConcreteRESTCloseoutEndpoints(&builder, input)
+	if !isGovernedWorkflowTaskRef(input.TaskRef) {
+		writeConcreteRESTCloseoutEndpoints(&builder, input)
+	}
 	builder.WriteString("\nRules:\n")
 	builder.WriteString("- Do not call projects.automation_runs.complete_attempt. The external runner owns automation run attempt reporting after your process exits.\n")
 	builder.WriteString("- Do not commit, push, or create pull requests when supervised runner GitOps is enabled. Modify task files only; the runner commits, pushes, and opens draft PRs after governed task closeout.\n")
 	builder.WriteString("- When attaching MCP evidence, claim, verifier, and knowledge refs, use short safe refs with only letters, numbers, dots, underscores, and hyphens. Do not use colons, slashes, paths, commands, raw logs, or source snippets as refs.\n")
 	builder.WriteString("- Do not attach review_result refs unless this task explicitly says you are the independent reviewer. Implementation workers must not self-review.\n")
 	builder.WriteString("- For confirmed bug fixes, add a focused regression test when feasible. If a regression test is not feasible in the task scope, record the concrete reason in the task outcome.\n")
-	builder.WriteString("- Before exiting successfully, record governed system closeout: attach bounded evidence and verifier refs, then move this Work Task out of in_progress, normally to needs_review. If blocked, use projects.work_tasks.block or fail.\n")
+	builder.WriteString("- Before exiting successfully on non-governed tasks, record governed system closeout: attach bounded evidence and verifier refs, then move this Work Task out of in_progress, normally to needs_review. For governed wrapper tasks, return the required JSON object instead; the runner owns lifecycle mutation.\n")
 	builder.WriteString("- If you confirm a real bug and the task asks for automatic remediation, call projects.automations.create_remediation_from_finding with finding_status=confirmed and activate_plan=true. Do not call projects.automations.run.\n")
 	builder.WriteString("- If no bug is confirmed, attach a no-confirmed-bug evidence ref and move this Work Task to needs_review with that outcome.\n")
-	builder.WriteString("- If native MCP tools are unavailable and the Mivia MCP server URL is present, use direct HTTP REST against that exact runtime URL. Do not hard-code hostnames or ports and do not depend on Codex MCP harness configuration.\n")
+	builder.WriteString("- If native MCP tools are unavailable and the Mivia server URL is present, use direct HTTP REST against that exact runtime URL only when this task is not a governed wrapper task. Do not hard-code hostnames or ports and do not depend on Codex MCP harness configuration.\n")
 	for _, instruction := range input.RunnerInstructions {
 		writePromptLine(&builder, "-", instruction)
 	}
@@ -3592,13 +3594,13 @@ func governedWorkflowStepInstructions(taskRef string) []string {
 	switch strings.TrimSpace(taskRef) {
 	case "decompose-work-plan":
 		return governedWorkflowCloseoutInstructions([]string{
-			"This governance step must create concrete child Work Tasks for the requested ticket by calling projects.work_tasks.create. Do not exit successfully with only metadata on this wrapper task.",
-			"Each created child Work Task must be implementation-ready: one objective, files_to_read, files_to_edit or explicit discovery scope, downstream impact, regression-test applicability, acceptance criteria, stop conditions, verifier ladder, dependencies, and resume instructions.",
+			"This governance step must produce concrete child Work Task metadata for the requested ticket in the final child_tasks JSON array. Do not exit successfully with only metadata on this wrapper task.",
+			"Each generated child Work Task must be implementation-ready: one objective, files_to_read, files_to_edit or explicit discovery scope, downstream impact, regression-test applicability, acceptance criteria, stop conditions, verifier ladder, dependencies, and resume instructions.",
 			"If no concrete implementation task can be derived from the ticket and source evidence, block this task with the exact missing evidence instead of marking it ready or done.",
 		})
 	case "mark-ready-after-review":
 		return governedWorkflowCloseoutInstructions([]string{
-			"This governance step must inspect child Work Tasks created by decomposition and move only reviewed implementation-ready child tasks to ready. Do not exit successfully if no child implementation Work Tasks exist.",
+			"This governance step must inspect child Work Tasks from decomposition and return needs_review only when reviewed implementation-ready child tasks exist. Do not exit successfully if no child implementation Work Tasks exist.",
 			"If no child implementation task is ready, block this task and state whether decomposition produced no tasks, review refs are missing, or task metadata is incomplete.",
 		})
 	case "select-ready-tasks":
@@ -3633,14 +3635,28 @@ func governedWorkflowStepInstructions(taskRef string) []string {
 
 func governedWorkflowCloseoutInstructions(stepInstructions []string) []string {
 	return append(stepInstructions,
-		"For this governed workflow wrapper, you must perform explicit system closeout before exiting successfully; do not rely on the runner to auto-close this task.",
-		"Successful closeout requires at least one bounded evidence ref on this wrapper task and projects.work_tasks.update_status moving this Work Task out of in_progress, normally to needs_review. If the required work cannot be completed, call projects.work_tasks.block or projects.work_tasks.fail with the concrete reason.",
-		"When native MCP tools are unavailable, use direct HTTP REST against the exact Mivia server URL shown in this prompt. Do not hard-code hostnames or ports; the server URL is runtime-configurable. Do not rely on Codex MCP harness configuration.",
-		"REST closeout routes: create child tasks with POST /api/v1/projects/<project_id>/work-plans/<plan_id>/tasks; attach evidence with POST /api/v1/projects/<project_id>/work-tasks/<task_id>/evidence; move this wrapper with POST /api/v1/projects/<project_id>/work-tasks/<task_id>/status; block/fail with POST /api/v1/projects/<project_id>/work-tasks/<task_id>/block or /fail; read back with GET /api/v1/projects/<project_id>/work-tasks/<task_id>.",
-		"After every governed closeout, read this Work Task ID back over REST and confirm the returned status is no longer in_progress before exiting successfully.",
-		"Do not merely describe the tasks or closeout steps in your final text. The required REST calls must be performed in the system.",
-		"The runner will fail this automation with automation_task_closeout_missing if this wrapper task is still in_progress after your process exits.",
+		"For this governed workflow wrapper, do not call MCP or REST for Work Task lifecycle closeout. The runner owns governed state transitions.",
+		"Your final response must be a single JSON object. Do not wrap it in prose. Required top-level fields: closeout_action, outcome, safe_next_action, evidence_refs, verifier_result_refs, child_tasks, block_reason, failure_reason.",
+		"closeout_action must be one of needs_review, block, or fail. Use needs_review only when the requested wrapper output is complete. Use block when required source or ticket evidence is missing. Use fail only for terminal execution failure.",
+		"child_tasks must contain concrete implementation Work Tasks when this wrapper decomposes or selects implementation work. Each child task must include task_ref, title, description, owner_agent, evidence_needed, files_to_read or explicit discovery scope, files_to_edit when known, likely_files_affected, verification_requirement, expected_output, failure_criteria, review_gate, resume_instructions, and decomposition_quality.",
+		"Use only bounded safe metadata in JSON: no raw source, raw logs, absolute paths, roots, secrets, external URLs, provider payloads, or PII.",
+		"The runner will validate this JSON, create child tasks, attach evidence, and move/block/fail this wrapper task. If the JSON is missing or invalid, the automation fails deterministically.",
 	)
+}
+
+func isGovernedWorkflowTaskRef(taskRef string) bool {
+	switch strings.TrimSpace(taskRef) {
+	case "decompose-work-plan",
+		"mark-ready-after-review",
+		"select-ready-tasks",
+		"run-implementation-batch",
+		"review-implementation-batch",
+		"orchestrator-verification",
+		"pr-gitops-readiness":
+		return true
+	default:
+		return false
+	}
 }
 
 func safeWorkerEvidenceRefs(values []string) []string {

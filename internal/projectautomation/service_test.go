@@ -129,17 +129,14 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 	run := AutomationRun{ID: "run-1", ProjectID: "mass-monorepo", TraceID: "trace-1"}
 	cases := map[string][]string{
 		"decompose-work-plan": {
-			"must create concrete child Work Tasks",
-			"projects.work_tasks.create",
+			"must produce concrete child Work Task metadata",
+			"final child_tasks JSON array",
 			"implementation-ready",
-			"must perform explicit system closeout",
-			"automation_task_closeout_missing",
-			"exact Mivia server URL shown in this prompt",
-			"Concrete REST closeout endpoints",
-			"Do not hard-code hostnames or ports",
-			"POST /api/v1/projects/<project_id>/work-plans/<plan_id>/tasks",
-			"GET /api/v1/projects/<project_id>/work-tasks/<task_id>",
-			"Do not merely describe the tasks",
+			"do not call MCP or REST",
+			"final response must be a single JSON object",
+			"closeout_action",
+			"child_tasks",
+			"runner will validate this JSON",
 		},
 		"mark-ready-after-review": {
 			"must inspect child Work Tasks",
@@ -171,13 +168,13 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 		input.MCPServerURL = "http://runtime-host:19090"
 		prompt := RenderCodexTaskPrompt(input)
 		if strings.Contains(prompt, "Leave verifier execution and task completion to the orchestrator.") {
-			t.Fatalf("task %s prompt must not tell governed workflow wrappers to leave closeout to the orchestrator:\n%s", taskRef, prompt)
+			t.Fatalf("task %s prompt must not use non-governed closeout wording:\n%s", taskRef, prompt)
 		}
 		if strings.Contains(prompt, "http://mivia-server:8080") || strings.Contains(prompt, "method=tools/call") || strings.Contains(prompt, "JSON-RPC tools/call") || strings.Contains(prompt, "governed MCP closeout") {
-			t.Fatalf("task %s prompt must use runtime REST URL without hardcoded host/port or JSON-RPC dependency:\n%s", taskRef, prompt)
+			t.Fatalf("task %s prompt must not use stale MCP closeout wording:\n%s", taskRef, prompt)
 		}
-		if !strings.Contains(prompt, "http://runtime-host:19090/api/v1/projects/mass-monorepo/work-tasks/task-1/status") {
-			t.Fatalf("task %s prompt missing concrete runtime closeout endpoint:\n%s", taskRef, prompt)
+		if strings.Contains(prompt, "Concrete REST closeout endpoints") || strings.Contains(prompt, "http://runtime-host:19090/api/v1/projects/mass-monorepo/work-tasks/task-1/status") {
+			t.Fatalf("task %s prompt must not ask governed wrappers to perform REST closeout:\n%s", taskRef, prompt)
 		}
 		for _, want := range wants {
 			if !strings.Contains(prompt, want) {

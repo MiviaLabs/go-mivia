@@ -320,10 +320,19 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			return 1, true, true
 		}
 	}
-	status, failureCategory, durationMS := runCodex(ctx, claimed, runCodexOptions)
+	codexResult := runCodex(ctx, claimed, runCodexOptions)
+	status, failureCategory, durationMS := codexResult.Status, codexResult.FailureCategory, codexResult.DurationMS
 	var evidenceRefs []string
 	if status == projectautomation.RunStatusCompleted {
 		taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+		if status == projectautomation.RunStatusCompleted && strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && taskRequiresExplicitGovernedCloseout(taskMetadata) && !taskHasGovernedCloseout(taskMetadata) {
+			if closeoutErr := client.applyGovernedCloseoutFromOutput(ctx, projectID, claimed, taskMetadata, codexResult.LastMessage); closeoutErr != nil {
+				status = projectautomation.RunStatusFailed
+				failureCategory = governedCloseoutFailureCategory(closeoutErr)
+			} else {
+				taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+			}
+		}
 		if status == projectautomation.RunStatusCompleted && strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && !taskHasGovernedCloseout(taskMetadata) && shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun, taskMetadata) {
 			if closeoutErr := client.closeoutMetadataOnlyTask(ctx, projectID, claimed, readOnlyReviewRun); closeoutErr != nil {
 				status = projectautomation.RunStatusFailed
@@ -720,35 +729,67 @@ func taskHasGovernedCloseout(task runnerWorkTaskMetadata) bool {
 	}
 }
 
-func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexOptions codexLaunchOptions) (string, string, int64) {
+type codexRunOutcome struct {
+	Status          string
+	FailureCategory string
+	DurationMS      int64
+	LastMessage     string
+}
+
+func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexOptions codexLaunchOptions) codexRunOutcome {
 	inputPath, cleanup, err := writeCodexInput(claimed.CodexInput)
 	if err != nil {
-		return projectautomation.RunStatusFailed, "codex_input_create_failed", 0
+		return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: "codex_input_create_failed"}
 	}
 	defer cleanup()
+	outputFile, cleanupOutput, err := createCodexOutputFile()
+	if err != nil {
+		return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: "codex_output_create_failed"}
+	}
+	defer cleanupOutput()
 	timeout := time.Duration(claimed.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	command, err := buildRunnerCodexCommand(inputPath, timeout, codexOptions)
+	command, err := buildRunnerCodexCommand(inputPath, outputFile, timeout, codexOptions)
 	if err != nil {
-		return projectautomation.RunStatusFailed, "codex_command_denied", 0
+		return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: "codex_command_denied"}
 	}
 	result, err := projectautomation.RunCodexCommand(ctx, command, 64*1024)
 	durationMS := result.Duration.Milliseconds()
+	lastMessage := readCodexLastMessage(outputFile, result.Output)
 	if err == nil {
-		return projectautomation.RunStatusCompleted, "", durationMS
+		return codexRunOutcome{Status: projectautomation.RunStatusCompleted, DurationMS: durationMS, LastMessage: lastMessage}
 	}
 	if result.TimedOut {
-		return projectautomation.RunStatusTimeout, "codex_cli_timeout", durationMS
+		return codexRunOutcome{Status: projectautomation.RunStatusTimeout, FailureCategory: "codex_cli_timeout", DurationMS: durationMS, LastMessage: lastMessage}
 	}
 	if result.SafeFailureCategory != "" {
-		return projectautomation.RunStatusFailed, result.SafeFailureCategory, durationMS
+		return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: result.SafeFailureCategory, DurationMS: durationMS, LastMessage: lastMessage}
 	}
-	return projectautomation.RunStatusFailed, "codex_cli_failed", durationMS
+	return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: "codex_cli_failed", DurationMS: durationMS, LastMessage: lastMessage}
 }
 
-func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptions codexLaunchOptions) (projectautomation.CodexCommand, error) {
+func createCodexOutputFile() (string, func(), error) {
+	dir, err := os.MkdirTemp("", "mivia-codex-output-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	path := filepath.Join(dir, "last-message.txt")
+	return path, cleanup, nil
+}
+
+func readCodexLastMessage(path string, fallback string) string {
+	if strings.TrimSpace(path) != "" {
+		if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) != "" {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func buildRunnerCodexCommand(inputPath string, outputPath string, timeout time.Duration, codexOptions codexLaunchOptions) (projectautomation.CodexCommand, error) {
 	launcher := strings.TrimSpace(codexOptions.Launcher)
 	if launcher == "" {
 		launcher = "direct"
@@ -764,6 +805,13 @@ func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptio
 		}
 		args := []string{"/c", "type", convertedInputPath, "|", binaryPath, "exec"}
 		args = appendCodexExecutionOptions(args, codexOptions)
+		if strings.TrimSpace(outputPath) != "" {
+			convertedOutputPath, err := windowsPathForRunner(strings.TrimSpace(outputPath))
+			if err != nil {
+				return projectautomation.CodexCommand{}, err
+			}
+			args = append(args, "--output-last-message", convertedOutputPath)
+		}
 		if strings.TrimSpace(codexOptions.WorkDir) != "" {
 			convertedWorkDir, err := windowsPathForRunner(strings.TrimSpace(codexOptions.WorkDir))
 			if err != nil {
@@ -793,10 +841,16 @@ func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptio
 	if strings.TrimSpace(codexOptions.WorkDir) != "" {
 		args := []string{"exec"}
 		args = appendCodexExecutionOptions(args, codexOptions)
+		if strings.TrimSpace(outputPath) != "" {
+			args = append(args, "--output-last-message", strings.TrimSpace(outputPath))
+		}
 		command.Args = append(args, "--cd", strings.TrimSpace(codexOptions.WorkDir), "-")
 	} else {
 		args := []string{"exec"}
 		args = appendCodexExecutionOptions(args, codexOptions)
+		if strings.TrimSpace(outputPath) != "" {
+			args = append(args, "--output-last-message", strings.TrimSpace(outputPath))
+		}
 		command.Args = append(args, "-")
 	}
 	return command, nil

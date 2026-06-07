@@ -33,6 +33,7 @@ type CodexRunResult struct {
 	TimedOut            bool
 	OutputTruncated     bool
 	SafeFailureCategory string
+	Output              string
 }
 
 func DetectCodex(binaryPath string) (string, bool) {
@@ -121,6 +122,7 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 		TimedOut:            runCtx.Err() == context.DeadlineExceeded,
 		OutputTruncated:     output.truncated,
 		SafeFailureCategory: safeFailureCategory,
+		Output:              output.String(),
 	}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
