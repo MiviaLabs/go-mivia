@@ -282,20 +282,13 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 	}
 	changed := false
 	for index, task := range tasks {
-		rawQuality, ok := task["decomposition_quality"]
-		if !ok || rawJSONValueIsStringOrNull(rawQuality) {
-			continue
+		if normalizeGovernedCloseoutObjectTextField(task, "decomposition_quality") {
+			changed = true
 		}
-		quality, err := decompositionQualityFromObject(rawQuality)
-		if err != nil {
-			continue
+		if normalizeGovernedCloseoutObjectTextField(task, "regression_test_applicability") {
+			changed = true
 		}
-		encoded, err := json.Marshal(quality)
-		if err != nil {
-			return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
-		}
-		tasks[index]["decomposition_quality"] = encoded
-		changed = true
+		tasks[index] = task
 	}
 	if !changed {
 		return jsonText, nil
@@ -312,12 +305,29 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 	return string(encoded), nil
 }
 
-func decompositionQualityFromObject(raw json.RawMessage) (string, error) {
+func normalizeGovernedCloseoutObjectTextField(task map[string]json.RawMessage, field string) bool {
+	rawValue, ok := task[field]
+	if !ok || rawJSONValueIsStringOrNull(rawValue) {
+		return false
+	}
+	value, err := closeoutTextFromObject(rawValue)
+	if err != nil {
+		return false
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	task[field] = encoded
+	return true
+}
+
+func closeoutTextFromObject(raw json.RawMessage) (string, error) {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return "", err
 	}
-	for _, key := range []string{"status", "quality", "value", "state", "decision"} {
+	for _, key := range []string{"status", "quality", "value", "state", "decision", "applicability"} {
 		rawValue, ok := object[key]
 		if !ok {
 			continue
@@ -327,7 +337,7 @@ func decompositionQualityFromObject(raw json.RawMessage) (string, error) {
 			return strings.TrimSpace(value), nil
 		}
 	}
-	return "", errors.New("decomposition_quality object lacks string status")
+	return "", errors.New("closeout text object lacks string value")
 }
 
 func validateGovernedCloseoutTopLevelFields(jsonText string) error {
