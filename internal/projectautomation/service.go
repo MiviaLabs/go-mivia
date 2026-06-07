@@ -3545,6 +3545,7 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 	} else {
 		instructions = append(instructions, "Leave verifier execution and task completion to the orchestrator.")
 	}
+	instructions = append(instructions, governedWorkflowStepInstructions(task.TaskRef)...)
 	return CodexTaskInput{
 		SchemaVersion:           1,
 		ProjectID:               run.ProjectID,
@@ -3563,6 +3564,39 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		FailureCriteria:         task.FailureCriteria,
 		ResumeInstructions:      task.ResumeInstructions,
 		RunnerInstructions:      instructions,
+	}
+}
+
+func governedWorkflowStepInstructions(taskRef string) []string {
+	switch strings.TrimSpace(taskRef) {
+	case "decompose-work-plan":
+		return []string{
+			"This governance step must create concrete child Work Tasks for the requested ticket by calling projects.work_tasks.create. Do not exit successfully with only metadata on this wrapper task.",
+			"Each created child Work Task must be implementation-ready: one objective, files_to_read, files_to_edit or explicit discovery scope, downstream impact, regression-test applicability, acceptance criteria, stop conditions, verifier ladder, dependencies, and resume instructions.",
+			"If no concrete implementation task can be derived from the ticket and source evidence, block this task with the exact missing evidence instead of marking it ready or done.",
+		}
+	case "mark-ready-after-review":
+		return []string{
+			"This governance step must inspect child Work Tasks created by decomposition and move only reviewed implementation-ready child tasks to ready. Do not exit successfully if no child implementation Work Tasks exist.",
+			"If no child implementation task is ready, block this task and state whether decomposition produced no tasks, review refs are missing, or task metadata is incomplete.",
+		}
+	case "select-ready-tasks":
+		return []string{
+			"This governance step must select actual ready child implementation Work Tasks from the previous decomposition output. Do not exit successfully if the only ready tasks are workflow wrapper tasks.",
+			"If no concrete child implementation task is selected, block this task with a missing-ready-implementation-task reason.",
+		}
+	case "run-implementation-batch":
+		return []string{
+			"This governance step must dispatch or execute concrete selected child implementation tasks. Do not exit successfully with no repository diff, no child task evidence, and no explicit blocked reason.",
+			"If selected implementation tasks cannot be claimed or executed, block this task and attach the selected task refs and blocker category.",
+		}
+	case "pr-gitops-readiness":
+		return []string{
+			"This governance step must not approve GitOps readiness when there is no implementation diff and no existing branch/PR evidence for the ticket.",
+			"If no diff exists after implementation, block this task with no-implementation-diff instead of approving PR readiness.",
+		}
+	default:
+		return nil
 	}
 }
 

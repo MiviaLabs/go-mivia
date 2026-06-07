@@ -1432,7 +1432,28 @@ func (client *runnerClient) closeoutMetadataOnlyTask(ctx context.Context, projec
 }
 
 func shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun bool, task runnerWorkTaskMetadata) bool {
-	return readOnlyReviewRun || len(task.FilesToEdit) == 0
+	if readOnlyReviewRun {
+		return true
+	}
+	if taskRequiresExplicitGovernedCloseout(task) {
+		return false
+	}
+	return len(task.FilesToEdit) == 0
+}
+
+func taskRequiresExplicitGovernedCloseout(task runnerWorkTaskMetadata) bool {
+	switch strings.TrimSpace(task.TaskRef) {
+	case "decompose-work-plan",
+		"mark-ready-after-review",
+		"select-ready-tasks",
+		"run-implementation-batch",
+		"review-implementation-batch",
+		"orchestrator-verification",
+		"pr-gitops-readiness":
+		return true
+	default:
+		return false
+	}
 }
 
 func metadataOnlyCloseoutOutcome(reviewTask bool) string {

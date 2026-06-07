@@ -96,6 +96,137 @@ func TestDecompositionWorkflowCompilesRichTaskPackets(t *testing.T) {
 	}
 }
 
+func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) {
+	ctx := context.Background()
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
+	svc := projectworkflow.New(workflowstore.NewMemoryStore())
+	svc.SetCompilerDependencies(workPlans, automations)
+	svc.SetCompileOptionsByProject(map[string]projectworkflow.CompileOptions{
+		"mass-monorepo": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
+	})
+
+	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-decomposition-planning.toml"), "mass-monorepo")
+	planningWorker := configAgentByID(t, decomposition, "planning-worker")
+	if !containsConfigString(planningWorker.AllowedTools, "projects.work_tasks.create") {
+		t.Fatalf("planning-worker must be able to create concrete child implementation tasks, tools=%#v", planningWorker.AllowedTools)
+	}
+	decomposeStep := configStepByID(t, decomposition, "decompose-work-plan")
+	for _, want := range []string{"Work Tasks in planned status", "regression-test decision", "acceptance criteria", "verifier ladder"} {
+		if !strings.Contains(decomposeStep.ExpectedOutput, want) {
+			t.Fatalf("decompose-work-plan expected_output must require %q, got %q", want, decomposeStep.ExpectedOutput)
+		}
+	}
+
+	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"), "mass-monorepo")
+	for i := 0; i < 2; i++ {
+		if _, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: implementation.ProjectID, WorkflowID: implementation.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "same-ticket-run"}); err != nil {
+			t.Fatalf("compile implementation workflow %d: %v", i+1, err)
+		}
+	}
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "mass-monorepo"})
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	branches := map[string]struct{}{}
+	var implementationPlan projectworkplan.WorkPlan
+	for _, plan := range plans {
+		if strings.Contains(plan.PlanRef, "governed-workplan-implementation") {
+			if !strings.HasPrefix(plan.GitBranchRef, "chore-MASS-1044-governed-workplan-implementation-compile-") {
+				t.Fatalf("implementation branch must preserve MASS policy and compile uniqueness, got %q", plan.GitBranchRef)
+			}
+			if _, exists := branches[plan.GitBranchRef]; exists {
+				t.Fatalf("implementation branch refs must be unique across same-ticket compiles, duplicate %q", plan.GitBranchRef)
+			}
+			branches[plan.GitBranchRef] = struct{}{}
+			implementationPlan = plan
+		}
+	}
+	if len(branches) != 2 {
+		t.Fatalf("expected two unique implementation branch refs, got %#v", branches)
+	}
+	implementationTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "mass-monorepo", PlanID: implementationPlan.ID})
+	if err != nil {
+		t.Fatalf("list implementation tasks: %v", err)
+	}
+	batchTask := compiledTaskByRef(t, implementationTasks, "run-implementation-batch")
+	if batchTask.ID == "" || batchTask.ReviewGate == "" {
+		t.Fatalf("run-implementation-batch must compile as a concrete reviewed Work Task: %#v", batchTask)
+	}
+	allAutomations, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: "mass-monorepo"})
+	if err != nil {
+		t.Fatalf("list implementation automations: %v", err)
+	}
+	implementationAutomations := configAutomationsForPlan(allAutomations, implementationPlan.ID)
+	batchAutomation := configAutomationByAllowedRef(t, implementationAutomations, "run-implementation-batch")
+	if len(batchAutomation.RequiredReviewTaskIDs) != 0 {
+		t.Fatalf("run-implementation-batch automation must not require its post-execution review before execution: %#v", batchAutomation.RequiredReviewTaskIDs)
+	}
+	reviewAutomation := configAutomationByAllowedRef(t, implementationAutomations, "review-run-implementation-batch-implementation-independent-review")
+	if reviewAutomation.ID == "" {
+		t.Fatal("expected independent review automation for run-implementation-batch")
+	}
+}
+
+func importConfigWorkflow(t *testing.T, ctx context.Context, svc *projectworkflow.Service, path string, projectID string) projectworkflow.WorkflowDefinition {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read workflow definition %s: %v", path, err)
+	}
+	imported, err := svc.ImportWorkflowTOML(ctx, projectworkflow.ImportWorkflowTOMLInput{ProjectID: projectID, Data: data})
+	if err != nil {
+		t.Fatalf("import workflow definition %s: %v", path, err)
+	}
+	if len(imported.Workflows) != 1 {
+		t.Fatalf("expected one workflow in %s, got %d", path, len(imported.Workflows))
+	}
+	return imported.Workflows[0]
+}
+
+func configAgentByID(t *testing.T, workflow projectworkflow.WorkflowDefinition, id string) projectworkflow.WorkflowAgentDefinition {
+	t.Helper()
+	for _, agent := range workflow.Agents {
+		if agent.ID == id {
+			return agent
+		}
+	}
+	t.Fatalf("missing workflow agent %q", id)
+	return projectworkflow.WorkflowAgentDefinition{}
+}
+
+func configStepByID(t *testing.T, workflow projectworkflow.WorkflowDefinition, id string) projectworkflow.WorkflowStep {
+	t.Helper()
+	for _, step := range workflow.Steps {
+		if step.ID == id {
+			return step
+		}
+	}
+	t.Fatalf("missing workflow step %q", id)
+	return projectworkflow.WorkflowStep{}
+}
+
+func configAutomationByAllowedRef(t *testing.T, automations []projectautomation.Automation, ref string) projectautomation.Automation {
+	t.Helper()
+	for _, automation := range automations {
+		if len(automation.AllowedTaskRefs) == 1 && automation.AllowedTaskRefs[0] == ref {
+			return automation
+		}
+	}
+	t.Fatalf("missing automation allowed ref %q in %#v", ref, automations)
+	return projectautomation.Automation{}
+}
+
+func configAutomationsForPlan(automations []projectautomation.Automation, planID string) []projectautomation.Automation {
+	out := make([]projectautomation.Automation, 0, len(automations))
+	for _, automation := range automations {
+		if automation.PlanID == planID {
+			out = append(out, automation)
+		}
+	}
+	return out
+}
+
 func compiledTaskByRef(t *testing.T, tasks []projectworkplan.WorkTask, ref string) projectworkplan.WorkTask {
 	t.Helper()
 	for _, task := range tasks {

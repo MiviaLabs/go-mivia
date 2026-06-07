@@ -113,6 +113,42 @@ func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
 	}
 }
 
+func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
+	run := AutomationRun{ID: "run-1", ProjectID: "mass-monorepo", TraceID: "trace-1"}
+	cases := map[string][]string{
+		"decompose-work-plan": {
+			"must create concrete child Work Tasks",
+			"projects.work_tasks.create",
+			"implementation-ready",
+		},
+		"mark-ready-after-review": {
+			"must inspect child Work Tasks",
+			"Do not exit successfully if no child implementation Work Tasks exist.",
+		},
+		"select-ready-tasks": {
+			"must select actual ready child implementation Work Tasks",
+			"missing-ready-implementation-task",
+		},
+		"run-implementation-batch": {
+			"must dispatch or execute concrete selected child implementation tasks",
+			"Do not exit successfully with no repository diff",
+		},
+		"pr-gitops-readiness": {
+			"must not approve GitOps readiness when there is no implementation diff",
+			"no-implementation-diff",
+		},
+	}
+	for taskRef, wants := range cases {
+		input := codexInputForRun(run, projectworkplan.WorkTask{ID: "task-1", PlanID: "plan-1", TaskRef: taskRef})
+		prompt := RenderCodexTaskPrompt(input)
+		for _, want := range wants {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("task %s prompt missing %q:\n%s", taskRef, want, prompt)
+			}
+		}
+	}
+}
+
 func TestSubmitRunDefaultsToCodexWhenAvailable(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t, Options{Enabled: true, RunnerEnabled: true, RequireCodexWhenAvailable: true, MaxParallelTasks: 2})

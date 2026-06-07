@@ -783,6 +783,28 @@ func TestShouldRunGitOpsForTaskRequiresEditScope(t *testing.T) {
 	}
 }
 
+func TestShouldAutoCloseoutMetadataOnlyTaskRejectsFalseGreenGovernanceSteps(t *testing.T) {
+	for _, taskRef := range []string{
+		"decompose-work-plan",
+		"mark-ready-after-review",
+		"select-ready-tasks",
+		"run-implementation-batch",
+		"review-implementation-batch",
+		"orchestrator-verification",
+		"pr-gitops-readiness",
+	} {
+		if shouldAutoCloseoutMetadataOnlyTask(false, runnerWorkTaskMetadata{TaskRef: taskRef}) {
+			t.Fatalf("governance step %q must require explicit closeout evidence", taskRef)
+		}
+	}
+	if !shouldAutoCloseoutMetadataOnlyTask(false, runnerWorkTaskMetadata{TaskRef: "context-summary"}) {
+		t.Fatal("ordinary metadata-only tasks may still auto-close")
+	}
+	if !shouldAutoCloseoutMetadataOnlyTask(true, runnerWorkTaskMetadata{TaskRef: "review-pr-gitops-readiness-implementation-independent-review"}) {
+		t.Fatal("read-only review gate closeout should remain allowed")
+	}
+}
+
 func TestShouldAllowScopedDirtyWorktreeForExistingImplementation(t *testing.T) {
 	claimed := projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{SafeSummary: "dependency_ready_automation_queued"},
