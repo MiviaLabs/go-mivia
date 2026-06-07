@@ -1,0 +1,200 @@
+id = "workflow-code-review-bug-planning"
+project_id = "mass-monorepo"
+workflow_ref = "governed-code-review-bug-planning"
+title = "MASS Governed Automatic Code Review Bug Planning"
+purpose = "Run automatic governed code review over a bounded MASS ref or diff, confirm only evidence-backed bugs through independent review, and create governed bug Work Plans for confirmed findings."
+status = "enabled"
+
+[[agents]]
+id = "code-review-scanner"
+display_name = "Code Review Scanner"
+purpose = "Inspects bounded changed files, source anchors, tests, contracts, and docs to propose candidate defects with evidence refs only."
+instructions = "Report only concrete candidate bugs with source anchors, impact, reachability, changed-range attribution, falsification notes, and bounded evidence refs. Do not report style-only or speculative risks. Pay special attention to auth, tenancy, PII, audit logs, public APIs, contracts, Temporal/eventing, migrations, and Flutter behavior when in scope."
+allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
+allowed_tools = [
+  "projects.get",
+  "projects.context_health",
+  "projects.workspace.git_status",
+  "projects.workspace.git_diff",
+  "projects.workspace.file_read",
+  "projects.context_pack.build",
+  "projects.evidence_graph.claims.create",
+  "projects.evidence_graph.evidence.append",
+  "projects.work_tasks.attach_evidence",
+  "projects.work_tasks.attach_claim"
+]
+allowed_commands = ["git diff --check"]
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "pnpm policies semgrep", "pnpm policies opa:test", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "30m"
+max_retries = 1
+
+[[agents]]
+id = "bug-finding-reviewer"
+display_name = "Bug Finding Reviewer"
+purpose = "Independently validates or rejects candidate findings using source anchors and safe evidence refs."
+instructions = "Independently falsify each candidate against current source and changed-range attribution. Approve only confirmed behavioral bugs with bounded evidence and reachable impact. Reject duplicates, weak claims, style-only issues, and pre-existing issues not worsened by the reviewed change."
+allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
+allowed_tools = [
+  "projects.workspace.file_read",
+  "projects.context_pack.build",
+  "projects.claims.check",
+  "projects.work_tasks.attach_review_result"
+]
+allowed_commands = []
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "pnpm policies semgrep", "pnpm policies opa:test", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "20m"
+max_retries = 0
+
+[[agents]]
+id = "bug-plan-orchestrator"
+display_name = "Bug Plan Orchestrator"
+purpose = "Deduplicates confirmed bugs and creates governed bug-fix Work Plans with isolated tasks for each confirmed finding."
+instructions = "Create bug-fix Work Plans only for independently confirmed findings. Include regression-test expectations when feasible and keep implementation automation manual unless explicitly approved."
+allowed_skills = ["mivia-mcp", "project-plan", "plan-task"]
+allowed_tools = [
+  "projects.work_plans.create",
+  "projects.work_tasks.create",
+  "projects.work_tasks.update_status",
+  "projects.work_tasks.attach_evidence",
+  "projects.work_tasks.attach_claim",
+  "projects.work_tasks.attach_review_result",
+  "projects.automations.create"
+]
+allowed_commands = []
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "pnpm policies semgrep", "pnpm policies opa:test", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "25m"
+max_retries = 0
+
+[[steps]]
+id = "collect-review-scope"
+kind = "work_task"
+title = "Collect Review Scope"
+agent = "code-review-scanner"
+description = "Collect bounded review scope for a manual or automatic MASS code review run, including git status/diff refs, changed-file refs, context health, relevant source anchors, and test/doc context."
+evidence_needed = ["review-request-ref", "git-status-ref", "git-diff-ref", "context-health-ref", "changed-file-refs"]
+files_to_read = [
+  "AGENTS.md",
+  "CODEX.md",
+  ".agentic/README.md",
+  ".agentic/skills/project-review/SKILL.md",
+  ".agentic/skills/mass-pr-review/SKILL.md",
+  "docs/ai/AI_AGENT_BOUNDARIES.md",
+  ".agentic/policies/repo-standards.md",
+  ".agentic/policies/risk-review-mapping.yaml",
+  ".agentic/workflows/governed-code-review-bug-planning.toml"
+]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "orchestrator confirms review scope refs exist and only bounded metadata refs are stored"
+expected_output = "bounded review scope refs and source-anchor refs"
+failure_criteria = "block if review scope is missing, too broad, stale, or would require storing unbounded review material"
+review_gate = "scanner-output-review required before scope task is done"
+resume_instructions = "resume by reading review-request-ref, git-status-ref, git-diff-ref, context-health-ref, and changed-file refs"
+
+[[steps]]
+id = "scan-for-candidate-bugs"
+kind = "work_task"
+title = "Scan For Candidate Bugs"
+agent = "code-review-scanner"
+depends_on = ["collect-review-scope"]
+description = "Review bounded changed files for concrete behavioral defects only. Candidate findings must include evidence refs, file/symbol anchors, changed-range attribution, reachability, impact summary, repro or reasoning, and falsification notes."
+evidence_needed = ["review-scope-ref", "source-anchor-refs", "candidate-finding-refs", "changed-range-ref", "reachability-ref", "falsification-notes-ref"]
+files_to_read = [
+  ".agentic/README.md",
+  ".agentic/skills/project-review/SKILL.md",
+  ".agentic/skills/mass-pr-review/SKILL.md",
+  ".agentic/workflows/governed-code-review-bug-planning.toml"
+]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "orchestrator confirms every candidate has source anchors, changed-range attribution, reachability, impact, and falsification notes"
+expected_output = "candidate finding refs or no-confirmed-candidate note"
+failure_criteria = "block or reject speculative style issues, weak risks, missing anchors, missing changed-range attribution, missing reachability, or findings without falsification"
+review_gate = "scanner-output-review required before candidate scan is done"
+resume_instructions = "resume by reading candidate finding refs, source anchors, and falsification notes"
+max_parallel_tasks = 1
+
+[[steps]]
+id = "review-candidate-bugs"
+kind = "work_task"
+title = "Review Candidate Bugs"
+agent = "bug-finding-reviewer"
+depends_on = ["scan-for-candidate-bugs"]
+description = "Independently review each candidate defect. Confirm only bugs that survive direct source falsification and have bounded evidence refs."
+evidence_needed = ["candidate-finding-refs", "source-anchor-refs", "changed-range-ref", "reachability-ref", "review-result-ref", "rejected-finding-refs"]
+files_to_read = [".agentic/workflows/governed-code-review-bug-planning.toml"]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "attach review_result_ref with approved, rejected, needs_changes, or blocked status for each candidate"
+expected_output = "confirmed-bug refs and rejected-finding refs"
+failure_criteria = "block on self-review, missing source anchors, missing changed-range attribution, missing reachability, missing impact, duplicated finding, or unclear decision"
+resume_instructions = "resume by reading candidate finding refs and independently checking source anchors before attaching review refs"
+
+[[steps]]
+id = "create-confirmed-bug-work-plans"
+kind = "work_task"
+title = "Create Confirmed Bug Work Plans"
+agent = "bug-plan-orchestrator"
+depends_on = ["review-candidate-bugs"]
+description = "Create governed Work Plans for confirmed bugs and decompose them into isolated bug-fix Work Tasks: reproduce or anchor evidence, implement fix, add a focused regression test when feasible, independent review, and orchestrator verification."
+evidence_needed = ["confirmed-bug-refs", "dedupe-key-refs", "review-result-ref", "bug-work-plan-refs"]
+files_to_read = [
+  ".agentic/README.md",
+  ".agentic/skills/project-plan/SKILL.md",
+  ".agentic/workflows/governed-code-review-bug-planning.toml",
+  ".agentic/workflows/governed-decomposition-planning.toml"
+]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "orchestrator confirms every created bug Work Plan has isolated tasks, focused regression-test expectations where feasible, verifier requirements, review gates, dependencies, and resume instructions"
+expected_output = "bug Work Plan refs with ready or planned Work Task refs, including regression-test scope or a concrete not-feasible reason"
+failure_criteria = "block if finding is not independently confirmed, duplicates an existing bug plan, lacks evidence refs, omits feasible regression-test scope, or cannot be decomposed without hidden context"
+resume_instructions = "resume by listing confirmed-bug refs, dedupe-key refs, created Work Plan refs, and task readiness states"
+
+[[steps]]
+id = "queue-low-risk-bug-plan-automation"
+kind = "automation"
+title = "Queue Low Risk Bug Plan Automation"
+agent = "bug-plan-orchestrator"
+depends_on = ["create-confirmed-bug-work-plans"]
+description = "Optionally create automation metadata for confirmed bug Work Plans only. Manual mode leaves implementation unqueued unless the orchestrator explicitly runs automation."
+evidence_needed = ["bug-work-plan-refs", "permission-snapshot-ref", "automation-ref", "human-approval-or-manual-run-ref"]
+files_to_read = [".agentic/workflows/governed-code-review-bug-planning.toml"]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "orchestrator confirms automation is metadata-only and targets existing ready Work Tasks only"
+expected_output = "automation ref or explicit manual-not-queued note"
+failure_criteria = "block if automation would run without confirmed findings, ready tasks, independent review refs, or explicit manual run decision"
+resume_instructions = "resume from bug Work Plan refs, automation ref, and manual run decision"
+
+[[review_gates]]
+id = "scanner-output-review"
+applies_to = ["collect-review-scope", "scan-for-candidate-bugs"]
+reviewer_agent = "bug-finding-reviewer"
+required = true
+independent_from_owner = true
+required_artifacts = ["review-scope-ref", "source-anchor-refs", "changed-range-ref", "reachability-ref", "falsification-notes-ref"]
+allowed_actions = ["approved", "rejected", "needs_changes", "blocked"]
+instructions = "Approve scanner output only if scope is bounded, source anchors exist, changed-range attribution and reachability are explicit, and candidate notes include falsification evidence."
+
+[[review_gates]]
+id = "confirmed-bug-independent-review"
+applies_to = ["create-confirmed-bug-work-plans", "queue-low-risk-bug-plan-automation"]
+reviewer_agent = "bug-finding-reviewer"
+required = true
+independent_from_owner = true
+required_artifacts = ["candidate-finding-refs", "source-anchor-refs", "changed-range-ref", "reachability-ref", "review-result-ref", "confirmed-bug-refs", "dedupe-key-refs"]
+allowed_actions = ["approved", "rejected", "needs_changes", "blocked"]
+instructions = "Approve only evidence-backed bugs that survive direct source falsification. Reject speculative risks, style-only issues, missing anchors, duplicate findings, self-review, or any plan that would auto-implement without confirmed bug refs and explicit automatic run decision."

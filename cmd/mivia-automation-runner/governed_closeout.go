@@ -113,7 +113,7 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 						"failure_criteria":         map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
 						"review_gate":              map[string]any{"type": "string", "minLength": 1, "maxLength": 500},
 						"resume_instructions":      map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
-						"decomposition_quality":    map[string]any{"type": "string", "enum": []string{"ready_for_worker"}},
+						"decomposition_quality":    map[string]any{"type": "string", "enum": []string{"ready"}},
 					},
 				},
 			},

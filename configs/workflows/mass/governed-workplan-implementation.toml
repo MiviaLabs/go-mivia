@@ -1,0 +1,196 @@
+id = "workflow-workplan-implementation"
+project_id = "mass-monorepo"
+workflow_ref = "governed-workplan-implementation"
+title = "MASS Governed Work Plan Implementation"
+purpose = "Execute reviewed ready MASS Work Tasks through bounded workers, independent review, orchestrator verification, and metadata-only automation."
+status = "enabled"
+
+[[agents]]
+id = "implementation-worker"
+display_name = "Implementation Worker"
+purpose = "Implements one ready MASS Work Task from metadata and attached refs only."
+instructions = "Claim exactly one ready task, edit only declared scope, attach bounded evidence, and run only task-scoped checks explicitly allowed by the task. Before changing behavior, confirm the task's regression-test applicability decision. If a regression test is feasible, add or update it before/with the fix and run the focused verifier. Create and close MASS local agentic task evidence when the scope is not Flutter-only. Do not bypass git hooks."
+allowed_skills = ["mivia-mcp", "write-tests", "project-implement"]
+allowed_tools = [
+  "projects.context_pack.build",
+  "projects.workspace.file_read",
+  "projects.workspace.file_edit",
+  "projects.work_tasks.claim",
+  "projects.work_tasks.start",
+  "projects.work_tasks.attach_evidence",
+  "projects.work_tasks.attach_claim"
+]
+allowed_commands = ["pnpm agentic task:create", "pnpm agentic task:close", "pnpm test:agentic", "pnpm docs check", "pnpm docs validate", "pnpm format staged:check", "git diff --check"]
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "pnpm policies semgrep", "pnpm policies opa:test", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "edit"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "30m"
+max_retries = 1
+
+[[agents]]
+id = "implementation-reviewer"
+display_name = "Implementation Reviewer"
+purpose = "Independently reviews changed files, evidence, verifier refs, and task outcome before completion."
+instructions = "Review changed files and evidence independently. Reject self-review, missing verifier refs, scope drift, unsafe metadata, untested feasible behavior changes, missing regression test when feasible, weak not-feasible regression-test rationale, missing downstream impact analysis, missing introduced-by-task attribution, PII/logging leaks, and auth/tenancy regressions."
+allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
+allowed_tools = [
+  "projects.workspace.git_status",
+  "projects.workspace.git_diff",
+  "projects.workspace.file_read",
+  "projects.context_pack.build",
+  "projects.work_tasks.attach_review_result",
+  "projects.claims.check"
+]
+allowed_commands = ["git diff --check"]
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "pnpm policies semgrep", "pnpm policies opa:test", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "20m"
+max_retries = 0
+
+[[agents]]
+id = "implementation-orchestrator"
+display_name = "Implementation Orchestrator"
+purpose = "Owns task dispatch, focused verification, final broader checks, and completion gates."
+instructions = "Dispatch only reviewed ready tasks. Run focused verifiers before broader checks. Complete tasks only after verifier and independent review refs exist. Use MASS package-local commands before repo-wide commands, then baseline policy checks when risk warrants."
+allowed_skills = ["mivia-mcp", "write-tests"]
+allowed_tools = [
+  "projects.work_tasks.get_next",
+  "projects.work_tasks.update_status",
+  "projects.work_tasks.attach_verifier_result",
+  "projects.automations.create",
+  "projects.automations.run_parallel_batch"
+]
+allowed_commands = ["pnpm test:agentic", "pnpm docs check", "pnpm docs validate", "pnpm format staged:check", "pnpm lint", "pnpm typecheck", "pnpm test", "pnpm policies semgrep", "pnpm policies opa:test", "git diff --check"]
+denied_commands = ["git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "edit"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "45m"
+max_retries = 0
+
+[[steps]]
+id = "select-ready-tasks"
+kind = "work_task"
+title = "Select Ready Tasks"
+agent = "implementation-orchestrator"
+description = "Select reviewed ready Work Tasks with done dependencies, complete downstream impact metadata, focused verifier ladder, and disjoint likely affected files for the next MASS implementation batch."
+evidence_needed = ["ready-task-list-ref", "dependency-status-ref", "review-result-ref", "downstream-impact-ref", "regression-test-applicability-ref", "verifier-ladder-ref"]
+files_to_read = [".agentic/workflows/governed-workplan-implementation.toml"]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "orchestrator confirms dependencies, downstream impact refs, regression-test applicability, verifier ladder, and file/artifact overlap before dispatch"
+expected_output = "safe implementation batch refs or blocked reason"
+failure_criteria = "block if tasks are not ready, overlap unsafely, lack downstream impact refs, lack regression-test applicability decision, lack verifier ladder, or lack review refs"
+review_gate = "implementation-independent-review required before dispatch"
+resume_instructions = "resume by calling get_next and checking dependency and review refs"
+
+[[steps]]
+id = "analyze-downstream-impact"
+kind = "work_task"
+title = "Analyze Downstream Impact"
+agent = "implementation-reviewer"
+depends_on = ["select-ready-tasks"]
+description = "Before implementation runs, independently confirm the batch impact map: changed paths, references, callers/callees where available, affected Nx packages/apps, contracts/OpenAPI, generated artifacts, events/outbox, Temporal workflows, migrations, policies, catalog, Flutter graphify surfaces, observability/logging, and external integrations."
+evidence_needed = ["changed-path-impact-ref", "reference-search-ref", "call-graph-ref", "affected-targets-ref", "contract-impact-ref", "generated-artifact-impact-ref", "integration-impact-ref", "regression-test-scope-ref"]
+files_to_read = [
+  ".agentic/policies/repo-standards.md",
+  ".agentic/policies/risk-review-mapping.yaml",
+  ".agentic/policies/completion-contract.yaml",
+  ".agentic/workflows/governed-workplan-implementation.toml"
+]
+files_to_edit = []
+likely_files_affected = ["apps", "libs", "packages", "infra", "catalog", "policies", "scripts", "docs", ".agentic"]
+verification_requirement = "attach or require downstream impact refs and regression-test scope before implementation automation is queued"
+expected_output = "approved impact map, regression-test scope, expanded verifier ladder, or blocked reason"
+failure_criteria = "block if downstream impact cannot be bounded, if regression-test scope is missing, if affected generated artifacts are unknown, or if security/privacy/API/migration impact lacks explicit verifier requirements"
+review_gate = "implementation-independent-review required before implementation dispatch"
+resume_instructions = "resume from changed-path impact refs, affected targets, generated artifact refs, and verifier ladder"
+
+[[steps]]
+id = "run-implementation-batch"
+kind = "automation_batch"
+title = "Run Implementation Batch"
+agent = "implementation-worker"
+depends_on = ["analyze-downstream-impact"]
+description = "Run bounded implementation workers only for selected ready tasks using permission snapshots and task metadata."
+evidence_needed = ["automation-run-ref", "permission-snapshot-ref", "changed-files-ref", "worker-evidence-ref", "local-agentic-task-ref", "downstream-impact-ref", "regression-test-ref", "acceptance-criteria-ref"]
+files_to_read = []
+files_to_edit = []
+likely_files_affected = ["apps", "libs", "packages", "infra", "docs", ".agentic", "scripts"]
+verification_requirement = "workers may run only task-scoped checks from the verifier ladder; feasible regression tests must be added/updated and run before claiming behavior is fixed; orchestrator runs downstream-aware focused and broader verification; non-Flutter-only tasks must preserve local agentic evidence"
+expected_output = "changed files, evidence refs, risks, and tests not run for each task"
+failure_criteria = "block if worker uses hidden context, runs broad repo suites, edits out of scope, changes downstream surfaces not in the impact map, lacks a feasible regression test or concrete not-feasible reason, lacks evidence, or skips required local agentic task evidence"
+review_gate = "implementation-independent-review required before task completion"
+resume_instructions = "resume from automation run refs, changed files, evidence refs, and task statuses"
+max_parallel_tasks = 2
+
+[[steps]]
+id = "review-implementation-batch"
+kind = "work_task"
+title = "Review Implementation Batch"
+agent = "implementation-reviewer"
+depends_on = ["run-implementation-batch"]
+description = "Review each worker result independently before any task can be marked done. Verify changed files, introduced-by-task attribution, downstream reachability, affected generated artifacts, security/privacy/API/migration impact, verifier refs, and task acceptance criteria."
+evidence_needed = ["changed-files-ref", "worker-evidence-ref", "verifier-ref", "review-result-ref", "introduced-by-task-ref", "downstream-reachability-ref", "regression-test-ref", "acceptance-criteria-ref"]
+files_to_read = []
+files_to_edit = []
+likely_files_affected = ["apps", "libs", "packages", "infra", "docs", ".agentic", "scripts"]
+verification_requirement = "attach review_result_ref for every implementation task after regression-test evidence, downstream reachability, and introduced-by-task attribution are checked"
+expected_output = "approved, rejected, needs_changes, or blocked review decisions with downstream impact disposition"
+failure_criteria = "block on self-review, missing evidence, missing verifier, missing feasible regression test or concrete not-feasible reason, missing introduced-by-task attribution, missing downstream reachability, unreviewed changed file, unreviewed generated artifact, or unreviewed sensitive-data impact"
+resume_instructions = "resume by reading worker outputs, changed files, verifier refs, and review refs"
+
+[[steps]]
+id = "orchestrator-verification"
+kind = "work_task"
+title = "Orchestrator Verification"
+agent = "implementation-orchestrator"
+depends_on = ["review-implementation-batch"]
+description = "Run focused tests first, then downstream-aware affected package/repo checks when focused checks pass, and attach verifier refs before completion."
+evidence_needed = ["focused-test-ref", "regression-test-ref", "affected-targets-ref", "broader-check-ref", "diff-check-ref", "generated-artifact-check-ref", "review-result-ref", "local-agentic-close-ref"]
+files_to_read = [".agentic/workflows/governed-workplan-implementation.toml"]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "run the regression test first when feasible, then the narrowest affected check, then affected Nx lint/typecheck/test, docs checks, policy checks, generated artifact checks, contracts/OpenAPI checks, migration checks, and Flutter graphify checks as impact warrants, then git diff --check; confirm local agentic close evidence for non-Flutter-only tasks"
+expected_output = "verifier refs attached to reviewed tasks"
+failure_criteria = "block if feasible regression tests are missing or fail, focused tests fail, affected downstream checks are missing, generated artifact checks are missing when applicable, review is missing, or diff check fails"
+review_gate = "implementation-independent-review required before verifier refs complete the task"
+resume_instructions = "resume by rerunning failed narrow verifier and checking attached review refs"
+
+[[steps]]
+id = "pr-gitops-readiness"
+kind = "work_task"
+title = "PR And GitOps Readiness"
+agent = "implementation-orchestrator"
+depends_on = ["orchestrator-verification"]
+description = "Before commit, push, or draft PR automation, verify clean worktree scope, branch naming, generated artifacts, required review refs, verifier refs, local agentic evidence, PR description sections, and no forbidden sensitive or unbounded metadata."
+evidence_needed = ["git-status-ref", "branch-policy-ref", "review-result-ref", "verifier-result-ref", "regression-test-ref", "generated-artifact-check-ref", "pr-description-ref", "metadata-redaction-ref"]
+files_to_read = [
+  ".agentic/policies/repo-standards.md",
+  ".agentic/policies/completion-contract.yaml",
+  "tools/mivia/mivia-server.example.toml",
+  ".agentic/workflows/governed-workplan-implementation.toml"
+]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "orchestrator confirms GitOps can commit/push/draft PR only after clean scoped changes, review refs, verifier refs, regression-test evidence or concrete not-feasible reason, generated artifact checks, and metadata redaction checks exist"
+expected_output = "GitOps ready ref or blocked reason"
+failure_criteria = "block if branch policy fails, worktree contains unreviewed changes, feasible regression tests are missing, generated artifacts are stale, review/verifier refs are missing, PR metadata is incomplete, or unsafe metadata would be published"
+review_gate = "implementation-independent-review required before GitOps readiness"
+resume_instructions = "resume by checking git status refs, verifier refs, review refs, generated artifact refs, and PR metadata refs"
+
+[[review_gates]]
+id = "implementation-independent-review"
+applies_to = ["select-ready-tasks", "run-implementation-batch", "orchestrator-verification", "pr-gitops-readiness"]
+reviewer_agent = "implementation-reviewer"
+required = true
+independent_from_owner = true
+required_artifacts = ["changed-files-ref", "evidence-refs", "downstream-impact-refs", "introduced-by-task-ref", "regression-test-ref", "verifier-refs", "risk-notes-ref", "local-agentic-task-ref", "gitops-readiness-ref"]
+allowed_actions = ["approved", "rejected", "needs_changes", "blocked"]
+instructions = "Approve only after independent review of changed files, introduced-by-task attribution, downstream impact/reachability, regression-test evidence or concrete not-feasible reason, evidence refs, verifier refs, generated artifacts, risks, local agentic evidence, and task scope. Reject self-review, missing feasible regression tests, missing downstream checks, stale generated artifacts, unsafe PR metadata, and any broad-suite worker execution."

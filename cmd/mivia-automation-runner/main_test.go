@@ -1769,6 +1769,37 @@ func TestCheckRunnerCodexPreflightRunsCodexInGitWorkDir(t *testing.T) {
 	}
 }
 
+func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
+	schemaPath, cleanup, err := createGovernedCloseoutSchemaFile()
+	if err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	defer cleanup()
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	schemaText := string(data)
+	for _, want := range []string{
+		`"needs_review"`,
+		`"block"`,
+		`"fail"`,
+		`"planned"`,
+		`"ready"`,
+	} {
+		if !strings.Contains(schemaText, want) {
+			t.Fatalf("schema missing accepted value %s: %s", want, schemaText)
+		}
+	}
+	if strings.Contains(schemaText, "ready_for_worker") {
+		t.Fatalf("schema must not require non-existent decomposition quality constant: %s", schemaText)
+	}
+	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("fixture accepted by parser must stay accepted by schema constants: %v", err)
+	}
+}
+
 func TestCheckCodexConfigReadableUsesCodexHome(t *testing.T) {
 	codexHome := filepath.Join(t.TempDir(), "codex-home")
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {

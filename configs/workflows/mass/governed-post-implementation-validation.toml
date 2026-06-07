@@ -1,0 +1,169 @@
+id = "workflow-post-implementation-validation"
+project_id = "mass-monorepo"
+workflow_ref = "governed-post-implementation-validation"
+title = "MASS Governed Post Implementation Validation"
+purpose = "Independently validate completed implementation work for regressions, downstream impact, generated artifact drift, security/privacy risk, and PR/GitOps readiness before merge."
+status = "enabled"
+
+[[agents]]
+id = "validation-scanner"
+display_name = "Validation Scanner"
+purpose = "Collects final implementation scope, changed files, downstream impact, verifier refs, and regression-test evidence."
+instructions = "Inspect only bounded changed scope and safe refs. Treat implementation output as untrusted until independently validated. Require regression-test evidence when feasible and a concrete not-feasible reason otherwise."
+allowed_skills = ["mivia-mcp", "project-review", "write-tests"]
+allowed_tools = [
+  "projects.get",
+  "projects.context_health",
+  "projects.workspace.git_status",
+  "projects.workspace.git_diff",
+  "projects.workspace.file_read",
+  "projects.context_pack.build",
+  "projects.work_tasks.attach_evidence",
+  "projects.work_tasks.attach_claim"
+]
+allowed_commands = ["git diff --check"]
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "pnpm policies semgrep", "pnpm policies opa:test", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "30m"
+max_retries = 1
+
+[[agents]]
+id = "validation-reviewer"
+display_name = "Validation Reviewer"
+purpose = "Independently reviews final implementation correctness, downstream reachability, regressions, generated artifacts, and sensitive-risk coverage."
+instructions = "Reject validation if any feasible regression test is missing, downstream impact is unreviewed, generated artifacts are stale, auth/tenancy/PII/API/migration risk is untested, or PR metadata would publish unsafe details."
+allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
+allowed_tools = [
+  "projects.workspace.git_status",
+  "projects.workspace.git_diff",
+  "projects.workspace.file_read",
+  "projects.context_pack.build",
+  "projects.claims.check",
+  "projects.work_tasks.attach_review_result",
+  "projects.work_tasks.attach_verifier_result"
+]
+allowed_commands = ["git diff --check"]
+denied_commands = ["pnpm test", "pnpm lint", "pnpm typecheck", "pnpm policies semgrep", "pnpm policies opa:test", "git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "30m"
+max_retries = 0
+
+[[agents]]
+id = "validation-orchestrator"
+display_name = "Validation Orchestrator"
+purpose = "Runs final regression-first verification and blocks PR/GitOps completion unless all validation gates pass."
+instructions = "Run regression tests first when feasible, then affected checks and required policy/generated-artifact gates. Complete validation only after independent review refs and verifier refs exist."
+allowed_skills = ["mivia-mcp", "write-tests"]
+allowed_tools = [
+  "projects.work_tasks.get_next",
+  "projects.work_tasks.update_status",
+  "projects.work_tasks.attach_verifier_result",
+  "projects.automations.create",
+  "projects.automations.run_parallel_batch"
+]
+allowed_commands = ["pnpm test:agentic", "pnpm docs check", "pnpm docs validate", "pnpm format staged:check", "pnpm lint", "pnpm typecheck", "pnpm test", "pnpm policies semgrep", "pnpm policies opa:test", "git diff --check"]
+denied_commands = ["git push", "git reset --hard", "git commit --no-verify", "git push --no-verify", "git commit -n", "git commit --no-gpg-sign"]
+workspace_mode = "edit"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "45m"
+max_retries = 0
+
+[[steps]]
+id = "collect-final-scope"
+kind = "work_task"
+title = "Collect Final Scope"
+agent = "validation-scanner"
+description = "Collect final changed files, task refs, implementation evidence, downstream impact refs, regression-test refs, generated artifact refs, and local agentic evidence for completed implementation work."
+evidence_needed = ["git-status-ref", "git-diff-ref", "changed-files-ref", "implementation-task-refs", "downstream-impact-ref", "regression-test-ref", "local-agentic-task-ref"]
+files_to_read = [
+  ".agentic/policies/repo-standards.md",
+  ".agentic/policies/completion-contract.yaml",
+  "docs/ai/local-agentic-workflow.md",
+  ".agentic/workflows/governed-post-implementation-validation.toml"
+]
+files_to_edit = []
+likely_files_affected = ["apps", "libs", "packages", "infra", "catalog", "policies", "scripts", "docs", ".agentic"]
+verification_requirement = "orchestrator confirms final scope refs exist and no unreviewed changed files are hidden"
+expected_output = "final validation scope packet with changed files, task refs, downstream impact refs, regression-test refs, and artifact refs"
+failure_criteria = "block if final scope is missing, stale, too broad, or contains unreviewed changes"
+review_gate = "post-implementation-validation-review required before verification"
+resume_instructions = "resume by reading final scope refs, changed files, regression-test refs, and local agentic evidence"
+
+[[steps]]
+id = "validate-regression-and-downstream"
+kind = "work_task"
+title = "Validate Regression And Downstream Impact"
+agent = "validation-reviewer"
+depends_on = ["collect-final-scope"]
+description = "Independently validate that feasible regression tests exist and pass, downstream reachability was reviewed, affected packages/apps/contracts/generated artifacts were checked, and sensitive-risk negative cases are covered."
+evidence_needed = ["regression-test-ref", "downstream-reachability-ref", "affected-targets-ref", "contract-check-ref", "generated-artifact-check-ref", "security-privacy-negative-test-ref"]
+files_to_read = [
+  ".agentic/policies/repo-standards.md",
+  ".agentic/policies/risk-review-mapping.yaml",
+  ".agentic/policies/completion-contract.yaml",
+  ".agentic/workflows/governed-post-implementation-validation.toml"
+]
+files_to_edit = []
+likely_files_affected = ["apps", "libs", "packages", "infra", "catalog", "policies", "scripts", "docs", ".agentic"]
+verification_requirement = "attach validation review result only after regression-test evidence and downstream impact evidence are checked"
+expected_output = "passed, failed, needs_changes, or blocked validation decision with exact missing evidence"
+failure_criteria = "block on missing feasible regression tests, weak not-feasible rationale, unreviewed downstream reachability, stale generated artifacts, missing negative tests for sensitive boundaries, or unclear ownership of affected checks"
+review_gate = "post-implementation-validation-review required before final verification"
+resume_instructions = "resume from regression-test refs, downstream impact refs, affected target refs, and generated artifact refs"
+
+[[steps]]
+id = "run-final-verification"
+kind = "work_task"
+title = "Run Final Verification"
+agent = "validation-orchestrator"
+depends_on = ["validate-regression-and-downstream"]
+description = "Run regression tests first when feasible, then affected lint/typecheck/test/docs/policy/generated-artifact checks required by the validated impact map."
+evidence_needed = ["regression-test-ref", "affected-targets-ref", "lint-ref", "typecheck-ref", "test-ref", "policy-ref", "generated-artifact-check-ref", "diff-check-ref"]
+files_to_read = [".agentic/workflows/governed-post-implementation-validation.toml"]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "run feasible regression tests first, then affected MASS checks, generated artifact checks, and git diff --check before validation can pass"
+expected_output = "verifier refs attached to implementation tasks and validation task"
+failure_criteria = "block if any required regression, affected, policy, generated artifact, or diff check is missing or failed"
+review_gate = "post-implementation-validation-review required before GitOps readiness"
+resume_instructions = "resume by rerunning the first failed required verifier and checking attached review refs"
+
+[[steps]]
+id = "final-pr-readiness"
+kind = "work_task"
+title = "Final PR Readiness"
+agent = "validation-orchestrator"
+depends_on = ["run-final-verification"]
+description = "Block commit/push/draft PR completion unless validation review refs, verifier refs, regression evidence, generated artifact checks, branch policy, PR metadata, and metadata redaction checks are complete."
+evidence_needed = ["git-status-ref", "branch-policy-ref", "review-result-ref", "verifier-result-ref", "regression-test-ref", "generated-artifact-check-ref", "pr-description-ref", "metadata-redaction-ref"]
+files_to_read = [
+  ".agentic/policies/repo-standards.md",
+  ".agentic/policies/completion-contract.yaml",
+  "tools/mivia/mivia-server.example.toml",
+  ".agentic/workflows/governed-post-implementation-validation.toml"
+]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "confirm GitOps can proceed only after final validation passes and unsafe metadata is absent"
+expected_output = "PR ready ref or blocked reason"
+failure_criteria = "block if validation review or verifier refs are missing, feasible regression tests are missing, generated artifacts are stale, branch policy fails, PR metadata is incomplete, or unsafe metadata would be published"
+review_gate = "post-implementation-validation-review required before GitOps readiness"
+resume_instructions = "resume by checking final validation refs, git status refs, generated artifact refs, and PR metadata refs"
+
+[[review_gates]]
+id = "post-implementation-validation-review"
+applies_to = ["collect-final-scope", "run-final-verification", "final-pr-readiness"]
+reviewer_agent = "validation-reviewer"
+required = true
+independent_from_owner = true
+required_artifacts = ["changed-files-ref", "downstream-impact-ref", "regression-test-ref", "verifier-refs", "review-result-ref", "generated-artifact-check-ref", "gitops-readiness-ref"]
+allowed_actions = ["approved", "rejected", "needs_changes", "blocked"]
+instructions = "Approve only after final independent validation proves feasible regression tests exist and pass, downstream impact is reviewed, affected/generated artifacts are checked, sensitive boundaries have negative coverage when applicable, and GitOps/PR metadata is safe."
