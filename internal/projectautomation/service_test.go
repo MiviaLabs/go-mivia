@@ -529,6 +529,84 @@ func TestClaimNextRunDoesNotCloseOutEmptyMetadataOnlyVerifyingTask(t *testing.T)
 	}
 }
 
+func TestClaimNextRunCodexInputIncludesPlanAndDependencyContext(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	discovery := readyTask("task-discovery", "discover-planning-context", nil)
+	discovery.Status = projectworkplan.WorkTaskStatusDone
+	discovery.Outcome = "bounded planning context discovered"
+	discovery.EvidenceRefs = []string{"context-pack-manifest-1", "acceptance-criteria-ref"}
+	discovery.ClaimRefs = []string{"claim-planning-context-discovery"}
+	discovery.VerifierResultRefs = []string{"verifier.automation.metadata-only-output"}
+	impact := readyTask("task-impact", "map-downstream-impact", nil)
+	impact.Status = projectworkplan.WorkTaskStatusDone
+	impact.Outcome = "downstream impact and verifier ladder mapped"
+	impact.EvidenceRefs = []string{"downstream-impact-ref", "regression-test-applicability-ref", "verifier-ladder-ref"}
+	impact.ReviewResultRefs = []string{"review.downstream-impact.approved"}
+	decompose := readyTask("task-decompose", "decompose-work-plan", nil)
+	decompose.DependencyTaskIDs = []string{discovery.ID, impact.ID}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"plan-1": {
+				ID:             "plan-1",
+				ProjectID:      "project-1",
+				PlanRef:        "governed-decomposition-planning:MASS-1044",
+				UserRequestRef: "jira:MASS-1044",
+				Title:          "Decompose MASS-1044",
+				GoalSummary:    "Classify Codex usage limit failures for future automation runs.",
+				Status:         projectworkplan.WorkPlanStatusActive,
+				ResumeSummary:  "Use discovery and downstream impact refs before decomposition.",
+			},
+		},
+		tasks: map[string]projectworkplan.WorkTask{
+			discovery.ID: discovery,
+			impact.ID:    impact,
+			decompose.ID: decompose,
+		},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/decompose",
+		Title:           "Decompose",
+		Purpose:         "Run decomposition after context dependencies",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "planning-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{decompose.ID, decompose.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	if _, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: "project-1", AutomationID: automation.ID, TaskID: decompose.ID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	prompt := RenderCodexTaskPrompt(claimed.CodexInput)
+	for _, want := range []string{
+		"Work Plan context",
+		"jira:MASS-1044",
+		"Classify Codex usage limit failures",
+		"Completed dependency context",
+		"discover-planning-context",
+		"context-pack-manifest-1",
+		"map-downstream-impact",
+		"downstream-impact-ref",
+		"regression-test-applicability-ref",
+		"verifier-ladder-ref",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected decompose prompt to include %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestClaimNextRunReconcilesRunningRunMovedToVerifyingBeforeClaimingQueuedRun(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()

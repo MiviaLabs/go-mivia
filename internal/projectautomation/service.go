@@ -65,6 +65,10 @@ type workTaskScopeExpander interface {
 	ExpandWorkTaskScope(context.Context, projectworkplan.ExpandWorkTaskScopeInput) (projectworkplan.WorkTask, error)
 }
 
+type workPlanLister interface {
+	ListWorkPlans(context.Context, projectworkplan.WorkPlanFilter) ([]projectworkplan.WorkPlan, error)
+}
+
 type remediationWorkPlanAPI interface {
 	CreateWorkPlan(context.Context, projectworkplan.CreateWorkPlanInput) (projectworkplan.WorkPlan, error)
 	ListWorkPlans(context.Context, projectworkplan.WorkPlanFilter) ([]projectworkplan.WorkPlan, error)
@@ -1042,7 +1046,7 @@ func (svc *Service) claimFirstQueuedRun(ctx context.Context, projectID string, a
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, "", nil
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, "", nil
 	}
 	return ClaimedRun{}, false, skippedReason, nil
 }
@@ -1129,7 +1133,7 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
 	}
 	return ClaimedRun{}, false, nil
 }
@@ -1187,7 +1191,7 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
 	}
 	return ClaimedRun{}, false, nil
 }
@@ -1354,7 +1358,7 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
 	}
 	return ClaimedRun{}, false, nil
 }
@@ -1465,7 +1469,7 @@ func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, p
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
 	}
 	return ClaimedRun{}, false, nil
 }
@@ -3874,6 +3878,8 @@ type CodexTaskInput struct {
 	Description             string   `json:"description,omitempty"`
 	EvidenceNeeded          []string `json:"evidence_needed,omitempty"`
 	ContextPackRefs         []string `json:"context_pack_refs,omitempty"`
+	WorkPlanContext         []string `json:"work_plan_context,omitempty"`
+	DependencyContext       []string `json:"dependency_context,omitempty"`
 	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
 	VerificationRequirement string   `json:"verification_requirement"`
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
@@ -3915,6 +3921,8 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	writePromptLine(&builder, "- Description", input.Description)
 	writePromptList(&builder, "- Evidence needed", input.EvidenceNeeded)
 	writePromptList(&builder, "- Context pack refs", input.ContextPackRefs)
+	writePromptList(&builder, "- Work Plan context", input.WorkPlanContext)
+	writePromptList(&builder, "- Completed dependency context", input.DependencyContext)
 	writePromptList(&builder, "- Likely files affected", input.LikelyFilesAffected)
 	writePromptLine(&builder, "- Verification requirement", input.VerificationRequirement)
 	writePromptLine(&builder, "- Expected output", input.ExpectedOutput)
@@ -3985,6 +3993,93 @@ func writePromptList(builder *strings.Builder, label string, values []string) {
 		builder.WriteString(value)
 		builder.WriteByte('\n')
 	}
+}
+
+func (svc *Service) codexInputForClaim(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) CodexTaskInput {
+	input := codexInputForRun(run, task)
+	input.WorkPlanContext = svc.workPlanContextLines(ctx, task)
+	input.DependencyContext = svc.dependencyContextLines(ctx, task)
+	return input
+}
+
+func (svc *Service) workPlanContextLines(ctx context.Context, task projectworkplan.WorkTask) []string {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(task.ProjectID) == "" || strings.TrimSpace(task.PlanID) == "" {
+		return nil
+	}
+	lister, ok := svc.workTasks.(workPlanLister)
+	if !ok || lister == nil {
+		return nil
+	}
+	plans, err := lister.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: task.ProjectID})
+	if err != nil {
+		return nil
+	}
+	for _, plan := range plans {
+		if plan.ID != task.PlanID {
+			continue
+		}
+		parts := make([]string, 0, 8)
+		appendPromptField(&parts, "plan_ref", plan.PlanRef)
+		appendPromptField(&parts, "user_request_ref", plan.UserRequestRef)
+		appendPromptField(&parts, "title", plan.Title)
+		appendPromptField(&parts, "goal_summary", plan.GoalSummary)
+		appendPromptField(&parts, "resume_summary", plan.ResumeSummary)
+		appendPromptField(&parts, "git_base_ref", plan.GitBaseRef)
+		appendPromptField(&parts, "git_branch_ref", plan.GitBranchRef)
+		if len(parts) == 0 {
+			return nil
+		}
+		return []string{strings.Join(parts, "; ")}
+	}
+	return nil
+}
+
+func (svc *Service) dependencyContextLines(ctx context.Context, task projectworkplan.WorkTask) []string {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(task.ProjectID) == "" || len(task.DependencyTaskIDs) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(task.DependencyTaskIDs))
+	for _, dependencyID := range task.DependencyTaskIDs {
+		dependencyID = strings.TrimSpace(dependencyID)
+		if dependencyID == "" {
+			continue
+		}
+		dependency, err := svc.workTasks.GetWorkTask(ctx, task.ProjectID, dependencyID)
+		if err != nil {
+			continue
+		}
+		parts := make([]string, 0, 12)
+		appendPromptField(&parts, "task_ref", dependency.TaskRef)
+		appendPromptField(&parts, "task_id", dependency.ID)
+		appendPromptField(&parts, "status", dependency.Status)
+		appendPromptField(&parts, "outcome", dependency.Outcome)
+		appendPromptRefs(&parts, "context_pack_refs", dependency.ContextPackRefs)
+		appendPromptRefs(&parts, "evidence_refs", dependency.EvidenceRefs)
+		appendPromptRefs(&parts, "claim_refs", dependency.ClaimRefs)
+		appendPromptRefs(&parts, "verifier_result_refs", dependency.VerifierResultRefs)
+		appendPromptRefs(&parts, "review_result_refs", dependency.ReviewResultRefs)
+		appendPromptField(&parts, "review_exempt_reason", dependency.ReviewExemptReason)
+		if len(parts) > 0 {
+			lines = append(lines, strings.Join(parts, "; "))
+		}
+	}
+	return lines
+}
+
+func appendPromptField(parts *[]string, name string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	*parts = append(*parts, name+"="+value)
+}
+
+func appendPromptRefs(parts *[]string, name string, refs []string) {
+	refs = uniqueRefs(refs)
+	if len(refs) == 0 {
+		return
+	}
+	*parts = append(*parts, name+"=["+strings.Join(refs, ", ")+"]")
 }
 
 func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTaskInput {
