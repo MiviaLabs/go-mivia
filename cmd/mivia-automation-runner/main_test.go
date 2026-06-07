@@ -1320,13 +1320,112 @@ func TestParseGovernedCloseoutAcceptsWrappedSingleJSONObject(t *testing.T) {
 }
 
 func TestParseGovernedCloseoutAllowsExtraChildTaskGovernanceFields(t *testing.T) {
-	payload := strings.Replace(governedCloseoutFixtureJSON(), `"decomposition_quality":"ready"`, `"decomposition_quality":"ready","acceptance_criteria":["works from source evidence"],"stop_conditions":["missing verifier"],"verifier_ladder":["focused go test"],"regression_test_applicability":"required"`, 1)
-	output, err := parseGovernedCloseoutOutput(payload)
+	output, err := parseGovernedCloseoutOutput(governedCloseoutFixtureJSON())
 	if err != nil {
 		t.Fatalf("extra child task governance fields must not fail JSON parsing: %v", err)
 	}
 	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
 		t.Fatalf("runner validation should accept otherwise valid child task: %v", err)
+	}
+}
+
+func TestValidateGovernedCloseoutRejectsChildTaskMetadataBeforeREST(t *testing.T) {
+	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].ExpectedOutput = strings.Repeat("x", closeoutWorkTaskTextMax+1)
+	err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if governedCloseoutFailureCategory(err) != governedCloseoutValidationFailed || !strings.Contains(err.Error(), "REST limits") {
+		t.Fatalf("expected REST-compatible validation failure, got %v", err)
+	}
+
+	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].Status = "done"
+	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if governedCloseoutFailureCategory(err) != governedCloseoutValidationFailed || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("expected terminal child status validation failure, got %v", err)
+	}
+
+	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].DownstreamImpactRefs = nil
+	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if governedCloseoutFailureCategory(err) != governedCloseoutValidationFailed || !strings.Contains(err.Error(), "governance metadata") {
+		t.Fatalf("expected missing governance validation failure, got %v", err)
+	}
+}
+
+func TestApplyGovernedCloseoutWorksAgainstWorkTaskRESTContract(t *testing.T) {
+	svc := projectworkplan.New(workplanstore.NewMemoryStore())
+	ctx := t.Context()
+	plan, err := svc.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
+		ProjectID:   "project-1",
+		PlanRef:     "plan-closeout-contract",
+		Title:       "Closeout Contract",
+		GoalSummary: "verify runner child task closeout matches Work Task REST limits",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  plan.ID,
+		TaskRef:                 "decompose-work-plan",
+		Title:                   "Decompose Work Plan",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              "planning-worker",
+		VerificationRequirement: "orchestrator verifies child tasks",
+		ExpectedOutput:          "child work tasks",
+		ResumeInstructions:      "resume decomposition",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, OwnerAgent: "planning-worker", RunID: "run-1", TraceID: "trace-1"}); err != nil {
+		t.Fatalf("claim task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-1", TraceID: "trace-1"}); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutes(mux, svc)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, r)
+		for key, values := range rec.Header() {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+		if rec.Code >= http.StatusBadRequest {
+			t.Logf("%s %s returned %d: %s", r.Method, r.URL.Path, rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	err = client.applyGovernedCloseoutFromOutput(ctx, "project-1", projectautomation.ClaimedRun{
+		Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", PlanID: plan.ID, TaskID: task.ID, TraceID: "trace-1"},
+		CodexInput: projectautomation.CodexTaskInput{PlanID: plan.ID, TaskID: task.ID},
+	}, runnerWorkTaskMetadata{ID: task.ID, TaskRef: "decompose-work-plan", Status: "in_progress"}, governedCloseoutFixtureJSON())
+	if err != nil {
+		t.Fatalf("apply governed closeout against REST contract: %v", err)
+	}
+	tasks, err := svc.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: plan.ID})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	var childFound bool
+	for _, candidate := range tasks {
+		if candidate.TaskRef == "implement-ticket-slice" {
+			childFound = true
+			if candidate.Status != projectworkplan.WorkTaskStatusPlanned || candidate.VerificationRequirement == "" {
+				t.Fatalf("unexpected child task: %+v", candidate)
+			}
+		}
+	}
+	if !childFound {
+		t.Fatalf("expected child task to be created, got %+v", tasks)
 	}
 }
 
@@ -1344,6 +1443,9 @@ func TestApplyGovernedCloseoutCreatesChildTasksAndMovesWrapperToNeedsReview(t *t
 			evidenceAttached.Add(1)
 			writeJSON(t, w, map[string]string{"ref": "evidence.governed"})
 		case "/api/v1/projects/project-1/work-tasks/task-1/verifier-results":
+			if statusMoved.Load() == 0 {
+				t.Fatal("needs_review closeout attached verifier before status transition")
+			}
 			verifierAttached.Add(1)
 			writeJSON(t, w, map[string]string{"ref": "verifier.governed"})
 		case "/api/v1/projects/project-1/work-tasks/task-1/status":
@@ -2007,7 +2109,13 @@ func governedCloseoutFixtureJSON() string {
 			"failure_criteria":"block on missing source evidence",
 			"review_gate":"implementation-review",
 			"resume_instructions":"claim this task and inspect listed files",
-			"decomposition_quality":"ready"
+			"decomposition_quality":"ready",
+			"acceptance_criteria":["source-backed behavior is implemented"],
+			"stop_conditions":["missing source evidence"],
+			"verifier_ladder":["focused regression test"],
+			"regression_test_applicability":"required",
+			"downstream_impact_refs":["downstream.impact"],
+			"output_contract":"code change with verifier evidence"
 		}],
 		"block_reason":"",
 		"failure_reason":""

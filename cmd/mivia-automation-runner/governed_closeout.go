@@ -22,6 +22,9 @@ const (
 	governedCloseoutValidationFailed = "governed_closeout_validation_failed"
 	governedCloseoutApplyFailed      = "governed_closeout_apply_failed"
 	governedCloseoutReadbackFailed   = "governed_closeout_readback_failed"
+
+	closeoutChildTaskDescriptionMax = 1000
+	closeoutWorkTaskTextMax         = 500
 )
 
 type governedCloseoutError struct {
@@ -87,7 +90,7 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 	childTaskProperties := map[string]any{
 		"task_ref":                      map[string]any{"type": "string", "maxLength": 200},
 		"title":                         map[string]any{"type": "string", "maxLength": 300},
-		"description":                   map[string]any{"type": "string", "maxLength": 1200},
+		"description":                   map[string]any{"type": "string", "maxLength": closeoutChildTaskDescriptionMax},
 		"status":                        map[string]any{"type": "string", "maxLength": 40},
 		"owner_agent":                   map[string]any{"type": "string", "maxLength": 120},
 		"evidence_needed":               closeoutRefArraySchema(),
@@ -96,18 +99,18 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 		"files_to_edit":                 closeoutPathArraySchema(),
 		"likely_files_affected":         closeoutPathArraySchema(),
 		"dependency_task_ids":           closeoutRefArraySchema(),
-		"verification_requirement":      map[string]any{"type": "string", "maxLength": 1200},
-		"expected_output":               map[string]any{"type": "string", "maxLength": 1200},
-		"failure_criteria":              map[string]any{"type": "string", "maxLength": 1200},
-		"review_gate":                   map[string]any{"type": "string", "maxLength": 500},
-		"resume_instructions":           map[string]any{"type": "string", "maxLength": 1200},
+		"verification_requirement":      map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
+		"expected_output":               map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
+		"failure_criteria":              map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
+		"review_gate":                   map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
+		"resume_instructions":           map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
 		"decomposition_quality":         map[string]any{"type": "string", "maxLength": 80},
 		"acceptance_criteria":           closeoutTextArraySchema(),
 		"stop_conditions":               closeoutTextArraySchema(),
 		"verifier_ladder":               closeoutTextArraySchema(),
-		"regression_test_applicability": map[string]any{"type": "string", "maxLength": 500},
+		"regression_test_applicability": map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
 		"downstream_impact_refs":        closeoutRefArraySchema(),
-		"output_contract":               map[string]any{"type": "string", "maxLength": 1200},
+		"output_contract":               map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
 	}
 	schema := map[string]any{
 		"type":                 "object",
@@ -353,11 +356,31 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 			return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task missing required safe metadata")}
 		}
 	}
+	if len(task.Description) > closeoutChildTaskDescriptionMax ||
+		len(task.VerificationRequirement) > closeoutWorkTaskTextMax ||
+		len(task.ExpectedOutput) > closeoutWorkTaskTextMax ||
+		len(task.FailureCriteria) > closeoutWorkTaskTextMax ||
+		len(task.ReviewGate) > closeoutWorkTaskTextMax ||
+		len(task.ResumeInstructions) > closeoutWorkTaskTextMax ||
+		len(task.RegressionApplicability) > closeoutWorkTaskTextMax ||
+		len(task.OutputContract) > closeoutWorkTaskTextMax {
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task metadata exceeds Work Task REST limits")}
+	}
 	if !safeCloseoutRef(task.TaskRef) {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("unsafe child task_ref")}
 	}
+	switch strings.TrimSpace(task.Status) {
+	case "", "planned", "ready", "blocked":
+	default:
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task status must be planned, ready, or blocked")}
+	}
 	if len(task.EvidenceNeeded) == 0 {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task evidence_needed required")}
+	}
+	if len(task.AcceptanceCriteria) == 0 || len(task.StopConditions) == 0 || len(task.VerifierLadder) == 0 ||
+		strings.TrimSpace(task.RegressionApplicability) == "" || len(task.DownstreamImpactRefs) == 0 ||
+		strings.TrimSpace(task.OutputContract) == "" {
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task missing governance metadata")}
 	}
 	if len(task.FilesToRead) == 0 && len(task.FilesToEdit) == 0 && !strings.Contains(strings.ToLower(task.Description), "discovery") {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task requires files_to_read, files_to_edit, or explicit discovery scope")}
@@ -370,6 +393,11 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 	for _, ref := range append(append([]string{}, task.ContextPackRefs...), task.DependencyTaskIDs...) {
 		if strings.TrimSpace(ref) != "" && unsafeText(ref) {
 			return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("unsafe child task ref")}
+		}
+	}
+	for _, ref := range task.DownstreamImpactRefs {
+		if !safeCloseoutRef(ref) {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("unsafe child task downstream impact ref")}
 		}
 	}
 	return nil
@@ -463,17 +491,6 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 			return err
 		}
 	}
-	for _, ref := range output.VerifierRefs {
-		input := struct {
-			Ref             string `json:"ref"`
-			AttachedByRunID string `json:"attached_by_run_id,omitempty"`
-			TraceID         string `json:"trace_id,omitempty"`
-			Note            string `json:"note,omitempty"`
-		}{Ref: ref, AttachedByRunID: runID, TraceID: traceID, Note: "runner-applied governed closeout verifier"}
-		if _, err := client.post(ctx, pathBase+"/verifier-results", input, nil); err != nil {
-			return err
-		}
-	}
 	switch strings.TrimSpace(output.CloseoutAction) {
 	case "needs_review":
 		input := struct {
@@ -484,9 +501,14 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 			Outcome            string   `json:"outcome,omitempty"`
 			VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
 		}{RunID: runID, TraceID: traceID, Status: "needs_review", SafeNextAction: output.SafeNextAction, Outcome: output.Outcome, VerifierResultRefs: output.VerifierRefs}
-		_, err := client.post(ctx, pathBase+"/status", input, nil)
-		return err
+		if _, err := client.post(ctx, pathBase+"/status", input, nil); err != nil {
+			return err
+		}
+		return client.attachGovernedCloseoutVerifierRefs(ctx, pathBase, runID, traceID, output.VerifierRefs)
 	case "block":
+		if err := client.attachGovernedCloseoutVerifierRefs(ctx, pathBase, runID, traceID, output.VerifierRefs); err != nil {
+			return err
+		}
 		input := struct {
 			RunID              string `json:"run_id,omitempty"`
 			TraceID            string `json:"trace_id,omitempty"`
@@ -497,6 +519,9 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 		_, err := client.post(ctx, pathBase+"/block", input, nil)
 		return err
 	case "fail":
+		if err := client.attachGovernedCloseoutVerifierRefs(ctx, pathBase, runID, traceID, output.VerifierRefs); err != nil {
+			return err
+		}
 		input := struct {
 			RunID              string `json:"run_id,omitempty"`
 			TraceID            string `json:"trace_id,omitempty"`
@@ -509,6 +534,21 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 	default:
 		return fmt.Errorf("%w: invalid closeout action", projectautomation.ErrInvalidInput)
 	}
+}
+
+func (client *runnerClient) attachGovernedCloseoutVerifierRefs(ctx context.Context, pathBase string, runID string, traceID string, refs []string) error {
+	for _, ref := range refs {
+		input := struct {
+			Ref             string `json:"ref"`
+			AttachedByRunID string `json:"attached_by_run_id,omitempty"`
+			TraceID         string `json:"trace_id,omitempty"`
+			Note            string `json:"note,omitempty"`
+		}{Ref: ref, AttachedByRunID: runID, TraceID: traceID, Note: "runner-applied governed closeout verifier"}
+		if _, err := client.post(ctx, pathBase+"/verifier-results", input, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func governedChildTaskCreateInput(child governedCloseoutWorkTask, runID string, traceID string) any {
