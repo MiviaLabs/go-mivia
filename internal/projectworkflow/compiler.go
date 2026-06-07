@@ -419,6 +419,7 @@ func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string,
 	for _, gate := range gates {
 		evidence = append(evidence, "review gate "+gate.ID)
 	}
+	acceptanceCriteria, stopConditions, verifierLadder, regressionApplicability, downstreamImpactRefs, outputContract := workflowStepGovernance(step)
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               workflow.ProjectID,
 		PlanID:                  planID,
@@ -440,7 +441,54 @@ func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string,
 		ReviewGate:              firstNonEmpty(step.ReviewGate, compileReviewGate(gates)),
 		ResumeInstructions:      firstNonEmpty(step.ResumeInstructions, "resume from task metadata and attached refs only"),
 		DecompositionQuality:    projectworkplan.DecompositionReady,
+		AcceptanceCriteria:      acceptanceCriteria,
+		StopConditions:          stopConditions,
+		VerifierLadder:          verifierLadder,
+		RegressionApplicability: regressionApplicability,
+		DownstreamImpactRefs:    downstreamImpactRefs,
+		OutputContract:          outputContract,
 	}
+}
+
+func workflowStepGovernance(step WorkflowStep) ([]string, []string, []string, string, []string, string) {
+	acceptanceCriteria := append([]string(nil), step.AcceptanceCriteria...)
+	stopConditions := append([]string(nil), step.StopConditions...)
+	verifierLadder := append([]string(nil), step.VerifierLadder...)
+	regressionApplicability := step.RegressionApplicability
+	downstreamImpactRefs := append([]string(nil), step.DownstreamImpactRefs...)
+	outputContract := step.OutputContract
+	if step.ID != "decompose-work-plan" {
+		return acceptanceCriteria, stopConditions, verifierLadder, regressionApplicability, downstreamImpactRefs, outputContract
+	}
+	if len(acceptanceCriteria) == 0 {
+		acceptanceCriteria = []string{
+			"Each child Work Task has one objective, bounded scope, dependencies, evidence needs, review gate, verifier requirement, and resume instructions.",
+			"Each child Work Task can be executed by an isolated worker from task metadata and attached refs only.",
+		}
+	}
+	if len(stopConditions) == 0 {
+		stopConditions = []string{
+			"Block instead of creating tasks when scope, evidence, dependencies, or verifier requirements are missing.",
+			"Do not mark child tasks ready until independent planning review approves the task packets.",
+		}
+	}
+	if len(verifierLadder) == 0 {
+		verifierLadder = []string{
+			"orchestrator reviews child task metadata completeness",
+			"orchestrator verifies dependency and downstream-impact refs",
+			"orchestrator checks review gate and verifier requirements before ready status",
+		}
+	}
+	if regressionApplicability == "" {
+		regressionApplicability = "required when decomposition identifies code-impacting work; otherwise record a concrete not-applicable reason"
+	}
+	if len(downstreamImpactRefs) == 0 {
+		downstreamImpactRefs = []string{"dependency-map-ref", "downstream-impact-ref"}
+	}
+	if outputContract == "" {
+		outputContract = "planned child Work Tasks with complete governance metadata and no hidden chat context"
+	}
+	return acceptanceCriteria, stopConditions, verifierLadder, regressionApplicability, downstreamImpactRefs, outputContract
 }
 
 func (svc *Service) reviewTaskInput(workflow WorkflowDefinition, planID string, reviewed projectworkplan.WorkTask, gate WorkflowReviewGate, runID string, traceID string) projectworkplan.CreateWorkTaskInput {

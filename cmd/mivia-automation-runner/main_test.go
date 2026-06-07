@@ -1161,7 +1161,7 @@ func TestRunOnceFailsGovernanceStepsWithoutExplicitCloseout(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 						t.Fatalf("decode attempt: %v", err)
 					}
-					if input.Status != projectautomation.RunStatusFailed || input.FailureCategory != governedCloseoutOutputMissing {
+					if input.Status != projectautomation.RunStatusFailed || !governedCloseoutCategoryHasPrefix(input.FailureCategory, governedCloseoutOutputMissing) {
 						t.Fatalf("expected governed closeout failure, got %+v", input)
 					}
 					completed.Add(1)
@@ -1277,7 +1277,7 @@ func TestRunOnceClosesOutReadOnlyReviewTaskAfterCodexSuccess(t *testing.T) {
 }
 
 func TestParseGovernedCloseoutRejectsMissingAndUnsafeOutput(t *testing.T) {
-	if _, err := parseGovernedCloseoutOutput(""); governedCloseoutFailureCategory(err) != governedCloseoutOutputMissing {
+	if _, err := parseGovernedCloseoutOutput(""); !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutOutputMissing) {
 		t.Fatalf("expected missing output category, got %v", err)
 	}
 	for name, payload := range map[string]string{
@@ -1286,13 +1286,13 @@ func TestParseGovernedCloseoutRejectsMissingAndUnsafeOutput(t *testing.T) {
 		"multiple_fences": "First:\n```json\n" + `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""}` + "\n```\nSecond:\n```json\n" + `{"closeout_action":"block","outcome":"ok","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""}` + "\n```",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := parseGovernedCloseoutOutput(payload); governedCloseoutFailureCategory(err) != governedCloseoutInvalidJSON {
+			if _, err := parseGovernedCloseoutOutput(payload); !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutInvalidJSON) {
 				t.Fatalf("expected invalid json category, got %v", err)
 			}
 		})
 	}
 	_, err := parseGovernedCloseoutOutput(`{"closeout_action":"needs_review","outcome":"ok","safe_next_action":"next","evidence_refs":["bad/ref"],"verifier_result_refs":[],"child_tasks":[]}`)
-	if governedCloseoutFailureCategory(validateGovernedCloseoutOutput(mustParseGovernedCloseout(t, `{"closeout_action":"needs_review","outcome":"ok","safe_next_action":"next","evidence_refs":["bad/ref"],"verifier_result_refs":[],"child_tasks":[]}`), runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})) != governedCloseoutValidationFailed {
+	if !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(validateGovernedCloseoutOutput(mustParseGovernedCloseout(t, `{"closeout_action":"needs_review","outcome":"ok","safe_next_action":"next","evidence_refs":["bad/ref"],"verifier_result_refs":[],"child_tasks":[]}`), runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})), governedCloseoutValidationFailed) {
 		t.Fatalf("expected unsafe ref validation failure")
 	}
 	if err == nil {
@@ -1319,6 +1319,18 @@ func TestParseGovernedCloseoutAcceptsWrappedSingleJSONObject(t *testing.T) {
 	}
 }
 
+func TestGovernedCloseoutFailureCategoryIncludesSafeDetail(t *testing.T) {
+	err := governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task missing governance metadata")}
+	if got, want := governedCloseoutFailureCategory(err), "governed_closeout_validation_failed_child_task_missing_governance_metadata"; got != want {
+		t.Fatalf("expected detailed validation category %q, got %q", want, got)
+	}
+
+	err = governedCloseoutError{category: governedCloseoutApplyFailed, err: errors.New("server returned 400 Bad Request: invalid_project_workplan_input: task_ref contains unsafe value")}
+	if got, want := governedCloseoutFailureCategory(err), "governed_closeout_apply_failed_invalid_project_workplan_input"; got != want {
+		t.Fatalf("expected detailed apply category %q, got %q", want, got)
+	}
+}
+
 func TestParseGovernedCloseoutAllowsExtraChildTaskGovernanceFields(t *testing.T) {
 	output, err := parseGovernedCloseoutOutput(governedCloseoutFixtureJSON())
 	if err != nil {
@@ -1333,21 +1345,21 @@ func TestValidateGovernedCloseoutRejectsChildTaskMetadataBeforeREST(t *testing.T
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	output.ChildTasks[0].ExpectedOutput = strings.Repeat("x", closeoutWorkTaskTextMax+1)
 	err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
-	if governedCloseoutFailureCategory(err) != governedCloseoutValidationFailed || !strings.Contains(err.Error(), "REST limits") {
+	if !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutValidationFailed) || !strings.Contains(err.Error(), "REST limits") {
 		t.Fatalf("expected REST-compatible validation failure, got %v", err)
 	}
 
 	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	output.ChildTasks[0].Status = "done"
 	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
-	if governedCloseoutFailureCategory(err) != governedCloseoutValidationFailed || !strings.Contains(err.Error(), "status") {
+	if !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutValidationFailed) || !strings.Contains(err.Error(), "status") {
 		t.Fatalf("expected terminal child status validation failure, got %v", err)
 	}
 
 	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	output.ChildTasks[0].DownstreamImpactRefs = nil
 	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
-	if governedCloseoutFailureCategory(err) != governedCloseoutValidationFailed || !strings.Contains(err.Error(), "governance metadata") {
+	if !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutValidationFailed) || !strings.Contains(err.Error(), "governance metadata") {
 		t.Fatalf("expected missing governance validation failure, got %v", err)
 	}
 }
@@ -1478,6 +1490,30 @@ func TestApplyGovernedCloseoutCreatesChildTasksAndMovesWrapperToNeedsReview(t *t
 	}
 	if childCreated.Load() != 1 || evidenceAttached.Load() != 1 || verifierAttached.Load() != 1 || statusMoved.Load() != 1 {
 		t.Fatalf("expected create/evidence/verifier/status calls, got child=%d evidence=%d verifier=%d status=%d", childCreated.Load(), evidenceAttached.Load(), verifierAttached.Load(), statusMoved.Load())
+	}
+}
+
+func TestApplyGovernedCloseoutReportsWrapperStatusFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans/plan-1/tasks":
+			writeJSON(t, w, map[string]string{"id": "child-1", "status": "planned"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/evidence":
+			writeJSON(t, w, map[string]string{"ref": "evidence.governed"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/status":
+			http.Error(w, "invalid_project_workplan_input: status rejected", http.StatusBadRequest)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	err := client.applyGovernedCloseoutFromOutput(t.Context(), "project-1", projectautomation.ClaimedRun{
+		Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", PlanID: "plan-1", TaskID: "task-1", TraceID: "trace-1"},
+		CodexInput: projectautomation.CodexTaskInput{PlanID: "plan-1", TaskID: "task-1"},
+	}, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "in_progress"}, governedCloseoutFixtureJSON())
+	if got, want := governedCloseoutFailureCategory(err), "governed_closeout_apply_failed_wrapper_status_update_failed"; got != want {
+		t.Fatalf("expected phase-specific closeout failure %q, got err=%v category=%q", want, err, got)
 	}
 }
 
@@ -1936,6 +1972,9 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 	if strings.Contains(schemaText, "ready_for_worker") {
 		t.Fatalf("schema must not require non-existent decomposition quality constant: %s", schemaText)
 	}
+	if strings.Contains(schemaText, "._:-") {
+		t.Fatalf("closeout ref schema must match runner validation and reject colon refs: %s", schemaText)
+	}
 	var schema map[string]any
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatalf("schema must be valid json: %v", err)
@@ -1960,13 +1999,34 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 		t.Fatalf("child_tasks schema missing governance metadata fields: %#v", itemProperties)
 	}
 	required, ok := items["required"].([]any)
-	if !ok || len(required) != len(itemProperties) {
-		t.Fatalf("child_tasks schema must require every listed property for Codex strict schema: %#v", items["required"])
+	if !ok {
+		t.Fatalf("child_tasks schema must expose a required list: %#v", items["required"])
+	}
+	if len(required) >= len(itemProperties) {
+		t.Fatalf("child_tasks schema must not reject incomplete metadata before runner validation: required=%#v properties=%#v", required, itemProperties)
+	}
+	if containsAnySchemaString(required, []string{"acceptance_criteria", "stop_conditions", "verifier_ladder", "regression_test_applicability", "downstream_impact_refs", "output_contract"}) {
+		t.Fatalf("child governance metadata must be enforced by runner validation, not Codex schema: required=%#v", required)
 	}
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
 		t.Fatalf("fixture accepted by parser must stay accepted by schema constants: %v", err)
 	}
+}
+
+func containsAnySchemaString(values []any, wants []string) bool {
+	for _, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		for _, want := range wants {
+			if text == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestDecomposeCloseoutUsesStrictSchemaAndRunnerValidation(t *testing.T) {
@@ -1983,9 +2043,13 @@ func TestDecomposeCloseoutUsesStrictSchemaAndRunnerValidation(t *testing.T) {
 	}
 	invalid := output
 	invalid.ChildTasks[0].EvidenceNeeded = nil
-	if err := validateGovernedCloseoutOutput(invalid, task); governedCloseoutFailureCategory(err) != governedCloseoutValidationFailed {
+	if err := validateGovernedCloseoutOutput(invalid, task); !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutValidationFailed) {
 		t.Fatalf("invalid child_tasks must be rejected by runner validation, got %v", err)
 	}
+}
+
+func governedCloseoutCategoryHasPrefix(category string, prefix string) bool {
+	return category == prefix || strings.HasPrefix(category, prefix+"_")
 }
 
 func TestCheckCodexConfigReadableUsesCodexHome(t *testing.T) {

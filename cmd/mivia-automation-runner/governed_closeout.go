@@ -44,9 +44,66 @@ func (err governedCloseoutError) Unwrap() error { return err.err }
 func governedCloseoutFailureCategory(err error) string {
 	var closeoutErr governedCloseoutError
 	if errors.As(err, &closeoutErr) && closeoutErr.category != "" {
+		if detail := governedCloseoutSafeFailureDetail(closeoutErr.category, closeoutErr.err); detail != "" {
+			return closeoutErr.category + "_" + detail
+		}
 		return closeoutErr.category
 	}
 	return governedCloseoutApplyFailed
+}
+
+func governedCloseoutSafeFailureDetail(category string, err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	for _, marker := range []string{
+		"child_task_create_failed",
+		"wrapper_evidence_attach_failed",
+		"wrapper_status_update_failed",
+		"wrapper_verifier_attach_failed",
+		"wrapper_block_failed",
+		"wrapper_fail_failed",
+		"wrapper_readback_failed",
+		"invalid_project_workplan_input",
+		"invalid_project_work_task_input",
+		"invalid_project_automation_input",
+		"invalid_project_workflow_input",
+		"invalid_project_gitops_input",
+	} {
+		if strings.Contains(text, marker) {
+			return marker
+		}
+	}
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range text {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+			lastUnderscore = false
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastUnderscore = false
+		default:
+			if !lastUnderscore && builder.Len() > 0 {
+				builder.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	detail := strings.Trim(builder.String(), "_")
+	if detail == "" {
+		return ""
+	}
+	max := 100 - len(category) - 1
+	if max < 20 {
+		max = 20
+	}
+	if len(detail) > max {
+		detail = strings.TrimRight(detail[:max], "_")
+	}
+	return detail
 }
 
 type governedCloseoutOutput struct {
@@ -130,7 +187,7 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
-					"required":             sortedSchemaKeys(childTaskProperties),
+					"required":             []string{},
 					"properties":           childTaskProperties,
 				},
 			},
@@ -154,7 +211,7 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 }
 
 func closeoutRefSchema() map[string]any {
-	return map[string]any{"type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"}
+	return map[string]any{"type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"}
 }
 
 func closeoutRefArraySchema() map[string]any {
@@ -475,7 +532,7 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 		for _, child := range output.ChildTasks {
 			input := governedChildTaskCreateInput(child, runID, traceID)
 			if _, err := client.post(ctx, fmt.Sprintf("/api/v1/projects/%s/work-plans/%s/tasks", url.PathEscape(projectID), url.PathEscape(planID)), input, nil); err != nil {
-				return err
+				return fmt.Errorf("child_task_create_failed: %w", err)
 			}
 		}
 	}
@@ -488,7 +545,7 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 			Note            string `json:"note,omitempty"`
 		}{Ref: ref, AttachedByRunID: runID, TraceID: traceID, Note: "runner-applied governed closeout evidence"}
 		if _, err := client.post(ctx, pathBase+"/evidence", input, nil); err != nil {
-			return err
+			return fmt.Errorf("wrapper_evidence_attach_failed: %w", err)
 		}
 	}
 	switch strings.TrimSpace(output.CloseoutAction) {
@@ -502,12 +559,15 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 			VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
 		}{RunID: runID, TraceID: traceID, Status: "needs_review", SafeNextAction: output.SafeNextAction, Outcome: output.Outcome, VerifierResultRefs: output.VerifierRefs}
 		if _, err := client.post(ctx, pathBase+"/status", input, nil); err != nil {
-			return err
+			return fmt.Errorf("wrapper_status_update_failed: %w", err)
 		}
-		return client.attachGovernedCloseoutVerifierRefs(ctx, pathBase, runID, traceID, output.VerifierRefs)
+		if err := client.attachGovernedCloseoutVerifierRefs(ctx, pathBase, runID, traceID, output.VerifierRefs); err != nil {
+			return fmt.Errorf("wrapper_verifier_attach_failed: %w", err)
+		}
+		return nil
 	case "block":
 		if err := client.attachGovernedCloseoutVerifierRefs(ctx, pathBase, runID, traceID, output.VerifierRefs); err != nil {
-			return err
+			return fmt.Errorf("wrapper_verifier_attach_failed: %w", err)
 		}
 		input := struct {
 			RunID              string `json:"run_id,omitempty"`
@@ -517,10 +577,13 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 			SafeNextAction     string `json:"safe_next_action,omitempty"`
 		}{RunID: runID, TraceID: traceID, BlockedReason: output.BlockReason, ResumeInstructions: output.SafeNextAction, SafeNextAction: output.SafeNextAction}
 		_, err := client.post(ctx, pathBase+"/block", input, nil)
-		return err
+		if err != nil {
+			return fmt.Errorf("wrapper_block_failed: %w", err)
+		}
+		return nil
 	case "fail":
 		if err := client.attachGovernedCloseoutVerifierRefs(ctx, pathBase, runID, traceID, output.VerifierRefs); err != nil {
-			return err
+			return fmt.Errorf("wrapper_verifier_attach_failed: %w", err)
 		}
 		input := struct {
 			RunID              string `json:"run_id,omitempty"`
@@ -530,7 +593,10 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 			SafeNextAction     string `json:"safe_next_action,omitempty"`
 		}{RunID: runID, TraceID: traceID, Outcome: firstNonEmpty(output.FailureReason, output.Outcome), ResumeInstructions: output.SafeNextAction, SafeNextAction: output.SafeNextAction}
 		_, err := client.post(ctx, pathBase+"/fail", input, nil)
-		return err
+		if err != nil {
+			return fmt.Errorf("wrapper_fail_failed: %w", err)
+		}
+		return nil
 	default:
 		return fmt.Errorf("%w: invalid closeout action", projectautomation.ErrInvalidInput)
 	}

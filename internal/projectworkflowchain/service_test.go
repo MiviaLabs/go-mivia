@@ -102,6 +102,43 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	}
 }
 
+func TestStartDoesNotActivateFirstStageBeforeChainRunPersists(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	store.createErr = errors.New("chain store unavailable")
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"}); err == nil {
+		t.Fatalf("expected start to fail when chain run persistence fails")
+	}
+	if len(workPlans.activations) != 0 || len(workPlans.released) != 0 {
+		t.Fatalf("must not activate or release stage work before chain persistence, activations=%#v released=%#v", workPlans.activations, workPlans.released)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("failed create must not leave persisted chain runs: %#v", store.runs)
+	}
+}
+
+func TestStartDoesNotActivateFirstStageBeforeStageMetadataUpdatePersists(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+	store.updateErr = errors.New("chain update unavailable")
+
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"}); err == nil {
+		t.Fatalf("expected start to fail when first-stage metadata update fails")
+	}
+	if len(workPlans.activations) != 0 || len(workPlans.released) != 0 {
+		t.Fatalf("must not activate or release first-stage work before chain metadata update, activations=%#v released=%#v", workPlans.activations, workPlans.released)
+	}
+}
+
 func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
@@ -140,6 +177,128 @@ func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *tes
 	}
 	if len(finalizer.inputs) != 1 {
 		t.Fatalf("expected no duplicate GitOps finalization, got %d", len(finalizer.inputs))
+	}
+}
+
+func TestHandleWorkPlanStatusChangedDoesNotActivateNextStageBeforeChainUpdatePersists(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	store.updateErr = errors.New("chain update unavailable")
+	err = svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone})
+	if err == nil {
+		t.Fatalf("expected next-stage chain update failure")
+	}
+	if len(workPlans.activations) != 1 || workPlans.activations[0] != "plan-decomposition" {
+		t.Fatalf("must not activate implementation before chain update, start=%#v activations=%#v", result, workPlans.activations)
+	}
+	if len(workPlans.released) != 1 || workPlans.released[0] != "task-decomposition" {
+		t.Fatalf("must not release implementation before chain update, released=%#v", workPlans.released)
+	}
+}
+
+func TestHandleWorkPlanStatusChangedDoesNotFinalizeGitOpsBeforeCheckpointPersists(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/MASS-1044"}}
+	svc.SetGitOpsFinalizer(finalizer)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, planID := range []string{"plan-decomposition", "plan-implementation"} {
+		if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	store.updateErr = errors.New("chain update unavailable")
+	err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone})
+	if err == nil {
+		t.Fatalf("expected GitOps checkpoint update failure")
+	}
+	if len(finalizer.inputs) != 0 {
+		t.Fatalf("must not create draft PR GitOps output before checkpoint persists, inputs=%#v", finalizer.inputs)
+	}
+}
+
+func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizerMissing(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, planID := range []string{"plan-decomposition", "plan-implementation"} {
+		if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected missing finalizer to block with invalid input, got %v", err)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != ChainStatusBlocked || !run.GitOpsReady || run.StageRuns[2].BlockedReason == "" {
+		t.Fatalf("expected blocked GitOps-ready chain with explicit reason, got %#v", run)
+	}
+	if !strings.HasPrefix(run.StageRuns[2].BlockedReason, "gitops_finalize_failed_invalid_project_workflow_chain_input_gitops_finalizer_missing") {
+		t.Fatalf("expected explicit missing-finalizer blocked reason, got %#v", run.StageRuns[2].BlockedReason)
+	}
+}
+
+func TestHandleWorkPlanStatusChangedStopsChainWhenStagePlanCancelledOrSuperseded(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name        string
+		planStatus  string
+		chainStatus string
+		stageStatus string
+		reason      string
+	}{
+		{name: "cancelled", planStatus: projectworkplan.WorkPlanStatusCancelled, chainStatus: ChainStatusCancelled, stageStatus: StageStatusCancelled, reason: "work_plan_cancelled"},
+		{name: "superseded", planStatus: projectworkplan.WorkPlanStatusSuperseded, chainStatus: ChainStatusSuperseded, stageStatus: StageStatusSuperseded, reason: "work_plan_superseded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestChainStore()
+			workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+			workPlans := &fakeWorkPlans{}
+			svc := New(store, workflows, workPlans, []Config{testConfig()})
+			svc.newID = deterministicIDs("workflow_chain_run_1")
+
+			result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+			if err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: tc.planStatus}); err != nil {
+				t.Fatalf("terminal change: %v", err)
+			}
+			run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+			if err != nil {
+				t.Fatalf("get run: %v", err)
+			}
+			if run.Status != tc.chainStatus || run.StageRuns[0].Status != tc.stageStatus || run.StageRuns[0].BlockedReason != tc.reason {
+				t.Fatalf("expected chain/stage terminal %s/%s, got %#v", tc.chainStatus, tc.stageStatus, run)
+			}
+		})
 	}
 }
 
@@ -435,7 +594,9 @@ func (fake *fakeGitOpsFinalizer) FinalizeWorkflowChain(_ context.Context, input 
 }
 
 type testChainStore struct {
-	runs map[string]ChainRun
+	runs      map[string]ChainRun
+	createErr error
+	updateErr error
 }
 
 func newTestChainStore() *testChainStore {
@@ -443,6 +604,9 @@ func newTestChainStore() *testChainStore {
 }
 
 func (store *testChainStore) CreateChainRun(_ context.Context, run ChainRun) (ChainRun, error) {
+	if store.createErr != nil {
+		return ChainRun{}, store.createErr
+	}
 	store.runs[run.ID] = run
 	return run, nil
 }
@@ -460,6 +624,9 @@ func (store *testChainStore) ListChainRuns(_ context.Context, _ ChainFilter) ([]
 }
 
 func (store *testChainStore) UpdateChainRun(_ context.Context, run ChainRun) (ChainRun, error) {
+	if store.updateErr != nil {
+		return ChainRun{}, store.updateErr
+	}
 	store.runs[run.ID] = run
 	return run, nil
 }

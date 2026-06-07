@@ -116,6 +116,22 @@ expected_output = "Work Tasks in planned status with complete metadata"
 failure_criteria = "block if any task depends on hidden chat context or lacks review and verifier requirements"
 review_gate = "planning-readiness-review must approve task packets before ready status"
 resume_instructions = "resume from Work Plan id, task refs, dependency map, and evidence refs"
+acceptance_criteria = [
+  "Each child Work Task has one objective, bounded scope, dependencies, evidence needs, review gate, verifier requirement, and resume instructions.",
+  "Each child Work Task can be executed by an isolated worker from task metadata and attached refs only."
+]
+stop_conditions = [
+  "Block instead of creating tasks when scope, evidence, dependencies, or verifier requirements are missing.",
+  "Do not mark child tasks ready until independent planning review approves the task packets."
+]
+verifier_ladder = [
+  "orchestrator reviews child task metadata completeness",
+  "orchestrator verifies dependency and downstream-impact refs",
+  "orchestrator checks review gate and verifier requirements before ready status"
+]
+regression_test_applicability = "required when decomposition identifies code-impacting work; otherwise record a concrete not-applicable reason"
+downstream_impact_refs = ["dependency-map-ref", "downstream-impact-ref"]
+output_contract = "planned child Work Tasks with complete governance metadata and no hidden chat context"
 max_parallel_tasks = 1
 
 [[steps]]

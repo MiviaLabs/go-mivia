@@ -100,6 +100,12 @@ type WorkflowStep struct {
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
 	ReviewGate              string   `json:"review_gate,omitempty"`
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string   `json:"output_contract,omitempty"`
 	MaxParallelTasks        int      `json:"max_parallel_tasks,omitempty"`
 	AutomationStatus        string   `json:"automation_status,omitempty"`
 	TriggerKind             string   `json:"trigger_kind,omitempty"`

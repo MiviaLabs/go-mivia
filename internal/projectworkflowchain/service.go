@@ -135,8 +135,21 @@ func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, e
 	for _, stage := range cfg.Stages {
 		run.StageRuns = append(run.StageRuns, StageRun{StageRef: stage.StageRef, WorkflowRef: stage.WorkflowRef, Status: StageStatusPlanned})
 	}
-	stage, err := svc.compileStage(ctx, cfg, run, cfg.Stages[0], false)
+	created, err := svc.store.CreateChainRun(ctx, run)
 	if err != nil {
+		return StartResult{}, err
+	}
+	run = created
+	stage, compiled, err := svc.compileStageMetadata(ctx, cfg, run, cfg.Stages[0], false)
+	if err != nil {
+		run.Status = ChainStatusBlocked
+		run.NextAction = "chain blocked while compiling first stage"
+		if len(run.StageRuns) > 0 {
+			run.StageRuns[0].Status = StageStatusBlocked
+			run.StageRuns[0].BlockedReason = "compile_first_stage_failed"
+		}
+		run.UpdatedAt = svc.now()
+		_, _ = svc.store.UpdateChainRun(ctx, run)
 		return StartResult{}, err
 	}
 	run.StageRuns[0] = stage
@@ -145,8 +158,20 @@ func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, e
 	run.Status = ChainStatusQueued
 	run.NextAction = "decomposition automation will run when planned tasks transition to ready"
 	run.UpdatedAt = svc.now()
-	created, err := svc.store.CreateChainRun(ctx, run)
+	created, err = svc.store.UpdateChainRun(ctx, run)
 	if err != nil {
+		return StartResult{}, err
+	}
+	run = created
+	if err := svc.activateCompiledStage(ctx, cfg, run, compiled); err != nil {
+		run.Status = ChainStatusBlocked
+		run.NextAction = "chain blocked while activating first stage"
+		if len(run.StageRuns) > 0 {
+			run.StageRuns[0].Status = StageStatusBlocked
+			run.StageRuns[0].BlockedReason = "activate_first_stage_failed"
+		}
+		run.UpdatedAt = svc.now()
+		_, _ = svc.store.UpdateChainRun(ctx, run)
 		return StartResult{}, err
 	}
 	return startResult(created, false), nil
@@ -229,7 +254,10 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 	if err != nil {
 		return nil
 	}
-	if change.NewStatus == projectworkplan.WorkPlanStatusBlocked || change.NewStatus == projectworkplan.WorkPlanStatusFailed {
+	if change.NewStatus == projectworkplan.WorkPlanStatusBlocked ||
+		change.NewStatus == projectworkplan.WorkPlanStatusFailed ||
+		change.NewStatus == projectworkplan.WorkPlanStatusCancelled ||
+		change.NewStatus == projectworkplan.WorkPlanStatusSuperseded {
 		return svc.markChainRunTerminalFromWorkPlan(ctx, run, change)
 	}
 	if change.NewStatus != projectworkplan.WorkPlanStatusDone {
@@ -254,7 +282,7 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 		run.UpdatedAt = svc.now()
 	}
 	if next, ok := nextReadyStage(cfg, run); ok {
-		stageRun, err := svc.compileStage(ctx, cfg, run, next, false)
+		stageRun, compiled, err := svc.compileStageMetadata(ctx, cfg, run, next, false)
 		if err != nil {
 			run.Status = ChainStatusBlocked
 			run.NextAction = "chain blocked while compiling next stage"
@@ -276,8 +304,36 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 		run.AutomationIDs = appendUniqueMany(run.AutomationIDs, stageRun.AutomationIDs)
 		run.Status = ChainStatusQueued
 		run.NextAction = "next stage automation will run when lifecycle gates are satisfied"
+		run.UpdatedAt = svc.now()
+		updated, err := svc.store.UpdateChainRun(ctx, run)
+		if err != nil {
+			return err
+		}
+		run = updated
+		if err := svc.activateCompiledStage(ctx, cfg, run, compiled); err != nil {
+			run.Status = ChainStatusBlocked
+			run.NextAction = "chain blocked while activating next stage"
+			for i := range run.StageRuns {
+				if run.StageRuns[i].StageRef == next.StageRef {
+					run.StageRuns[i].Status = StageStatusBlocked
+					run.StageRuns[i].BlockedReason = "activate_next_stage_failed"
+				}
+			}
+			run.UpdatedAt = svc.now()
+			_, _ = svc.store.UpdateChainRun(ctx, run)
+			return err
+		}
 	} else if allStagesCompleted(run) {
 		if cfg.GitOpsMode == GitOpsModeDraftPRAfterValidation {
+			run.Status = ChainStatusPostValidationPassed
+			run.GitOpsReady = true
+			run.NextAction = "chain ready for draft PR GitOps finalization"
+			run.UpdatedAt = svc.now()
+			updated, err := svc.store.UpdateChainRun(ctx, run)
+			if err != nil {
+				return err
+			}
+			run = updated
 			if err := svc.finalizeGitOps(ctx, &run); err != nil {
 				run.Status = ChainStatusBlocked
 				run.GitOpsReady = true
@@ -303,11 +359,22 @@ func (svc *Service) markChainRunTerminalFromWorkPlan(ctx context.Context, run Ch
 	stageStatus := StageStatusBlocked
 	reason := "work_plan_blocked"
 	nextAction := "workflow chain blocked by terminal Work Plan status"
-	if change.NewStatus == projectworkplan.WorkPlanStatusFailed {
+	switch change.NewStatus {
+	case projectworkplan.WorkPlanStatusFailed:
 		status = ChainStatusFailed
 		stageStatus = StageStatusFailed
 		reason = "work_plan_failed"
 		nextAction = "workflow chain failed by terminal Work Plan status"
+	case projectworkplan.WorkPlanStatusCancelled:
+		status = ChainStatusCancelled
+		stageStatus = StageStatusCancelled
+		reason = "work_plan_cancelled"
+		nextAction = "workflow chain cancelled by terminal Work Plan status"
+	case projectworkplan.WorkPlanStatusSuperseded:
+		status = ChainStatusSuperseded
+		stageStatus = StageStatusSuperseded
+		reason = "work_plan_superseded"
+		nextAction = "workflow chain superseded by terminal Work Plan status"
 	}
 	changed := run.Status != status || run.NextAction != nextAction
 	for i := range run.StageRuns {
@@ -353,10 +420,7 @@ func (svc *Service) finalizeGitOps(ctx context.Context, run *ChainRun) error {
 		return fmt.Errorf("%w: chain run is required", ErrInvalidInput)
 	}
 	if svc.gitOpsFinalizer == nil {
-		run.Status = ChainStatusPostValidationPassed
-		run.GitOpsReady = true
-		run.NextAction = "draft PR GitOps is allowed after configured GitOps checks pass"
-		return nil
+		return fmt.Errorf("%w: gitops_finalizer_missing", ErrInvalidInput)
 	}
 	if strings.TrimSpace(run.PullRequestRef) != "" {
 		run.Status = ChainStatusCompleted
@@ -463,9 +527,23 @@ func (svc *Service) dryRunStart(ctx context.Context, cfg Config, inputRef string
 }
 
 func (svc *Service) compileStage(ctx context.Context, cfg Config, run ChainRun, stage StageConfig, dryRun bool) (StageRun, error) {
-	workflow, err := svc.resolveWorkflow(ctx, cfg.ProjectID, stage.WorkflowRef)
+	stageRun, compiled, err := svc.compileStageMetadata(ctx, cfg, run, stage, dryRun)
 	if err != nil {
 		return StageRun{}, err
+	}
+	if dryRun {
+		return stageRun, nil
+	}
+	if err := svc.activateCompiledStage(ctx, cfg, run, compiled); err != nil {
+		return StageRun{}, err
+	}
+	return stageRun, nil
+}
+
+func (svc *Service) compileStageMetadata(ctx context.Context, cfg Config, run ChainRun, stage StageConfig, dryRun bool) (StageRun, projectworkflow.WorkflowCompileResult, error) {
+	workflow, err := svc.resolveWorkflow(ctx, cfg.ProjectID, stage.WorkflowRef)
+	if err != nil {
+		return StageRun{}, projectworkflow.WorkflowCompileResult{}, err
 	}
 	title := renderTemplate(firstNonEmpty(cfg.DefaultTitleTemplate, "{{input_ref}} governed delivery"), cfg.ChainRef, run.InputRef)
 	if stage.StageRef != "" {
@@ -481,7 +559,7 @@ func (svc *Service) compileStage(ctx context.Context, cfg Config, run ChainRun, 
 		DryRun:         dryRun,
 	})
 	if err != nil {
-		return StageRun{}, err
+		return StageRun{}, projectworkflow.WorkflowCompileResult{}, err
 	}
 	stageRun := StageRun{
 		StageRef:      stage.StageRef,
@@ -495,8 +573,12 @@ func (svc *Service) compileStage(ctx context.Context, cfg Config, run ChainRun, 
 	}
 	if dryRun {
 		stageRun.Status = StageStatusPlanned
-		return stageRun, nil
+		return stageRun, compiled, nil
 	}
+	return stageRun, compiled, nil
+}
+
+func (svc *Service) activateCompiledStage(ctx context.Context, cfg Config, run ChainRun, compiled projectworkflow.WorkflowCompileResult) error {
 	if compiled.WorkPlanID != "" {
 		if _, err := svc.workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
 			ProjectID:      cfg.ProjectID,
@@ -506,13 +588,13 @@ func (svc *Service) compileStage(ctx context.Context, cfg Config, run ChainRun, 
 			RunID:          firstNonEmpty(run.CreatedByRunID, run.ID),
 			TraceID:        run.TraceID,
 		}); err != nil {
-			return StageRun{}, err
+			return err
 		}
 	}
 	if err := svc.releaseCompiledTasks(ctx, cfg.ProjectID, compiled, run); err != nil {
-		return StageRun{}, err
+		return err
 	}
-	return stageRun, nil
+	return nil
 }
 
 func (svc *Service) releaseCompiledTasks(ctx context.Context, projectID string, compiled projectworkflow.WorkflowCompileResult, run ChainRun) error {

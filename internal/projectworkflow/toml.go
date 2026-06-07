@@ -72,6 +72,12 @@ type workflowStepTOML struct {
 	FailureCriteria         string   `toml:"failure_criteria"`
 	ReviewGate              string   `toml:"review_gate"`
 	ResumeInstructions      string   `toml:"resume_instructions"`
+	AcceptanceCriteria      []string `toml:"acceptance_criteria"`
+	StopConditions          []string `toml:"stop_conditions"`
+	VerifierLadder          []string `toml:"verifier_ladder"`
+	RegressionApplicability string   `toml:"regression_test_applicability"`
+	DownstreamImpactRefs    []string `toml:"downstream_impact_refs"`
+	OutputContract          string   `toml:"output_contract"`
 	MaxParallelTasks        *int     `toml:"max_parallel_tasks"`
 	AutomationStatus        string   `toml:"automation_status"`
 	TriggerKind             string   `toml:"trigger_kind"`
@@ -193,6 +199,9 @@ func (w workflowTOML) toDefinition() WorkflowDefinition {
 			LikelyFilesAffected:     step.LikelyFilesAffected,
 			VerificationRequirement: step.VerificationRequirement, ExpectedOutput: step.ExpectedOutput,
 			FailureCriteria: step.FailureCriteria, ReviewGate: step.ReviewGate, ResumeInstructions: step.ResumeInstructions,
+			AcceptanceCriteria: step.AcceptanceCriteria, StopConditions: step.StopConditions,
+			VerifierLadder: step.VerifierLadder, RegressionApplicability: step.RegressionApplicability,
+			DownstreamImpactRefs: step.DownstreamImpactRefs, OutputContract: step.OutputContract,
 			MaxParallelTasks: maxParallelTasks, AutomationStatus: step.AutomationStatus,
 			TriggerKind: step.TriggerKind, SchedulePolicy: step.SchedulePolicy,
 		})

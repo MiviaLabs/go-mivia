@@ -95,6 +95,9 @@ func TestDecompositionWorkflowCompilesRichTaskPackets(t *testing.T) {
 	if !strings.Contains(decompose.ReviewGate, "planning-readiness-review") {
 		t.Fatalf("decompose task missing planning review gate: %q", decompose.ReviewGate)
 	}
+	if len(decompose.AcceptanceCriteria) == 0 || len(decompose.StopConditions) == 0 || len(decompose.VerifierLadder) == 0 || decompose.RegressionApplicability == "" || len(decompose.DownstreamImpactRefs) == 0 || decompose.OutputContract == "" {
+		t.Fatalf("decompose task missing first-class governance fields: %#v", decompose)
+	}
 }
 
 func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) {
@@ -117,6 +120,18 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 		if !strings.Contains(decomposeStep.ExpectedOutput, want) {
 			t.Fatalf("decompose-work-plan expected_output must require %q, got %q", want, decomposeStep.ExpectedOutput)
 		}
+	}
+	decompositionResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: decomposition.ProjectID, WorkflowID: decomposition.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "mass-decomposition-test-run"})
+	if err != nil {
+		t.Fatalf("compile MASS decomposition workflow: %v", err)
+	}
+	decompositionTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "mass-monorepo", PlanID: decompositionResult.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list MASS decomposition tasks: %v", err)
+	}
+	compiledDecomposeTask := compiledTaskByRef(t, decompositionTasks, "decompose-work-plan")
+	if len(compiledDecomposeTask.AcceptanceCriteria) == 0 || len(compiledDecomposeTask.StopConditions) == 0 || len(compiledDecomposeTask.VerifierLadder) == 0 || compiledDecomposeTask.RegressionApplicability == "" || len(compiledDecomposeTask.DownstreamImpactRefs) == 0 || compiledDecomposeTask.OutputContract == "" {
+		t.Fatalf("MASS decompose-work-plan must compile first-class governance fields, got %#v", compiledDecomposeTask)
 	}
 
 	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"), "mass-monorepo")

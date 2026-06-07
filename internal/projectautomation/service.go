@@ -1748,6 +1748,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 			return svc.failRun(ctx, run, RunStatusFailed, "post_implementation_review_queue_failed")
 		}
 	case RunStatusTimeout:
+		if isRecoverableCodexExecutionFailure(failureCategory) {
+			return svc.requeueTaskAfterCodexExecutionFailure(ctx, run, failureCategory)
+		}
 		run.Status = RunStatusTimeout
 	case RunStatusFailed:
 		if strings.TrimSpace(run.SafeSummary) == RunSafeSummaryGitOpsPostTaskRecovery && isGitOpsRecoveryFailure(failureCategory) {
@@ -2457,6 +2460,9 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 	if err != nil {
 		return run, nil
 	}
+	if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil && runPlanFailureCategory(err) == "work_plan_terminal" {
+		return svc.blockRunFromTerminalPlan(ctx, run, task)
+	}
 	if run.Status == RunStatusClaiming || run.Status == RunStatusStarting {
 		if task.Status == projectworkplan.WorkTaskStatusDone {
 			return svc.completeRunAfterTaskDone(ctx, run, task)
@@ -2751,6 +2757,9 @@ func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun
 	if err != nil {
 		return run, nil
 	}
+	if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil && runPlanFailureCategory(err) == "work_plan_terminal" {
+		return svc.blockRunFromTerminalPlan(ctx, run, task)
+	}
 	if task.Status == projectworkplan.WorkTaskStatusDone {
 		return svc.completeRunAfterTaskDone(ctx, run, task)
 	}
@@ -2925,6 +2934,12 @@ func (svc *Service) finishRunAfterTaskTerminal(ctx context.Context, run Automati
 	return updated, svc.updatePlanAfterTerminalTask(ctx, task)
 }
 
+func (svc *Service) blockRunFromTerminalPlan(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
+	run.WorkTaskStatus = task.Status
+	run.SafeSummary = "work_plan_terminal"
+	return svc.failRun(ctx, run, RunStatusBlocked, "work_plan_terminal")
+}
+
 func isTerminalIncompleteTaskStatus(status string) bool {
 	switch status {
 	case projectworkplan.WorkTaskStatusBlocked, projectworkplan.WorkTaskStatusFailed, projectworkplan.WorkTaskStatusCancelled, projectworkplan.WorkTaskStatusSuperseded:
@@ -2960,6 +2975,26 @@ func (svc *Service) updatePlanAfterTerminalTask(ctx context.Context, task projec
 			Status:        projectworkplan.WorkPlanStatusFailed,
 			Outcome:       firstNonEmpty(task.Outcome, "automation Work Task failed"),
 			ResumeSummary: firstNonEmpty(task.ResumeInstructions, "inspect failed Work Task before resuming automation"),
+			CurrentTaskID: task.ID,
+		})
+		return err
+	case projectworkplan.WorkTaskStatusCancelled:
+		_, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:     task.ProjectID,
+			PlanID:        task.PlanID,
+			Status:        projectworkplan.WorkPlanStatusCancelled,
+			Outcome:       firstNonEmpty(task.Outcome, "automation Work Task cancelled"),
+			ResumeSummary: firstNonEmpty(task.ResumeInstructions, "cancelled Work Task terminated automation Work Plan"),
+			CurrentTaskID: task.ID,
+		})
+		return err
+	case projectworkplan.WorkTaskStatusSuperseded:
+		_, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:     task.ProjectID,
+			PlanID:        task.PlanID,
+			Status:        projectworkplan.WorkPlanStatusSuperseded,
+			Outcome:       firstNonEmpty(task.Outcome, "automation Work Task superseded"),
+			ResumeSummary: firstNonEmpty(task.ResumeInstructions, "superseded Work Task terminated automation Work Plan"),
 			CurrentTaskID: task.ID,
 		})
 		return err
@@ -3013,8 +3048,15 @@ func (svc *Service) reconcileReadyAutomationsForProject(ctx context.Context, pro
 	if err != nil {
 		return err
 	}
+	automations, err := svc.store.ListAutomations(ctx, AutomationFilter{ProjectID: projectID, Status: AutomationStatusEnabled})
+	if err != nil {
+		return err
+	}
 	for _, plan := range plans {
 		if err := svc.reconcileReadyAutomationsForPlan(ctx, projectID, plan.ID, ""); err != nil {
+			return err
+		}
+		if err := svc.blockReadyTasksWithoutEnabledAutomation(ctx, projectID, plan.ID, automations); err != nil {
 			return err
 		}
 	}
@@ -3376,7 +3418,7 @@ func isTerminalReplacementFailure(run AutomationRun) bool {
 		}
 		return false
 	case RunStatusTimeout:
-		return false
+		return isRecoverableCodexExecutionFailure(run.FailureCategory)
 	default:
 		return false
 	}
@@ -3426,19 +3468,22 @@ func isNonRetryableCodexExecutionFailure(category string) bool {
 }
 
 func isRecoverableGovernedCloseoutFailure(category string) bool {
-	switch strings.TrimSpace(category) {
-	case "automation_task_closeout_failed",
+	category = strings.TrimSpace(category)
+	for _, prefix := range []string{
+		"automation_task_closeout_failed",
 		"automation_task_closeout_missing",
 		"governed_closeout_apply_failed",
 		"governed_closeout_invalid_json",
 		"governed_closeout_output_missing",
 		"governed_closeout_readback_failed",
 		"governed_closeout_schema_create_failed",
-		"governed_closeout_validation_failed":
-		return true
-	default:
-		return false
+		"governed_closeout_validation_failed",
+	} {
+		if category == prefix || strings.HasPrefix(category, prefix+"_") {
+			return true
+		}
 	}
+	return false
 }
 
 func governedCloseoutRecoveryResumeInstructions(category string) string {

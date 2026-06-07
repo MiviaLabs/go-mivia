@@ -9,14 +9,18 @@ const (
 	ChainStatusPostValidationPassed = "post_validation_passed"
 	ChainStatusBlocked              = "blocked"
 	ChainStatusFailed               = "failed"
+	ChainStatusCancelled            = "cancelled"
+	ChainStatusSuperseded           = "superseded"
 )
 
 const (
-	StageStatusPlanned   = "planned"
-	StageStatusQueued    = "queued"
-	StageStatusCompleted = "completed"
-	StageStatusBlocked   = "blocked"
-	StageStatusFailed    = "failed"
+	StageStatusPlanned    = "planned"
+	StageStatusQueued     = "queued"
+	StageStatusCompleted  = "completed"
+	StageStatusBlocked    = "blocked"
+	StageStatusFailed     = "failed"
+	StageStatusCancelled  = "cancelled"
+	StageStatusSuperseded = "superseded"
 )
 
 const (

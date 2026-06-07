@@ -942,7 +942,7 @@ func TestCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t *testing.
 		ProjectID:          "project-1",
 		RunID:              "run-a",
 		Status:             RunStatusFailed,
-		FailureCategory:    "governed_closeout_apply_failed",
+		FailureCategory:    "governed_closeout_apply_failed_invalid_project_workplan_input",
 		ClaimID:            "claim-a",
 		RunnerID:           "runner-a",
 		EvidenceRefs:       []string{"closeout:governed-closeout-apply-failed"},
@@ -951,7 +951,7 @@ func TestCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t *testing.
 	if err != nil {
 		t.Fatalf("CompleteAttempt returned error: %v", err)
 	}
-	if updated.Status != RunStatusFailed || updated.FailureCategory != "governed_closeout_apply_failed" {
+	if updated.Status != RunStatusFailed || updated.FailureCategory != "governed_closeout_apply_failed_invalid_project_workplan_input" {
 		t.Fatalf("expected governed closeout run to be failed durably, got %#v", updated)
 	}
 	requeuedTask := fake.tasks[task.ID]
@@ -1116,6 +1116,160 @@ func TestCompleteAttemptBlocksFailedCodexCLIAfterReplacementRetryLimitAndParentP
 		if run.ID != "run-2" && run.Status == RunStatusQueued {
 			t.Fatalf("expected no queued replacement after retry limit, got %#v", run)
 		}
+	}
+}
+
+func TestCompleteAttemptRequeuesTimedOutCodexCLIForClaimedTask(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "implement-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-timeout"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-timeout", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress,
+		ClaimID:        "claim-timeout",
+		RunnerID:       "runner-timeout",
+		AttemptCount:   1,
+		SafeSummary:    "dependency_ready_automation_queued",
+		CreatedAt:      time.Unix(200, 0).UTC(), UpdatedAt: time.Unix(200, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       "project-1",
+		RunID:           "run-timeout",
+		Status:          RunStatusTimeout,
+		FailureCategory: "codex_cli_timeout",
+		ClaimID:         "claim-timeout",
+		RunnerID:        "runner-timeout",
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if updated.Status != RunStatusFailed || updated.FailureCategory != "codex_cli_timeout" {
+		t.Fatalf("expected timeout to be durably recorded as recoverable codex failure, got %#v", updated)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusReady || requeuedTask.ClaimedByRunID != "" {
+		t.Fatalf("expected task ready after codex timeout, got %#v", requeuedTask)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	var replacementCount int
+	for _, run := range runs {
+		if run.ID != "run-timeout" && run.TaskID == task.ID && run.Status == RunStatusQueued {
+			replacementCount++
+		}
+	}
+	if replacementCount != 1 {
+		t.Fatalf("expected one queued replacement after codex timeout, got %d runs=%#v", replacementCount, runs)
+	}
+}
+
+func TestCompleteAttemptBlocksTimedOutCodexCLIAfterReplacementRetryLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "implement-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-timeout"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{"task-a": task},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	for i := 0; i < defaultAutomationMaxReplacementRunsPerTask-1; i++ {
+		if _, err := store.CreateRun(ctx, AutomationRun{
+			ID:              fmt.Sprintf("timeout-run-%d", i),
+			ProjectID:       automation.ProjectID,
+			AutomationID:    automation.ID,
+			AgentID:         automation.AgentID,
+			PlanID:          task.PlanID,
+			TaskID:          task.ID,
+			Status:          RunStatusTimeout,
+			RunnerKind:      RunnerKindCodexCLI,
+			FailureCategory: "codex_cli_timeout",
+			SafeSummary:     "dependency_ready_automation_queued",
+			UpdatedAt:       time.Unix(int64(100+i), 0).UTC(),
+		}); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-timeout", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress,
+		ClaimID:        "claim-timeout",
+		RunnerID:       "runner-timeout",
+		AttemptCount:   1,
+		SafeSummary:    "dependency_ready_automation_queued",
+		CreatedAt:      time.Unix(200, 0).UTC(), UpdatedAt: time.Unix(200, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       "project-1",
+		RunID:           "run-timeout",
+		Status:          RunStatusTimeout,
+		FailureCategory: "codex_cli_timeout",
+		ClaimID:         "claim-timeout",
+		RunnerID:        "runner-timeout",
+	}); err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked || blockedTask.ClaimedByRunID != "" {
+		t.Fatalf("expected task blocked after timeout retry limit, got %#v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "codex_cli_timeout") {
+		t.Fatalf("expected timeout category in blocked reason, got %q", blockedTask.BlockedReason)
+	}
+	if fake.plans[task.PlanID].Status != projectworkplan.WorkPlanStatusBlocked {
+		t.Fatalf("expected parent plan blocked with timeout task, got %#v", fake.plans[task.PlanID])
+	}
+}
+
+func TestUpdatePlanAfterTerminalTaskPropagatesCancelledAndSuperseded(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		taskStatus string
+		planStatus string
+	}{
+		{taskStatus: projectworkplan.WorkTaskStatusCancelled, planStatus: projectworkplan.WorkPlanStatusCancelled},
+		{taskStatus: projectworkplan.WorkTaskStatusSuperseded, planStatus: projectworkplan.WorkPlanStatusSuperseded},
+	} {
+		t.Run(tc.taskStatus, func(t *testing.T) {
+			task := readyTask("task-a", "implement-a", []string{"internal/foo.go"})
+			task.Status = tc.taskStatus
+			task.ResumeInstructions = "terminal task should close parent plan"
+			fake := &fakeWorkTasks{
+				plans: map[string]projectworkplan.WorkPlan{
+					task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+				},
+				tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+			}
+			svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+
+			if err := svc.updatePlanAfterTerminalTask(ctx, task); err != nil {
+				t.Fatalf("updatePlanAfterTerminalTask returned error: %v", err)
+			}
+			if fake.plans[task.PlanID].Status != tc.planStatus {
+				t.Fatalf("expected parent plan status %q, got %#v", tc.planStatus, fake.plans[task.PlanID])
+			}
+		})
 	}
 }
 
@@ -3662,6 +3816,103 @@ func TestWorkPlanStatusTriggerBlocksReadyTaskWithoutEnabledMatchingAutomation(t 
 	}
 	if len(runs) != 0 {
 		t.Fatalf("expected no queued runs without matching automation, got %#v", runs)
+	}
+}
+
+func TestClaimNextRunBlocksReadyTaskWithoutEnabledMatchingAutomationForActivePlan(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "decompose-work-plan", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: task.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after poll-time no-automation block, got %v", err)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected poll-time ready task blocked without matching automation, got %#v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "No enabled automatic automation") {
+		t.Fatalf("expected explicit no-automation blocked reason, got %q", blockedTask.BlockedReason)
+	}
+	if fake.plans[task.PlanID].Status != projectworkplan.WorkPlanStatusBlocked {
+		t.Fatalf("expected parent plan blocked, got %#v", fake.plans[task.PlanID])
+	}
+}
+
+func TestClaimNextRunBlocksRunningRunFromTerminalPlan(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "implement-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-running"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusBlocked},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-running", ProjectID: task.ProjectID, AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: task.PlanID, TaskID: task.ID, WorkTaskStatus: task.Status, Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		ClaimID: "claim-running", RunnerID: "runner-running", SafeSummary: "dependency_ready_automation_queued",
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: task.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after terminal-plan reconciliation, got %v", err)
+	}
+	updated, err := store.GetRun(ctx, task.ProjectID, "run-running")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if updated.Status != RunStatusBlocked || updated.FailureCategory != "work_plan_terminal" {
+		t.Fatalf("expected running run blocked by terminal plan, got %#v", updated)
+	}
+}
+
+func TestClaimNextRunBlocksVerifyingRunFromTerminalPlan(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "verify-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-verifying"
+	task.VerifierResultRefs = []string{"verifier.pending"}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusSuperseded},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-verifying", ProjectID: task.ProjectID, AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: task.PlanID, TaskID: task.ID, WorkTaskStatus: task.Status, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI,
+		ClaimID: "claim-verifying", RunnerID: "runner-verifying", SafeSummary: "external_codex_cli_completed_verification_required",
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: task.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after terminal-plan reconciliation, got %v", err)
+	}
+	updated, err := store.GetRun(ctx, task.ProjectID, "run-verifying")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if updated.Status != RunStatusBlocked || updated.FailureCategory != "work_plan_terminal" {
+		t.Fatalf("expected verifying run blocked by terminal plan, got %#v", updated)
 	}
 }
 
@@ -7016,8 +7267,8 @@ func TestClaimNextRunDoesNotRequeueAbandonedRunFromTerminalPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if abandoned.Status != RunStatusTimeout || abandoned.FailureCategory != "external_runner_interrupted" {
-		t.Fatalf("expected abandoned run timeout marker, got %+v", abandoned)
+	if abandoned.Status != RunStatusBlocked || abandoned.FailureCategory != "work_plan_terminal" {
+		t.Fatalf("expected abandoned run blocked by terminal plan, got %+v", abandoned)
 	}
 	for _, run := range store.runs {
 		if run.ID != "run-a" && run.TaskID == task.ID && run.Status == RunStatusQueued {
