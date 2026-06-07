@@ -31,6 +31,7 @@ type Store interface {
 type WorkPlanAPI interface {
 	CreateWorkPlan(context.Context, projectworkplan.CreateWorkPlanInput) (projectworkplan.WorkPlan, error)
 	CreateWorkTask(context.Context, projectworkplan.CreateWorkTaskInput) (projectworkplan.WorkTask, error)
+	UpdateWorkTask(context.Context, projectworkplan.WorkTask) (projectworkplan.WorkTask, error)
 }
 
 type AutomationAPI interface {
@@ -38,11 +39,17 @@ type AutomationAPI interface {
 }
 
 type Service struct {
-	store       Store
-	workPlans   WorkPlanAPI
-	automations AutomationAPI
-	now         func() time.Time
-	newID       func(string) string
+	store          Store
+	workPlans      WorkPlanAPI
+	automations    AutomationAPI
+	compileOptions map[string]CompileOptions
+	now            func() time.Time
+	newID          func(string) string
+}
+
+type CompileOptions struct {
+	BranchPrefix          string
+	BranchSummaryTemplate string
 }
 
 type CreateWorkflowInput struct {
@@ -99,6 +106,17 @@ func New(store Store) *Service {
 func (svc *Service) SetCompilerDependencies(workPlans WorkPlanAPI, automations AutomationAPI) {
 	svc.workPlans = workPlans
 	svc.automations = automations
+}
+
+func (svc *Service) SetCompileOptionsByProject(options map[string]CompileOptions) {
+	svc.compileOptions = map[string]CompileOptions{}
+	for projectID, option := range options {
+		projectID = strings.TrimSpace(projectID)
+		if projectID == "" {
+			continue
+		}
+		svc.compileOptions[projectID] = option
+	}
 }
 
 func (svc *Service) CreateWorkflow(ctx context.Context, input CreateWorkflowInput) (WorkflowDefinition, error) {

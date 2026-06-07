@@ -14,6 +14,12 @@ type plannedTask struct {
 	id   string
 }
 
+type plannedAutomationReview struct {
+	step WorkflowStep
+	gate WorkflowReviewGate
+	task projectworkplan.WorkTask
+}
+
 // CompileWorkflow compiles a stored, enabled workflow into governed execution metadata.
 func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileInput) (WorkflowCompileResult, error) {
 	if svc.store == nil {
@@ -70,7 +76,7 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 
 	title := firstNonEmpty(titleOverride, workflow.Title)
 	planRef := compilePlanRef(workflow.WorkflowRef, runID, svc.newID)
-	isolation := compileIsolationRefs(workflow, planRef, userRequestRef, runID)
+	isolation := compileIsolationRefs(workflow, planRef, userRequestRef, runID, svc.compileOptions[workflow.ProjectID])
 	plan, err := svc.workPlans.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
 		ProjectID:        workflow.ProjectID,
 		PlanRef:          planRef,
@@ -111,27 +117,97 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 		taskByStep[item.step.ID] = created
 		result.WorkTaskIDs = append(result.WorkTaskIDs, created.ID)
 	}
+	reviewTaskIDsByReviewedStep := map[string][]string{}
+	reviewTasks := []plannedAutomationReview{}
 	for _, task := range taskByStep {
 		for _, gate := range graph.gatesByStep[task.TaskRef] {
 			reviewer, err := svc.workPlans.CreateWorkTask(ctx, svc.reviewTaskInput(workflow, plan.ID, task, gate, runID, traceID))
 			if err != nil {
 				return result, fmt.Errorf("create compiled review task %s/%s: %w", task.TaskRef, gate.ID, err)
 			}
+			reviewTaskIDsByReviewedStep[task.TaskRef] = append(reviewTaskIDsByReviewedStep[task.TaskRef], reviewer.ID)
+			reviewTasks = append(reviewTasks, plannedAutomationReview{step: graph.stepsByID[task.TaskRef], gate: gate, task: reviewer})
 			result.ReviewerTaskIDs = append(result.ReviewerTaskIDs, reviewer.ID)
 		}
 	}
 	reviewTaskIDsByAutomationStep := map[string][]string{}
+	automationReviews := []plannedAutomationReview{}
 	for _, step := range graph.automationSteps {
 		for _, gate := range graph.gatesByStep[step.ID] {
-			reviewer, err := svc.workPlans.CreateWorkTask(ctx, svc.reviewAutomationTaskInput(workflow, plan.ID, step, gate, taskByStep, runID, traceID))
+			reviewer, err := svc.workPlans.CreateWorkTask(ctx, svc.reviewAutomationTaskInput(workflow, plan.ID, step, gate, runID, traceID))
 			if err != nil {
 				return result, fmt.Errorf("create compiled automation review task %s/%s: %w", step.ID, gate.ID, err)
 			}
 			reviewTaskIDsByAutomationStep[step.ID] = append(reviewTaskIDsByAutomationStep[step.ID], reviewer.ID)
+			automationReviews = append(automationReviews, plannedAutomationReview{step: step, gate: gate, task: reviewer})
 			result.ReviewerTaskIDs = append(result.ReviewerTaskIDs, reviewer.ID)
 		}
 	}
+	for _, item := range graph.tasks {
+		task := taskByStep[item.step.ID]
+		task.DependencyTaskIDs = compiledDependencyTaskIDs(item.step, graph.stepsByID, taskByStep, reviewTaskIDsByReviewedStep, reviewTaskIDsByAutomationStep)
+		updated, err := svc.workPlans.UpdateWorkTask(ctx, task)
+		if err != nil {
+			return result, fmt.Errorf("update compiled work task dependencies %s: %w", item.step.ID, err)
+		}
+		taskByStep[item.step.ID] = updated
+	}
+	for _, review := range reviewTasks {
+		snapshot := snapshotByAgent[review.gate.ReviewerAgent]
+		automation, err := svc.automations.CreateAutomation(ctx, projectautomation.CreateAutomationInput{
+			ProjectID:       workflow.ProjectID,
+			AutomationRef:   compileAutomationRef(plan.PlanRef, "review-"+review.step.ID+"-"+review.gate.ID),
+			Title:           "Review " + review.step.Title,
+			Purpose:         "Automatically run independent workflow task review.",
+			Status:          projectautomation.AutomationStatusEnabled,
+			AgentID:         review.gate.ReviewerAgent,
+			PlanID:          plan.ID,
+			AllowedTaskRefs: []string{review.task.TaskRef},
+			TriggerKind:     projectautomation.TriggerKindAutomatic,
+			SchedulePolicy:  "on-ready-task",
+			PermissionRef:   "permission_snapshot:" + snapshot.ID,
+			SourceKind:      projectautomation.AutomationSourceWorkflow,
+			CreatedByRunID:  firstNonEmpty(runID, workflow.CreatedByRunID),
+			TraceID:         firstNonEmpty(traceID, workflow.TraceID),
+		})
+		if err != nil {
+			return result, fmt.Errorf("%w: create compiled task review automation %s/%s: %v", ErrInvalidInput, review.step.ID, review.gate.ID, err)
+		}
+		result.AutomationIDs = append(result.AutomationIDs, automation.ID)
+	}
+	for _, review := range automationReviews {
+		snapshot := snapshotByAgent[review.gate.ReviewerAgent]
+		automation, err := svc.automations.CreateAutomation(ctx, projectautomation.CreateAutomationInput{
+			ProjectID:       workflow.ProjectID,
+			AutomationRef:   compileAutomationRef(plan.PlanRef, "review-"+review.step.ID+"-"+review.gate.ID),
+			Title:           "Review " + review.step.Title,
+			Purpose:         "Automatically run independent workflow automation review.",
+			Status:          projectautomation.AutomationStatusEnabled,
+			AgentID:         review.gate.ReviewerAgent,
+			PlanID:          plan.ID,
+			AllowedTaskRefs: []string{review.task.TaskRef},
+			TriggerKind:     projectautomation.TriggerKindAutomatic,
+			SchedulePolicy:  "on-ready-task",
+			PermissionRef:   "permission_snapshot:" + snapshot.ID,
+			SourceKind:      projectautomation.AutomationSourceWorkflow,
+			CreatedByRunID:  firstNonEmpty(runID, workflow.CreatedByRunID),
+			TraceID:         firstNonEmpty(traceID, workflow.TraceID),
+		})
+		if err != nil {
+			return result, fmt.Errorf("%w: create compiled automation review %s/%s: %v", ErrInvalidInput, review.step.ID, review.gate.ID, err)
+		}
+		result.AutomationIDs = append(result.AutomationIDs, automation.ID)
+	}
+	coveredTaskRefs := map[string]bool{}
 	for _, step := range graph.automationSteps {
+		refs := allowedTaskRefs(step, graph.stepsByID, taskByStep)
+		stepStatus := firstNonEmpty(step.AutomationStatus, projectautomation.AutomationStatusDraft)
+		stepTrigger := firstNonEmpty(step.TriggerKind, projectautomation.TriggerKindManual)
+		if stepStatus == projectautomation.AutomationStatusEnabled && stepTrigger == projectautomation.TriggerKindAutomatic {
+			for _, ref := range refs {
+				coveredTaskRefs[ref] = true
+			}
+		}
 		snapshot := snapshotByAgent[step.Agent]
 		automation, err := svc.automations.CreateAutomation(ctx, projectautomation.CreateAutomationInput{
 			ProjectID:             workflow.ProjectID,
@@ -141,7 +217,7 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 			Status:                firstNonEmpty(step.AutomationStatus, projectautomation.AutomationStatusDraft),
 			AgentID:               step.Agent,
 			PlanID:                plan.ID,
-			AllowedTaskRefs:       allowedTaskRefs(step, taskByStep),
+			AllowedTaskRefs:       refs,
 			RequiredReviewTaskIDs: reviewTaskIDsByAutomationStep[step.ID],
 			TriggerKind:           firstNonEmpty(step.TriggerKind, projectautomation.TriggerKindManual),
 			SchedulePolicy:        step.SchedulePolicy,
@@ -155,6 +231,33 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 		}
 		result.AutomationIDs = append(result.AutomationIDs, automation.ID)
 	}
+	for _, item := range graph.tasks {
+		task := taskByStep[item.step.ID]
+		if coveredTaskRefs[task.TaskRef] {
+			continue
+		}
+		snapshot := snapshotByAgent[item.step.Agent]
+		automation, err := svc.automations.CreateAutomation(ctx, projectautomation.CreateAutomationInput{
+			ProjectID:       workflow.ProjectID,
+			AutomationRef:   compileAutomationRef(plan.PlanRef, item.step.ID),
+			Title:           item.step.Title,
+			Purpose:         firstNonEmpty(item.step.Description, "Run workflow task "+item.step.ID),
+			Status:          projectautomation.AutomationStatusEnabled,
+			AgentID:         item.step.Agent,
+			PlanID:          plan.ID,
+			AllowedTaskRefs: []string{task.TaskRef},
+			TriggerKind:     projectautomation.TriggerKindAutomatic,
+			SchedulePolicy:  "on-ready-task",
+			PermissionRef:   "permission_snapshot:" + snapshot.ID,
+			SourceKind:      projectautomation.AutomationSourceWorkflow,
+			CreatedByRunID:  firstNonEmpty(runID, workflow.CreatedByRunID),
+			TraceID:         firstNonEmpty(traceID, workflow.TraceID),
+		})
+		if err != nil {
+			return result, fmt.Errorf("%w: create compiled task automation %s: %v", ErrInvalidInput, item.step.ID, err)
+		}
+		result.AutomationIDs = append(result.AutomationIDs, automation.ID)
+	}
 	return result, nil
 }
 
@@ -162,13 +265,13 @@ type compileGraph struct {
 	tasks           []plannedTask
 	automationSteps []WorkflowStep
 	gatesByStep     map[string][]WorkflowReviewGate
+	stepsByID       map[string]WorkflowStep
 }
 
 func (svc *Service) planCompileGraph(workflow WorkflowDefinition) (compileGraph, error) {
-	graph := compileGraph{gatesByStep: requiredGatesByStep(workflow.ReviewGates)}
-	stepsByID := map[string]WorkflowStep{}
+	graph := compileGraph{gatesByStep: requiredGatesByStep(workflow.ReviewGates), stepsByID: map[string]WorkflowStep{}}
 	for _, step := range workflow.Steps {
-		stepsByID[step.ID] = step
+		graph.stepsByID[step.ID] = step
 	}
 	for _, step := range workflow.Steps {
 		if step.Kind == WorkflowStepKindAutomation || step.Kind == WorkflowStepKindAutomationBatch {
@@ -180,7 +283,7 @@ func (svc *Service) planCompileGraph(workflow WorkflowDefinition) (compileGraph,
 					return graph, fmt.Errorf("%w: review gate %s requires independent reviewer", ErrInvalidInput, gate.ID)
 				}
 			}
-			if !hasTaskProducingDependency(step, stepsByID) {
+			if !hasTaskProducingDependency(step, graph.stepsByID) {
 				return graph, fmt.Errorf("%w: automation step %s must depend on at least one work task step", ErrInvalidInput, step.ID)
 			}
 			graph.automationSteps = append(graph.automationSteps, step)
@@ -196,7 +299,7 @@ func (svc *Service) planCompileGraph(workflow WorkflowDefinition) (compileGraph,
 		if visiting[stepID] {
 			return fmt.Errorf("%w: workflow task dependency cycle", ErrInvalidInput)
 		}
-		step, ok := stepsByID[stepID]
+		step, ok := graph.stepsByID[stepID]
 		if !ok || step.Kind != WorkflowStepKindWorkTask {
 			return nil
 		}
@@ -230,15 +333,32 @@ func (svc *Service) dryRunCompileResult(workflow WorkflowDefinition, graph compi
 		result.WorkTaskIDs = append(result.WorkTaskIDs, task.id)
 		for range graph.gatesByStep[task.step.ID] {
 			result.ReviewerTaskIDs = append(result.ReviewerTaskIDs, svc.newID("work_task"))
+			result.AutomationIDs = append(result.AutomationIDs, svc.newID("automation"))
 		}
 	}
 	for _, step := range graph.automationSteps {
 		for range graph.gatesByStep[step.ID] {
 			result.ReviewerTaskIDs = append(result.ReviewerTaskIDs, svc.newID("work_task"))
+			result.AutomationIDs = append(result.AutomationIDs, svc.newID("automation"))
 		}
 	}
 	for range graph.automationSteps {
 		result.AutomationIDs = append(result.AutomationIDs, svc.newID("automation"))
+	}
+	coveredTaskRefs := map[string]bool{}
+	for _, step := range graph.automationSteps {
+		stepStatus := firstNonEmpty(step.AutomationStatus, projectautomation.AutomationStatusDraft)
+		stepTrigger := firstNonEmpty(step.TriggerKind, projectautomation.TriggerKindManual)
+		if stepStatus == projectautomation.AutomationStatusEnabled && stepTrigger == projectautomation.TriggerKindAutomatic {
+			for _, ref := range allowedTaskRefs(step, graph.stepsByID, map[string]projectworkplan.WorkTask{}) {
+				coveredTaskRefs[ref] = true
+			}
+		}
+	}
+	for _, task := range graph.tasks {
+		if !coveredTaskRefs[task.step.ID] {
+			result.AutomationIDs = append(result.AutomationIDs, svc.newID("automation"))
+		}
 	}
 	for _, agent := range workflow.Agents {
 		result.PermissionSnapshotIDs = append(result.PermissionSnapshotIDs, "permission_snapshot:"+agent.ID)
@@ -298,7 +418,7 @@ func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string,
 		FilesToRead:             step.FilesToRead,
 		FilesToEdit:             step.FilesToEdit,
 		LikelyFilesAffected:     step.LikelyFilesAffected,
-		DependencyTaskIDs:       dependencyTaskIDs(step, taskByStep),
+		DependencyTaskIDs:       nil,
 		VerificationRequirement: firstNonEmpty(step.VerificationRequirement, "orchestrator runs focused verifier"),
 		ExpectedOutput:          firstNonEmpty(step.ExpectedOutput, "bounded implementation artifact"),
 		FailureCriteria:         firstNonEmpty(step.FailureCriteria, "block if evidence or verifier scope is missing"),
@@ -332,7 +452,7 @@ func (svc *Service) reviewTaskInput(workflow WorkflowDefinition, planID string, 
 	}
 }
 
-func (svc *Service) reviewAutomationTaskInput(workflow WorkflowDefinition, planID string, step WorkflowStep, gate WorkflowReviewGate, taskByStep map[string]projectworkplan.WorkTask, runID string, traceID string) projectworkplan.CreateWorkTaskInput {
+func (svc *Service) reviewAutomationTaskInput(workflow WorkflowDefinition, planID string, step WorkflowStep, gate WorkflowReviewGate, runID string, traceID string) projectworkplan.CreateWorkTaskInput {
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               workflow.ProjectID,
 		PlanID:                  planID,
@@ -346,7 +466,7 @@ func (svc *Service) reviewAutomationTaskInput(workflow WorkflowDefinition, planI
 		ContextPackRefs:         step.ContextPackRefs,
 		FilesToRead:             step.FilesToRead,
 		LikelyFilesAffected:     step.LikelyFilesAffected,
-		DependencyTaskIDs:       dependencyTaskIDs(step, taskByStep),
+		DependencyTaskIDs:       nil,
 		VerificationRequirement: "attach review_result_ref before automation execution",
 		ExpectedOutput:          "automation review decision placeholder",
 		FailureCriteria:         "block on self-review, missing automation ref, missing verifier, or unclear decision",
@@ -369,21 +489,64 @@ func requiredGatesByStep(gates []WorkflowReviewGate) map[string][]WorkflowReview
 	return out
 }
 
-func dependencyTaskIDs(step WorkflowStep, taskByStep map[string]projectworkplan.WorkTask) []string {
-	out := make([]string, 0, len(step.DependsOn))
-	for _, dep := range step.DependsOn {
-		if task := taskByStep[dep]; task.ID != "" {
-			out = append(out, task.ID)
+func allowedTaskRefs(step WorkflowStep, stepsByID map[string]WorkflowStep, taskByStep map[string]projectworkplan.WorkTask) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	var visit func(string)
+	visit = func(stepID string) {
+		if _, ok := seen[stepID]; ok {
+			return
 		}
+		seen[stepID] = struct{}{}
+		depStep := stepsByID[stepID]
+		for _, dep := range depStep.DependsOn {
+			visit(dep)
+		}
+		if task := taskByStep[stepID]; task.TaskRef != "" {
+			out = append(out, task.TaskRef)
+			return
+		}
+		if depStep.Kind == WorkflowStepKindWorkTask {
+			out = append(out, depStep.ID)
+		}
+	}
+	for _, dep := range step.DependsOn {
+		visit(dep)
 	}
 	return out
 }
 
-func allowedTaskRefs(step WorkflowStep, taskByStep map[string]projectworkplan.WorkTask) []string {
-	out := make([]string, 0, len(step.DependsOn))
-	for _, dep := range step.DependsOn {
-		if task := taskByStep[dep]; task.TaskRef != "" {
-			out = append(out, task.TaskRef)
+func compiledDependencyTaskIDs(step WorkflowStep, stepsByID map[string]WorkflowStep, taskByStep map[string]projectworkplan.WorkTask, reviewTaskIDsByReviewedStep map[string][]string, reviewTaskIDsByAutomationStep map[string][]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	var add func(string)
+	add = func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	for _, depID := range step.DependsOn {
+		depStep := stepsByID[depID]
+		switch depStep.Kind {
+		case WorkflowStepKindWorkTask:
+			if task := taskByStep[depID]; task.ID != "" {
+				add(task.ID)
+			}
+		case WorkflowStepKindAutomation, WorkflowStepKindAutomationBatch:
+			for _, reviewTaskID := range reviewTaskIDsByAutomationStep[depID] {
+				add(reviewTaskID)
+			}
+			for _, taskRef := range allowedTaskRefs(depStep, stepsByID, taskByStep) {
+				if task := taskByStep[taskRef]; task.ID != "" {
+					add(task.ID)
+				}
+				for _, reviewTaskID := range reviewTaskIDsByReviewedStep[taskRef] {
+					add(reviewTaskID)
+				}
+			}
 		}
 	}
 	return out
@@ -409,7 +572,7 @@ type compileIsolation struct {
 	gitWorktreeRef   string
 }
 
-func compileIsolationRefs(workflow WorkflowDefinition, planRef string, userRequestRef string, runID string) compileIsolation {
+func compileIsolationRefs(workflow WorkflowDefinition, planRef string, userRequestRef string, runID string, options CompileOptions) compileIsolation {
 	token := safeCompileGitToken(firstNonEmpty(planRef, userRequestRef, runID, workflow.WorkflowRef, workflow.ID))
 	if token == "" {
 		token = safeCompileGitToken(workflow.ProjectID)
@@ -419,12 +582,65 @@ func compileIsolationRefs(workflow WorkflowDefinition, planRef string, userReque
 	}
 	// Workflow metadata does not carry a verified repository default branch.
 	// Leave git_base_ref unset so workspace creation falls back to HEAD.
+	branchToken := token
+	if summary := renderCompileBranchSummary(options.BranchSummaryTemplate, userRequestRef, workflow.WorkflowRef, token); summary != "" {
+		branchToken = summary
+	}
+	branchPrefix := options.BranchPrefix
+	if strings.TrimSpace(branchPrefix) == "" && options.BranchSummaryTemplate == "" {
+		branchPrefix = "mivia/"
+	}
 	return compileIsolation{
 		parallelGroupRef: "workflow/" + token,
 		workspaceRef:     "workflow/" + token,
-		gitBranchRef:     "mivia/" + token,
+		gitBranchRef:     branchPrefix + branchToken,
 		gitWorktreeRef:   "workflow/" + token,
 	}
+}
+
+func renderCompileBranchSummary(template string, userRequestRef string, workflowRef string, token string) string {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return ""
+	}
+	ticket := strings.TrimPrefix(userRequestRef, "jira:")
+	out := strings.ReplaceAll(template, "{{ticket_ref}}", ticket)
+	out = strings.ReplaceAll(out, "{{user_request_ref}}", userRequestRef)
+	out = strings.ReplaceAll(out, "{{workflow_ref}}", workflowRef)
+	out = strings.ReplaceAll(out, "{{token}}", token)
+	return safeCompileBranchName(out)
+}
+
+func safeCompileBranchName(value string) string {
+	parts := strings.Split(value, "/")
+	for i, part := range parts {
+		parts[i] = safeCompileBranchSegment(part)
+	}
+	out := strings.Join(parts, "/")
+	out = strings.Trim(out, "/-")
+	if len(out) > 160 {
+		out = strings.Trim(out[:160], "/-")
+	}
+	return out
+}
+
+func safeCompileBranchSegment(value string) string {
+	value = strings.TrimSpace(value)
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if ok {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && builder.Len() > 0 {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
 }
 
 func safeCompileGitToken(value string) string {

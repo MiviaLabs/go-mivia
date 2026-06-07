@@ -356,8 +356,24 @@ func TestCallToolCompileCreatesGovernedRefs(t *testing.T) {
 		t.Fatalf("compile workflow: %v", err)
 	}
 	compiled := result["structuredContent"].(projectworkflow.WorkflowCompileResult)
-	if compiled.WorkPlanID == "" || len(compiled.WorkTaskIDs) != 1 || len(compiled.ReviewerTaskIDs) != 2 || len(compiled.AutomationIDs) != 1 {
+	if compiled.WorkPlanID == "" || len(compiled.WorkTaskIDs) != 1 || len(compiled.ReviewerTaskIDs) != 2 || len(compiled.AutomationIDs) != 4 {
 		t.Fatalf("unexpected compile result: %#v", compiled)
+	}
+	autos, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list compiled automations: %v", err)
+	}
+	reviewAutomationCount := 0
+	for _, automation := range autos {
+		if automation.PlanID != compiled.WorkPlanID {
+			t.Fatalf("compiled automation must target compiled plan: %#v", automation)
+		}
+		if strings.HasSuffix(automation.AutomationRef, ":review-automation-step-review-automation") && automation.SchedulePolicy == "on-ready-task" {
+			reviewAutomationCount++
+		}
+	}
+	if len(autos) != 4 || reviewAutomationCount != 1 {
+		t.Fatalf("expected executor, fallback task, task-review, and ready-task review automations, got %#v", autos)
 	}
 }
 

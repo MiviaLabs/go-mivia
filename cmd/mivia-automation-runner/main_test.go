@@ -18,6 +18,9 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
 	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan/httpapi"
+	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
 )
 
 func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
@@ -1059,7 +1062,7 @@ func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
 				TimeoutMS:  1000,
 			})
 		case "/api/v1/projects/project-1/work-tasks/task-1":
-			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "in_progress"})
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "in_progress", FilesToEdit: []string{"internal/service.go"}})
 		case "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
 			var input projectautomation.CompleteAttemptInput
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -1082,6 +1085,183 @@ func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
 	}
 	if completed.Load() != 1 {
 		t.Fatalf("expected one attempt report, got %d", completed.Load())
+	}
+}
+
+func TestRunOnceClosesOutReadOnlyReviewTaskAfterCodexSuccess(t *testing.T) {
+	setReadableCodexHome(t)
+	var attemptCompleted atomic.Int32
+	var verifierAttached atomic.Int32
+	var taskVerifying atomic.Int32
+	var taskCompleted atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			input := testCodexInput("run-1")
+			input.TaskRef = "review-run-planning-automation"
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", TaskID: "task-1", TraceID: "trace-1"},
+				CodexInput: input,
+				TimeoutMS:  1000,
+			})
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			if taskCompleted.Load() > 0 {
+				writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "done", ReviewResultRefs: []string{"review:run-1"}, VerifierResultRefs: []string{"verifier:run-1"}})
+				return
+			}
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "in_progress"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/verifier-results":
+			var input struct {
+				Ref             string `json:"ref"`
+				AttachedByRunID string `json:"attached_by_run_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode verifier result: %v", err)
+			}
+			if input.Ref != "verifier:run-1" || input.AttachedByRunID != "run-1" {
+				t.Fatalf("unexpected verifier result input: %+v", input)
+			}
+			verifierAttached.Add(1)
+			writeJSON(t, w, map[string]string{"ref": input.Ref})
+		case "/api/v1/projects/project-1/work-tasks/task-1/status":
+			if verifierAttached.Load() == 0 {
+				t.Fatal("status update attempted before verifier result attachment")
+			}
+			var input struct {
+				RunID  string `json:"run_id"`
+				Status string `json:"status"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode status task: %v", err)
+			}
+			if input.RunID != "run-1" || input.Status != "verifying" {
+				t.Fatalf("unexpected status input: %+v", input)
+			}
+			taskVerifying.Add(1)
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "verifying"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/complete":
+			if taskVerifying.Load() == 0 {
+				t.Fatal("complete attempted before verifying transition")
+			}
+			var input struct {
+				RunID              string   `json:"run_id"`
+				VerifierResultRefs []string `json:"verifier_result_refs"`
+				ReviewExemptReason string   `json:"review_exempt_reason"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode complete task: %v", err)
+			}
+			if input.RunID != "run-1" || strings.Join(input.VerifierResultRefs, ",") != "verifier:run-1" || !strings.Contains(input.ReviewExemptReason, "nested self-review is prohibited") {
+				t.Fatalf("unexpected complete input: %+v", input)
+			}
+			taskCompleted.Add(1)
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "done"})
+		case "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			var input projectautomation.CompleteAttemptInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode attempt: %v", err)
+			}
+			if input.Status != projectautomation.RunStatusCompleted || input.FailureCategory != "" {
+				t.Fatalf("expected completed attempt, got %+v", input)
+			}
+			attemptCompleted.Add(1)
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", Status: projectautomation.RunStatusVerifying})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", "/bin/true"})
+	if status != 0 {
+		t.Fatalf("expected exit 0, got %d", status)
+	}
+	if attemptCompleted.Load() != 1 || verifierAttached.Load() != 1 || taskVerifying.Load() != 1 || taskCompleted.Load() != 1 {
+		t.Fatalf("expected closeout calls and attempt completion, got attempt=%d verifier=%d verifying=%d task=%d", attemptCompleted.Load(), verifierAttached.Load(), taskVerifying.Load(), taskCompleted.Load())
+	}
+}
+
+func TestRunnerClientCloseoutReadOnlyReviewTaskUsesWorkTaskLifecycle(t *testing.T) {
+	testRunnerClientCloseoutMetadataOnlyTaskUsesWorkTaskLifecycle(t, true)
+}
+
+func TestRunnerClientCloseoutMetadataOnlyPlanningTaskUsesWorkTaskLifecycle(t *testing.T) {
+	testRunnerClientCloseoutMetadataOnlyTaskUsesWorkTaskLifecycle(t, false)
+}
+
+func testRunnerClientCloseoutMetadataOnlyTaskUsesWorkTaskLifecycle(t *testing.T, reviewTask bool) {
+	svc := projectworkplan.New(workplanstore.NewMemoryStore())
+	ctx := t.Context()
+	plan, err := svc.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
+		ProjectID:   "project-1",
+		PlanRef:     "plan/runner-closeout",
+		Title:       "Runner closeout lifecycle",
+		GoalSummary: "verify runner closeout uses valid Work Task lifecycle",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  plan.ID,
+		TaskRef:                 "review-run-planning-automation",
+		Title:                   "Review planning automation",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              "planning-reviewer",
+		VerificationRequirement: "attach reviewer gate verifier ref",
+		ExpectedOutput:          "metadata-only review closeout",
+		ResumeInstructions:      "complete reviewer gate closeout",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, OwnerAgent: "planning-reviewer", RunID: "run-1", TraceID: "trace-1"}); err != nil {
+		t.Fatalf("claim task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-1", TraceID: "trace-1"}); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutes(mux, svc)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, r)
+		for key, values := range rec.Header() {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+		if rec.Code >= http.StatusBadRequest {
+			t.Logf("%s %s returned %d: %s", r.Method, r.URL.Path, rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	err = client.closeoutMetadataOnlyTask(ctx, "project-1", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", TaskID: task.ID, TraceID: "trace-1"},
+	}, reviewTask)
+	if err != nil {
+		t.Fatalf("closeout read-only review task: %v", err)
+	}
+	done, err := svc.GetWorkTask(ctx, "project-1", task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if done.Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected done task, got %+v", done)
+	}
+	if strings.Join(done.VerifierResultRefs, ",") != "verifier:run-1" {
+		t.Fatalf("expected verifier ref to be recorded, got %+v", done.VerifierResultRefs)
+	}
+	if reviewTask && !strings.Contains(done.ReviewExemptReason, "nested self-review is prohibited") {
+		t.Fatalf("expected reviewer closeout exemption, got %q", done.ReviewExemptReason)
+	}
+	if !reviewTask && !strings.Contains(done.ReviewExemptReason, "changed no repository files") {
+		t.Fatalf("expected metadata-only closeout exemption, got %q", done.ReviewExemptReason)
 	}
 }
 

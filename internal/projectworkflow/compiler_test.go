@@ -33,8 +33,8 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if len(result.ReviewerTaskIDs) != 2 {
 		t.Fatalf("expected implementation and automation reviewer tasks, got %#v", result.ReviewerTaskIDs)
 	}
-	if len(result.AutomationIDs) != 1 {
-		t.Fatalf("expected one automation, got %#v", result.AutomationIDs)
+	if len(result.AutomationIDs) != 3 {
+		t.Fatalf("expected executor, task reviewer, and automation reviewer automations, got %#v", result.AutomationIDs)
 	}
 	if len(result.PermissionSnapshotIDs) != 3 {
 		t.Fatalf("expected agent permission snapshots, got %#v", result.PermissionSnapshotIDs)
@@ -94,16 +94,32 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if !strings.Contains(automationReviewer.Description, "Agent instructions: Review independently before approval.") || !strings.Contains(automationReviewer.Description, "Gate instructions: Review automation refs") {
 		t.Fatalf("automation reviewer task missing reviewer agent or gate instructions: %#v", automationReviewer)
 	}
-	if len(automationReviewer.DependencyTaskIDs) != 1 || automationReviewer.DependencyTaskIDs[0] != impl.ID {
-		t.Fatalf("automation reviewer task must depend on implementation task: %#v", automationReviewer)
+	if len(automationReviewer.DependencyTaskIDs) != 0 {
+		t.Fatalf("automation reviewer task must not depend on tasks it gates: %#v", automationReviewer)
 	}
 	if !containsString(automationReviewer.EvidenceNeeded, "automation ref") || !containsString(automationReviewer.EvidenceNeeded, "allowed task refs") {
 		t.Fatalf("automation reviewer task missing required evidence: %#v", automationReviewer)
 	}
 
-	createdAutomation, err := automations.GetAutomation(ctx, "project-1", result.AutomationIDs[0])
-	if err != nil {
-		t.Fatalf("get automation: %v", err)
+	var createdAutomation projectautomation.Automation
+	var taskReviewAutomation projectautomation.Automation
+	var automationReviewAutomation projectautomation.Automation
+	for _, automationID := range result.AutomationIDs {
+		automation, err := automations.GetAutomation(ctx, "project-1", automationID)
+		if err != nil {
+			t.Fatalf("get automation %s: %v", automationID, err)
+		}
+		switch {
+		case len(automation.AllowedTaskRefs) == 1 && automation.AllowedTaskRefs[0] == automationReviewer.TaskRef:
+			automationReviewAutomation = automation
+		case len(automation.AllowedTaskRefs) == 1 && automation.AllowedTaskRefs[0] == reviewer.TaskRef:
+			taskReviewAutomation = automation
+		default:
+			createdAutomation = automation
+		}
+	}
+	if createdAutomation.ID == "" || taskReviewAutomation.ID == "" || automationReviewAutomation.ID == "" {
+		t.Fatalf("expected executor and review automations, got executor=%#v taskReview=%#v automationReview=%#v", createdAutomation, taskReviewAutomation, automationReviewAutomation)
 	}
 	if createdAutomation.PlanID != result.WorkPlanID || !strings.HasPrefix(createdAutomation.AutomationRef, "workflow-ref:run-1:compile-") || !strings.HasSuffix(createdAutomation.AutomationRef, ":automation-step") {
 		t.Fatalf("unexpected automation refs: %#v", createdAutomation)
@@ -120,6 +136,59 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if createdAutomation.SourceKind != projectautomation.AutomationSourceWorkflow {
 		t.Fatalf("automation must be marked workflow-sourced: %#v", createdAutomation)
 	}
+	if taskReviewAutomation.AgentID != "reviewer" || taskReviewAutomation.TriggerKind != projectautomation.TriggerKindAutomatic || taskReviewAutomation.Status != projectautomation.AutomationStatusEnabled {
+		t.Fatalf("task review automation must be enabled automatic reviewer work: %#v", taskReviewAutomation)
+	}
+	if taskReviewAutomation.SchedulePolicy != "on-ready-task" {
+		t.Fatalf("task review automation must use the ready-task scheduler: %#v", taskReviewAutomation)
+	}
+	if len(taskReviewAutomation.AllowedTaskRefs) != 1 || taskReviewAutomation.AllowedTaskRefs[0] != reviewer.TaskRef {
+		t.Fatalf("task review automation must be scoped to generated review task ref: %#v", taskReviewAutomation.AllowedTaskRefs)
+	}
+	if automationReviewAutomation.PlanID != result.WorkPlanID || !strings.HasPrefix(automationReviewAutomation.AutomationRef, "workflow-ref:run-1:compile-") || !strings.HasSuffix(automationReviewAutomation.AutomationRef, ":review-automation-step-review-automation") {
+		t.Fatalf("unexpected automation review automation refs: %#v", automationReviewAutomation)
+	}
+	if automationReviewAutomation.AgentID != "reviewer" || automationReviewAutomation.TriggerKind != projectautomation.TriggerKindAutomatic || automationReviewAutomation.Status != projectautomation.AutomationStatusEnabled {
+		t.Fatalf("automation review automation must be enabled automatic reviewer work: %#v", automationReviewAutomation)
+	}
+	if automationReviewAutomation.SchedulePolicy != "on-ready-task" {
+		t.Fatalf("automation review automation must use the ready-task scheduler: %#v", automationReviewAutomation)
+	}
+	if len(automationReviewAutomation.AllowedTaskRefs) != 1 || automationReviewAutomation.AllowedTaskRefs[0] != automationReviewer.TaskRef {
+		t.Fatalf("automation review automation must be scoped to generated review task ref: %#v", automationReviewAutomation.AllowedTaskRefs)
+	}
+	if strings.Contains(automationReviewAutomation.Purpose, automationReviewer.TaskRef) || strings.Contains(automationReviewAutomation.Purpose, "raw_prompt") {
+		t.Fatalf("automation review automation purpose must not embed task refs or unsafe markers: %#v", automationReviewAutomation)
+	}
+	if !strings.HasPrefix(taskReviewAutomation.PermissionRef, "permission_snapshot:") || taskReviewAutomation.SourceKind != projectautomation.AutomationSourceWorkflow {
+		t.Fatalf("task review automation must have workflow source and permission snapshot: %#v", taskReviewAutomation)
+	}
+	if !strings.HasPrefix(automationReviewAutomation.PermissionRef, "permission_snapshot:") || automationReviewAutomation.SourceKind != projectautomation.AutomationSourceWorkflow {
+		t.Fatalf("automation review automation must have workflow source and permission snapshot: %#v", automationReviewAutomation)
+	}
+}
+
+func TestCompileWorkflowUsesProjectBranchPolicyOptions(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, workPlans, _ := newCompileFixture()
+	workflowStore.seedWorkflow(baseCompileWorkflow())
+	svc.SetCompileOptionsByProject(map[string]CompileOptions{
+		"project-1": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
+	})
+
+	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "jira:MASS-1044", CreatedByRunID: "run-1"}); err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("expected one plan, got %d", len(plans))
+	}
+	if got, want := plans[0].GitBranchRef, "chore-MASS-1044-workflow-ref"; got != want {
+		t.Fatalf("GitBranchRef = %q, want %q", got, want)
+	}
 }
 
 func TestCompileWorkflowDryRunPersistsNothing(t *testing.T) {
@@ -131,7 +200,7 @@ func TestCompileWorkflowDryRunPersistsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry-run compile workflow: %v", err)
 	}
-	if !result.DryRun || result.WorkPlanID == "" || len(result.WorkTaskIDs) != 1 || len(result.ReviewerTaskIDs) != 2 || len(result.AutomationIDs) != 1 {
+	if !result.DryRun || result.WorkPlanID == "" || len(result.WorkTaskIDs) != 1 || len(result.ReviewerTaskIDs) != 2 || len(result.AutomationIDs) != 3 {
 		t.Fatalf("unexpected dry-run summary: %#v", result)
 	}
 	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
@@ -144,6 +213,100 @@ func TestCompileWorkflowDryRunPersistsNothing(t *testing.T) {
 	}
 	if len(plans) != 0 || len(autos) != 0 || len(workflowStore.snapshots) != 0 {
 		t.Fatalf("dry run persisted plans=%#v automations=%#v snapshots=%#v", plans, autos, workflowStore.snapshots)
+	}
+}
+
+func TestCompileWorkflowMaterializesAutomationStepDependencies(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, workPlans, automations := newCompileFixture()
+	workflow := baseCompileWorkflow()
+	workflow.Steps = append(workflow.Steps, WorkflowStep{
+		ID:                 "mark-ready-after-review",
+		Kind:               WorkflowStepKindWorkTask,
+		Title:              "Mark Ready After Review",
+		Agent:              "automation",
+		DependsOn:          []string{"automation-step"},
+		Description:        "Finalize only after automation-step task and review gates are done.",
+		EvidenceNeeded:     []string{"review-result-ref"},
+		FilesToRead:        []string{"internal/projectworkflow/compiler.go"},
+		FilesToEdit:        []string{},
+		ReviewGate:         "review-implement approval required before done",
+		ResumeInstructions: "resume from compiler task metadata only",
+	})
+	workflow.ReviewGates[0].AppliesTo = append(workflow.ReviewGates[0].AppliesTo, "mark-ready-after-review")
+	workflowStore.seedWorkflow(workflow)
+
+	result, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "request-1", CreatedByRunID: "run-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+
+	tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: result.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	impl := taskByRef(t, tasks, "implement-step")
+	implReview := taskByRef(t, tasks, "review-implement-step-review-implement")
+	automationReview := taskByRef(t, tasks, "review-automation-step-review-automation")
+	markReady := taskByRef(t, tasks, "mark-ready-after-review")
+	for _, required := range []string{impl.ID, implReview.ID, automationReview.ID} {
+		if !containsString(markReady.DependencyTaskIDs, required) {
+			t.Fatalf("mark-ready task must depend on concrete automation prerequisite %s, got %#v", required, markReady.DependencyTaskIDs)
+		}
+	}
+
+	var markReadyAutomation projectautomation.Automation
+	for _, automationID := range result.AutomationIDs {
+		automation, err := automations.GetAutomation(ctx, "project-1", automationID)
+		if err != nil {
+			t.Fatalf("get automation %s: %v", automationID, err)
+		}
+		if len(automation.AllowedTaskRefs) == 1 && automation.AllowedTaskRefs[0] == markReady.TaskRef {
+			markReadyAutomation = automation
+			break
+		}
+	}
+	if markReadyAutomation.ID == "" || markReadyAutomation.Status != projectautomation.AutomationStatusEnabled || markReadyAutomation.TriggerKind != projectautomation.TriggerKindAutomatic {
+		t.Fatalf("uncovered workflow task must get enabled automatic task automation, got %#v", markReadyAutomation)
+	}
+}
+
+func TestCompileWorkflowCreatesFallbackTaskAutomationWhenWorkflowAutomationIsManualDraft(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, _, automations := newCompileFixture()
+	workflow := baseCompileWorkflow()
+	workflow.Steps[1].AutomationStatus = projectautomation.AutomationStatusDraft
+	workflow.Steps[1].TriggerKind = projectautomation.TriggerKindManual
+	workflow.Steps[1].SchedulePolicy = ""
+	workflowStore.seedWorkflow(workflow)
+
+	result, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "request-1", CreatedByRunID: "run-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+
+	var fallback projectautomation.Automation
+	var manualStep projectautomation.Automation
+	for _, automationID := range result.AutomationIDs {
+		automation, err := automations.GetAutomation(ctx, "project-1", automationID)
+		if err != nil {
+			t.Fatalf("get automation %s: %v", automationID, err)
+		}
+		if len(automation.AllowedTaskRefs) != 1 || automation.AllowedTaskRefs[0] != "implement-step" {
+			continue
+		}
+		if automation.AgentID == "worker" {
+			fallback = automation
+		}
+		if automation.AgentID == "automation" {
+			manualStep = automation
+		}
+	}
+	if manualStep.ID == "" || manualStep.Status != projectautomation.AutomationStatusDraft || manualStep.TriggerKind != projectautomation.TriggerKindManual {
+		t.Fatalf("expected manual draft workflow automation to remain metadata only, got %#v", manualStep)
+	}
+	if fallback.ID == "" || fallback.Status != projectautomation.AutomationStatusEnabled || fallback.TriggerKind != projectautomation.TriggerKindAutomatic || fallback.SchedulePolicy != "on-ready-task" {
+		t.Fatalf("expected uncovered task fallback automation, got %#v", fallback)
 	}
 }
 
@@ -212,8 +375,8 @@ func TestCompileWorkflowAllowsRepeatedRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list automations: %v", err)
 	}
-	if len(autos) != 2 {
-		t.Fatalf("expected two compiled automations, got %#v", autos)
+	if len(autos) != 6 {
+		t.Fatalf("expected two executor and four reviewer automations, got %#v", autos)
 	}
 }
 
@@ -335,12 +498,15 @@ func baseCompileWorkflow() WorkflowDefinition {
 				ResumeInstructions:      "resume from compiler task metadata only",
 			},
 			{
-				ID:          "automation-step",
-				Kind:        WorkflowStepKindAutomation,
-				Title:       "Run Automation",
-				Agent:       "automation",
-				DependsOn:   []string{"implement-step"},
-				Description: "Queue governed automation for ready implementation tasks.",
+				ID:               "automation-step",
+				Kind:             WorkflowStepKindAutomation,
+				Title:            "Run Automation",
+				Agent:            "automation",
+				DependsOn:        []string{"implement-step"},
+				Description:      "Queue governed automation for ready implementation tasks.",
+				AutomationStatus: projectautomation.AutomationStatusEnabled,
+				TriggerKind:      projectautomation.TriggerKindAutomatic,
+				SchedulePolicy:   "on-ready-task",
 			},
 		},
 		ReviewGates: []WorkflowReviewGate{

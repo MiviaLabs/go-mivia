@@ -86,6 +86,91 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	}
 }
 
+func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{},
+			{Stdout: "1\n"},
+			{},
+			{},
+			{},
+			{},
+			{},
+			{Stdout: "https://github.com/example/repo/pull/123\n"},
+		},
+		errs: []error{
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			errors.New("no existing pr"),
+		},
+	}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		DraftPRAfterPush:     true,
+		RemoteName:           "origin",
+		BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+		SSHPrivateKeyPath:    "/tmp/id_ed25519",
+		SSHKnownHostsPath:    "/tmp/known_hosts",
+		GitHubTokenEnv:       "GITHUB_TOKEN",
+		GitHubCLIPath:        "gh",
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		Verification: VerificationProfile{
+			AlwaysBeforePR: []string{"pnpm -s nx affected -t test --base=origin/main --head=HEAD"},
+		},
+	}, runner)
+	t.Setenv("GITHUB_TOKEN", "token")
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:         "/tmp/worktree",
+		ProjectID:       "mass-monorepo",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "workflow-chain-finalize",
+		TaskTitle:       "jira:MASS-1044 final GitOps",
+		BranchName:      "chore-MASS-1044-governed-workplan-implementation",
+		AutomationID:    "workflow-chain-gitops",
+		AutomationRunID: "workflow_chain_run_1",
+		OperatorID:      "mivia-workflow-chain",
+		ReviewRefs:      []string{"review/ref"},
+		VerifierRefs:    []string{"verifier/ref"},
+		TestResults:     []string{"post-validation completed"},
+	})
+	if err != nil {
+		t.Fatalf("expected clean ahead branch PR finalization to succeed: %v", err)
+	}
+	if result.NoChanges || result.PushRef == "" || result.PullRequestRef == "" {
+		t.Fatalf("expected push and draft PR refs, got %#v", result)
+	}
+	joined := commandArgs(runner.commands)
+	if !strings.Contains(joined, "rev-list --count origin/main..HEAD") ||
+		!strings.Contains(joined, "sh -lc pnpm -s nx affected -t test --base=origin/main --head=HEAD") ||
+		!strings.Contains(joined, "push --no-verify origin HEAD:chore-MASS-1044-governed-workplan-implementation") ||
+		!strings.Contains(joined, "pr create --draft") {
+		t.Fatalf("expected rev-list, verifier, push, and draft PR commands, got %q", joined)
+	}
+	if !containsString(result.EvidenceRefs, "project-verification-passed") {
+		t.Fatalf("expected clean-ahead verification evidence, got %#v", result.EvidenceRefs)
+	}
+}
+
+func commandArgs(commands []Command) string {
+	var out []string
+	for _, command := range commands {
+		out = append(out, command.Path+" "+strings.Join(command.Args, " "))
+	}
+	return strings.Join(out, "\n")
+}
+
 func TestPostTaskStagesOnlyChangedFilesInsideAllowedScopes(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},

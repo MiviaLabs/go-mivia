@@ -123,6 +123,64 @@ statuses = ["active"]
 	}
 }
 
+func TestLoadFileConfig_AcceptsProjectWorkflowChains(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "mass-monorepo"
+display_name = "MASS"
+root_path = "/absolute/path/to/project"
+enabled = true
+
+[[projects.workflow_chains]]
+chain_ref = "mass-governed-ticket-delivery"
+enabled = true
+input_kind = "jira_issue_key"
+input_pattern = "^MASS-[0-9]+$"
+context_provider = "jira"
+context_mode = "local_ingested"
+default_title_template = "{{input_ref}} governed delivery"
+gitops_mode = "draft_pr_after_post_validation"
+
+[[projects.workflow_chains.stages]]
+stage_ref = "decomposition"
+workflow_ref = "governed-decomposition-planning"
+trigger = "on_chain_start"
+required_status_before_next = "completed"
+
+[[projects.workflow_chains.stages]]
+stage_ref = "implementation"
+workflow_ref = "governed-workplan-implementation"
+trigger = "after_stage_review_passed"
+depends_on = ["decomposition"]
+required_status_before_next = "completed"
+
+[[projects.workflow_chains.stages]]
+stage_ref = "post-validation"
+workflow_ref = "governed-post-implementation-validation"
+trigger = "after_stage_review_passed"
+depends_on = ["implementation"]
+required_status_before_next = "completed"
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected workflow chain config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected workflow chain config to apply: %v", err)
+	}
+	chains := merged.Projects[0].WorkflowChains
+	if len(chains) != 1 || chains[0].ChainRef != "mass-governed-ticket-delivery" || len(chains[0].Stages) != 3 {
+		t.Fatalf("unexpected workflow chain config: %#v", chains)
+	}
+	if chains[0].Stages[1].DependsOn[0] != "decomposition" {
+		t.Fatalf("unexpected stage dependencies: %#v", chains[0].Stages[1])
+	}
+}
+
 func TestAutomationEnvOverrides(t *testing.T) {
 	t.Setenv("MIVIA_AUTOMATION_ENABLED", "true")
 	t.Setenv("MIVIA_AUTOMATION_RUNNER_ENABLED", "true")

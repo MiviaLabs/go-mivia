@@ -324,7 +324,15 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	var evidenceRefs []string
 	if status == projectautomation.RunStatusCompleted {
 		taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
-		if strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && !taskHasGovernedCloseout(taskMetadata) {
+		if status == projectautomation.RunStatusCompleted && strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && !taskHasGovernedCloseout(taskMetadata) && shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun, taskMetadata) {
+			if closeoutErr := client.closeoutMetadataOnlyTask(ctx, projectID, claimed, readOnlyReviewRun); closeoutErr != nil {
+				status = projectautomation.RunStatusFailed
+				failureCategory = "automation_task_closeout_failed"
+			} else {
+				taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+			}
+		}
+		if status == projectautomation.RunStatusCompleted && strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && !taskHasGovernedCloseout(taskMetadata) {
 			status = projectautomation.RunStatusFailed
 			failureCategory = "automation_task_closeout_missing"
 		}
@@ -1362,6 +1370,83 @@ func (client *runnerClient) getWorkTaskMetadata(ctx context.Context, projectID s
 	}
 	_, err := client.get(ctx, fmt.Sprintf("/api/v1/projects/%s/work-tasks/%s", url.PathEscape(projectID), url.PathEscape(taskID)), &task)
 	return task, err
+}
+
+func (client *runnerClient) closeoutMetadataOnlyTask(ctx context.Context, projectID string, claimed projectautomation.ClaimedRun, reviewTask bool) error {
+	taskID := strings.TrimSpace(claimed.Run.TaskID)
+	runID := strings.TrimSpace(claimed.Run.ID)
+	if taskID == "" || runID == "" {
+		return fmt.Errorf("%w: metadata-only closeout requires run and task refs", projectautomation.ErrInvalidInput)
+	}
+	verifierRef := "verifier:" + runID
+	pathBase := fmt.Sprintf("/api/v1/projects/%s/work-tasks/%s", url.PathEscape(projectID), url.PathEscape(taskID))
+	verifierInput := struct {
+		Ref             string `json:"ref"`
+		AttachedByRunID string `json:"attached_by_run_id,omitempty"`
+		TraceID         string `json:"trace_id,omitempty"`
+		Note            string `json:"note,omitempty"`
+	}{
+		Ref:             verifierRef,
+		AttachedByRunID: runID,
+		TraceID:         firstNonEmpty(claimed.Run.TraceID, runID),
+		Note:            "metadata-only automation completed without runner-level failure",
+	}
+	if _, err := client.post(ctx, pathBase+"/verifier-results", verifierInput, nil); err != nil {
+		return err
+	}
+	statusInput := struct {
+		RunID          string `json:"run_id,omitempty"`
+		TraceID        string `json:"trace_id,omitempty"`
+		Status         string `json:"status"`
+		SafeNextAction string `json:"safe_next_action"`
+	}{
+		RunID:          runID,
+		TraceID:        firstNonEmpty(claimed.Run.TraceID, runID),
+		Status:         "verifying",
+		SafeNextAction: "complete read-only reviewer gate after verifier metadata is attached",
+	}
+	if _, err := client.post(ctx, pathBase+"/status", statusInput, nil); err != nil {
+		return err
+	}
+	completeInput := struct {
+		RunID              string   `json:"run_id,omitempty"`
+		TraceID            string   `json:"trace_id,omitempty"`
+		Outcome            string   `json:"outcome"`
+		SafeNextAction     string   `json:"safe_next_action"`
+		VerifierResultRefs []string `json:"verifier_result_refs"`
+		ReviewExemptReason string   `json:"review_exempt_reason"`
+		EvidenceRefs       []string `json:"evidence_refs,omitempty"`
+	}{
+		RunID:              runID,
+		TraceID:            firstNonEmpty(claimed.Run.TraceID, runID),
+		Outcome:            metadataOnlyCloseoutOutcome(reviewTask),
+		SafeNextAction:     "continue governed automation after metadata-only task closeout",
+		VerifierResultRefs: []string{verifierRef},
+		ReviewExemptReason: metadataOnlyReviewExemption(reviewTask),
+		EvidenceRefs:       []string{"automation_run:" + runID},
+	}
+	if _, err := client.post(ctx, pathBase+"/complete", completeInput, nil); err != nil {
+		return err
+	}
+	return nil
+}
+
+func shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun bool, task runnerWorkTaskMetadata) bool {
+	return readOnlyReviewRun || len(task.FilesToEdit) == 0
+}
+
+func metadataOnlyCloseoutOutcome(reviewTask bool) string {
+	if reviewTask {
+		return "read-only review automation completed; no reusable project knowledge because this is reviewer gate closeout metadata"
+	}
+	return "metadata-only automation completed; no reusable project knowledge because no repository files were changed"
+}
+
+func metadataOnlyReviewExemption(reviewTask bool) string {
+	if reviewTask {
+		return "read-only reviewer task is itself the independent review gate; nested self-review is prohibited"
+	}
+	return "metadata-only task changed no repository files; independent diff review is not applicable"
 }
 
 func (client *runnerClient) listProjectIDs(ctx context.Context) ([]string, error) {

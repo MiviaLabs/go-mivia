@@ -40,6 +40,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 	workflowmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkflow/mcpapi"
 	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
+	chainmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkflowchain/mcpapi"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 	workplanmcpapi "github.com/MiviaLabs/go-mivia/internal/projectworkplan/mcpapi"
 	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
@@ -79,6 +80,7 @@ type Handler struct {
 	projectWorkPlan         workplanmcpapi.API
 	projectAutomation       automationmcpapi.API
 	projectWorkflow         workflowmcpapi.API
+	projectWorkflowChain    chainmcpapi.API
 	integrations            *projectintegrations.Service
 	diagnostics             *diagnostics.Service
 	activity                *agentactivity.Recorder
@@ -145,6 +147,10 @@ func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAndAutomatio
 }
 
 func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationAndWorkflow(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, projectKnowledge *projectknowledge.Service, projectKnowledgeInputs *projectknowledge.PromotionInputAdapter, projectWorkPlan workplanmcpapi.API, projectAutomation automationmcpapi.API, projectWorkflow workflowmcpapi.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
+	return NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationWorkflowAndChains(service, research, projects, projectDigest, projectIngest, projectWork, projectEvidence, projectConfidence, projectConfidenceInputs, projectKnowledge, projectKnowledgeInputs, projectWorkPlan, projectAutomation, projectWorkflow, nil, integrations, diagnosticsService, activity, logger)
+}
+
+func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationWorkflowAndChains(service *service.Service, research *research.Service, projects *projectregistry.Registry, projectDigest *projectregistry.DigestService, projectIngest projectingestion.API, projectWork projectworkspace.API, projectEvidence *projectevidence.Service, projectConfidence *projectconfidence.Service, projectConfidenceInputs *projectconfidence.ReliabilityInputAdapter, projectKnowledge *projectknowledge.Service, projectKnowledgeInputs *projectknowledge.PromotionInputAdapter, projectWorkPlan workplanmcpapi.API, projectAutomation automationmcpapi.API, projectWorkflow workflowmcpapi.API, projectWorkflowChain chainmcpapi.API, integrations *projectintegrations.Service, diagnosticsService *diagnostics.Service, activity *agentactivity.Recorder, logger *slog.Logger) http.Handler {
 	return &Handler{
 		service:                 service,
 		research:                research,
@@ -160,6 +166,7 @@ func NewHandlerWithActivityEvidenceGraphConfidenceKnowledgeWorkPlansAutomationAn
 		projectWorkPlan:         projectWorkPlan,
 		projectAutomation:       projectAutomation,
 		projectWorkflow:         projectWorkflow,
+		projectWorkflowChain:    projectWorkflowChain,
 		integrations:            integrations,
 		diagnostics:             diagnosticsService,
 		activity:                activity,
@@ -356,6 +363,11 @@ func activitySafeProjectID(name string, raw json.RawMessage) string {
 
 func activitySafeToolArguments(name string, raw json.RawMessage) json.RawMessage {
 	canonical := strings.ReplaceAll(name, "_", ".")
+	if canonical == "projects.workflow.chains.start" || name == "projects.workflow_chains.start" {
+		payload := map[string]any{"id": "[redacted-chain-project]", "chain_ref": "[redacted-chain-ref]", "input_text": "[redacted-chain-input]"}
+		encoded, _ := json.Marshal(payload)
+		return encoded
+	}
 	if canonical != "projects.workflows.validate.toml" && canonical != "projects.workflows.import.toml" {
 		return raw
 	}
@@ -436,6 +448,9 @@ func (handler *Handler) callToolParams(r *http.Request, params toolsCallParams) 
 	}
 	if workflowmcpapi.IsWorkflowTool(params.Name) {
 		return workflowmcpapi.CallTool(r.Context(), handler.projectWorkflow, params.Name, params.Arguments)
+	}
+	if chainmcpapi.IsWorkflowChainTool(params.Name) {
+		return chainmcpapi.CallTool(r.Context(), handler.projectWorkflowChain, params.Name, params.Arguments)
 	}
 	switch params.Name {
 	case "tasks.create", "tasks_create":
@@ -670,6 +685,10 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
 		return
 	}
+	if errors.Is(err, chainmcpapi.ErrInvalidInput) {
+		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
+		return
+	}
 	if errors.Is(err, projectworkplan.ErrInvalidInput) || errors.Is(err, workplanstore.ErrDuplicate) {
 		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
 		return
@@ -680,6 +699,10 @@ func writeToolOrError(w http.ResponseWriter, id any, result map[string]any, err 
 	}
 	if errors.Is(err, projectworkflow.ErrInvalidInput) || errors.Is(err, workflowstore.ErrDuplicate) {
 		writeJSONRPCError(w, id, -32602, safeClientErrorMessage("invalid tool arguments", err))
+		return
+	}
+	if errors.Is(err, chainmcpapi.ErrNotFound) {
+		writeJSONRPCError(w, id, -32002, "resource not found")
 		return
 	}
 	if errors.Is(err, store.ErrNotFound) {
@@ -899,6 +922,9 @@ func (handler *Handler) toolDefinitions() []map[string]any {
 	}
 	if handler.projectWorkflow != nil {
 		tools = append(tools, workflowmcpapi.ToolDefinitions()...)
+	}
+	if handler.projectWorkflowChain != nil {
+		tools = append(tools, chainmcpapi.ToolDefinitions()...)
 	}
 	if handler.integrations != nil {
 		tools = append(tools, integrationmcpapi.ToolDefinitions()...)

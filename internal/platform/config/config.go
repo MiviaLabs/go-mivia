@@ -240,6 +240,28 @@ type Project struct {
 	Integrations          IntegrationConfig
 	GitOperations         *GitOperations
 	Verification          *Verification
+	WorkflowChains        []WorkflowChain
+}
+
+type WorkflowChain struct {
+	ChainRef             string
+	Enabled              bool
+	InputKind            string
+	InputPattern         string
+	ContextProvider      string
+	ContextMode          string
+	DefaultTitleTemplate string
+	GitOpsMode           string
+	Stages               []WorkflowChainStage
+}
+
+type WorkflowChainStage struct {
+	StageRef                 string
+	WorkflowRef              string
+	Trigger                  string
+	DependsOn                []string
+	AutomationRefTemplate    string
+	RequiredStatusBeforeNext string
 }
 
 type IntegrationConfig struct {

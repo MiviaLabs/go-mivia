@@ -67,7 +67,7 @@ func TestWorkflowRoutesValidateImportListGetStatusAndCompile(t *testing.T) {
 	compiled := requestJSON[projectworkflow.WorkflowCompileResult](t, mux, http.MethodPost, "/api/v1/projects/project-1/workflows/workflow-1/compile", map[string]any{
 		"user_request_ref": "request-1",
 	}, http.StatusOK)
-	if compiled.WorkPlanID == "" || len(compiled.WorkTaskIDs) != 1 || len(compiled.ReviewerTaskIDs) != 1 || len(compiled.AutomationIDs) != 0 {
+	if compiled.WorkPlanID == "" || len(compiled.WorkTaskIDs) != 1 || len(compiled.ReviewerTaskIDs) != 1 || len(compiled.AutomationIDs) != 2 {
 		t.Fatalf("unexpected compile result: %#v", compiled)
 	}
 	plans, err := workPlans.ListWorkPlans(t.Context(), projectworkplan.WorkPlanFilter{ProjectID: "project-1"})

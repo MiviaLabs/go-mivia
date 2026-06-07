@@ -240,6 +240,28 @@ type fileProjectConfig struct {
 	Integrations          *fileProjectIntegrationsConfig `toml:"integrations"`
 	GitOps                *fileGitOpsConfig              `toml:"git_operations"`
 	Verification          *fileVerificationConfig        `toml:"verification"`
+	WorkflowChains        []fileWorkflowChainConfig      `toml:"workflow_chains"`
+}
+
+type fileWorkflowChainConfig struct {
+	ChainRef             string                   `toml:"chain_ref"`
+	Enabled              bool                     `toml:"enabled"`
+	InputKind            string                   `toml:"input_kind"`
+	InputPattern         string                   `toml:"input_pattern"`
+	ContextProvider      string                   `toml:"context_provider"`
+	ContextMode          string                   `toml:"context_mode"`
+	DefaultTitleTemplate string                   `toml:"default_title_template"`
+	GitOpsMode           string                   `toml:"gitops_mode"`
+	Stages               []fileWorkflowChainStage `toml:"stages"`
+}
+
+type fileWorkflowChainStage struct {
+	StageRef                 string   `toml:"stage_ref"`
+	WorkflowRef              string   `toml:"workflow_ref"`
+	Trigger                  string   `toml:"trigger"`
+	DependsOn                []string `toml:"depends_on"`
+	AutomationRefTemplate    string   `toml:"automation_ref_template"`
+	RequiredStatusBeforeNext string   `toml:"required_status_before_next"`
 }
 
 type fileProjectIntegrationsConfig struct {
@@ -355,6 +377,44 @@ func (cfg fileConfig) validate() error {
 			if err := project.Integrations.validate(i); err != nil {
 				return err
 			}
+		}
+		if err := project.validateWorkflowChains(i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (project fileProjectConfig) validateWorkflowChains(projectIndex int) error {
+	for i, chain := range project.WorkflowChains {
+		prefix := fmt.Sprintf("projects[%d].workflow_chains[%d]", projectIndex, i)
+		if strings.TrimSpace(chain.ChainRef) == "" {
+			return fmt.Errorf("%s.chain_ref must not be empty", prefix)
+		}
+		if strings.TrimSpace(chain.InputPattern) != "" {
+			if len(strings.TrimSpace(chain.InputPattern)) > 128 {
+				return fmt.Errorf("%s.input_pattern is too long", prefix)
+			}
+			if _, err := regexp.Compile(strings.TrimSpace(chain.InputPattern)); err != nil {
+				return fmt.Errorf("%s.input_pattern must compile", prefix)
+			}
+		}
+		if len(chain.Stages) == 0 {
+			return fmt.Errorf("%s.stages must contain at least one stage", prefix)
+		}
+		seen := map[string]bool{}
+		for j, stage := range chain.Stages {
+			stagePrefix := fmt.Sprintf("%s.stages[%d]", prefix, j)
+			if strings.TrimSpace(stage.StageRef) == "" {
+				return fmt.Errorf("%s.stage_ref must not be empty", stagePrefix)
+			}
+			if strings.TrimSpace(stage.WorkflowRef) == "" {
+				return fmt.Errorf("%s.workflow_ref must not be empty", stagePrefix)
+			}
+			if seen[stage.StageRef] {
+				return fmt.Errorf("%s.stage_ref duplicates an earlier stage", stagePrefix)
+			}
+			seen[stage.StageRef] = true
 		}
 	}
 	return nil
@@ -1011,7 +1071,37 @@ func (project fileProjectConfig) toProject(globalGitOps GitOperations, globalVer
 		verification := mergeVerification(globalVerification, project.Verification)
 		cfgProject.Verification = &verification
 	}
+	cfgProject.WorkflowChains = workflowChainsFromFile(project.WorkflowChains)
 	return cfgProject
+}
+
+func workflowChainsFromFile(chains []fileWorkflowChainConfig) []WorkflowChain {
+	out := make([]WorkflowChain, 0, len(chains))
+	for _, chain := range chains {
+		converted := WorkflowChain{
+			ChainRef:             strings.TrimSpace(chain.ChainRef),
+			Enabled:              chain.Enabled,
+			InputKind:            strings.TrimSpace(chain.InputKind),
+			InputPattern:         strings.TrimSpace(chain.InputPattern),
+			ContextProvider:      strings.TrimSpace(chain.ContextProvider),
+			ContextMode:          strings.TrimSpace(chain.ContextMode),
+			DefaultTitleTemplate: strings.TrimSpace(chain.DefaultTitleTemplate),
+			GitOpsMode:           strings.TrimSpace(chain.GitOpsMode),
+			Stages:               make([]WorkflowChainStage, 0, len(chain.Stages)),
+		}
+		for _, stage := range chain.Stages {
+			converted.Stages = append(converted.Stages, WorkflowChainStage{
+				StageRef:                 strings.TrimSpace(stage.StageRef),
+				WorkflowRef:              strings.TrimSpace(stage.WorkflowRef),
+				Trigger:                  strings.TrimSpace(stage.Trigger),
+				DependsOn:                trimStringSlice(stage.DependsOn),
+				AutomationRefTemplate:    strings.TrimSpace(stage.AutomationRefTemplate),
+				RequiredStatusBeforeNext: strings.TrimSpace(stage.RequiredStatusBeforeNext),
+			})
+		}
+		out = append(out, converted)
+	}
+	return out
 }
 
 func (cfg fileProjectIntegrationsConfig) toIntegrationConfig() IntegrationConfig {

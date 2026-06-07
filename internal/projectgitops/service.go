@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -139,7 +140,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		return PostTaskResult{}, err
 	}
 	if strings.TrimSpace(status.Stdout) == "" {
-		return PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}, nil
+		return svc.finalizeCleanAheadBranch(ctx, workDir, input, PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}})
 	}
 
 	preCommitVerificationRefs, preCommitVerificationTests, err := svc.runPreCommitVerification(ctx, workDir)
@@ -157,7 +158,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		if strings.TrimSpace(status.Stdout) == "" {
 			result := PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}
 			result.EvidenceRefs = append(result.EvidenceRefs, preCommitVerificationRefs...)
-			return result, nil
+			return svc.finalizeCleanAheadBranch(ctx, workDir, input, result)
 		}
 	}
 
@@ -256,6 +257,78 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		}
 	}
 	return result, nil
+}
+
+func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string, input PostTaskInput, result PostTaskResult) (PostTaskResult, error) {
+	if !svc.options.PushAfterTask || !svc.options.DraftPRAfterPush || !svc.branchHasCommitsAhead(ctx, workDir) {
+		return result, nil
+	}
+	branch := strings.TrimSpace(input.BranchName)
+	if branch == "" {
+		var err error
+		branch, err = svc.currentBranch(ctx, workDir)
+		if err != nil {
+			return PostTaskResult{}, err
+		}
+	}
+	input.BranchName = branch
+	branch, err := svc.normalizeBranchForPolicy(ctx, workDir, input)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	input.BranchName = branch
+	preRefs, preTests, err := svc.runPreCommitVerification(ctx, workDir)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	postRefs, postTests, err := svc.runPostCommitVerification(ctx, workDir)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	if len(preTests) > 0 || len(postTests) > 0 {
+		input.TestResults = append(input.TestResults, preTests...)
+		input.TestResults = append(input.TestResults, postTests...)
+	}
+	if len(preRefs) > 0 || len(postRefs) > 0 {
+		status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
+		if err != nil {
+			return PostTaskResult{}, err
+		}
+		if strings.TrimSpace(status.Stdout) != "" {
+			return PostTaskResult{}, fmt.Errorf("%w: verification dirtied clean-ahead branch", ErrDirtyWorktree)
+		}
+		result.EvidenceRefs = append(result.EvidenceRefs, preRefs...)
+		result.EvidenceRefs = append(result.EvidenceRefs, postRefs...)
+	}
+	rendered, err := Render(input, svc.options.Conventions)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", "--no-verify", svc.options.RemoteName, "HEAD:"+branch); err != nil {
+		return PostTaskResult{}, err
+	}
+	prRef, err := svc.ensureDraftPR(ctx, workDir, rendered)
+	if err != nil {
+		return PostTaskResult{}, err
+	}
+	result.NoChanges = false
+	result.PushRef = "git-push-" + safeHash(branch)
+	result.PullRequestRef = prRef
+	result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed", "draft-pr-ready")
+	return result, nil
+}
+
+func (svc *Service) branchHasCommitsAhead(ctx context.Context, workDir string) bool {
+	remote := strings.TrimSpace(svc.options.RemoteName)
+	if remote == "" {
+		remote = "origin"
+	}
+	result, err := svc.git(ctx, workDir, nil, "rev-list", "--count", remote+"/main..HEAD")
+	if err != nil {
+		return false
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(result.Stdout))
+	return err == nil && count > 0
 }
 
 func FailureCategory(err error) string {
