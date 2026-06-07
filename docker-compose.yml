@@ -115,7 +115,9 @@ services:
       - "${MIVIA_AUTOMATION_CODEX_CD:-/workspace}"
       - --codex-sandbox
       - "${MIVIA_AUTOMATION_CODEX_SANDBOX:-workspace-write}"
-      - "--codex-bypass-approvals-and-sandbox=${MIVIA_AUTOMATION_CODEX_BYPASS:-false}"
+      # The runner sidecar is already containerized. Codex's bubblewrap sandbox
+      # cannot create user namespaces in default Docker Desktop/Compose setups.
+      - "--codex-bypass-approvals-and-sandbox=${MIVIA_AUTOMATION_CODEX_BYPASS:-true}"
     environment:
       MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-10001}"
       MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-10001}"

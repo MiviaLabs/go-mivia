@@ -214,8 +214,8 @@ func checkRunnerCodexPreflight(ctx context.Context, codexOptions codexLaunchOpti
 		TaskID:         "runner-preflight",
 		TaskRef:        "runner-preflight",
 		Title:          "Runner preflight",
-		Description:    "Verify Codex can execute in the configured workdir without modifying files.",
-		ExpectedOutput: "Return only {\"ok\":true}. Do not modify files.",
+		Description:    "Verify Codex can execute a read-only shell command in the configured workdir without modifying files. Run pwd before returning.",
+		ExpectedOutput: "Return only {\"ok\":true} after a successful pwd shell command. Return {\"ok\":false} if shell execution fails. Do not modify files.",
 	})
 	if err != nil {
 		return fmt.Errorf("%w: codex_preflight_input_create_failed", projectautomation.ErrInvalidInput)
