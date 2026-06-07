@@ -74,6 +74,24 @@ func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
 	}
 }
 
+func TestComposeRunnerDefaultsToInImageCodexBinary(t *testing.T) {
+	for _, path := range []string{"../../docker-compose.yml", "../../.docker-compose.local.yml"} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read compose file: %v", err)
+			}
+			text := string(data)
+			if !strings.Contains(text, "${MIVIA_AUTOMATION_CODEX_BINARY:-/usr/local/bin/codex}") {
+				t.Fatalf("runner compose default must use in-image codex binary: %s", path)
+			}
+			if strings.Contains(text, "${MIVIA_AUTOMATION_CODEX_BINARY:-codex}") {
+				t.Fatalf("runner compose default must not fall back to PATH codex: %s", path)
+			}
+		})
+	}
+}
+
 func TestWorktreePathReadyRejectsStaleGitdirPointer(t *testing.T) {
 	target := filepath.Join(t.TempDir(), ".mivia-worktrees", "project-1", "project-1-worktree-docs-smoke")
 	if err := os.MkdirAll(target, 0o700); err != nil {

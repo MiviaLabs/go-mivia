@@ -110,7 +110,7 @@ services:
       - --heartbeat-interval
       - "${MIVIA_AUTOMATION_RUNNER_HEARTBEAT_INTERVAL:-15s}"
       - --codex
-      - "${MIVIA_AUTOMATION_CODEX_BINARY:-codex}"
+      - "${MIVIA_AUTOMATION_CODEX_BINARY:-/usr/local/bin/codex}"
       - --codex-cd
       - "${MIVIA_AUTOMATION_CODEX_CD:-/workspace}"
       - --codex-sandbox
