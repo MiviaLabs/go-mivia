@@ -2320,12 +2320,13 @@ func (svc *Service) reconcileRecoveryRunsWithStaleReadyTasks(ctx context.Context
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
 	for _, run := range runs {
-		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" || run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" {
 			continue
 		}
-		switch strings.TrimSpace(run.FailureCategory) {
-		case "gitops_recovery_failed_requires_implementation", "pre_execution_recovery_failed_requires_implementation":
-		default:
+		if run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady && !isRecoverableCodexExecutionFailure(run.FailureCategory) {
+			continue
+		}
+		if !isRecoverableRecoveryFailure(run.FailureCategory) && !isRecoverableCodexExecutionFailure(run.FailureCategory) {
 			continue
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
@@ -2930,12 +2931,10 @@ func isActiveAutomationRunStatus(status string) bool {
 func isTerminalReplacementFailure(run AutomationRun) bool {
 	switch run.Status {
 	case RunStatusFailed:
-		switch strings.TrimSpace(run.FailureCategory) {
-		case "gitops_recovery_failed_requires_implementation", "pre_execution_recovery_failed_requires_implementation":
+		if isRecoverableRecoveryFailure(run.FailureCategory) || isRecoverableCodexExecutionFailure(run.FailureCategory) {
 			return true
-		default:
-			return false
 		}
+		return false
 	case RunStatusTimeout:
 		return false
 	default:
@@ -2949,10 +2948,28 @@ func shouldQueueReplacementRun(run AutomationRun) bool {
 		return isRecoverablePreExecutionFailure(run.FailureCategory) ||
 			isRecoverableGitOpsPostTaskFailure(run.FailureCategory) ||
 			isRecoverableReviewGitOpsFailure(run.FailureCategory) ||
-			strings.TrimSpace(run.FailureCategory) == "gitops_recovery_failed_requires_implementation" ||
-			strings.TrimSpace(run.FailureCategory) == "pre_execution_recovery_failed_requires_implementation"
+			isRecoverableRecoveryFailure(run.FailureCategory) ||
+			isRecoverableCodexExecutionFailure(run.FailureCategory)
 	case RunStatusTimeout:
 		return strings.TrimSpace(run.FailureCategory) == "external_runner_interrupted"
+	default:
+		return false
+	}
+}
+
+func isRecoverableRecoveryFailure(category string) bool {
+	switch strings.TrimSpace(category) {
+	case "gitops_recovery_failed_requires_implementation", "pre_execution_recovery_failed_requires_implementation":
+		return true
+	default:
+		return false
+	}
+}
+
+func isRecoverableCodexExecutionFailure(category string) bool {
+	switch strings.TrimSpace(category) {
+	case "codex_cli_failed", "codex_cli_timeout":
+		return true
 	default:
 		return false
 	}

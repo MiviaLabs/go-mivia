@@ -444,6 +444,42 @@ func TestClaimNextRunRecoversFailedWorktreeResolveForInProgressTaskClaimedByRun(
 	}
 }
 
+func TestClaimNextRunRequeuesFailedCodexCLIForInProgressTaskClaimedByRun(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "fix-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-a", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusFailed, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus:  projectworkplan.WorkTaskStatusInProgress,
+		FailureCategory: "codex_cli_failed",
+		SafeSummary:     "dependency_ready_automation_queued",
+		CreatedAt:       time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID == "run-a" {
+		t.Fatalf("expected a replacement run, got original failed run: %#v", claimed.Run)
+	}
+	if claimed.Run.Status != RunStatusRunning || claimed.Run.TaskID != "task-a" || claimed.Run.AttemptCount != 1 || claimed.Run.FailureCategory != "" {
+		t.Fatalf("expected replacement run to be claimed, got %#v", claimed.Run)
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusInProgress || fake.tasks[task.ID].ClaimedByRunID != claimed.Run.ID {
+		t.Fatalf("expected replacement claim to own task, got %#v", fake.tasks[task.ID])
+	}
+}
+
 func TestClaimNextRunRecoversGitOpsPreTaskFailureForReadyTask(t *testing.T) {
 	for _, category := range []string{"worktree_prepare_failed", "gitops_pre_task_failed", "gitops_dirty_worktree"} {
 		t.Run(category, func(t *testing.T) {
