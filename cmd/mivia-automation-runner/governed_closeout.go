@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
@@ -74,13 +75,44 @@ type governedCloseoutWorkTask struct {
 	ReviewGate              string   `json:"review_gate"`
 	ResumeInstructions      string   `json:"resume_instructions"`
 	DecompositionQuality    string   `json:"decomposition_quality"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria"`
+	StopConditions          []string `json:"stop_conditions"`
+	VerifierLadder          []string `json:"verifier_ladder"`
+	RegressionApplicability string   `json:"regression_test_applicability"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs"`
+	OutputContract          string   `json:"output_contract"`
 }
 
 func createGovernedCloseoutSchemaFile() (string, func(), error) {
+	childTaskProperties := map[string]any{
+		"task_ref":                      map[string]any{"type": "string", "maxLength": 200},
+		"title":                         map[string]any{"type": "string", "maxLength": 300},
+		"description":                   map[string]any{"type": "string", "maxLength": 1200},
+		"status":                        map[string]any{"type": "string", "maxLength": 40},
+		"owner_agent":                   map[string]any{"type": "string", "maxLength": 120},
+		"evidence_needed":               closeoutRefArraySchema(),
+		"context_pack_refs":             closeoutRefArraySchema(),
+		"files_to_read":                 closeoutPathArraySchema(),
+		"files_to_edit":                 closeoutPathArraySchema(),
+		"likely_files_affected":         closeoutPathArraySchema(),
+		"dependency_task_ids":           closeoutRefArraySchema(),
+		"verification_requirement":      map[string]any{"type": "string", "maxLength": 1200},
+		"expected_output":               map[string]any{"type": "string", "maxLength": 1200},
+		"failure_criteria":              map[string]any{"type": "string", "maxLength": 1200},
+		"review_gate":                   map[string]any{"type": "string", "maxLength": 500},
+		"resume_instructions":           map[string]any{"type": "string", "maxLength": 1200},
+		"decomposition_quality":         map[string]any{"type": "string", "maxLength": 80},
+		"acceptance_criteria":           closeoutTextArraySchema(),
+		"stop_conditions":               closeoutTextArraySchema(),
+		"verifier_ladder":               closeoutTextArraySchema(),
+		"regression_test_applicability": map[string]any{"type": "string", "maxLength": 500},
+		"downstream_impact_refs":        closeoutRefArraySchema(),
+		"output_contract":               map[string]any{"type": "string", "maxLength": 1200},
+	}
 	schema := map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []string{"closeout_action", "outcome", "safe_next_action"},
+		"required":             []string{"closeout_action", "outcome", "safe_next_action", "evidence_refs", "verifier_result_refs", "child_tasks", "block_reason", "failure_reason"},
 		"properties": map[string]any{
 			"closeout_action":      map[string]any{"type": "string", "enum": []string{"needs_review", "block", "fail"}},
 			"outcome":              map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
@@ -91,11 +123,13 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 			"failure_reason":       map[string]any{"type": "string", "maxLength": 1200},
 			"child_tasks": map[string]any{
 				"type":     "array",
-				"maxItems": 0,
-				// Child-task-producing closeouts skip Codex output-schema enforcement.
-				// The runner owns that validation because the API's strict schema
-				// subset cannot express permissive nested task packets.
-				"items": map[string]any{"type": "string"},
+				"maxItems": 50,
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             sortedSchemaKeys(childTaskProperties),
+					"properties":           childTaskProperties,
+				},
 			},
 		},
 	}
@@ -126,6 +160,19 @@ func closeoutRefArraySchema() map[string]any {
 
 func closeoutPathArraySchema() map[string]any {
 	return map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 300, "pattern": "^[A-Za-z0-9][A-Za-z0-9._/@+-]*$"}}
+}
+
+func closeoutTextArraySchema() map[string]any {
+	return map[string]any{"type": "array", "maxItems": 50, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}}
+}
+
+func sortedSchemaKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func parseGovernedCloseoutOutput(message string) (governedCloseoutOutput, error) {

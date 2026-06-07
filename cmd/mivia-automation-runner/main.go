@@ -1629,16 +1629,7 @@ func taskRequiresExplicitGovernedCloseout(task runnerWorkTaskMetadata) bool {
 }
 
 func shouldUseCodexOutputSchemaForGovernedCloseout(task runnerWorkTaskMetadata) bool {
-	return !governedCloseoutMayEmitChildTasks(task)
-}
-
-func governedCloseoutMayEmitChildTasks(task runnerWorkTaskMetadata) bool {
-	switch strings.TrimSpace(task.TaskRef) {
-	case "decompose-work-plan", "select-ready-tasks":
-		return true
-	default:
-		return false
-	}
+	return taskRequiresExplicitGovernedCloseout(task)
 }
 
 func metadataOnlyCloseoutOutcome(reviewTask bool) string {

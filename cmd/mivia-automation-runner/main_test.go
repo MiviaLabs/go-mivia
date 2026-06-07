@@ -1833,12 +1833,20 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 	if !ok {
 		t.Fatalf("schema missing child_tasks: %s", schemaText)
 	}
-	if childTasks["maxItems"] != float64(0) {
-		t.Fatalf("schema-constrained closeout must not validate child task packets in Codex: %#v", childTasks)
+	if childTasks["maxItems"] != float64(50) {
+		t.Fatalf("schema-constrained closeout must allow child task packets: %#v", childTasks)
 	}
 	items, ok := childTasks["items"].(map[string]any)
-	if !ok || items["type"] != "string" {
-		t.Fatalf("child_tasks schema must stay strict-schema compatible when used, got %#v", childTasks["items"])
+	if !ok || items["type"] != "object" || items["additionalProperties"] != false {
+		t.Fatalf("child_tasks items must be strict-schema-compatible objects, got %#v", childTasks["items"])
+	}
+	itemProperties, ok := items["properties"].(map[string]any)
+	if !ok || itemProperties["acceptance_criteria"] == nil || itemProperties["stop_conditions"] == nil {
+		t.Fatalf("child_tasks schema missing governance metadata fields: %#v", itemProperties)
+	}
+	required, ok := items["required"].([]any)
+	if !ok || len(required) != len(itemProperties) {
+		t.Fatalf("child_tasks schema must require every listed property for Codex strict schema: %#v", items["required"])
 	}
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
@@ -1846,13 +1854,13 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 	}
 }
 
-func TestDecomposeCloseoutSkipsCodexOutputSchemaAndUsesRunnerValidation(t *testing.T) {
+func TestDecomposeCloseoutUsesStrictSchemaAndRunnerValidation(t *testing.T) {
 	task := runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}
 	if !taskRequiresExplicitGovernedCloseout(task) {
 		t.Fatal("decompose-work-plan must require explicit governed closeout")
 	}
-	if shouldUseCodexOutputSchemaForGovernedCloseout(task) {
-		t.Fatal("decompose-work-plan must not use Codex output-schema; strict schema rejects permissive child_tasks")
+	if !shouldUseCodexOutputSchemaForGovernedCloseout(task) {
+		t.Fatal("decompose-work-plan must use Codex output-schema to force parseable closeout JSON")
 	}
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	if err := validateGovernedCloseoutOutput(output, task); err != nil {
