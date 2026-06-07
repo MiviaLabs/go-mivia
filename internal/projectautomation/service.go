@@ -3613,12 +3613,12 @@ func governedWorkflowStepInstructions(taskRef string) []string {
 
 func governedWorkflowCloseoutInstructions(stepInstructions []string) []string {
 	return append(stepInstructions,
-		"For this governed workflow wrapper, you must perform explicit MCP closeout before exiting successfully; do not rely on the runner to auto-close this task.",
+		"For this governed workflow wrapper, you must perform explicit system closeout before exiting successfully; do not rely on the runner to auto-close this task.",
 		"Successful closeout requires at least one bounded evidence ref on this wrapper task and projects.work_tasks.update_status moving this Work Task out of in_progress, normally to needs_review. If the required work cannot be completed, call projects.work_tasks.block or projects.work_tasks.fail with the concrete reason.",
-		"When native MCP tools are unavailable, use the Mivia MCP server URL with JSON-RPC tools/call for projects.work_tasks.create, projects.work_tasks.attach_evidence, projects.work_tasks.update_status, projects.work_tasks.block, or projects.work_tasks.fail as applicable.",
-		"JSON-RPC call shape: POST the MCP server URL with method=tools/call and params.name set to the exact tool name; params.arguments must include id=<Project ID> plus the required tool arguments. Headers must include Content-Type application/json, Accept application/json, text/event-stream, and MCP-Protocol-Version 2025-06-18.",
-		"After every governed closeout, call projects.work_tasks.get for this Work Task ID and confirm the returned status is no longer in_progress before exiting successfully.",
-		"Do not merely describe the tasks or closeout steps in your final text. The required MCP calls must be performed in the system.",
+		"When native MCP tools are unavailable, use direct HTTP REST against the exact Mivia server URL shown in this prompt. Do not hard-code hostnames or ports; the server URL is runtime-configurable. Do not rely on Codex MCP harness configuration.",
+		"REST closeout routes: create child tasks with POST /api/v1/projects/<project_id>/work-plans/<plan_id>/tasks; attach evidence with POST /api/v1/projects/<project_id>/work-tasks/<task_id>/evidence; move this wrapper with POST /api/v1/projects/<project_id>/work-tasks/<task_id>/status; block/fail with POST /api/v1/projects/<project_id>/work-tasks/<task_id>/block or /fail; read back with GET /api/v1/projects/<project_id>/work-tasks/<task_id>.",
+		"After every governed closeout, read this Work Task ID back over REST and confirm the returned status is no longer in_progress before exiting successfully.",
+		"Do not merely describe the tasks or closeout steps in your final text. The required REST calls must be performed in the system.",
 		"The runner will fail this automation with automation_task_closeout_missing if this wrapper task is still in_progress after your process exits.",
 	)
 }

@@ -120,10 +120,12 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 			"must create concrete child Work Tasks",
 			"projects.work_tasks.create",
 			"implementation-ready",
-			"must perform explicit MCP closeout",
+			"must perform explicit system closeout",
 			"automation_task_closeout_missing",
-			"method=tools/call",
-			"projects.work_tasks.get",
+			"exact Mivia server URL shown in this prompt",
+			"Do not hard-code hostnames or ports",
+			"POST /api/v1/projects/<project_id>/work-plans/<plan_id>/tasks",
+			"GET /api/v1/projects/<project_id>/work-tasks/<task_id>",
 			"Do not merely describe the tasks",
 		},
 		"mark-ready-after-review": {
@@ -156,6 +158,9 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 		prompt := RenderCodexTaskPrompt(input)
 		if strings.Contains(prompt, "Leave verifier execution and task completion to the orchestrator.") {
 			t.Fatalf("task %s prompt must not tell governed workflow wrappers to leave closeout to the orchestrator:\n%s", taskRef, prompt)
+		}
+		if strings.Contains(prompt, "http://mivia-server:8080") || strings.Contains(prompt, "method=tools/call") {
+			t.Fatalf("task %s prompt must use runtime REST URL without hardcoded host/port or JSON-RPC dependency:\n%s", taskRef, prompt)
 		}
 		for _, want := range wants {
 			if !strings.Contains(prompt, want) {
