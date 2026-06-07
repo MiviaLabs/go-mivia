@@ -186,8 +186,45 @@ func TestCompileWorkflowUsesProjectBranchPolicyOptions(t *testing.T) {
 	if len(plans) != 1 {
 		t.Fatalf("expected one plan, got %d", len(plans))
 	}
-	if got, want := plans[0].GitBranchRef, "chore-MASS-1044-workflow-ref"; got != want {
-		t.Fatalf("GitBranchRef = %q, want %q", got, want)
+	if got, wantPrefix := plans[0].GitBranchRef, "chore-MASS-1044-workflow-ref-compile-"; !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("GitBranchRef = %q, want prefix %q", got, wantPrefix)
+	}
+}
+
+func TestCompileWorkflowProjectBranchPolicyStaysUniqueAcrossSameTicketCompiles(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, workPlans, _ := newCompileFixture()
+	workflowStore.seedWorkflow(baseCompileWorkflow())
+	svc.SetCompileOptionsByProject(map[string]CompileOptions{
+		"project-1": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
+	})
+
+	for i := 0; i < 2; i++ {
+		if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "jira:MASS-1044", CreatedByRunID: "operator-real-ticket-run"}); err != nil {
+			t.Fatalf("compile workflow %d: %v", i+1, err)
+		}
+	}
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("expected two plans, got %d", len(plans))
+	}
+	seenBranches := map[string]struct{}{}
+	seenWorktrees := map[string]struct{}{}
+	for _, plan := range plans {
+		if !strings.HasPrefix(plan.GitBranchRef, "chore-MASS-1044-workflow-ref-compile-") {
+			t.Fatalf("GitBranchRef must preserve policy prefix and compile uniqueness, got %q", plan.GitBranchRef)
+		}
+		if _, exists := seenBranches[plan.GitBranchRef]; exists {
+			t.Fatalf("GitBranchRef must be unique across same-ticket compiles, duplicate %q", plan.GitBranchRef)
+		}
+		seenBranches[plan.GitBranchRef] = struct{}{}
+		if _, exists := seenWorktrees[plan.GitWorktreeRef]; exists {
+			t.Fatalf("GitWorktreeRef must be unique across same-ticket compiles, duplicate %q", plan.GitWorktreeRef)
+		}
+		seenWorktrees[plan.GitWorktreeRef] = struct{}{}
 	}
 }
 

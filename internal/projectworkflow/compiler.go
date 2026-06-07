@@ -653,7 +653,7 @@ func compileIsolationRefs(workflow WorkflowDefinition, planRef string, userReque
 	// Leave git_base_ref unset so workspace creation falls back to HEAD.
 	branchToken := token
 	if summary := renderCompileBranchSummary(options.BranchSummaryTemplate, userRequestRef, workflow.WorkflowRef, token); summary != "" {
-		branchToken = summary
+		branchToken = compileUniqueBranchSummary(summary, token)
 	}
 	branchPrefix := options.BranchPrefix
 	if strings.TrimSpace(branchPrefix) == "" && options.BranchSummaryTemplate == "" {
@@ -678,6 +678,29 @@ func renderCompileBranchSummary(template string, userRequestRef string, workflow
 	out = strings.ReplaceAll(out, "{{workflow_ref}}", workflowRef)
 	out = strings.ReplaceAll(out, "{{token}}", token)
 	return safeCompileBranchName(out)
+}
+
+func compileUniqueBranchSummary(summary string, token string) string {
+	summary = safeCompileBranchName(summary)
+	if summary == "" {
+		return ""
+	}
+	unique := compileUniqueToken(token)
+	if unique == "" || strings.Contains(summary, unique) {
+		return summary
+	}
+	return safeCompileBranchName(summary + "-" + unique)
+}
+
+func compileUniqueToken(token string) string {
+	token = safeCompileGitToken(token)
+	if token == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(token, "compile-"); idx >= 0 {
+		return token[idx:]
+	}
+	return token
 }
 
 func safeCompileBranchName(value string) string {
