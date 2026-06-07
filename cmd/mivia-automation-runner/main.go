@@ -1432,11 +1432,11 @@ func (client *runnerClient) closeoutMetadataOnlyTask(ctx context.Context, projec
 }
 
 func shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun bool, task runnerWorkTaskMetadata) bool {
-	if readOnlyReviewRun {
-		return true
-	}
 	if taskRequiresExplicitGovernedCloseout(task) {
 		return false
+	}
+	if readOnlyReviewRun {
+		return true
 	}
 	return len(task.FilesToEdit) == 0
 }

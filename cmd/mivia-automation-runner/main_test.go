@@ -1110,6 +1110,61 @@ func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
 	}
 }
 
+func TestRunOnceFailsGovernanceStepsWithoutExplicitCloseout(t *testing.T) {
+	for _, taskRef := range []string{
+		"decompose-work-plan",
+		"mark-ready-after-review",
+		"select-ready-tasks",
+		"run-implementation-batch",
+		"review-implementation-batch",
+		"orchestrator-verification",
+		"pr-gitops-readiness",
+	} {
+		t.Run(taskRef, func(t *testing.T) {
+			setReadableCodexHome(t)
+			var completed atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/projects/mass-monorepo/automation-runs/claim-next":
+					input := testCodexInput("run-1")
+					input.ProjectID = "mass-monorepo"
+					input.TaskRef = taskRef
+					writeJSON(t, w, projectautomation.ClaimedRun{
+						Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "mass-monorepo", PlanID: "plan-1", TaskID: "task-1"},
+						CodexInput: input,
+						TimeoutMS:  1000,
+					})
+				case "/api/v1/projects/mass-monorepo/work-plans/plan-1":
+					writeJSON(t, w, runnerWorkPlan{ID: "plan-1", ProjectID: "mass-monorepo", IsolationMode: "shared"})
+				case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+					writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: taskRef, Status: "in_progress"})
+				case "/api/v1/projects/mass-monorepo/automation-runs/run-1/attempt-result":
+					var input projectautomation.CompleteAttemptInput
+					if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+						t.Fatalf("decode attempt: %v", err)
+					}
+					if input.Status != projectautomation.RunStatusFailed || input.FailureCategory != "automation_task_closeout_missing" {
+						t.Fatalf("expected governed closeout failure, got %+v", input)
+					}
+					completed.Add(1)
+					writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", Status: projectautomation.RunStatusFailed})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			status := run([]string{"--server", server.URL, "--project", "mass-monorepo", "--codex", "/bin/true"})
+			if status == 0 {
+				t.Fatal("expected exit failure when governed closeout is missing")
+			}
+			if completed.Load() != 1 {
+				t.Fatalf("expected one failed attempt report, got %d", completed.Load())
+			}
+		})
+	}
+}
+
 func TestRunOnceClosesOutReadOnlyReviewTaskAfterCodexSuccess(t *testing.T) {
 	setReadableCodexHome(t)
 	var attemptCompleted atomic.Int32
