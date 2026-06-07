@@ -245,6 +245,57 @@ func TestHandleWorkPlanStatusChangedBlocksWhenNextStageCannotCompile(t *testing.
 	}
 }
 
+func TestHandleWorkPlanStatusChangedBlocksChainWhenStagePlanBlocks(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusBlocked}); err != nil {
+		t.Fatalf("block chain: %v", err)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != ChainStatusBlocked || run.StageRuns[0].Status != StageStatusBlocked || run.StageRuns[1].Status == StageStatusQueued {
+		t.Fatalf("expected blocked chain without next-stage advancement, got %#v", run)
+	}
+	if run.StageRuns[0].BlockedReason != "work_plan_blocked" || run.NextAction == "" {
+		t.Fatalf("expected safe blocked reason and next action, got %#v", run)
+	}
+}
+
+func TestHandleWorkPlanStatusChangedFailsChainWhenStagePlanFails(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusFailed}); err != nil {
+		t.Fatalf("fail chain: %v", err)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != ChainStatusFailed || run.StageRuns[0].Status != StageStatusFailed || run.StageRuns[0].BlockedReason != "work_plan_failed" {
+		t.Fatalf("expected failed chain and failed stage, got %#v", run)
+	}
+}
+
 func TestStartRejectsUnknownWorkflowRef(t *testing.T) {
 	ctx := context.Background()
 	svc := New(newTestChainStore(), &fakeWorkflowAPI{workflows: enabledWorkflows()[:1]}, &fakeWorkPlans{}, []Config{testConfig()})

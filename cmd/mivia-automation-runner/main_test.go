@@ -1754,6 +1754,21 @@ func TestCheckCodexLauncherDirect(t *testing.T) {
 	}
 }
 
+func TestCheckRunnerCodexPreflightRejectsMissingWorkDirBeforeClaim(t *testing.T) {
+	err := checkRunnerCodexPreflight(t.Context(), codexLaunchOptions{Path: fakeCodex(t, 0), Launcher: "direct", WorkDir: filepath.Join(t.TempDir(), "missing"), SmokePreflight: false})
+	if err == nil || !strings.Contains(err.Error(), "codex_workdir_unavailable") {
+		t.Fatalf("expected missing workdir preflight failure, got %v", err)
+	}
+}
+
+func TestCheckRunnerCodexPreflightRunsCodexInGitWorkDir(t *testing.T) {
+	workDir := initRunnerGitRepo(t)
+	binary := fakeCodexWritingLastMessage(t, `{"ok": true}`)
+	if err := checkRunnerCodexPreflight(t.Context(), codexLaunchOptions{Path: binary, Launcher: "direct", WorkDir: workDir, Sandbox: "workspace-write", SmokePreflight: true}); err != nil {
+		t.Fatalf("expected codex smoke preflight to pass: %v", err)
+	}
+}
+
 func TestCheckCodexConfigReadableUsesCodexHome(t *testing.T) {
 	codexHome := filepath.Join(t.TempDir(), "codex-home")
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
@@ -2003,11 +2018,12 @@ func TestBuildRunnerCodexCommandSupportsWindowsLauncher(t *testing.T) {
 func TestBuildRunnerCodexCommandSupportsDirectLauncherWorkDir(t *testing.T) {
 	inputPath := filepath.Join(t.TempDir(), "codex-input.json")
 	outputPath := filepath.Join(t.TempDir(), "last-message.txt")
-	command, err := buildRunnerCodexCommand(inputPath, outputPath, time.Minute, codexLaunchOptions{Path: "/usr/local/bin/codex", Launcher: "direct", WorkDir: "/workspace/repo", Sandbox: "workspace-write"})
+	schemaPath := filepath.Join(t.TempDir(), "schema.json")
+	command, err := buildRunnerCodexCommand(inputPath, outputPath, time.Minute, codexLaunchOptions{Path: "/usr/local/bin/codex", Launcher: "direct", WorkDir: "/workspace/repo", Sandbox: "workspace-write", OutputSchemaPath: schemaPath})
 	if err != nil {
 		t.Fatalf("buildRunnerCodexCommand returned error: %v", err)
 	}
-	want := []string{"exec", "--sandbox", "workspace-write", "--output-last-message", outputPath, "--cd", "/workspace/repo", "-"}
+	want := []string{"exec", "--sandbox", "workspace-write", "--output-schema", schemaPath, "--output-last-message", outputPath, "--cd", "/workspace/repo", "-"}
 	if len(command.Args) != len(want) {
 		t.Fatalf("unexpected args: %#v", command.Args)
 	}
@@ -2018,6 +2034,9 @@ func TestBuildRunnerCodexCommandSupportsDirectLauncherWorkDir(t *testing.T) {
 	}
 	if command.StdinFile != inputPath {
 		t.Fatalf("stdin file = %q, want %q", command.StdinFile, inputPath)
+	}
+	if command.Dir != "/workspace/repo" {
+		t.Fatalf("command dir = %q, want /workspace/repo", command.Dir)
 	}
 }
 

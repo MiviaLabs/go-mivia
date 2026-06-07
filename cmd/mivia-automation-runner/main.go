@@ -37,6 +37,7 @@ func run(args []string) int {
 	codexCD := flags.String("codex-cd", "", "optional workspace directory passed to codex exec --cd")
 	codexSandbox := flags.String("codex-sandbox", "workspace-write", "sandbox mode passed to codex exec")
 	codexBypass := flags.Bool("codex-bypass-approvals-and-sandbox", false, "pass Codex CLI's non-interactive approval and sandbox bypass flag")
+	codexSmokePreflight := flags.Bool("codex-smoke-preflight", true, "run a non-mutating codex exec smoke test in --codex-cd before claiming work")
 	once := flags.Bool("once", true, "claim and run one queued task, then exit")
 	watch := flags.Bool("watch", false, "continuously claim queued tasks until interrupted")
 	pollInterval := flags.Duration("poll-interval", 5*time.Second, "poll interval when once is false")
@@ -53,7 +54,7 @@ func run(args []string) int {
 	if *watch {
 		*once = false
 	}
-	codexOptions := codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD), Sandbox: strings.TrimSpace(*codexSandbox), BypassApprovalsAndSandbox: *codexBypass}
+	codexOptions := codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD), Sandbox: strings.TrimSpace(*codexSandbox), BypassApprovalsAndSandbox: *codexBypass, SmokePreflight: *codexSmokePreflight}
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config load failed: %v\n", err)
@@ -69,6 +70,10 @@ func run(args []string) int {
 	}
 	if err := checkCodexConfigReadable(); err != nil {
 		fmt.Fprintf(os.Stderr, "codex runtime config unavailable: %v\n", err)
+		return 1
+	}
+	if err := checkRunnerCodexPreflight(context.Background(), codexOptions); err != nil {
+		fmt.Fprintf(os.Stderr, "codex runtime preflight failed: %v\n", err)
 		return 1
 	}
 	runnerID := defaultRunnerID()
@@ -192,6 +197,85 @@ func checkCodexConfigReadable() error {
 	return file.Close()
 }
 
+func checkRunnerCodexPreflight(ctx context.Context, codexOptions codexLaunchOptions) error {
+	workDir := strings.TrimSpace(codexOptions.WorkDir)
+	if workDir == "" {
+		return nil
+	}
+	if err := checkRunnerWorkDir(ctx, workDir); err != nil {
+		return err
+	}
+	if !codexOptions.SmokePreflight {
+		return nil
+	}
+	inputPath, cleanupInput, err := writeCodexInput(projectautomation.CodexTaskInput{
+		SchemaVersion:  1,
+		ProjectID:      "runner-preflight",
+		TaskID:         "runner-preflight",
+		TaskRef:        "runner-preflight",
+		Title:          "Runner preflight",
+		Description:    "Verify Codex can execute in the configured workdir without modifying files.",
+		ExpectedOutput: "Return only {\"ok\":true}. Do not modify files.",
+	})
+	if err != nil {
+		return fmt.Errorf("%w: codex_preflight_input_create_failed", projectautomation.ErrInvalidInput)
+	}
+	defer cleanupInput()
+	outputPath, cleanupOutput, err := createCodexOutputFile()
+	if err != nil {
+		return fmt.Errorf("%w: codex_preflight_output_create_failed", projectautomation.ErrInvalidInput)
+	}
+	defer cleanupOutput()
+	smokeOptions := codexOptions
+	smokeOptions.OutputSchemaPath = ""
+	command, err := buildRunnerCodexCommand(inputPath, outputPath, 2*time.Minute, smokeOptions)
+	if err != nil {
+		return err
+	}
+	result, err := projectautomation.RunCodexCommand(ctx, command, 16*1024)
+	if err != nil {
+		if result.SafeFailureCategory != "" {
+			return fmt.Errorf("%w: %s", projectautomation.ErrInvalidInput, result.SafeFailureCategory)
+		}
+		return fmt.Errorf("%w: codex_preflight_exec_failed", projectautomation.ErrInvalidInput)
+	}
+	if !codexPreflightOutputOK(readCodexLastMessage(outputPath, result.Output)) {
+		return fmt.Errorf("%w: codex_preflight_unexpected_output", projectautomation.ErrInvalidInput)
+	}
+	return nil
+}
+
+func codexPreflightOutputOK(message string) bool {
+	var output struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(message)), &output); err != nil {
+		return false
+	}
+	return output.OK
+}
+
+func checkRunnerWorkDir(ctx context.Context, workDir string) error {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return nil
+	}
+	if !filepath.IsAbs(workDir) || strings.ContainsAny(workDir, "\x00\r\n") {
+		return fmt.Errorf("%w: workdir must be absolute and safe", projectautomation.ErrInvalidInput)
+	}
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return fmt.Errorf("%w: codex_workdir_unavailable", projectautomation.ErrInvalidInput)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: codex_workdir_not_directory", projectautomation.ErrInvalidInput)
+	}
+	if _, err := os.ReadDir(workDir); err != nil {
+		return fmt.Errorf("%w: codex_workdir_unreadable", projectautomation.ErrInvalidInput)
+	}
+	return prepareRunWorktree(ctx, workDir)
+}
+
 func codexConfigPath() string {
 	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
 		return filepath.Join(codexHome, "config.toml")
@@ -215,6 +299,8 @@ type codexLaunchOptions struct {
 	WorkDir                   string
 	Sandbox                   string
 	BypassApprovalsAndSandbox bool
+	SmokePreflight            bool
+	OutputSchemaPath          string
 }
 
 func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg config.Config, projectID string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
@@ -319,6 +405,24 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			fmt.Fprintf(os.Stdout, "automation run %s durably reported %s\n", claimed.Run.ID, completedRun.Status)
 			return 1, true, true
 		}
+	}
+	if strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && taskRequiresExplicitGovernedCloseout(taskMetadata) {
+		schemaPath, cleanupSchema, schemaErr := createGovernedCloseoutSchemaFile()
+		if schemaErr != nil {
+			result := projectautomation.CompleteAttemptInput{
+				Status:          projectautomation.RunStatusFailed,
+				FailureCategory: "governed_closeout_schema_create_failed",
+			}
+			completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run, result)
+			if reportErr != nil {
+				fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
+				return 1, false, true
+			}
+			fmt.Fprintf(os.Stdout, "automation run %s durably reported %s\n", claimed.Run.ID, completedRun.Status)
+			return 1, true, true
+		}
+		defer cleanupSchema()
+		runCodexOptions.OutputSchemaPath = schemaPath
 	}
 	codexResult := runCodex(ctx, claimed, runCodexOptions)
 	status, failureCategory, durationMS := codexResult.Status, codexResult.FailureCategory, codexResult.DurationMS
@@ -805,6 +909,13 @@ func buildRunnerCodexCommand(inputPath string, outputPath string, timeout time.D
 		}
 		args := []string{"/c", "type", convertedInputPath, "|", binaryPath, "exec"}
 		args = appendCodexExecutionOptions(args, codexOptions)
+		if strings.TrimSpace(codexOptions.OutputSchemaPath) != "" {
+			convertedSchemaPath, err := windowsPathForRunner(strings.TrimSpace(codexOptions.OutputSchemaPath))
+			if err != nil {
+				return projectautomation.CodexCommand{}, err
+			}
+			args = append(args, "--output-schema", convertedSchemaPath)
+		}
 		if strings.TrimSpace(outputPath) != "" {
 			convertedOutputPath, err := windowsPathForRunner(strings.TrimSpace(outputPath))
 			if err != nil {
@@ -841,13 +952,20 @@ func buildRunnerCodexCommand(inputPath string, outputPath string, timeout time.D
 	if strings.TrimSpace(codexOptions.WorkDir) != "" {
 		args := []string{"exec"}
 		args = appendCodexExecutionOptions(args, codexOptions)
+		if strings.TrimSpace(codexOptions.OutputSchemaPath) != "" {
+			args = append(args, "--output-schema", strings.TrimSpace(codexOptions.OutputSchemaPath))
+		}
 		if strings.TrimSpace(outputPath) != "" {
 			args = append(args, "--output-last-message", strings.TrimSpace(outputPath))
 		}
 		command.Args = append(args, "--cd", strings.TrimSpace(codexOptions.WorkDir), "-")
+		command.Dir = strings.TrimSpace(codexOptions.WorkDir)
 	} else {
 		args := []string{"exec"}
 		args = appendCodexExecutionOptions(args, codexOptions)
+		if strings.TrimSpace(codexOptions.OutputSchemaPath) != "" {
+			args = append(args, "--output-schema", strings.TrimSpace(codexOptions.OutputSchemaPath))
+		}
 		if strings.TrimSpace(outputPath) != "" {
 			args = append(args, "--output-last-message", strings.TrimSpace(outputPath))
 		}

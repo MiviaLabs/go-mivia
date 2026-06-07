@@ -222,11 +222,17 @@ func (svc *Service) List(ctx context.Context, filter ChainFilter) (ListResult, e
 }
 
 func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change projectworkplan.WorkPlanStatusChange) error {
-	if change.NewStatus != projectworkplan.WorkPlanStatusDone || svc.store == nil {
+	if svc.store == nil {
 		return nil
 	}
 	run, err := svc.store.FindChainRunByWorkPlan(ctx, change.ProjectID, change.PlanID)
 	if err != nil {
+		return nil
+	}
+	if change.NewStatus == projectworkplan.WorkPlanStatusBlocked || change.NewStatus == projectworkplan.WorkPlanStatusFailed {
+		return svc.markChainRunTerminalFromWorkPlan(ctx, run, change)
+	}
+	if change.NewStatus != projectworkplan.WorkPlanStatusDone {
 		return nil
 	}
 	if run.Status == ChainStatusBlocked && run.GitOpsReady && allStagesCompleted(run) {
@@ -289,6 +295,39 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 	}
 	run.UpdatedAt = svc.now()
 	_, err = svc.store.UpdateChainRun(ctx, run)
+	return err
+}
+
+func (svc *Service) markChainRunTerminalFromWorkPlan(ctx context.Context, run ChainRun, change projectworkplan.WorkPlanStatusChange) error {
+	status := ChainStatusBlocked
+	stageStatus := StageStatusBlocked
+	reason := "work_plan_blocked"
+	nextAction := "workflow chain blocked by terminal Work Plan status"
+	if change.NewStatus == projectworkplan.WorkPlanStatusFailed {
+		status = ChainStatusFailed
+		stageStatus = StageStatusFailed
+		reason = "work_plan_failed"
+		nextAction = "workflow chain failed by terminal Work Plan status"
+	}
+	changed := run.Status != status || run.NextAction != nextAction
+	for i := range run.StageRuns {
+		if run.StageRuns[i].WorkPlanID != change.PlanID {
+			continue
+		}
+		if run.StageRuns[i].Status != stageStatus || run.StageRuns[i].BlockedReason != reason {
+			run.StageRuns[i].Status = stageStatus
+			run.StageRuns[i].BlockedReason = reason
+			run.StageRuns[i].CompletedAt = svc.now()
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	run.Status = status
+	run.NextAction = nextAction
+	run.UpdatedAt = svc.now()
+	_, err := svc.store.UpdateChainRun(ctx, run)
 	return err
 }
 

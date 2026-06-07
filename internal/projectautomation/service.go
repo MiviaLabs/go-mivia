@@ -2536,7 +2536,11 @@ func (svc *Service) finishRunAfterTaskTerminal(ctx context.Context, run Automati
 		run.FinishedAt = now
 	}
 	run.UpdatedAt = now
-	return svc.store.UpdateRun(ctx, run)
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	return updated, svc.updatePlanAfterTerminalTask(ctx, task)
 }
 
 func isTerminalIncompleteTaskStatus(status string) bool {
@@ -2545,6 +2549,40 @@ func isTerminalIncompleteTaskStatus(status string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (svc *Service) updatePlanAfterTerminalTask(ctx context.Context, task projectworkplan.WorkTask) error {
+	if task.ProjectID == "" || task.PlanID == "" {
+		return nil
+	}
+	workPlans, ok := svc.workTasks.(remediationWorkPlanAPI)
+	if !ok || workPlans == nil {
+		return nil
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusBlocked:
+		_, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:     task.ProjectID,
+			PlanID:        task.PlanID,
+			Status:        projectworkplan.WorkPlanStatusBlocked,
+			Outcome:       firstNonEmpty(task.BlockedReason, "automation Work Task blocked"),
+			ResumeSummary: firstNonEmpty(task.ResumeInstructions, "resolve blocked Work Task before resuming automation"),
+			CurrentTaskID: task.ID,
+		})
+		return err
+	case projectworkplan.WorkTaskStatusFailed:
+		_, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:     task.ProjectID,
+			PlanID:        task.PlanID,
+			Status:        projectworkplan.WorkPlanStatusFailed,
+			Outcome:       firstNonEmpty(task.Outcome, "automation Work Task failed"),
+			ResumeSummary: firstNonEmpty(task.ResumeInstructions, "inspect failed Work Task before resuming automation"),
+			CurrentTaskID: task.ID,
+		})
+		return err
+	default:
+		return nil
 	}
 }
 

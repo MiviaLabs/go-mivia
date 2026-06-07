@@ -8,6 +8,7 @@ const (
 	ChainStatusCompleted            = "completed"
 	ChainStatusPostValidationPassed = "post_validation_passed"
 	ChainStatusBlocked              = "blocked"
+	ChainStatusFailed               = "failed"
 )
 
 const (
@@ -15,6 +16,7 @@ const (
 	StageStatusQueued    = "queued"
 	StageStatusCompleted = "completed"
 	StageStatusBlocked   = "blocked"
+	StageStatusFailed    = "failed"
 )
 
 const (

@@ -2227,6 +2227,45 @@ func TestClaimNextRunDoesNotRecoverOrdinaryBlockedRun(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunTerminalBlockedTaskBlocksParentWorkPlan(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "scan-a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusBlocked
+	task.BlockedReason = "context unavailable"
+	task.ResumeInstructions = "restore context and retry"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{"task-a": task},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-a", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI,
+		CreatedAt: time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after terminal recovery, got %v", err)
+	}
+	run, err := store.GetRun(ctx, "project-1", "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if run.Status != RunStatusBlocked || run.FailureCategory != "work_task_blocked" {
+		t.Fatalf("expected blocked automation run, got %#v", run)
+	}
+	plan := fake.plans["plan-1"]
+	if plan.Status != projectworkplan.WorkPlanStatusBlocked || plan.ResumeSummary != "restore context and retry" {
+		t.Fatalf("expected parent Work Plan blocked with resume summary, got %#v", plan)
+	}
+}
+
 func TestClaimNextRunDoesNotFailScannerWithConfirmedFindingRefs(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
@@ -2513,7 +2552,9 @@ func TestClaimNextRunClosesRemediationPlannerWithBugPlanHandoff(t *testing.T) {
 func TestClaimNextRunMarksVerifyingRunBlockedWhenTaskBlocked(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
-	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+	fake := &fakeWorkTasks{plans: map[string]projectworkplan.WorkPlan{
+		"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
+	}, tasks: map[string]projectworkplan.WorkTask{
 		"task-blocked": {
 			ID:                      "task-blocked",
 			ProjectID:               "project-1",

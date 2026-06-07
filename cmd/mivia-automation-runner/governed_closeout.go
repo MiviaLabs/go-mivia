@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -73,6 +74,78 @@ type governedCloseoutWorkTask struct {
 	ReviewGate              string   `json:"review_gate"`
 	ResumeInstructions      string   `json:"resume_instructions"`
 	DecompositionQuality    string   `json:"decomposition_quality"`
+}
+
+func createGovernedCloseoutSchemaFile() (string, func(), error) {
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"closeout_action", "outcome", "safe_next_action"},
+		"properties": map[string]any{
+			"closeout_action":      map[string]any{"type": "string", "enum": []string{"needs_review", "block", "fail"}},
+			"outcome":              map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
+			"safe_next_action":     map[string]any{"type": "string", "maxLength": 1200},
+			"evidence_refs":        closeoutRefArraySchema(),
+			"verifier_result_refs": closeoutRefArraySchema(),
+			"block_reason":         map[string]any{"type": "string", "maxLength": 1200},
+			"failure_reason":       map[string]any{"type": "string", "maxLength": 1200},
+			"child_tasks": map[string]any{
+				"type":     "array",
+				"maxItems": 50,
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []string{"task_ref", "title", "description", "status", "evidence_needed", "verification_requirement", "expected_output", "failure_criteria", "review_gate", "resume_instructions", "decomposition_quality"},
+					"properties": map[string]any{
+						"task_ref":                 closeoutRefSchema(),
+						"title":                    map[string]any{"type": "string", "minLength": 1, "maxLength": 200},
+						"description":              map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
+						"status":                   map[string]any{"type": "string", "enum": []string{"planned", "ready"}},
+						"owner_agent":              closeoutRefSchema(),
+						"evidence_needed":          closeoutRefArraySchema(),
+						"context_pack_refs":        closeoutRefArraySchema(),
+						"files_to_read":            closeoutPathArraySchema(),
+						"files_to_edit":            closeoutPathArraySchema(),
+						"likely_files_affected":    closeoutPathArraySchema(),
+						"dependency_task_ids":      closeoutRefArraySchema(),
+						"verification_requirement": map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
+						"expected_output":          map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
+						"failure_criteria":         map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
+						"review_gate":              map[string]any{"type": "string", "minLength": 1, "maxLength": 500},
+						"resume_instructions":      map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
+						"decomposition_quality":    map[string]any{"type": "string", "enum": []string{"ready_for_worker"}},
+					},
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return "", nil, err
+	}
+	dir, err := os.MkdirTemp("", "mivia-governed-closeout-schema-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	path := filepath.Join(dir, "governed-closeout.schema.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
+}
+
+func closeoutRefSchema() map[string]any {
+	return map[string]any{"type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"}
+}
+
+func closeoutRefArraySchema() map[string]any {
+	return map[string]any{"type": "array", "maxItems": 100, "items": closeoutRefSchema()}
+}
+
+func closeoutPathArraySchema() map[string]any {
+	return map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 300, "pattern": "^[A-Za-z0-9][A-Za-z0-9._/@+-]*$"}}
 }
 
 func parseGovernedCloseoutOutput(message string) (governedCloseoutOutput, error) {

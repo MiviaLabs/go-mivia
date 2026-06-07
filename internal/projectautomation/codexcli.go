@@ -17,6 +17,7 @@ type CodexCommand struct {
 	Args      []string
 	Env       []string
 	StdinFile string
+	Dir       string
 	Timeout   time.Duration
 }
 
@@ -101,6 +102,9 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 
 	started := time.Now()
 	cmd := exec.CommandContext(runCtx, command.Path, command.Args...)
+	if strings.TrimSpace(command.Dir) != "" {
+		cmd.Dir = command.Dir
+	}
 	cmd.Env = append(os.Environ(), command.Env...)
 	if command.StdinFile != "" {
 		stdin, err := os.Open(command.StdinFile)
