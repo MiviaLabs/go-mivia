@@ -1802,8 +1802,6 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 		`"needs_review"`,
 		`"block"`,
 		`"fail"`,
-		`"planned"`,
-		`"ready"`,
 	} {
 		if !strings.Contains(schemaText, want) {
 			t.Fatalf("schema missing accepted value %s: %s", want, schemaText)
@@ -1811,6 +1809,25 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 	}
 	if strings.Contains(schemaText, "ready_for_worker") {
 		t.Fatalf("schema must not require non-existent decomposition quality constant: %s", schemaText)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("schema must be valid json: %v", err)
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing properties: %s", schemaText)
+	}
+	childTasks, ok := properties["child_tasks"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing child_tasks: %s", schemaText)
+	}
+	items, ok := childTasks["items"].(map[string]any)
+	if !ok || items["type"] != "object" {
+		t.Fatalf("child_tasks items must stay a permissive object schema, got %#v", childTasks["items"])
+	}
+	if _, ok := items["required"]; ok {
+		t.Fatalf("child_tasks output schema must not require nested fields; runner validation owns that contract: %#v", items)
 	}
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {

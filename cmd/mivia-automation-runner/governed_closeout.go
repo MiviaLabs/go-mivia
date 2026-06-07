@@ -92,30 +92,9 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 			"child_tasks": map[string]any{
 				"type":     "array",
 				"maxItems": 50,
-				"items": map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"required":             []string{"task_ref", "title", "description", "status", "evidence_needed", "verification_requirement", "expected_output", "failure_criteria", "review_gate", "resume_instructions", "decomposition_quality"},
-					"properties": map[string]any{
-						"task_ref":                 closeoutRefSchema(),
-						"title":                    map[string]any{"type": "string", "minLength": 1, "maxLength": 200},
-						"description":              map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
-						"status":                   map[string]any{"type": "string", "enum": []string{"planned", "ready"}},
-						"owner_agent":              closeoutRefSchema(),
-						"evidence_needed":          closeoutRefArraySchema(),
-						"context_pack_refs":        closeoutRefArraySchema(),
-						"files_to_read":            closeoutPathArraySchema(),
-						"files_to_edit":            closeoutPathArraySchema(),
-						"likely_files_affected":    closeoutPathArraySchema(),
-						"dependency_task_ids":      closeoutRefArraySchema(),
-						"verification_requirement": map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
-						"expected_output":          map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
-						"failure_criteria":         map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
-						"review_gate":              map[string]any{"type": "string", "minLength": 1, "maxLength": 500},
-						"resume_instructions":      map[string]any{"type": "string", "minLength": 1, "maxLength": 1200},
-						"decomposition_quality":    map[string]any{"type": "string", "enum": []string{"ready"}},
-					},
-				},
+				// Keep Codex's generation schema permissive for nested task packets.
+				// The runner still enforces the full child-task contract after parsing.
+				"items": map[string]any{"type": "object"},
 			},
 		},
 	}
