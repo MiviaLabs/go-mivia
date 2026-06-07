@@ -407,6 +407,128 @@ func TestClaimNextRunRecoversRunningRunWhenTaskMovedToVerifying(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunClosesOutMetadataOnlyVerifyingTaskAndQueuesDependent(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	discovery := readyTask("task-discovery", "discover-planning-context", nil)
+	discovery.Status = projectworkplan.WorkTaskStatusNeedsReview
+	discovery.FilesToEdit = nil
+	discovery.EvidenceRefs = []string{"context-pack-manifest-1"}
+	discovery.ClaimRefs = []string{"claim-planning-context-discovery"}
+	discovery.Outcome = "bounded planning context discovered"
+	discovery.ClaimedByRunID = "run-discovery"
+	review := readyTask("task-review", "review-planning-context", nil)
+	review.Status = projectworkplan.WorkTaskStatusPlanned
+	review.DependencyTaskIDs = []string{discovery.ID}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{
+			discovery.ID: discovery,
+			review.ID:    review,
+		},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review-planning-context",
+		Title:           "Review planning context",
+		Purpose:         "Run review after planning context discovery",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "planning-reviewer",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{review.ID, review.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-discovery",
+		ProjectID:      "project-1",
+		AutomationID:   "automation-discovery",
+		AgentID:        "planning-worker",
+		PlanID:         "plan-1",
+		TaskID:         discovery.ID,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusNeedsReview,
+		Status:         RunStatusVerifying,
+		RunnerKind:     RunnerKindCodexCLI,
+		CreatedAt:      time.Unix(100, 0).UTC(),
+		UpdatedAt:      time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.AutomationID != automation.ID || claimed.Run.TaskID != review.ID || claimed.Run.Status != RunStatusRunning {
+		t.Fatalf("expected dependent review run to be claimed after metadata-only closeout, got %#v", claimed.Run)
+	}
+	completed, err := store.GetRun(ctx, "project-1", "run-discovery")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if completed.Status != RunStatusCompleted || completed.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected discovery run completed, got %#v", completed)
+	}
+	discovery = fake.tasks[discovery.ID]
+	if discovery.Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected discovery task done, got %#v", discovery)
+	}
+	if !containsString(discovery.VerifierResultRefs, "verifier.automation.metadata-only-output") {
+		t.Fatalf("expected synthetic metadata-only verifier ref, got %#v", discovery.VerifierResultRefs)
+	}
+	if discovery.ReviewExemptReason != "metadata-only automation task; no repository writes require secondary review" {
+		t.Fatalf("unexpected review exemption: %q", discovery.ReviewExemptReason)
+	}
+}
+
+func TestClaimNextRunDoesNotCloseOutEmptyMetadataOnlyVerifyingTask(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-empty", "discover-planning-context", nil)
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.FilesToEdit = nil
+	task.ClaimedByRunID = "run-empty"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-empty",
+		ProjectID:      "project-1",
+		AutomationID:   "automation-discovery",
+		AgentID:        "planning-worker",
+		PlanID:         "plan-1",
+		TaskID:         task.ID,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusNeedsReview,
+		Status:         RunStatusVerifying,
+		RunnerKind:     RunnerKindCodexCLI,
+		CreatedAt:      time.Unix(100, 0).UTC(),
+		UpdatedAt:      time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run while empty metadata-only task remains verifying, got %v", err)
+	}
+	run, err := store.GetRun(ctx, "project-1", "run-empty")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if run.Status != RunStatusVerifying {
+		t.Fatalf("expected empty metadata-only run to remain verifying, got %#v", run)
+	}
+	if got := fake.tasks[task.ID].Status; got != projectworkplan.WorkTaskStatusNeedsReview {
+		t.Fatalf("expected empty metadata-only task to remain needs_review, got %q", got)
+	}
+}
+
 func TestClaimNextRunReconcilesRunningRunMovedToVerifyingBeforeClaimingQueuedRun(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()

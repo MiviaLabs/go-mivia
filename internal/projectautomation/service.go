@@ -4491,6 +4491,9 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 	if isReadOnlyScannerTask(task) && readOnlyScannerTaskHasCloseoutOutput(task) {
 		return true
 	}
+	if !isReadOnlyScannerTask(task) && len(task.FilesToEdit) == 0 && metadataOnlyTaskHasCloseoutEvidence(task) {
+		return true
+	}
 	if len(task.VerifierResultRefs) == 0 {
 		return false
 	}
@@ -4553,6 +4556,9 @@ func automationCloseoutVerifierRefs(task projectworkplan.WorkTask) []string {
 	refs := append([]string(nil), task.VerifierResultRefs...)
 	if len(refs) == 0 && isReadOnlyScannerTask(task) && readOnlyScannerTaskHasCloseoutOutput(task) {
 		refs = append(refs, "verifier.automation.read-only-scanner-output")
+	}
+	if len(refs) == 0 && !isReadOnlyScannerTask(task) && len(task.FilesToEdit) == 0 && metadataOnlyTaskHasCloseoutEvidence(task) {
+		refs = append(refs, "verifier.automation.metadata-only-output")
 	}
 	return refs
 }
