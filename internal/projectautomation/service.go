@@ -3536,16 +3536,17 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		"Use only the bounded task scope and likely affected files unless current source proves a narrower necessary change.",
 		"Do not run verifier commands unless this task explicitly allows worker verification.",
 	}
-	if strings.HasPrefix(task.TaskRef, "review-") {
+	governedInstructions := governedWorkflowStepInstructions(task.TaskRef)
+	if strings.HasPrefix(task.TaskRef, "review-") && len(governedInstructions) == 0 {
 		instructions = append(instructions,
 			"This is an independent review task. Do not edit implementation files.",
 			"Review the implementation task named in the task description or evidence refs.",
 			"Attach a review_result_ref to the implementation task before completing this review task.",
 		)
-	} else {
+	} else if len(governedInstructions) == 0 {
 		instructions = append(instructions, "Leave verifier execution and task completion to the orchestrator.")
 	}
-	instructions = append(instructions, governedWorkflowStepInstructions(task.TaskRef)...)
+	instructions = append(instructions, governedInstructions...)
 	return CodexTaskInput{
 		SchemaVersion:           1,
 		ProjectID:               run.ProjectID,
@@ -3570,34 +3571,53 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 func governedWorkflowStepInstructions(taskRef string) []string {
 	switch strings.TrimSpace(taskRef) {
 	case "decompose-work-plan":
-		return []string{
+		return governedWorkflowCloseoutInstructions([]string{
 			"This governance step must create concrete child Work Tasks for the requested ticket by calling projects.work_tasks.create. Do not exit successfully with only metadata on this wrapper task.",
 			"Each created child Work Task must be implementation-ready: one objective, files_to_read, files_to_edit or explicit discovery scope, downstream impact, regression-test applicability, acceptance criteria, stop conditions, verifier ladder, dependencies, and resume instructions.",
 			"If no concrete implementation task can be derived from the ticket and source evidence, block this task with the exact missing evidence instead of marking it ready or done.",
-		}
+		})
 	case "mark-ready-after-review":
-		return []string{
+		return governedWorkflowCloseoutInstructions([]string{
 			"This governance step must inspect child Work Tasks created by decomposition and move only reviewed implementation-ready child tasks to ready. Do not exit successfully if no child implementation Work Tasks exist.",
 			"If no child implementation task is ready, block this task and state whether decomposition produced no tasks, review refs are missing, or task metadata is incomplete.",
-		}
+		})
 	case "select-ready-tasks":
-		return []string{
+		return governedWorkflowCloseoutInstructions([]string{
 			"This governance step must select actual ready child implementation Work Tasks from the previous decomposition output. Do not exit successfully if the only ready tasks are workflow wrapper tasks.",
 			"If no concrete child implementation task is selected, block this task with a missing-ready-implementation-task reason.",
-		}
+		})
 	case "run-implementation-batch":
-		return []string{
+		return governedWorkflowCloseoutInstructions([]string{
 			"This governance step must dispatch or execute concrete selected child implementation tasks. Do not exit successfully with no repository diff, no child task evidence, and no explicit blocked reason.",
 			"If selected implementation tasks cannot be claimed or executed, block this task and attach the selected task refs and blocker category.",
-		}
+		})
+	case "review-implementation-batch":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This governance step must independently review concrete child implementation task outputs. Do not exit successfully if there are no child implementation tasks, no implementation evidence refs, or no diff/branch evidence to review.",
+			"If implementation output is missing or unreviewable, block this task with missing-implementation-output instead of approving the batch.",
+		})
+	case "orchestrator-verification":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This governance step must verify concrete implementation outputs against the ticket, downstream impact map, regression-test decision, and verifier ladder. Do not exit successfully if there are no implementation outputs to verify.",
+			"If verification cannot run or required implementation evidence is missing, block this task with missing-verification-evidence or verifier-unavailable.",
+		})
 	case "pr-gitops-readiness":
-		return []string{
+		return governedWorkflowCloseoutInstructions([]string{
 			"This governance step must not approve GitOps readiness when there is no implementation diff and no existing branch/PR evidence for the ticket.",
 			"If no diff exists after implementation, block this task with no-implementation-diff instead of approving PR readiness.",
-		}
+		})
 	default:
 		return nil
 	}
+}
+
+func governedWorkflowCloseoutInstructions(stepInstructions []string) []string {
+	return append(stepInstructions,
+		"For this governed workflow wrapper, you must perform explicit MCP closeout before exiting successfully; do not rely on the runner to auto-close this task.",
+		"Successful closeout requires at least one bounded evidence ref on this wrapper task and projects.work_tasks.update_status moving this Work Task out of in_progress, normally to needs_review. If the required work cannot be completed, call projects.work_tasks.block or projects.work_tasks.fail with the concrete reason.",
+		"When native MCP tools are unavailable, use the Mivia MCP server URL with JSON-RPC tools/call for projects.work_tasks.create, projects.work_tasks.attach_evidence, projects.work_tasks.update_status, projects.work_tasks.block, or projects.work_tasks.fail as applicable.",
+		"The runner will fail this automation with automation_task_closeout_missing if this wrapper task is still in_progress after your process exits.",
+	)
 }
 
 func safeWorkerEvidenceRefs(values []string) []string {

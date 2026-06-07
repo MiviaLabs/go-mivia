@@ -120,6 +120,8 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 			"must create concrete child Work Tasks",
 			"projects.work_tasks.create",
 			"implementation-ready",
+			"must perform explicit MCP closeout",
+			"automation_task_closeout_missing",
 		},
 		"mark-ready-after-review": {
 			"must inspect child Work Tasks",
@@ -133,6 +135,14 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 			"must dispatch or execute concrete selected child implementation tasks",
 			"Do not exit successfully with no repository diff",
 		},
+		"review-implementation-batch": {
+			"must independently review concrete child implementation task outputs",
+			"missing-implementation-output",
+		},
+		"orchestrator-verification": {
+			"must verify concrete implementation outputs",
+			"missing-verification-evidence",
+		},
 		"pr-gitops-readiness": {
 			"must not approve GitOps readiness when there is no implementation diff",
 			"no-implementation-diff",
@@ -141,6 +151,9 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 	for taskRef, wants := range cases {
 		input := codexInputForRun(run, projectworkplan.WorkTask{ID: "task-1", PlanID: "plan-1", TaskRef: taskRef})
 		prompt := RenderCodexTaskPrompt(input)
+		if strings.Contains(prompt, "Leave verifier execution and task completion to the orchestrator.") {
+			t.Fatalf("task %s prompt must not tell governed workflow wrappers to leave closeout to the orchestrator:\n%s", taskRef, prompt)
+		}
 		for _, want := range wants {
 			if !strings.Contains(prompt, want) {
 				t.Fatalf("task %s prompt missing %q:\n%s", taskRef, want, prompt)
