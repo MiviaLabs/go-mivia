@@ -5805,6 +5805,53 @@ func TestSubmitRunQueuesRequiredAutomationReviewBeforeImplementation(t *testing.
 	}
 }
 
+func TestSubmitRunDoesNotQueueRequiredAutomationReviewForTerminalPlan(t *testing.T) {
+	ctx := context.Background()
+	reviewTask := readyTask("automation-review", "automation-review", []string{"internal/foo.go"})
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusBlocked},
+		},
+		tasks: map[string]projectworkplan.WorkTask{
+			"task-a":            task,
+			"automation-review": reviewTask,
+		},
+	}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:             "project-1",
+		AutomationRef:         "auto/review-gated-terminal",
+		Title:                 "Review gated automation",
+		Purpose:               "Require review before external claim",
+		AgentID:               "agent-1",
+		PlanID:                "plan-1",
+		RequiredReviewTaskIDs: []string{"automation-review"},
+		PermissionRef:         "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+
+	run, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: "project-1", AutomationID: automation.ID, PlanID: "plan-1", TaskID: "task-a", RunnerKind: RunnerKindCodexCLI, OrchestratorRunID: "orch-1"})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	if run.Status != RunStatusBlocked || run.FailureCategory != "work_plan_terminal" {
+		t.Fatalf("expected terminal plan rejection, got %#v", run)
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: automation.ID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	for _, queued := range runs {
+		if queued.TaskID == reviewTask.ID && queued.Status == RunStatusQueued {
+			t.Fatalf("terminal plan must not queue required review run, got %#v", queued)
+		}
+	}
+}
+
 func TestRunStartAttachesGovernanceActionEvidence(t *testing.T) {
 	ctx := context.Background()
 	fakeTasks := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
@@ -6925,6 +6972,57 @@ func TestClaimNextRunRecoversAbandonedRunningRunAfterRestart(t *testing.T) {
 	}
 	if abandoned.Status != RunStatusTimeout || abandoned.FailureCategory != "external_runner_interrupted" {
 		t.Fatalf("expected abandoned run timeout marker, got %+v", abandoned)
+	}
+}
+
+func TestClaimNextRunDoesNotRequeueAbandonedRunFromTerminalPlan(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusBlocked},
+		},
+		tasks: map[string]projectworkplan.WorkTask{"task-a": task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	startedBeforeRestart := svc.startedAt.Add(-time.Minute)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-a",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         task.PlanID,
+		TaskID:         task.ID,
+		WorkTaskStatus: task.Status,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		AttemptCount:   1,
+		StartedAt:      startedBeforeRestart,
+		CreatedAt:      startedBeforeRestart,
+		UpdatedAt:      startedBeforeRestart,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no replacement claim for terminal plan, got %v", err)
+	}
+	abandoned, err := store.GetRun(ctx, automation.ProjectID, "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if abandoned.Status != RunStatusTimeout || abandoned.FailureCategory != "external_runner_interrupted" {
+		t.Fatalf("expected abandoned run timeout marker, got %+v", abandoned)
+	}
+	for _, run := range store.runs {
+		if run.ID != "run-a" && run.TaskID == task.ID && run.Status == RunStatusQueued {
+			t.Fatalf("terminal plan must not create queued replacement, got %+v", run)
+		}
 	}
 }
 

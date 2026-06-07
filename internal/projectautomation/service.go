@@ -590,6 +590,11 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	if err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
 	}
+	if svc.workTasks != nil && strings.TrimSpace(planID) != "" {
+		if err := svc.validatePlanExecutable(ctx, projectID, planID); err != nil {
+			return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, runPlanFailureCategory(err))
+		}
+	}
 	if err := svc.ensureRequiredAutomationReviewRuns(ctx, automation, runnerKind, input); err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, err.Error())
 	}
@@ -3115,6 +3120,9 @@ func (svc *Service) readyPlannedDependentTasks(ctx context.Context, projectID st
 }
 
 func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automation Automation, task projectworkplan.WorkTask) error {
+	if err := svc.validateRunPlanExecutable(ctx, AutomationRun{ProjectID: task.ProjectID, PlanID: task.PlanID}, task); err != nil {
+		return nil
+	}
 	existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: task.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
 	if err != nil {
 		return err
@@ -3559,6 +3567,9 @@ func (svc *Service) queueReviewForImplementationTask(ctx context.Context, run Au
 }
 
 func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) error {
+	if err := svc.validateRunPlanExecutable(ctx, parent, reviewTask); err != nil {
+		return nil
+	}
 	automations, err := svc.store.ListAutomations(ctx, AutomationFilter{ProjectID: parent.ProjectID, Status: AutomationStatusEnabled})
 	if err != nil {
 		return err
@@ -3846,10 +3857,14 @@ func (svc *Service) candidateTasks(ctx context.Context, projectID string, planID
 
 func (svc *Service) validateRunPlanExecutable(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) error {
 	planID := firstNonEmpty(task.PlanID, run.PlanID)
+	return svc.validatePlanExecutable(ctx, run.ProjectID, planID)
+}
+
+func (svc *Service) validatePlanExecutable(ctx context.Context, projectID string, planID string) error {
 	if strings.TrimSpace(planID) == "" {
 		return nil
 	}
-	plan, err := svc.workTasks.GetWorkPlan(ctx, run.ProjectID, planID)
+	plan, err := svc.workTasks.GetWorkPlan(ctx, projectID, planID)
 	if err != nil {
 		return fmt.Errorf("%w: work_plan_unavailable", ErrInvalidInput)
 	}
@@ -4494,6 +4509,9 @@ func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, auto
 		}
 		if task.Status != projectworkplan.WorkTaskStatusReady {
 			continue
+		}
+		if err := svc.validateRunPlanExecutable(ctx, AutomationRun{ProjectID: automation.ProjectID, PlanID: automation.PlanID}, task); err != nil {
+			return err
 		}
 		existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: automation.PlanID})
 		if err != nil {
