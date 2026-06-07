@@ -613,7 +613,7 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	run := AutomationRun{
 		ID: svc.newID("automation_run"), ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID,
 		TaskID: taskID, Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: orchestratorRunID,
-		ParentRunID: parentRunID, CreatedAt: now, UpdatedAt: now,
+		ParentRunID: parentRunID, TraceID: automation.TraceID, CreatedAt: now, UpdatedAt: now,
 	}
 	return svc.store.CreateRun(ctx, run)
 }
@@ -973,24 +973,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
-	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
-	if err != nil {
-		return ClaimedRun{}, err
-	}
-	svc.sortQueuedRunsForClaim(ctx, runs)
-	for _, run := range runs {
-		if run.RunnerKind != RunnerKindCodexCLI {
-			continue
-		}
-		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
-			continue
-		}
-		claimed, task, err := svc.prepareRunForExecution(ctx, run, runnerID)
-		if err != nil {
-			continue
-		}
-		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, nil
+	claimed, ok, skippedReason, err := svc.claimFirstQueuedRun(ctx, projectID, agentID, runnerID)
+	if err != nil || ok {
+		return claimed, err
 	}
 	if err := svc.reconcileRunningRuns(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
@@ -1022,11 +1007,26 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
 		return ClaimedRun{}, err
 	}
-	runs, err = svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
+	claimed, ok, skippedReasonAfterReconcile, err := svc.claimFirstQueuedRun(ctx, projectID, agentID, runnerID)
+	if err != nil || ok {
+		return claimed, err
+	}
+	if skippedReasonAfterReconcile != "" {
+		skippedReason = skippedReasonAfterReconcile
+	}
+	if skippedReason != "" {
+		return ClaimedRun{}, fmt.Errorf("%w: queued automation runs not claimable: %s", ErrInvalidInput, skippedReason)
+	}
+	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
+}
+
+func (svc *Service) claimFirstQueuedRun(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, string, error) {
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
 	if err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, false, "", err
 	}
 	svc.sortQueuedRunsForClaim(ctx, runs)
+	skippedReason := ""
 	for _, run := range runs {
 		if run.RunnerKind != RunnerKindCodexCLI {
 			continue
@@ -1036,12 +1036,32 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		}
 		claimed, task, err := svc.prepareRunForExecution(ctx, run, runnerID)
 		if err != nil {
+			if skippedReason == "" {
+				skippedReason = claimSkipReason(claimed, err)
+			}
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, nil
+		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, "", nil
 	}
-	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
+	return ClaimedRun{}, false, skippedReason, nil
+}
+
+func claimSkipReason(run AutomationRun, err error) string {
+	if strings.TrimSpace(run.FailureCategory) != "" {
+		return safeFailure(run.FailureCategory)
+	}
+	if err == nil {
+		return "unknown"
+	}
+	reason := strings.TrimSpace(err.Error())
+	prefix := ErrInvalidInput.Error() + ":"
+	if strings.HasPrefix(reason, prefix) {
+		reason = strings.TrimSpace(strings.TrimPrefix(reason, prefix))
+	} else if idx := strings.LastIndex(reason, ":"); idx >= 0 && idx+1 < len(reason) {
+		reason = strings.TrimSpace(reason[idx+1:])
+	}
+	return safeFailure(reason)
 }
 
 func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, error) {

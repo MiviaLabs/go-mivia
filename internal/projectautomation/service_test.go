@@ -291,6 +291,80 @@ func TestWorkPlanStatusTriggerQueuesAutomaticRunsOnce(t *testing.T) {
 	}
 }
 
+func TestSubmitRunCopiesWorkflowTraceIDFromAutomation(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newTestStore(), &fakeWorkTasks{}, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:     "project-1",
+		AutomationRef: "auto/trace",
+		Title:         "Trace automation",
+		Purpose:       "Preserve workflow trace on queued runs",
+		AgentID:       "agent-1",
+		PlanID:        "plan-1",
+		TraceID:       "trace-current-workflow",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+
+	run, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: "project-1", AutomationID: automation.ID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	if run.TraceID != "trace-current-workflow" {
+		t.Fatalf("expected queued run to inherit automation trace, got %q", run.TraceID)
+	}
+}
+
+func TestClaimNextRunReportsUnclaimableQueuedRunReason(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": readyTask("task-a", "actual-task", []string{"internal/foo.go"}),
+	}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/unclaimable",
+		Title:           "Unclaimable automation",
+		Purpose:         "Expose queued claim blockers",
+		AgentID:         "agent-1",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{"different-task"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:           "run-a",
+		ProjectID:    "project-1",
+		AutomationID: automation.ID,
+		AgentID:      "agent-1",
+		PlanID:       "plan-1",
+		TaskID:       "task-a",
+		Status:       RunStatusQueued,
+		RunnerKind:   RunnerKindCodexCLI,
+		CreatedAt:    time.Unix(100, 0).UTC(),
+		UpdatedAt:    time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	_, err = svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "queued automation runs not claimable:") || !strings.Contains(err.Error(), "task_ref_not_allowed") {
+		t.Fatalf("expected explicit unclaimable queued reason, got %v", err)
+	}
+	blocked, err := store.GetRun(ctx, "project-1", "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if blocked.Status != RunStatusPolicyDenied || !strings.Contains(blocked.FailureCategory, "task_ref_not_allowed") {
+		t.Fatalf("expected rejected run to preserve precise failure, got %+v", blocked)
+	}
+}
+
 func TestClaimNextRunRecoversRunningRunWhenTaskMovedToVerifying(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
@@ -2051,8 +2125,8 @@ func TestClaimNextRunBlocksStaleQueuedReplacementAfterRetryLimit(t *testing.T) {
 		t.Fatalf("CreateRun returned error: %v", err)
 	}
 
-	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
-		t.Fatalf("expected no queued automation run after stale replacement is blocked, got %v", err)
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "queued automation runs not claimable: "+automationReplacementRetryLimitCategory) {
+		t.Fatalf("expected explicit retry-limit blocker after stale replacement is blocked, got %v", err)
 	}
 	blockedRun, err := store.GetRun(ctx, automation.ProjectID, "stale-queued-run")
 	if err != nil {
@@ -2113,8 +2187,8 @@ func TestClaimNextRunBlocksStaleQueuedReplacementWhenTaskAlreadyBlockedAfterRetr
 		t.Fatalf("CreateRun returned error: %v", err)
 	}
 
-	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
-		t.Fatalf("expected no queued automation run after stale replacement is blocked, got %v", err)
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "queued automation runs not claimable: "+automationReplacementRetryLimitCategory) {
+		t.Fatalf("expected explicit retry-limit blocker after stale replacement is blocked, got %v", err)
 	}
 	blockedRun, err := store.GetRun(ctx, automation.ProjectID, "stale-queued-run")
 	if err != nil {
