@@ -168,6 +168,49 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	}
 }
 
+func TestMassGovernedDecompositionPlanningStageSequence(t *testing.T) {
+	ctx := context.Background()
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
+	svc := projectworkflow.New(workflowstore.NewMemoryStore())
+	svc.SetCompilerDependencies(workPlans, automations)
+
+	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-decomposition-planning.toml"), "mass-monorepo")
+	expectedOrder := []string{
+		"discover-planning-context",
+		"map-downstream-impact",
+		"decompose-work-plan",
+		"mark-ready-after-review",
+	}
+	if len(decomposition.Steps) != len(expectedOrder) {
+		t.Fatalf("expected exact decomposition stage sequence %v, got %#v", expectedOrder, decomposition.Steps)
+	}
+	for index, want := range expectedOrder {
+		step := decomposition.Steps[index]
+		if step.ID != want {
+			t.Fatalf("stage %d must be %q, got %q", index, want, step.ID)
+		}
+		if !strings.Contains(step.ReviewGate, "planning-readiness-review") {
+			t.Fatalf("stage %q must require planning-readiness-review, got %q", step.ID, step.ReviewGate)
+		}
+		if index == 0 && len(step.DependsOn) != 0 {
+			t.Fatalf("discover stage must have no dependencies, got %#v", step.DependsOn)
+		}
+		if index > 0 && (len(step.DependsOn) != 1 || step.DependsOn[0] != expectedOrder[index-1]) {
+			t.Fatalf("stage %q must depend only on %q, got %#v", step.ID, expectedOrder[index-1], step.DependsOn)
+		}
+	}
+	gate := configReviewGateByID(t, decomposition, "planning-readiness-review")
+	if !gate.Required || !gate.IndependentFromOwner {
+		t.Fatalf("planning readiness review must be required and independent, got %#v", gate)
+	}
+	for _, stepID := range expectedOrder {
+		if !containsConfigString(gate.AppliesTo, stepID) {
+			t.Fatalf("planning readiness review must apply to %q, applies_to=%#v", stepID, gate.AppliesTo)
+		}
+	}
+}
+
 func importConfigWorkflow(t *testing.T, ctx context.Context, svc *projectworkflow.Service, path string, projectID string) projectworkflow.WorkflowDefinition {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -204,6 +247,17 @@ func configStepByID(t *testing.T, workflow projectworkflow.WorkflowDefinition, i
 	}
 	t.Fatalf("missing workflow step %q", id)
 	return projectworkflow.WorkflowStep{}
+}
+
+func configReviewGateByID(t *testing.T, workflow projectworkflow.WorkflowDefinition, id string) projectworkflow.WorkflowReviewGate {
+	t.Helper()
+	for _, gate := range workflow.ReviewGates {
+		if gate.ID == id {
+			return gate
+		}
+	}
+	t.Fatalf("missing workflow review gate %q", id)
+	return projectworkflow.WorkflowReviewGate{}
 }
 
 func configAutomationByAllowedRef(t *testing.T, automations []projectautomation.Automation, ref string) projectautomation.Automation {
