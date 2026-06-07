@@ -272,15 +272,28 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 	if err := json.Unmarshal([]byte(jsonText), &fields); err != nil {
 		return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
+	if normalizeGovernedCloseoutBoundedTextField(fields, "outcome", closeoutWorkTaskTextMax) {
+		jsonText = ""
+	}
+	if normalizeGovernedCloseoutBoundedTextField(fields, "safe_next_action", closeoutWorkTaskTextMax) {
+		jsonText = ""
+	}
 	rawTasks, ok := fields["child_tasks"]
 	if !ok || len(bytes.TrimSpace(rawTasks)) == 0 || string(bytes.TrimSpace(rawTasks)) == "null" {
-		return jsonText, nil
+		if jsonText != "" {
+			return jsonText, nil
+		}
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
+		}
+		return string(encoded), nil
 	}
 	var tasks []map[string]json.RawMessage
 	if err := json.Unmarshal(rawTasks, &tasks); err != nil {
 		return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
-	changed := false
+	changed := jsonText == ""
 	for index, task := range tasks {
 		if normalizeGovernedCloseoutObjectTextField(task, "decomposition_quality") {
 			changed = true
@@ -305,6 +318,27 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 	return string(encoded), nil
 }
 
+func normalizeGovernedCloseoutBoundedTextField(fields map[string]json.RawMessage, field string, max int) bool {
+	rawValue, ok := fields[field]
+	if !ok {
+		return false
+	}
+	var value string
+	if err := json.Unmarshal(rawValue, &value); err != nil {
+		return false
+	}
+	value = strings.TrimSpace(value)
+	if len(value) <= max {
+		return false
+	}
+	encoded, err := json.Marshal(value[:max])
+	if err != nil {
+		return false
+	}
+	fields[field] = encoded
+	return true
+}
+
 func normalizeGovernedCloseoutObjectTextField(task map[string]json.RawMessage, field string) bool {
 	rawValue, ok := task[field]
 	if !ok || rawJSONValueIsStringOrNull(rawValue) {
@@ -327,7 +361,7 @@ func closeoutTextFromObject(raw json.RawMessage) (string, error) {
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return "", err
 	}
-	for _, key := range []string{"status", "quality", "value", "state", "decision", "applicability"} {
+	for _, key := range []string{"status", "quality", "value", "state", "decision", "applicability", "summary", "assessment", "result", "reason", "rationale", "confidence"} {
 		rawValue, ok := object[key]
 		if !ok {
 			continue
@@ -337,7 +371,26 @@ func closeoutTextFromObject(raw json.RawMessage) (string, error) {
 			return strings.TrimSpace(value), nil
 		}
 	}
+	if value := firstNestedString(object); value != "" {
+		return value, nil
+	}
 	return "", errors.New("closeout text object lacks string value")
+}
+
+func firstNestedString(object map[string]json.RawMessage) string {
+	for _, rawValue := range object {
+		var value string
+		if err := json.Unmarshal(rawValue, &value); err == nil && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(rawValue, &nested); err == nil {
+			if value := firstNestedString(nested); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
 }
 
 func validateGovernedCloseoutTopLevelFields(jsonText string) error {

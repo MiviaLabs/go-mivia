@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2352,6 +2353,22 @@ func TestValidateGovernedCloseoutRejectsServerInvalidBlockReason(t *testing.T) {
 	}
 }
 
+func TestParseGovernedCloseoutTrimsServerInvalidOutcomeSummary(t *testing.T) {
+	output, err := parseGovernedCloseoutOutput(fmt.Sprintf(`{
+		"closeout_action":"needs_review",
+		"outcome":%q,
+		"safe_next_action":"review child tasks",
+		"evidence_refs":["task-decomposition-ref"],
+		"child_tasks":[]
+	}`, strings.Repeat("a", closeoutWorkTaskTextMax+1)))
+	if err != nil {
+		t.Fatalf("expected long outcome summary to normalize, got %v", err)
+	}
+	if len(output.Outcome) != closeoutWorkTaskTextMax {
+		t.Fatalf("outcome length = %d, want %d", len(output.Outcome), closeoutWorkTaskTextMax)
+	}
+}
+
 func TestParseGovernedCloseoutRejectsChildTaskObjectStringFieldAsValidation(t *testing.T) {
 	_, err := parseGovernedCloseoutOutput(`{
 		"closeout_action":"needs_review",
@@ -2431,6 +2448,39 @@ func TestParseGovernedCloseoutNormalizesChildTaskDecompositionQualityObject(t *t
 	}
 	if got := output.ChildTasks[0].DecompositionQuality; got != "ready" {
 		t.Fatalf("decomposition_quality = %q, want ready", got)
+	}
+}
+
+func TestParseGovernedCloseoutNormalizesChildTaskStructuredDecompositionQualityObject(t *testing.T) {
+	output, err := parseGovernedCloseoutOutput(`{
+		"closeout_action":"needs_review",
+		"outcome":"decomposed",
+		"safe_next_action":"review child tasks",
+		"evidence_refs":["task-decomposition-ref"],
+		"child_tasks":[{
+			"task_ref":"implement-mass-1044",
+			"title":"Implement MASS-1044",
+			"description":"Implement bounded change",
+			"evidence_needed":["source-evidence"],
+			"files_to_read":["apps/domain/file.ts"],
+			"verification_requirement":"run focused verifier",
+			"expected_output":"implementation complete",
+			"failure_criteria":"block on missing evidence",
+			"resume_instructions":"resume from task refs",
+			"decomposition_quality":{"summary":"complete governed metadata","confidence":"high"},
+			"acceptance_criteria":["source verified"],
+			"stop_conditions":["stop on missing evidence"],
+			"verifier_ladder":["focused verifier"],
+			"regression_test_applicability":"required",
+			"downstream_impact_refs":["downstream-impact-ref"],
+			"output_contract":"bounded output"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("expected structured decomposition_quality object to normalize, got %v", err)
+	}
+	if got := output.ChildTasks[0].DecompositionQuality; got != "complete governed metadata" {
+		t.Fatalf("decomposition_quality = %q, want complete governed metadata", got)
 	}
 }
 
