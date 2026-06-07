@@ -3916,6 +3916,34 @@ func TestClaimNextRunBlocksVerifyingRunFromTerminalPlan(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunBlocksActivePlanWithStaleBlockedTask(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "decompose-work-plan", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusBlocked
+	task.BlockedReason = "Automation replacement retry limit reached after repeated codex_cli_failed failures."
+	task.ResumeInstructions = "Correct codex_cli_failed before requeueing."
+	task.EvidenceRefs = []string{"automation_run:run-failed"}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: task.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after stale blocked-task reconciliation, got %v", err)
+	}
+	plan := fake.plans[task.PlanID]
+	if plan.Status != projectworkplan.WorkPlanStatusBlocked || plan.CurrentTaskID != task.ID {
+		t.Fatalf("expected stale blocked task to block parent plan, got %#v", plan)
+	}
+	if !strings.Contains(plan.Outcome, "retry limit") || !strings.Contains(plan.ResumeSummary, "Correct codex_cli_failed") {
+		t.Fatalf("expected plan to carry task blocker metadata, got %#v", plan)
+	}
+}
+
 func TestWorkPlanStatusTriggerQueuesRequiredReviewTask(t *testing.T) {
 	ctx := context.Background()
 	reviewTask := readyTask("automation-review", "automation-review", []string{"internal/review.go"})
@@ -7659,6 +7687,8 @@ func (fake *fakeWorkTasks) UpdateWorkPlanStatus(_ context.Context, input project
 	}
 	plan.Status = input.Status
 	plan.ResumeSummary = input.ResumeSummary
+	plan.Outcome = input.Outcome
+	plan.CurrentTaskID = input.CurrentTaskID
 	fake.plans[plan.ID] = plan
 	return plan, nil
 }

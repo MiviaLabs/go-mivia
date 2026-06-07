@@ -3059,6 +3059,26 @@ func (svc *Service) reconcileReadyAutomationsForProject(ctx context.Context, pro
 		if err := svc.blockReadyTasksWithoutEnabledAutomation(ctx, projectID, plan.ID, automations); err != nil {
 			return err
 		}
+		if err := svc.blockActivePlanFromStaleBlockedTasks(ctx, projectID, plan.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) blockActivePlanFromStaleBlockedTasks(ctx context.Context, projectID string, planID string) error {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" || strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if task.Status != projectworkplan.WorkTaskStatusBlocked {
+			continue
+		}
+		return svc.updatePlanAfterTerminalTask(ctx, task)
 	}
 	return nil
 }
