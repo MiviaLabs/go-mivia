@@ -1669,6 +1669,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if isRecoverableCodexExecutionFailure(failureCategory) {
 			return svc.requeueTaskAfterCodexExecutionFailure(ctx, run, failureCategory)
 		}
+		if isNonRetryableCodexExecutionFailure(failureCategory) {
+			return svc.blockTaskAfterNonRetryableCodexExecutionFailure(ctx, run, failureCategory)
+		}
 		if isRecoverableGovernedCloseoutFailure(failureCategory) {
 			return svc.requeueTaskAfterGovernedCloseoutFailure(ctx, run, failureCategory)
 		}
@@ -2274,6 +2277,46 @@ func (svc *Service) requeueTaskAfterCodexExecutionFailure(ctx context.Context, r
 	}
 	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
 		return updated, nil
+	}
+	return updated, nil
+}
+
+func (svc *Service) blockTaskAfterNonRetryableCodexExecutionFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	run.Status = RunStatusFailed
+	run.FailureCategory = category
+	run.SafeSummary = category
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return updated, nil
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return updated, nil
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		return updated, nil
+	}
+	blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		SafeNextAction:     category,
+		TraceID:            category,
+		BlockedReason:      nonRetryableCodexBlockedReason(category),
+		ResumeInstructions: nonRetryableCodexResumeInstructions(category),
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+		return updated, err
 	}
 	return updated, nil
 }
@@ -3234,6 +3277,15 @@ func isRecoverableCodexExecutionFailure(category string) bool {
 	}
 }
 
+func isNonRetryableCodexExecutionFailure(category string) bool {
+	switch strings.TrimSpace(category) {
+	case "codex_usage_limit_reached":
+		return true
+	default:
+		return false
+	}
+}
+
 func isRecoverableGovernedCloseoutFailure(category string) bool {
 	switch strings.TrimSpace(category) {
 	case "automation_task_closeout_failed",
@@ -3264,6 +3316,24 @@ func codexExecutionFailureResumeInstructions(category string) string {
 		category = "codex_cli_failed"
 	}
 	return recoveryResumeInstructions("Codex execution failed with " + safeFailure(category) + ". Inspect the automation run evidence, runner worktree, Codex binary/config, and generated closeout before retrying the same bounded task.")
+}
+
+func nonRetryableCodexBlockedReason(category string) string {
+	switch strings.TrimSpace(category) {
+	case "codex_usage_limit_reached":
+		return "Codex usage limit reached; automation cannot continue until quota or credits are available."
+	default:
+		return "Codex execution failed with a non-retryable runtime condition."
+	}
+}
+
+func nonRetryableCodexResumeInstructions(category string) string {
+	switch strings.TrimSpace(category) {
+	case "codex_usage_limit_reached":
+		return "Restore Codex quota or credits, then explicitly requeue this Work Task; do not retry automatically while the usage limit is active."
+	default:
+		return "Resolve the non-retryable Codex runtime condition, then explicitly requeue this Work Task."
+	}
 }
 
 func (svc *Service) shouldQueueReplacementRunForTask(ctx context.Context, automation Automation, run AutomationRun, task projectworkplan.WorkTask) bool {

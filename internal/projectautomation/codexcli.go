@@ -143,6 +143,8 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 func safeCodexFailureCategory(output string) string {
 	normalized := strings.ToLower(output)
 	switch {
+	case strings.Contains(normalized, "usage limit"):
+		return "codex_usage_limit_reached"
 	case strings.Contains(normalized, "failed to read config file") && strings.Contains(normalized, "permission denied"):
 		return "codex_config_unreadable"
 	case strings.Contains(normalized, "not logged in") || strings.Contains(normalized, "login") && strings.Contains(normalized, "codex"):

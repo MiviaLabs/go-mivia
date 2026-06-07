@@ -70,3 +70,27 @@ func TestRunCodexCommandClassifiesConfigPermissionFailure(t *testing.T) {
 		t.Fatalf("expected codex_config_unreadable, got %q", result.SafeFailureCategory)
 	}
 }
+
+func TestRunCodexCommandClassifiesUsageLimitFailure(t *testing.T) {
+	inputPath := filepath.Join(t.TempDir(), "task.txt")
+	if err := os.WriteFile(inputPath, []byte("safe prompt"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	binary := filepath.Join(t.TempDir(), "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again later.\" >&2\nexit 1\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	command, err := BuildCodexCommand(CodexCommandInput{BinaryPath: binary, InputPath: inputPath, Timeout: time.Minute})
+	if err != nil {
+		t.Fatalf("BuildCodexCommand returned error: %v", err)
+	}
+
+	result, err := RunCodexCommand(t.Context(), command, 1024)
+	if err == nil {
+		t.Fatal("expected fake codex failure")
+	}
+	if result.SafeFailureCategory != "codex_usage_limit_reached" {
+		t.Fatalf("expected codex_usage_limit_reached, got %q", result.SafeFailureCategory)
+	}
+}

@@ -839,6 +839,66 @@ func TestCompleteAttemptBlocksFailedCodexCLIAfterReplacementRetryLimitAndParentP
 	}
 }
 
+func TestCompleteAttemptBlocksCodexUsageLimitWithoutReplacement(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "discover-planning-context", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-usage"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{"task-a": task},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-usage", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress,
+		ClaimID:        "claim-usage",
+		RunnerID:       "runner-usage",
+		AttemptCount:   1,
+		CreatedAt:      time.Unix(200, 0).UTC(), UpdatedAt: time.Unix(200, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       "project-1",
+		RunID:           "run-usage",
+		Status:          RunStatusFailed,
+		FailureCategory: "codex_usage_limit_reached",
+		ClaimID:         "claim-usage",
+		RunnerID:        "runner-usage",
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if updated.Status != RunStatusFailed || updated.FailureCategory != "codex_usage_limit_reached" {
+		t.Fatalf("expected terminal usage-limit failure, got %#v", updated)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("usage limit must block task without replacement, got %#v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "usage limit") {
+		t.Fatalf("expected usage-limit blocked reason, got %q", blockedTask.BlockedReason)
+	}
+	if fake.plans[task.PlanID].Status != projectworkplan.WorkPlanStatusBlocked {
+		t.Fatalf("expected parent plan blocked, got %#v", fake.plans[task.PlanID])
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected no replacement run for usage limit, got %#v", runs)
+	}
+}
+
 func TestClaimNextRunRecoversGitOpsPreTaskFailureForReadyTask(t *testing.T) {
 	for _, category := range []string{"worktree_prepare_failed", "gitops_pre_task_failed", "gitops_dirty_worktree"} {
 		t.Run(category, func(t *testing.T) {
