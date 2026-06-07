@@ -1885,6 +1885,13 @@ func TestCheckCodexLauncherDirect(t *testing.T) {
 	}
 }
 
+func TestCheckCodexLauncherRejectsWindowsCmd(t *testing.T) {
+	err := checkCodexLauncher(t.Context(), codexLaunchOptions{Path: "codex", Launcher: "windows-cmd"})
+	if !errors.Is(err, projectautomation.ErrInvalidInput) || !strings.Contains(err.Error(), "unknown codex launcher") {
+		t.Fatalf("expected windows launcher to be rejected, got %v", err)
+	}
+}
+
 func TestCheckRunnerCodexPreflightRejectsMissingWorkDirBeforeClaim(t *testing.T) {
 	err := checkRunnerCodexPreflight(t.Context(), codexLaunchOptions{Path: fakeCodex(t, 0), Launcher: "direct", WorkDir: filepath.Join(t.TempDir(), "missing"), SmokePreflight: false})
 	if err == nil || !strings.Contains(err.Error(), "codex_workdir_unavailable") {
@@ -2189,41 +2196,10 @@ func shellQuoteForTest(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func TestBuildRunnerCodexCommandSupportsWindowsLauncher(t *testing.T) {
-	inputPath := filepath.Join(t.TempDir(), "codex-input.json")
-	originalConverter := windowsPathForRunner
-	t.Cleanup(func() { windowsPathForRunner = originalConverter })
-
-	outputPath := filepath.Join(t.TempDir(), "last-message.txt")
-	windowsPathForRunner = func(path string) (string, error) {
-		switch path {
-		case inputPath:
-			return `\\wsl.localhost\Ubuntu\tmp\codex-input.json`, nil
-		case outputPath:
-			return `\\wsl.localhost\Ubuntu\tmp\last-message.txt`, nil
-		case "/workspace/repo":
-			return `\\wsl.localhost\Ubuntu\workspace\repo`, nil
-		default:
-			t.Fatalf("unexpected path to convert: %q", path)
-			return "", nil
-		}
-	}
-
-	command, err := buildRunnerCodexCommand(inputPath, outputPath, time.Minute, codexLaunchOptions{Path: "codex", Launcher: "windows-cmd", WorkDir: "/workspace/repo", Sandbox: "workspace-write"})
-	if err != nil {
-		t.Fatalf("buildRunnerCodexCommand returned error: %v", err)
-	}
-	if command.Path != "cmd.exe" {
-		t.Fatalf("expected cmd.exe launcher, got %q", command.Path)
-	}
-	want := []string{"/c", "type", `\\wsl.localhost\Ubuntu\tmp\codex-input.json`, "|", "codex", "exec", "--sandbox", "workspace-write", "--output-last-message", `\\wsl.localhost\Ubuntu\tmp\last-message.txt`, "--cd", `\\wsl.localhost\Ubuntu\workspace\repo`, "-"}
-	if len(command.Args) != len(want) {
-		t.Fatalf("unexpected launcher args: %#v", command.Args)
-	}
-	for index := range want {
-		if command.Args[index] != want[index] {
-			t.Fatalf("arg %d = %q, want %q; all args %#v", index, command.Args[index], want[index], command.Args)
-		}
+func TestBuildRunnerCodexCommandRejectsWindowsLauncher(t *testing.T) {
+	_, err := buildRunnerCodexCommand(filepath.Join(t.TempDir(), "codex-input.json"), filepath.Join(t.TempDir(), "last-message.txt"), time.Minute, codexLaunchOptions{Path: "codex", Launcher: "windows-cmd", WorkDir: "/workspace/repo", Sandbox: "workspace-write"})
+	if !errors.Is(err, projectautomation.ErrInvalidInput) || !strings.Contains(err.Error(), "unknown codex launcher") {
+		t.Fatalf("expected windows launcher to be rejected, got %v", err)
 	}
 }
 

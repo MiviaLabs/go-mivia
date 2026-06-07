@@ -765,6 +765,80 @@ func TestCompleteAttemptBlocksFailedGovernedCloseoutAfterReplacementRetryLimit(t
 	}
 }
 
+func TestCompleteAttemptBlocksFailedCodexCLIAfterReplacementRetryLimitAndParentPlan(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "decompose-work-plan", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-2"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{"task-a": task},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	for i := 0; i < defaultAutomationMaxReplacementRunsPerTask-1; i++ {
+		if _, err := store.CreateRun(ctx, AutomationRun{
+			ID:              fmt.Sprintf("failed-codex-run-%d", i),
+			ProjectID:       automation.ProjectID,
+			AutomationID:    automation.ID,
+			AgentID:         automation.AgentID,
+			PlanID:          task.PlanID,
+			TaskID:          task.ID,
+			Status:          RunStatusFailed,
+			RunnerKind:      RunnerKindCodexCLI,
+			FailureCategory: "codex_cli_failed",
+			SafeSummary:     "dependency_ready_automation_queued",
+		}); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-2", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress,
+		ClaimID:        "claim-2",
+		RunnerID:       "runner-2",
+		AttemptCount:   1,
+		CreatedAt:      time.Unix(200, 0).UTC(), UpdatedAt: time.Unix(200, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       "project-1",
+		RunID:           "run-2",
+		Status:          RunStatusFailed,
+		FailureCategory: "codex_cli_failed",
+		ClaimID:         "claim-2",
+		RunnerID:        "runner-2",
+	}); err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked || blockedTask.ClaimedByRunID != "" {
+		t.Fatalf("expected task blocked after codex retry limit, got %#v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "replacement retry limit") {
+		t.Fatalf("expected explicit retry-limit blocked reason, got %q", blockedTask.BlockedReason)
+	}
+	if fake.plans[task.PlanID].Status != projectworkplan.WorkPlanStatusBlocked {
+		t.Fatalf("expected parent plan blocked with task, got %#v", fake.plans[task.PlanID])
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	for _, run := range runs {
+		if run.ID != "run-2" && run.Status == RunStatusQueued {
+			t.Fatalf("expected no queued replacement after retry limit, got %#v", run)
+		}
+	}
+}
+
 func TestClaimNextRunRecoversGitOpsPreTaskFailureForReadyTask(t *testing.T) {
 	for _, category := range []string{"worktree_prepare_failed", "gitops_pre_task_failed", "gitops_dirty_worktree"} {
 		t.Run(category, func(t *testing.T) {
@@ -3201,6 +3275,53 @@ func TestWorkPlanStatusTriggerSkipsWhenNoReadyTask(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Fatalf("expected no runs without a ready task, got %d: %#v", len(runs), runs)
+	}
+}
+
+func TestWorkPlanStatusTriggerBlocksReadyTaskWithoutEnabledMatchingAutomation(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "decompose-work-plan", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	svc := New(newTestStore(), fake, Options{
+		Enabled:         true,
+		RunnerEnabled:   true,
+		RunnerExecution: RunnerExecutionExternal,
+		WorkPlanStatusTrigger: WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID: task.ProjectID,
+		PlanID:    task.PlanID,
+		OldStatus: projectworkplan.WorkPlanStatusPlanned,
+		NewStatus: projectworkplan.WorkPlanStatusActive,
+		ChangedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("HandleWorkPlanStatusChanged returned error: %v", err)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected ready task blocked without matching automation, got %#v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "No enabled automatic automation") {
+		t.Fatalf("expected explicit no-automation blocked reason, got %q", blockedTask.BlockedReason)
+	}
+	if fake.plans[task.PlanID].Status != projectworkplan.WorkPlanStatusBlocked {
+		t.Fatalf("expected parent plan blocked, got %#v", fake.plans[task.PlanID])
+	}
+	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: task.ProjectID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected no queued runs without matching automation, got %#v", runs)
 	}
 }
 
@@ -6664,9 +6785,12 @@ func (fake *fakeWorkTasks) CreateWorkTask(_ context.Context, input projectworkpl
 func (fake *fakeWorkTasks) UpdateWorkPlanStatus(_ context.Context, input projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	if fake.plans == nil {
+		fake.plans = map[string]projectworkplan.WorkPlan{}
+	}
 	plan, ok := fake.plans[input.PlanID]
 	if !ok {
-		return projectworkplan.WorkPlan{}, errors.New("not found")
+		plan = projectworkplan.WorkPlan{ID: input.PlanID, ProjectID: input.ProjectID}
 	}
 	plan.Status = input.Status
 	plan.ResumeSummary = input.ResumeSummary

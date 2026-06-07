@@ -707,6 +707,9 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, event proje
 			return err
 		}
 	}
+	if err := svc.blockReadyTasksWithoutEnabledAutomation(ctx, event.ProjectID, event.PlanID, automations); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -725,6 +728,54 @@ func (svc *Service) workPlanStatusTriggers(status string) bool {
 
 func workPlanStatusTriggerRunID(event projectworkplan.WorkPlanStatusChange, automation Automation) string {
 	return "workplan-status:" + event.PlanID + ":" + event.NewStatus + ":" + automation.ID
+}
+
+func (svc *Service) blockReadyTasksWithoutEnabledAutomation(ctx context.Context, projectID string, planID string, automations []Automation) error {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" || strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if task.Status != projectworkplan.WorkTaskStatusReady {
+			continue
+		}
+		if hasEnabledAutomationForReadyTask(automations, task) {
+			continue
+		}
+		blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "no_enabled_matching_automation",
+			TraceID:            "no-enabled-matching-automation",
+			BlockedReason:      "No enabled automatic automation matches this ready Work Task.",
+			ResumeInstructions: "Enable or create an automatic automation for this task_ref and plan before resuming the Work Plan.",
+		})
+		if err != nil {
+			return err
+		}
+		if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hasEnabledAutomationForReadyTask(automations []Automation, task projectworkplan.WorkTask) bool {
+	for _, automation := range automations {
+		if automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || automation.PlanID != task.PlanID {
+			continue
+		}
+		if containsRef(automation.RequiredReviewTaskIDs, task.ID) {
+			return true
+		}
+		if validateAllowedTaskRef(automation, task) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (svc *Service) RunNow(ctx context.Context, input SubmitRunInput) (AutomationRun, error) {
@@ -1615,6 +1666,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if strings.TrimSpace(run.SafeSummary) == RunSafeSummaryGitOpsPostTaskRecovery && isGitOpsRecoveryFailure(failureCategory) {
 			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory, evidenceRefs)
 		}
+		if isRecoverableCodexExecutionFailure(failureCategory) {
+			return svc.requeueTaskAfterCodexExecutionFailure(ctx, run, failureCategory)
+		}
 		if isRecoverableGovernedCloseoutFailure(failureCategory) {
 			return svc.requeueTaskAfterGovernedCloseoutFailure(ctx, run, failureCategory)
 		}
@@ -2125,6 +2179,86 @@ func (svc *Service) requeueTaskAfterGovernedCloseoutFailure(ctx context.Context,
 	run.WorkTaskStatus = readyTask.Status
 	run.FailureCategory = category
 	run.SafeSummary = "governed_closeout_failed_requeue_implementation"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+		return updated, nil
+	}
+	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+		return updated, nil
+	}
+	return updated, nil
+}
+
+func (svc *Service) requeueTaskAfterCodexExecutionFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = "codex_execution_failed_requeue_unavailable"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = "codex_execution_failed_requeue_unavailable"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusReady, projectworkplan.WorkTaskStatusClaimed, projectworkplan.WorkTaskStatusInProgress:
+	default:
+		run.Status = RunStatusFailed
+		run.WorkTaskStatus = task.Status
+		run.FailureCategory = category
+		run.SafeSummary = "codex_execution_failed_task_advanced"
+		now := svc.now()
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		return svc.store.UpdateRun(ctx, run)
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		run.Status = RunStatusFailed
+		run.WorkTaskStatus = task.Status
+		run.FailureCategory = category
+		run.SafeSummary = "codex_execution_failed_task_claimed_by_other_run"
+		now := svc.now()
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		return svc.store.UpdateRun(ctx, run)
+	}
+	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "codex_execution_failed_requeue_implementation",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			ResumeInstructions: codexExecutionFailureResumeInstructions(category),
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = readyTask.Status
+	run.FailureCategory = category
+	run.SafeSummary = "codex_execution_failed_requeue_implementation"
 	now := svc.now()
 	if run.FinishedAt.IsZero() {
 		run.FinishedAt = now
@@ -2994,7 +3128,7 @@ func (svc *Service) blockRunAfterReplacementRetryLimit(ctx context.Context, run 
 }
 
 func (svc *Service) blockTaskAfterReplacementRetryLimit(ctx context.Context, task projectworkplan.WorkTask) (projectworkplan.WorkTask, error) {
-	return svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+	blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
 		ProjectID:          task.ProjectID,
 		TaskID:             task.ID,
 		SafeNextAction:     automationReplacementRetryLimitCategory,
@@ -3002,6 +3136,13 @@ func (svc *Service) blockTaskAfterReplacementRetryLimit(ctx context.Context, tas
 		BlockedReason:      "Automation replacement retry limit reached after repeated GitOps, pre-execution, or external-runner recovery failures.",
 		ResumeInstructions: "Inspect the task worktree, dirty files, GitOps scope, and task file metadata before requeueing. Do not create another replacement run until the concrete blocker is corrected.",
 	})
+	if err != nil {
+		return projectworkplan.WorkTask{}, err
+	}
+	if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+		return blocked, err
+	}
+	return blocked, nil
 }
 
 func countTerminalReplacementFailures(runs []AutomationRun, task projectworkplan.WorkTask) int {
@@ -3115,6 +3256,14 @@ func governedCloseoutRecoveryResumeInstructions(category string) string {
 		category = "governed_closeout_failed"
 	}
 	return "Governed closeout failed with " + category + ". Inspect the automation run evidence and retry the same bounded task; do not bypass child task, review gate, verifier, or stop-condition requirements."
+}
+
+func codexExecutionFailureResumeInstructions(category string) string {
+	category = strings.TrimSpace(category)
+	if category == "" {
+		category = "codex_cli_failed"
+	}
+	return recoveryResumeInstructions("Codex execution failed with " + safeFailure(category) + ". Inspect the automation run evidence, runner worktree, Codex binary/config, and generated closeout before retrying the same bounded task.")
 }
 
 func (svc *Service) shouldQueueReplacementRunForTask(ctx context.Context, automation Automation, run AutomationRun, task projectworkplan.WorkTask) bool {

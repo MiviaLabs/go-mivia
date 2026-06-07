@@ -32,12 +32,12 @@ func run(args []string) int {
 	server := flags.String("server", "http://127.0.0.1:8080", "mivia-server base URL")
 	projectID := flags.String("project", "", "project id; omit to watch all configured projects")
 	agentID := flags.String("agent", "", "optional agent id filter")
-	codexPath := flags.String("codex", "codex", "codex CLI binary path")
-	codexLauncher := flags.String("codex-launcher", "direct", "codex launcher: direct or windows-cmd")
+	codexPath := flags.String("codex", "/usr/local/bin/codex", "codex CLI binary path")
+	codexLauncher := flags.String("codex-launcher", "direct", "codex launcher: direct")
 	codexCD := flags.String("codex-cd", "", "optional workspace directory passed to codex exec --cd")
 	codexSandbox := flags.String("codex-sandbox", "workspace-write", "sandbox mode passed to codex exec")
-	codexBypass := flags.Bool("codex-bypass-approvals-and-sandbox", false, "pass Codex CLI's non-interactive approval and sandbox bypass flag")
-	codexSmokePreflight := flags.Bool("codex-smoke-preflight", true, "run a non-mutating codex exec smoke test in --codex-cd before claiming work")
+	codexBypass := flags.Bool("codex-bypass-approvals-and-sandbox", true, "pass Codex CLI's non-interactive approval and sandbox bypass flag")
+	codexSmokePreflight := flags.Bool("codex-smoke-preflight", false, "run a non-mutating codex exec smoke test in --codex-cd before claiming work")
 	once := flags.Bool("once", true, "claim and run one queued task, then exit")
 	watch := flags.Bool("watch", false, "continuously claim queued tasks until interrupted")
 	pollInterval := flags.Duration("poll-interval", 5*time.Second, "poll interval when once is false")
@@ -154,14 +154,6 @@ func checkCodexLauncher(ctx context.Context, codexOptions codexLaunchOptions) er
 		command.Stderr = &stderr
 		if err := command.Run(); err != nil {
 			return fmt.Errorf("%s --version failed: %w: %s", binaryPath, err, strings.TrimSpace(stderr.String()))
-		}
-		return nil
-	case "windows-cmd":
-		command := exec.CommandContext(ctx, "cmd.exe", "/c", binaryPath, "--version")
-		var stderr bytes.Buffer
-		command.Stderr = &stderr
-		if err := command.Run(); err != nil {
-			return fmt.Errorf("cmd.exe /c %s --version failed: %w: %s", binaryPath, err, strings.TrimSpace(stderr.String()))
 		}
 		return nil
 	default:
@@ -901,41 +893,6 @@ func buildRunnerCodexCommand(inputPath string, outputPath string, timeout time.D
 	binaryPath := strings.TrimSpace(codexOptions.Path)
 	if binaryPath == "" {
 		binaryPath = "codex"
-	}
-	if launcher == "windows-cmd" {
-		convertedInputPath, err := windowsPathForRunner(inputPath)
-		if err != nil {
-			return projectautomation.CodexCommand{}, err
-		}
-		args := []string{"/c", "type", convertedInputPath, "|", binaryPath, "exec"}
-		args = appendCodexExecutionOptions(args, codexOptions)
-		if strings.TrimSpace(codexOptions.OutputSchemaPath) != "" {
-			convertedSchemaPath, err := windowsPathForRunner(strings.TrimSpace(codexOptions.OutputSchemaPath))
-			if err != nil {
-				return projectautomation.CodexCommand{}, err
-			}
-			args = append(args, "--output-schema", convertedSchemaPath)
-		}
-		if strings.TrimSpace(outputPath) != "" {
-			convertedOutputPath, err := windowsPathForRunner(strings.TrimSpace(outputPath))
-			if err != nil {
-				return projectautomation.CodexCommand{}, err
-			}
-			args = append(args, "--output-last-message", convertedOutputPath)
-		}
-		if strings.TrimSpace(codexOptions.WorkDir) != "" {
-			convertedWorkDir, err := windowsPathForRunner(strings.TrimSpace(codexOptions.WorkDir))
-			if err != nil {
-				return projectautomation.CodexCommand{}, err
-			}
-			args = append(args, "--cd", convertedWorkDir)
-		}
-		args = append(args, "-")
-		return projectautomation.CodexCommand{
-			Path:    "cmd.exe",
-			Args:    args,
-			Timeout: timeout,
-		}, nil
 	}
 	if launcher != "direct" {
 		return projectautomation.CodexCommand{}, fmt.Errorf("%w: unknown codex launcher", projectautomation.ErrInvalidInput)
