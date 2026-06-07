@@ -246,6 +246,10 @@ func parseGovernedCloseoutOutput(message string) (governedCloseoutOutput, error)
 	if err != nil {
 		return governedCloseoutOutput{}, governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
+	jsonText, err = normalizeGovernedCloseoutJSON(jsonText)
+	if err != nil {
+		return governedCloseoutOutput{}, err
+	}
 	if err := validateGovernedCloseoutTopLevelFields(jsonText); err != nil {
 		return governedCloseoutOutput{}, err
 	}
@@ -261,6 +265,69 @@ func parseGovernedCloseoutOutput(message string) (governedCloseoutOutput, error)
 		return governedCloseoutOutput{}, governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
 	return output, nil
+}
+
+func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(jsonText), &fields); err != nil {
+		return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
+	}
+	rawTasks, ok := fields["child_tasks"]
+	if !ok || len(bytes.TrimSpace(rawTasks)) == 0 || string(bytes.TrimSpace(rawTasks)) == "null" {
+		return jsonText, nil
+	}
+	var tasks []map[string]json.RawMessage
+	if err := json.Unmarshal(rawTasks, &tasks); err != nil {
+		return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
+	}
+	changed := false
+	for index, task := range tasks {
+		rawQuality, ok := task["decomposition_quality"]
+		if !ok || rawJSONValueIsStringOrNull(rawQuality) {
+			continue
+		}
+		quality, err := decompositionQualityFromObject(rawQuality)
+		if err != nil {
+			continue
+		}
+		encoded, err := json.Marshal(quality)
+		if err != nil {
+			return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
+		}
+		tasks[index]["decomposition_quality"] = encoded
+		changed = true
+	}
+	if !changed {
+		return jsonText, nil
+	}
+	encodedTasks, err := json.Marshal(tasks)
+	if err != nil {
+		return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
+	}
+	fields["child_tasks"] = encodedTasks
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
+	}
+	return string(encoded), nil
+}
+
+func decompositionQualityFromObject(raw json.RawMessage) (string, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return "", err
+	}
+	for _, key := range []string{"status", "quality", "value", "state", "decision"} {
+		rawValue, ok := object[key]
+		if !ok {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(rawValue, &value); err == nil && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value), nil
+		}
+	}
+	return "", errors.New("decomposition_quality object lacks string status")
 }
 
 func validateGovernedCloseoutTopLevelFields(jsonText string) error {

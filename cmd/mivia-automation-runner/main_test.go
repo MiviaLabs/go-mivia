@@ -2401,6 +2401,39 @@ func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T
 	}
 }
 
+func TestParseGovernedCloseoutNormalizesChildTaskDecompositionQualityObject(t *testing.T) {
+	output, err := parseGovernedCloseoutOutput(`{
+		"closeout_action":"needs_review",
+		"outcome":"decomposed",
+		"safe_next_action":"review child tasks",
+		"evidence_refs":["task-decomposition-ref"],
+		"child_tasks":[{
+			"task_ref":"implement-mass-1044",
+			"title":"Implement MASS-1044",
+			"description":"Implement bounded change",
+			"evidence_needed":["source-evidence"],
+			"files_to_read":["apps/domain/file.ts"],
+			"verification_requirement":"run focused verifier",
+			"expected_output":"implementation complete",
+			"failure_criteria":"block on missing evidence",
+			"resume_instructions":"resume from task refs",
+			"decomposition_quality":{"status":"ready","rationale":"metadata complete"},
+			"acceptance_criteria":["source verified"],
+			"stop_conditions":["stop on missing evidence"],
+			"verifier_ladder":["focused verifier"],
+			"regression_test_applicability":"required",
+			"downstream_impact_refs":["downstream-impact-ref"],
+			"output_contract":"bounded output"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("expected decomposition_quality object with status to normalize, got %v", err)
+	}
+	if got := output.ChildTasks[0].DecompositionQuality; got != "ready" {
+		t.Fatalf("decomposition_quality = %q, want ready", got)
+	}
+}
+
 func validGovernedCloseoutChildTaskForTest() governedCloseoutWorkTask {
 	return governedCloseoutWorkTask{
 		TaskRef:                 "implement-mass-1044",
