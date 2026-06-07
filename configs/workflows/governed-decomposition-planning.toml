@@ -16,6 +16,8 @@ allowed_tools = [
   "projects.get",
   "projects.context_health",
   "projects.context_pack.build",
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.work_plans.create",
   "projects.work_tasks.create"
 ]
@@ -35,6 +37,8 @@ purpose = "Reviews Work Plan and Work Task decomposition for readiness, evidence
 instructions = "Reject decomposition that lacks evidence refs, verifier scope, dependencies, resume instructions, review gates, files_to_read, or clear files_to_edit decisions."
 allowed_skills = ["mivia-mcp", "project-review"]
 allowed_tools = [
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.work_plans.get",
   "projects.work_tasks.list",
   "projects.work_tasks.attach_review_result",
@@ -56,6 +60,8 @@ purpose = "Compiles planning tasks and queues only reviewed ready tasks for auto
 instructions = "Move tasks to ready or queue automation only after independent review refs, permission snapshots, and safe task packet metadata exist."
 allowed_skills = ["mivia-mcp"]
 allowed_tools = [
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.work_plans.resume",
   "projects.work_tasks.update_status",
   "projects.automations.create",

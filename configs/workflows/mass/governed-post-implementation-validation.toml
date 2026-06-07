@@ -14,6 +14,8 @@ allowed_skills = ["mivia-mcp", "project-review", "write-tests"]
 allowed_tools = [
   "projects.get",
   "projects.context_health",
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.workspace.git_status",
   "projects.workspace.git_diff",
   "projects.workspace.file_read",
@@ -37,6 +39,8 @@ purpose = "Independently reviews final implementation correctness, downstream re
 instructions = "Reject validation if any feasible regression test is missing, downstream impact is unreviewed, generated artifacts are stale, auth/tenancy/PII/API/migration risk is untested, or PR metadata would publish unsafe details."
 allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
 allowed_tools = [
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.workspace.git_status",
   "projects.workspace.git_diff",
   "projects.workspace.file_read",
@@ -61,6 +65,8 @@ purpose = "Runs final regression-first verification and blocks PR/GitOps complet
 instructions = "Run regression tests first when feasible, then affected checks and required policy/generated-artifact gates. Complete validation only after independent review refs and verifier refs exist."
 allowed_skills = ["mivia-mcp", "write-tests"]
 allowed_tools = [
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.work_tasks.get_next",
   "projects.work_tasks.update_status",
   "projects.work_tasks.attach_verifier_result",

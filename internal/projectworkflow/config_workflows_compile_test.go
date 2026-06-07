@@ -127,13 +127,15 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	ctx := context.Background()
 	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
 	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
-	svc := projectworkflow.New(workflowstore.NewMemoryStore())
+	workflowStore := workflowstore.NewMemoryStore()
+	svc := projectworkflow.New(workflowStore)
 	svc.SetCompilerDependencies(workPlans, automations)
 	svc.SetCompileOptionsByProject(map[string]projectworkflow.CompileOptions{
 		"mass-monorepo": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
 	})
 
 	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-decomposition-planning.toml"), "mass-monorepo")
+	assertMassAgentsCanReadLocalTicketEvidence(t, decomposition)
 	planningWorker := configAgentByID(t, decomposition, "planning-worker")
 	if !containsConfigString(planningWorker.AllowedTools, "projects.work_tasks.create") {
 		t.Fatalf("planning-worker must be able to create concrete child implementation tasks, tools=%#v", planningWorker.AllowedTools)
@@ -148,6 +150,7 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	if err != nil {
 		t.Fatalf("compile MASS decomposition workflow: %v", err)
 	}
+	assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, decomposition)
 	decompositionTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "mass-monorepo", PlanID: decompositionResult.WorkPlanID})
 	if err != nil {
 		t.Fatalf("list MASS decomposition tasks: %v", err)
@@ -158,11 +161,13 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	}
 
 	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"), "mass-monorepo")
+	assertMassAgentsCanReadLocalTicketEvidence(t, implementation)
 	for i := 0; i < 2; i++ {
 		if _, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: implementation.ProjectID, WorkflowID: implementation.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "same-ticket-run"}); err != nil {
 			t.Fatalf("compile implementation workflow %d: %v", i+1, err)
 		}
 	}
+	assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, implementation)
 	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "mass-monorepo"})
 	if err != nil {
 		t.Fatalf("list plans: %v", err)
@@ -205,6 +210,13 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	if reviewAutomation.ID == "" {
 		t.Fatal("expected independent review automation for run-implementation-batch")
 	}
+
+	validation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-post-implementation-validation.toml"), "mass-monorepo")
+	assertMassAgentsCanReadLocalTicketEvidence(t, validation)
+	if _, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: validation.ProjectID, WorkflowID: validation.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "validation-ticket-run"}); err != nil {
+		t.Fatalf("compile validation workflow: %v", err)
+	}
+	assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, validation)
 }
 
 func TestMassGovernedDecompositionPlanningStageSequence(t *testing.T) {
@@ -390,6 +402,37 @@ func configAgentByID(t *testing.T, workflow projectworkflow.WorkflowDefinition, 
 	}
 	t.Fatalf("missing workflow agent %q", id)
 	return projectworkflow.WorkflowAgentDefinition{}
+}
+
+func assertMassAgentsCanReadLocalTicketEvidence(t *testing.T, workflow projectworkflow.WorkflowDefinition) {
+	t.Helper()
+	for _, agent := range workflow.Agents {
+		if !containsConfigString(agent.AllowedTools, "projects.jira.issue.get") {
+			t.Fatalf("MASS agent %s/%s must be able to read bounded local Jira issue content for ticket-scoped work, tools=%#v", workflow.WorkflowRef, agent.ID, agent.AllowedTools)
+		}
+		if !containsConfigString(agent.AllowedTools, "projects.integrations.search") {
+			t.Fatalf("MASS agent %s/%s must be able to search bounded local integration content for ticket-scoped work, tools=%#v", workflow.WorkflowRef, agent.ID, agent.AllowedTools)
+		}
+	}
+}
+
+func assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t *testing.T, ctx context.Context, store projectworkflow.Store, workflow projectworkflow.WorkflowDefinition) {
+	t.Helper()
+	snapshots, err := store.ListPermissionSnapshots(ctx, projectworkflow.PermissionSnapshotFilter{ProjectID: workflow.ProjectID, WorkflowID: workflow.ID})
+	if err != nil {
+		t.Fatalf("list permission snapshots for %s: %v", workflow.WorkflowRef, err)
+	}
+	if len(snapshots) != len(workflow.Agents) {
+		t.Fatalf("expected one permission snapshot per %s agent, snapshots=%#v agents=%#v", workflow.WorkflowRef, snapshots, workflow.Agents)
+	}
+	for _, snapshot := range snapshots {
+		if !containsConfigString(snapshot.AllowedTools, "projects.jira.issue.get") {
+			t.Fatalf("MASS snapshot %s/%s must carry local Jira read permission, tools=%#v", workflow.WorkflowRef, snapshot.AgentID, snapshot.AllowedTools)
+		}
+		if !containsConfigString(snapshot.AllowedTools, "projects.integrations.search") {
+			t.Fatalf("MASS snapshot %s/%s must carry local integration search permission, tools=%#v", workflow.WorkflowRef, snapshot.AgentID, snapshot.AllowedTools)
+		}
+	}
 }
 
 func configStepByID(t *testing.T, workflow projectworkflow.WorkflowDefinition, id string) projectworkflow.WorkflowStep {

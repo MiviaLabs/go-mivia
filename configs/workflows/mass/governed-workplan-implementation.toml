@@ -12,6 +12,8 @@ purpose = "Implements one ready MASS Work Task from metadata and attached refs o
 instructions = "Claim exactly one ready task, edit only declared scope, attach bounded evidence, and run only task-scoped checks explicitly allowed by the task. Before changing behavior, confirm the task's regression-test applicability decision. If a regression test is feasible, add or update it before/with the fix and run the focused verifier. Create and close MASS local agentic task evidence when the scope is not Flutter-only. Do not bypass git hooks."
 allowed_skills = ["mivia-mcp", "write-tests", "project-implement"]
 allowed_tools = [
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.context_pack.build",
   "projects.workspace.file_read",
   "projects.workspace.file_edit",
@@ -36,6 +38,8 @@ purpose = "Independently reviews changed files, evidence, verifier refs, and tas
 instructions = "Review changed files and evidence independently. Reject self-review, missing verifier refs, scope drift, unsafe metadata, untested feasible behavior changes, missing regression test when feasible, weak not-feasible regression-test rationale, missing downstream impact analysis, missing introduced-by-task attribution, PII/logging leaks, and auth/tenancy regressions."
 allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
 allowed_tools = [
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.workspace.git_status",
   "projects.workspace.git_diff",
   "projects.workspace.file_read",
@@ -59,6 +63,8 @@ purpose = "Owns task dispatch, focused verification, final broader checks, and c
 instructions = "Dispatch only reviewed ready tasks. Run focused verifiers before broader checks. Complete tasks only after verifier and independent review refs exist. Use MASS package-local commands before repo-wide commands, then baseline policy checks when risk warrants."
 allowed_skills = ["mivia-mcp", "write-tests"]
 allowed_tools = [
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.work_tasks.get_next",
   "projects.work_tasks.update_status",
   "projects.work_tasks.attach_verifier_result",
