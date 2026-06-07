@@ -406,7 +406,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			return 1, true, true
 		}
 	}
-	if strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && taskRequiresExplicitGovernedCloseout(taskMetadata) {
+	if strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && taskRequiresExplicitGovernedCloseout(taskMetadata) && shouldUseCodexOutputSchemaForGovernedCloseout(taskMetadata) {
 		schemaPath, cleanupSchema, schemaErr := createGovernedCloseoutSchemaFile()
 		if schemaErr != nil {
 			result := projectautomation.CompleteAttemptInput{
@@ -1622,6 +1622,19 @@ func taskRequiresExplicitGovernedCloseout(task runnerWorkTaskMetadata) bool {
 		"review-implementation-batch",
 		"orchestrator-verification",
 		"pr-gitops-readiness":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldUseCodexOutputSchemaForGovernedCloseout(task runnerWorkTaskMetadata) bool {
+	return !governedCloseoutMayEmitChildTasks(task)
+}
+
+func governedCloseoutMayEmitChildTasks(task runnerWorkTaskMetadata) bool {
+	switch strings.TrimSpace(task.TaskRef) {
+	case "decompose-work-plan", "select-ready-tasks":
 		return true
 	default:
 		return false

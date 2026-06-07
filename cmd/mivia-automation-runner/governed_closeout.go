@@ -91,10 +91,11 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 			"failure_reason":       map[string]any{"type": "string", "maxLength": 1200},
 			"child_tasks": map[string]any{
 				"type":     "array",
-				"maxItems": 50,
-				// Keep Codex's generation schema permissive for nested task packets.
-				// The runner still enforces the full child-task contract after parsing.
-				"items": map[string]any{"type": "object"},
+				"maxItems": 0,
+				// Child-task-producing closeouts skip Codex output-schema enforcement.
+				// The runner owns that validation because the API's strict schema
+				// subset cannot express permissive nested task packets.
+				"items": map[string]any{"type": "string"},
 			},
 		},
 	}

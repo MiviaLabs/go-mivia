@@ -1822,16 +1822,35 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 	if !ok {
 		t.Fatalf("schema missing child_tasks: %s", schemaText)
 	}
-	items, ok := childTasks["items"].(map[string]any)
-	if !ok || items["type"] != "object" {
-		t.Fatalf("child_tasks items must stay a permissive object schema, got %#v", childTasks["items"])
+	if childTasks["maxItems"] != float64(0) {
+		t.Fatalf("schema-constrained closeout must not validate child task packets in Codex: %#v", childTasks)
 	}
-	if _, ok := items["required"]; ok {
-		t.Fatalf("child_tasks output schema must not require nested fields; runner validation owns that contract: %#v", items)
+	items, ok := childTasks["items"].(map[string]any)
+	if !ok || items["type"] != "string" {
+		t.Fatalf("child_tasks schema must stay strict-schema compatible when used, got %#v", childTasks["items"])
 	}
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
 		t.Fatalf("fixture accepted by parser must stay accepted by schema constants: %v", err)
+	}
+}
+
+func TestDecomposeCloseoutSkipsCodexOutputSchemaAndUsesRunnerValidation(t *testing.T) {
+	task := runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}
+	if !taskRequiresExplicitGovernedCloseout(task) {
+		t.Fatal("decompose-work-plan must require explicit governed closeout")
+	}
+	if shouldUseCodexOutputSchemaForGovernedCloseout(task) {
+		t.Fatal("decompose-work-plan must not use Codex output-schema; strict schema rejects permissive child_tasks")
+	}
+	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	if err := validateGovernedCloseoutOutput(output, task); err != nil {
+		t.Fatalf("valid child_tasks must be accepted by runner validation: %v", err)
+	}
+	invalid := output
+	invalid.ChildTasks[0].EvidenceNeeded = nil
+	if err := validateGovernedCloseoutOutput(invalid, task); governedCloseoutFailureCategory(err) != governedCloseoutValidationFailed {
+		t.Fatalf("invalid child_tasks must be rejected by runner validation, got %v", err)
 	}
 }
 
