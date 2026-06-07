@@ -116,7 +116,6 @@ likely_files_affected = ["apps", "libs", "packages", "infra", "catalog", "polici
 verification_requirement = "attach validation review result only after regression-test evidence and downstream impact evidence are checked"
 expected_output = "passed, failed, needs_changes, or blocked validation decision with exact missing evidence"
 failure_criteria = "block on missing feasible regression tests, weak not-feasible rationale, unreviewed downstream reachability, stale generated artifacts, missing negative tests for sensitive boundaries, or unclear ownership of affected checks"
-review_gate = "post-implementation-validation-review required before final verification"
 resume_instructions = "resume from regression-test refs, downstream impact refs, affected target refs, and generated artifact refs"
 
 [[steps]]

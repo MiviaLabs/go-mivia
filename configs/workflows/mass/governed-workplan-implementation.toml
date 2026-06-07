@@ -109,7 +109,6 @@ likely_files_affected = ["apps", "libs", "packages", "infra", "catalog", "polici
 verification_requirement = "attach or require downstream impact refs and regression-test scope before implementation automation is queued"
 expected_output = "approved impact map, regression-test scope, expanded verifier ladder, or blocked reason"
 failure_criteria = "block if downstream impact cannot be bounded, if regression-test scope is missing, if affected generated artifacts are unknown, or if security/privacy/API/migration impact lacks explicit verifier requirements"
-review_gate = "implementation-independent-review required before implementation dispatch"
 resume_instructions = "resume from changed-path impact refs, affected targets, generated artifact refs, and verifier ladder"
 
 [[steps]]

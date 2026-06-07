@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -209,6 +210,58 @@ func TestMassGovernedDecompositionPlanningStageSequence(t *testing.T) {
 			t.Fatalf("planning readiness review must apply to %q, applies_to=%#v", stepID, gate.AppliesTo)
 		}
 	}
+}
+
+func TestConfigWorkflowReviewGateCoverage(t *testing.T) {
+	paths, err := configWorkflowPaths()
+	if err != nil {
+		t.Fatalf("glob workflow definitions: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("expected at least one workflow definition")
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read workflow definition: %v", err)
+			}
+			defs, _, err := projectworkflow.ParseWorkflowTOML(data)
+			if err != nil {
+				t.Fatalf("parse workflow definition: %v", err)
+			}
+			for _, workflow := range defs {
+				requiredGateByID := map[string]projectworkflow.WorkflowReviewGate{}
+				for _, gate := range workflow.ReviewGates {
+					if gate.Required {
+						requiredGateByID[gate.ID] = gate
+					}
+				}
+				for _, step := range workflow.Steps {
+					for _, gateID := range stepReviewGateIDs(step.ReviewGate, requiredGateByID) {
+						gate, ok := requiredGateByID[gateID]
+						if !ok {
+							t.Fatalf("workflow %s step %s references missing required review gate %q", workflow.WorkflowRef, step.ID, gateID)
+						}
+						if !containsConfigString(gate.AppliesTo, step.ID) {
+							t.Fatalf("workflow %s step %s review gate %q must include step in applies_to=%#v", workflow.WorkflowRef, step.ID, gateID, gate.AppliesTo)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func stepReviewGateIDs(reviewGate string, requiredGateByID map[string]projectworkflow.WorkflowReviewGate) []string {
+	out := make([]string, 0, 1)
+	for gateID := range requiredGateByID {
+		if strings.Contains(reviewGate, gateID) {
+			out = append(out, gateID)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func importConfigWorkflow(t *testing.T, ctx context.Context, svc *projectworkflow.Service, path string, projectID string) projectworkflow.WorkflowDefinition {
