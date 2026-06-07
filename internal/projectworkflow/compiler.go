@@ -618,9 +618,7 @@ func compiledDependencyTaskIDs(step WorkflowStep, stepsByID map[string]WorkflowS
 }
 
 func automationRequiredReviewTaskIDs(stepID string, reviewTaskIDsByReviewedStep map[string][]string, reviewTaskIDsByAutomationStep map[string][]string) []string {
-	out := append([]string(nil), reviewTaskIDsByAutomationStep[stepID]...)
-	out = append(out, reviewTaskIDsByReviewedStep[stepID]...)
-	return out
+	return append([]string(nil), reviewTaskIDsByAutomationStep[stepID]...)
 }
 
 func compilePlanRef(workflowRef string, runID string, newID func(string) string) string {

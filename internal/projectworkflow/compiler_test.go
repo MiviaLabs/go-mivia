@@ -357,6 +357,9 @@ func TestCompileWorkflowMaterializesAutomationBatchAsExecutableTask(t *testing.T
 	if batchAutomation.ID == "" || batchAutomation.Status != projectautomation.AutomationStatusEnabled || batchAutomation.TriggerKind != projectautomation.TriggerKindAutomatic {
 		t.Fatalf("automation batch task must have enabled automatic execution metadata, got %#v", batchAutomation)
 	}
+	if len(batchAutomation.RequiredReviewTaskIDs) != 0 {
+		t.Fatalf("automation batch execution must not wait on its post-execution review task, got %#v", batchAutomation.RequiredReviewTaskIDs)
+	}
 }
 
 func TestCompileWorkflowCreatesFallbackTaskAutomationWhenWorkflowAutomationIsManualDraft(t *testing.T) {
