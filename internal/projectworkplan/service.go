@@ -346,6 +346,30 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	if err != nil {
 		return WorkTask{}, err
 	}
+	acceptanceCriteria, err := safeTextList(input.AcceptanceCriteria, "acceptance_criteria", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	stopConditions, err := safeTextList(input.StopConditions, "stop_conditions", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	verifierLadder, err := safeTextList(input.VerifierLadder, "verifier_ladder", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	regressionApplicability, err := safeOptionalText(input.RegressionApplicability, "regression_test_applicability", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	downstreamImpactRefs, err := safeRefList(input.DownstreamImpactRefs, "downstream_impact_refs")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	outputContract, err := safeOptionalText(input.OutputContract, "output_contract", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
 	quality := input.DecompositionQuality
 	if quality == "" {
 		quality = assessDecomposition(evidence, contextRefs, files, deps, verify, expected, failure, resume)
@@ -367,7 +391,7 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 			return WorkTask{}, fmt.Errorf("%w: create task status cannot be terminal", ErrInvalidInput)
 		}
 	}
-	return WorkTask{ID: svc.newID("work_task"), ProjectID: projectID, PlanID: planID, TaskRef: taskRef, Title: title, Description: description, Status: status, OwnerAgent: owner, TraceID: traceID, EvidenceNeeded: evidence, ContextPackRefs: contextRefs, FilesToRead: filesToRead, FilesToEdit: filesToEdit, LikelyFilesAffected: files, DependencyTaskIDs: deps, VerificationRequirement: verify, ExpectedOutput: expected, FailureCriteria: failure, ReviewGate: reviewGate, ResumeInstructions: resume, KnowledgeCandidateRefs: knowledgeRefs, AgentRunIDs: optionalRefSlice(runID), DecompositionQuality: quality, CreatedAt: now, UpdatedAt: now}, nil
+	return WorkTask{ID: svc.newID("work_task"), ProjectID: projectID, PlanID: planID, TaskRef: taskRef, Title: title, Description: description, Status: status, OwnerAgent: owner, TraceID: traceID, EvidenceNeeded: evidence, ContextPackRefs: contextRefs, FilesToRead: filesToRead, FilesToEdit: filesToEdit, LikelyFilesAffected: files, DependencyTaskIDs: deps, VerificationRequirement: verify, ExpectedOutput: expected, FailureCriteria: failure, ReviewGate: reviewGate, ResumeInstructions: resume, KnowledgeCandidateRefs: knowledgeRefs, AgentRunIDs: optionalRefSlice(runID), DecompositionQuality: quality, AcceptanceCriteria: acceptanceCriteria, StopConditions: stopConditions, VerifierLadder: verifierLadder, RegressionApplicability: regressionApplicability, DownstreamImpactRefs: downstreamImpactRefs, OutputContract: outputContract, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (svc *Service) GetWorkTask(ctx context.Context, projectID, taskID string) (WorkTask, error) {

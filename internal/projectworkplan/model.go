@@ -101,6 +101,12 @@ type WorkTask struct {
 	ArtifactRefs            []string  `json:"artifact_refs,omitempty"`
 	AgentRunIDs             []string  `json:"agent_run_ids,omitempty"`
 	DecompositionQuality    string    `json:"decomposition_quality"`
+	AcceptanceCriteria      []string  `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string  `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string  `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string    `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string  `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string    `json:"output_contract,omitempty"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
 	ClaimedAt               time.Time `json:"claimed_at,omitempty"`
@@ -187,6 +193,12 @@ type CreateWorkTaskInput struct {
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
 	KnowledgeCandidateRefs  []string `json:"knowledge_candidate_refs,omitempty"`
 	DecompositionQuality    string   `json:"decomposition_quality,omitempty"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string   `json:"output_contract,omitempty"`
 }
 
 type WorkTaskFilter struct {

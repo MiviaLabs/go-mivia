@@ -572,13 +572,22 @@ func governedChildTaskCreateInput(child governedCloseoutWorkTask, runID string, 
 		ReviewGate              string   `json:"review_gate,omitempty"`
 		ResumeInstructions      string   `json:"resume_instructions,omitempty"`
 		DecompositionQuality    string   `json:"decomposition_quality,omitempty"`
+		AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+		StopConditions          []string `json:"stop_conditions,omitempty"`
+		VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+		RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+		DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+		OutputContract          string   `json:"output_contract,omitempty"`
 	}{
 		TaskRef: child.TaskRef, Title: child.Title, Description: child.Description, Status: child.Status, OwnerAgent: child.OwnerAgent,
 		RunID: runID, TraceID: traceID, EvidenceNeeded: child.EvidenceNeeded, ContextPackRefs: child.ContextPackRefs,
 		FilesToRead: child.FilesToRead, FilesToEdit: child.FilesToEdit, LikelyFilesAffected: child.LikelyFilesAffected,
 		DependencyTaskIDs: child.DependencyTaskIDs, VerificationRequirement: child.VerificationRequirement, ExpectedOutput: child.ExpectedOutput,
 		FailureCriteria: child.FailureCriteria, ReviewGate: child.ReviewGate, ResumeInstructions: child.ResumeInstructions,
-		DecompositionQuality: child.DecompositionQuality,
+		DecompositionQuality: child.DecompositionQuality, AcceptanceCriteria: child.AcceptanceCriteria,
+		StopConditions: child.StopConditions, VerifierLadder: child.VerifierLadder,
+		RegressionApplicability: child.RegressionApplicability, DownstreamImpactRefs: child.DownstreamImpactRefs,
+		OutputContract: child.OutputContract,
 	}
 }
 

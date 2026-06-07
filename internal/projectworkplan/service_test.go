@@ -162,6 +162,12 @@ func TestServiceCreateWorkTaskValidation(t *testing.T) {
 	rich.ReviewGate = "independent review required before completion"
 	rich.Status = projectworkplan.WorkTaskStatusReady
 	rich.RunID = "agent_run_1"
+	rich.AcceptanceCriteria = []string{"source-backed behavior is implemented"}
+	rich.StopConditions = []string{"block when source evidence is missing"}
+	rich.VerifierLadder = []string{"focused regression test", "go test package"}
+	rich.RegressionApplicability = "required because behavior changes"
+	rich.DownstreamImpactRefs = []string{"downstream.impact"}
+	rich.OutputContract = "code diff plus verifier refs"
 	createdRich, err := svc.CreateWorkTask(ctx, rich)
 	if err != nil {
 		t.Fatalf("create rich task: %v", err)
@@ -180,6 +186,12 @@ func TestServiceCreateWorkTaskValidation(t *testing.T) {
 	}
 	if createdRich.ReviewGate != "independent review required before completion" {
 		t.Fatalf("expected review gate to persist, got %q", createdRich.ReviewGate)
+	}
+	if len(createdRich.AcceptanceCriteria) != 1 || len(createdRich.StopConditions) != 1 || len(createdRich.VerifierLadder) != 2 {
+		t.Fatalf("expected governance lists to persist, got %+v", createdRich)
+	}
+	if createdRich.RegressionApplicability == "" || len(createdRich.DownstreamImpactRefs) != 1 || createdRich.OutputContract == "" {
+		t.Fatalf("expected downstream contract fields to persist, got %+v", createdRich)
 	}
 
 	terminal := readyTaskInput(plan.ID, "task-terminal")

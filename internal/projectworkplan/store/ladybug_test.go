@@ -39,6 +39,10 @@ func TestLadybugStoreCreateGetListPlanAndTask(t *testing.T) {
 	if gotTask.TaskRef != task.TaskRef || gotTask.VerificationRequirement == "" {
 		t.Fatalf("unexpected task: %#v", gotTask)
 	}
+	if len(gotTask.AcceptanceCriteria) != 1 || len(gotTask.StopConditions) != 1 || len(gotTask.VerifierLadder) != 1 ||
+		gotTask.RegressionApplicability == "" || len(gotTask.DownstreamImpactRefs) != 1 || gotTask.OutputContract == "" {
+		t.Fatalf("expected governed task contract to persist, got %#v", gotTask)
+	}
 	tasks, err := store.ListWorkTasks(ctx, model.WorkTaskFilter{ProjectID: task.ProjectID, PlanID: task.PlanID})
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
@@ -299,6 +303,12 @@ func createWorkTask(t *testing.T, ctx context.Context, store *LadybugStore, proj
 		DependencyTaskIDs:       dependencyIDs,
 		VerificationRequirement: "run focused store tests",
 		ResumeInstructions:      "revalidate source before continuing",
+		AcceptanceCriteria:      []string{"source-backed behavior is implemented"},
+		StopConditions:          []string{"missing source evidence"},
+		VerifierLadder:          []string{"focused store test"},
+		RegressionApplicability: "required",
+		DownstreamImpactRefs:    []string{"downstream.impact"},
+		OutputContract:          "metadata contract plus verifier refs",
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)

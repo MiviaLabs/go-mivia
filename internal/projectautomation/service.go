@@ -3097,7 +3097,7 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 		return err
 	}
 	if countTerminalReplacementFailures(existing, task) >= defaultAutomationMaxReplacementRunsPerTask {
-		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
+		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task, latestTerminalReplacementFailureCategory(existing, task))
 		return err
 	}
 	for _, run := range existing {
@@ -3178,7 +3178,11 @@ func (svc *Service) replacementRetryLimitReached(ctx context.Context, run Automa
 }
 
 func (svc *Service) blockRunAfterReplacementRetryLimit(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
-	blockedTask, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
+	lastFailureCategory, err := svc.latestTerminalReplacementFailureCategory(ctx, run, task)
+	if err != nil {
+		return run, err
+	}
+	blockedTask, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task, lastFailureCategory)
 	if err != nil {
 		return run, err
 	}
@@ -3194,14 +3198,40 @@ func (svc *Service) blockRunAfterReplacementRetryLimit(ctx context.Context, run 
 	return svc.store.UpdateRun(ctx, run)
 }
 
-func (svc *Service) blockTaskAfterReplacementRetryLimit(ctx context.Context, task projectworkplan.WorkTask) (projectworkplan.WorkTask, error) {
+func (svc *Service) latestTerminalReplacementFailureCategory(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (string, error) {
+	if run.ProjectID == "" || run.AutomationID == "" || task.PlanID == "" || task.ID == "" {
+		return "", nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: run.ProjectID, AutomationID: run.AutomationID, PlanID: task.PlanID})
+	if err != nil {
+		return "", err
+	}
+	return latestTerminalReplacementFailureCategory(runs, task), nil
+}
+
+func latestTerminalReplacementFailureCategory(runs []AutomationRun, task projectworkplan.WorkTask) string {
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for i := len(runs) - 1; i >= 0; i-- {
+		candidate := runs[i]
+		if candidate.TaskID != task.ID || !isTerminalReplacementFailure(candidate) {
+			continue
+		}
+		if category := strings.TrimSpace(candidate.FailureCategory); category != "" {
+			return category
+		}
+	}
+	return ""
+}
+
+func (svc *Service) blockTaskAfterReplacementRetryLimit(ctx context.Context, task projectworkplan.WorkTask, lastFailureCategory string) (projectworkplan.WorkTask, error) {
+	blockedReason := replacementRetryLimitBlockedReason(lastFailureCategory)
 	blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
 		ProjectID:          task.ProjectID,
 		TaskID:             task.ID,
 		SafeNextAction:     automationReplacementRetryLimitCategory,
 		TraceID:            "automation-replacement-limit",
-		BlockedReason:      "Automation replacement retry limit reached after repeated GitOps, pre-execution, or external-runner recovery failures.",
-		ResumeInstructions: "Inspect the task worktree, dirty files, GitOps scope, and task file metadata before requeueing. Do not create another replacement run until the concrete blocker is corrected.",
+		BlockedReason:      blockedReason,
+		ResumeInstructions: replacementRetryLimitResumeInstructions(lastFailureCategory),
 	})
 	if err != nil {
 		return projectworkplan.WorkTask{}, err
@@ -3210,6 +3240,25 @@ func (svc *Service) blockTaskAfterReplacementRetryLimit(ctx context.Context, tas
 		return blocked, err
 	}
 	return blocked, nil
+}
+
+func replacementRetryLimitBlockedReason(lastFailureCategory string) string {
+	category := strings.TrimSpace(lastFailureCategory)
+	if category == "" {
+		return "Automation replacement retry limit reached; last concrete failure category is unavailable."
+	}
+	return "Automation replacement retry limit reached after repeated " + category + " failures."
+}
+
+func replacementRetryLimitResumeInstructions(lastFailureCategory string) string {
+	category := strings.TrimSpace(lastFailureCategory)
+	if isRecoverableGovernedCloseoutFailure(category) {
+		return governedCloseoutRecoveryResumeInstructions(category)
+	}
+	if isRecoverableCodexExecutionFailure(category) {
+		return codexExecutionFailureResumeInstructions(category)
+	}
+	return "Inspect the last failed automation run and correct " + safeFailure(category) + " before requeueing. Do not create another replacement run until the concrete blocker is corrected."
 }
 
 func countTerminalReplacementFailures(runs []AutomationRun, task projectworkplan.WorkTask) int {
@@ -4497,7 +4546,35 @@ func validateExecutableTask(task projectworkplan.WorkTask) error {
 	if strings.TrimSpace(task.VerificationRequirement) == "" {
 		return fmt.Errorf("%w: missing_verification", ErrInvalidInput)
 	}
+	if implementationTaskRequiresGovernanceContract(task) {
+		if len(task.AcceptanceCriteria) == 0 {
+			return fmt.Errorf("%w: missing_acceptance_criteria", ErrInvalidInput)
+		}
+		if len(task.StopConditions) == 0 {
+			return fmt.Errorf("%w: missing_stop_conditions", ErrInvalidInput)
+		}
+		if len(task.VerifierLadder) == 0 {
+			return fmt.Errorf("%w: missing_verifier_ladder", ErrInvalidInput)
+		}
+		if strings.TrimSpace(task.RegressionApplicability) == "" {
+			return fmt.Errorf("%w: missing_regression_test_applicability", ErrInvalidInput)
+		}
+		if len(task.DownstreamImpactRefs) == 0 {
+			return fmt.Errorf("%w: missing_downstream_impact_refs", ErrInvalidInput)
+		}
+		if strings.TrimSpace(task.OutputContract) == "" {
+			return fmt.Errorf("%w: missing_output_contract", ErrInvalidInput)
+		}
+	}
 	return nil
+}
+
+func implementationTaskRequiresGovernanceContract(task projectworkplan.WorkTask) bool {
+	if isGovernedWorkflowTaskRef(task.TaskRef) || isReviewTask(task) || isReadOnlyScannerTask(task) || len(task.FilesToEdit) == 0 {
+		return false
+	}
+	owner := strings.ToLower(strings.TrimSpace(task.OwnerAgent))
+	return strings.Contains(owner, "implementation")
 }
 
 func isRecoverableGitOpsPostTaskFailure(category string) bool {

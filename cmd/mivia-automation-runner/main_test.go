@@ -1422,6 +1422,12 @@ func TestApplyGovernedCloseoutWorksAgainstWorkTaskRESTContract(t *testing.T) {
 			if candidate.Status != projectworkplan.WorkTaskStatusPlanned || candidate.VerificationRequirement == "" {
 				t.Fatalf("unexpected child task: %+v", candidate)
 			}
+			if len(candidate.AcceptanceCriteria) == 0 || len(candidate.StopConditions) == 0 || len(candidate.VerifierLadder) == 0 {
+				t.Fatalf("child task lost governance lists: %+v", candidate)
+			}
+			if candidate.RegressionApplicability == "" || len(candidate.DownstreamImpactRefs) == 0 || candidate.OutputContract == "" {
+				t.Fatalf("child task lost downstream contract metadata: %+v", candidate)
+			}
 		}
 	}
 	if !childFound {

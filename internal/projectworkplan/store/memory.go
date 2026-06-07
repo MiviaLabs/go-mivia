@@ -195,6 +195,10 @@ func cloneTask(task projectworkplan.WorkTask) projectworkplan.WorkTask {
 	task.ReviewResultRefs = append([]string(nil), task.ReviewResultRefs...)
 	task.ArtifactRefs = append([]string(nil), task.ArtifactRefs...)
 	task.AgentRunIDs = append([]string(nil), task.AgentRunIDs...)
+	task.AcceptanceCriteria = append([]string(nil), task.AcceptanceCriteria...)
+	task.StopConditions = append([]string(nil), task.StopConditions...)
+	task.VerifierLadder = append([]string(nil), task.VerifierLadder...)
+	task.DownstreamImpactRefs = append([]string(nil), task.DownstreamImpactRefs...)
 	return task
 }
 

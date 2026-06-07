@@ -1028,6 +1028,12 @@ func TestCompleteAttemptBlocksFailedGovernedCloseoutAfterReplacementRetryLimit(t
 	if !strings.Contains(blockedTask.BlockedReason, "replacement retry limit") {
 		t.Fatalf("expected explicit retry-limit blocked reason, got %q", blockedTask.BlockedReason)
 	}
+	if !strings.Contains(blockedTask.BlockedReason, "governed_closeout_apply_failed") {
+		t.Fatalf("expected retry-limit reason to include last governed closeout failure, got %q", blockedTask.BlockedReason)
+	}
+	if !strings.Contains(blockedTask.ResumeInstructions, "Governed closeout failed with governed_closeout_apply_failed") {
+		t.Fatalf("expected governed closeout resume instructions, got %q", blockedTask.ResumeInstructions)
+	}
 	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
 	if err != nil {
 		t.Fatalf("ListRuns returned error: %v", err)
@@ -7024,6 +7030,25 @@ func TestValidateAllowedTaskRefAcceptsTaskIDOrTaskRef(t *testing.T) {
 	}
 }
 
+func TestValidateExecutableTaskRequiresImplementationGovernanceContract(t *testing.T) {
+	task := readyTask("work_task_123", "implement-ticket-slice", []string{"internal/foo.go"})
+	task.OwnerAgent = "implementation-worker"
+	task.FilesToEdit = []string{"internal/foo.go"}
+	if err := validateExecutableTask(task); err == nil || !strings.Contains(err.Error(), "missing_acceptance_criteria") {
+		t.Fatalf("expected missing implementation governance contract, got %v", err)
+	}
+
+	task.AcceptanceCriteria = []string{"source-backed behavior is implemented"}
+	task.StopConditions = []string{"missing source evidence"}
+	task.VerifierLadder = []string{"focused regression test"}
+	task.RegressionApplicability = "required"
+	task.DownstreamImpactRefs = []string{"downstream.impact"}
+	task.OutputContract = "diff and verifier refs"
+	if err := validateExecutableTask(task); err != nil {
+		t.Fatalf("expected implementation task with governance contract to execute, got %v", err)
+	}
+}
+
 type fakeWorkTasks struct {
 	mu                   sync.Mutex
 	plans                map[string]projectworkplan.WorkPlan
@@ -7111,6 +7136,12 @@ func (fake *fakeWorkTasks) CreateWorkTask(_ context.Context, input projectworkpl
 		ReviewGate:              input.ReviewGate,
 		ResumeInstructions:      input.ResumeInstructions,
 		DecompositionQuality:    input.DecompositionQuality,
+		AcceptanceCriteria:      append([]string(nil), input.AcceptanceCriteria...),
+		StopConditions:          append([]string(nil), input.StopConditions...),
+		VerifierLadder:          append([]string(nil), input.VerifierLadder...),
+		RegressionApplicability: input.RegressionApplicability,
+		DownstreamImpactRefs:    append([]string(nil), input.DownstreamImpactRefs...),
+		OutputContract:          input.OutputContract,
 	}
 	fake.tasks[task.ID] = task
 	return task, nil
