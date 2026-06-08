@@ -3219,6 +3219,17 @@ func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T
 	}
 
 	task = validGovernedCloseoutChildTaskForTest()
+	task.DecompositionQuality = "complete"
+	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err == nil || !strings.Contains(err.Error(), "child task decomposition_quality is invalid") {
+		t.Fatalf("expected runner validation to reject server-invalid decomposition_quality, got %v", err)
+	}
+
+	task = validGovernedCloseoutChildTaskForTest()
 	task.EvidenceNeeded = []string{"contact test@example.com"}
 	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
 		CloseoutAction: "needs_review",
@@ -3284,6 +3295,66 @@ func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T
 	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
 	if err == nil || !strings.Contains(err.Error(), "unsafe child task path") {
 		t.Fatalf("expected runner validation to reject server-unsafe path, got %v", err)
+	}
+}
+
+func TestGovernedChildTaskRunnerAcceptedPayloadsMatchWorkTaskService(t *testing.T) {
+	cases := map[string]func(*governedCloseoutWorkTask){
+		"baseline": func(*governedCloseoutWorkTask) {},
+		"blocked status": func(task *governedCloseoutWorkTask) {
+			task.Status = projectworkplan.WorkTaskStatusBlocked
+		},
+		"safe refs": func(task *governedCloseoutWorkTask) {
+			task.ContextPackRefs = []string{"context-pack:manifest:68c3ee2ad1556459"}
+			task.DependencyTaskIDs = []string{"work_task:parent+1"}
+			task.DownstreamImpactRefs = []string{"impact/ref@mass+1044"}
+		},
+		"discovery scope without files": func(task *governedCloseoutWorkTask) {
+			task.Description = "Perform discovery and produce bounded implementation task metadata."
+			task.FilesToRead = nil
+			task.FilesToEdit = nil
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			child := validGovernedCloseoutChildTaskForTest()
+			child.TaskRef = "implement-mass-1044-" + strings.ReplaceAll(name, " ", "-")
+			mutate(&child)
+			output := governedCloseoutOutput{
+				CloseoutAction: "needs_review",
+				Outcome:        "decomposed",
+				SafeNextAction: "review child tasks",
+				EvidenceRefs:   []string{"task-decomposition-ref"},
+				ChildTasks:     []governedCloseoutWorkTask{child},
+			}
+			if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+				t.Fatalf("runner validation rejected fixture before service parity check: %v", err)
+			}
+			svc := projectworkplan.New(workplanstore.NewMemoryStore())
+			ctx := t.Context()
+			plan, err := svc.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
+				ProjectID:   "project-1",
+				PlanRef:     "plan-" + strings.ReplaceAll(name, " ", "-"),
+				Title:       "Parity " + name,
+				GoalSummary: "verify runner accepted child task matches Work Task service",
+			})
+			if err != nil {
+				t.Fatalf("create plan: %v", err)
+			}
+			var input projectworkplan.CreateWorkTaskInput
+			data, err := json.Marshal(governedChildTaskCreateInput(child, "run-1", "trace-1"))
+			if err != nil {
+				t.Fatalf("marshal runner child input: %v", err)
+			}
+			if err := json.Unmarshal(data, &input); err != nil {
+				t.Fatalf("unmarshal runner child input into service input: %v", err)
+			}
+			input.ProjectID = "project-1"
+			input.PlanID = plan.ID
+			if _, err := svc.CreateWorkTask(ctx, input); err != nil {
+				t.Fatalf("runner-accepted child task must satisfy Work Task service: %v\ninput=%+v", err, input)
+			}
+		})
 	}
 }
 

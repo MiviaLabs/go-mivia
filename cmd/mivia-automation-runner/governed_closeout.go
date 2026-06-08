@@ -913,6 +913,11 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 	default:
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task status must be planned, ready, or blocked")}
 	}
+	switch strings.TrimSpace(task.DecompositionQuality) {
+	case "draft", "ready", "too_broad", "missing_evidence", "missing_context", "missing_verification", "missing_resume":
+	default:
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task decomposition_quality is invalid")}
+	}
 	if len(task.EvidenceNeeded) == 0 {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task evidence_needed required")}
 	}
