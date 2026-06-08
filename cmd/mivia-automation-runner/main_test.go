@@ -2433,8 +2433,19 @@ func TestParseGovernedCloseoutNormalizesChildTaskObjectArrayItems(t *testing.T) 
 
 func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T) {
 	task := validGovernedCloseoutChildTaskForTest()
-	task.Title = strings.Repeat("a", 201)
+	task.VerificationRequirement = ""
 	err := validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err == nil || !strings.Contains(err.Error(), "child task verification_requirement required") {
+		t.Fatalf("expected exact required field validation, got %v", err)
+	}
+
+	task = validGovernedCloseoutChildTaskForTest()
+	task.Title = strings.Repeat("a", 201)
+	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
 		CloseoutAction: "needs_review",
 		EvidenceRefs:   []string{"task-decomposition-ref"},
 		ChildTasks:     []governedCloseoutWorkTask{task},
@@ -2474,6 +2485,41 @@ func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T
 	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
 	if err == nil || !strings.Contains(err.Error(), "child task evidence_needed exceeds Work Task REST limits") {
 		t.Fatalf("expected runner validation to reject server-invalid evidence_needed, got %v", err)
+	}
+
+	task = validGovernedCloseoutChildTaskForTest()
+	task.ResumeInstructions = strings.Repeat("resume safely ", 60)
+	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err != nil {
+		t.Fatalf("expected runner validation to accept long safe resume_instructions matching server, got %v", err)
+	}
+
+	task = validGovernedCloseoutChildTaskForTest()
+	task.ContextPackRefs = []string{"context-pack:manifest:68c3ee2ad1556459"}
+	task.DependencyTaskIDs = []string{"work_task:parent+1"}
+	task.DownstreamImpactRefs = []string{"impact/ref@mass+1044"}
+	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err != nil {
+		t.Fatalf("expected runner validation to accept server-safe refs, got %v", err)
+	}
+
+	task = validGovernedCloseoutChildTaskForTest()
+	task.ExpectedOutput = "see https://example.invalid/reference for expected API behavior"
+	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err != nil {
+		t.Fatalf("expected runner validation to accept server-safe URL-like text, got %v", err)
 	}
 
 	task = validGovernedCloseoutChildTaskForTest()

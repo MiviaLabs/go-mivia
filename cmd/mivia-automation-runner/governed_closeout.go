@@ -33,6 +33,7 @@ var (
 	closeoutEmailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
 	closeoutPhonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
 	closeoutDrivePattern = regexp.MustCompile(`^[a-z]:`)
+	closeoutRefPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
 )
 
 type governedCloseoutError struct {
@@ -698,10 +699,22 @@ func validateGovernedCloseoutTextLimit(value string, name string) error {
 }
 
 func validateGovernedChildTask(task governedCloseoutWorkTask) error {
-	required := []string{task.TaskRef, task.Title, task.Description, task.VerificationRequirement, task.ExpectedOutput, task.FailureCriteria, task.ResumeInstructions, task.DecompositionQuality}
-	for _, value := range required {
-		if strings.TrimSpace(value) == "" || unsafeText(value) {
-			return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task missing required safe metadata")}
+	required := map[string]string{
+		"task_ref":                 task.TaskRef,
+		"title":                    task.Title,
+		"description":              task.Description,
+		"verification_requirement": task.VerificationRequirement,
+		"expected_output":          task.ExpectedOutput,
+		"failure_criteria":         task.FailureCriteria,
+		"resume_instructions":      task.ResumeInstructions,
+		"decomposition_quality":    task.DecompositionQuality,
+	}
+	for name, value := range required {
+		if strings.TrimSpace(value) == "" {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("child task %s required", name)}
+		}
+		if unsafeText(value) {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("unsafe child task %s", name)}
 		}
 	}
 	if len(task.Description) > closeoutChildTaskDescriptionMax ||
@@ -709,7 +722,6 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 		len(task.ExpectedOutput) > closeoutWorkTaskTextMax ||
 		len(task.FailureCriteria) > closeoutWorkTaskTextMax ||
 		len(task.ReviewGate) > closeoutWorkTaskTextMax ||
-		len(task.ResumeInstructions) > closeoutWorkTaskTextMax ||
 		len(task.RegressionApplicability) > closeoutWorkTaskTextMax ||
 		len(task.OutputContract) > closeoutWorkTaskTextMax {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task metadata exceeds Work Task REST limits")}
@@ -807,7 +819,6 @@ func unsafeText(value string) bool {
 		strings.HasPrefix(lower, "sk-") ||
 		strings.Contains(lower, " sk-") ||
 		strings.Contains(lower, "=sk-") ||
-		strings.Contains(value, "://") ||
 		containsCloseoutRootMarker(value) ||
 		strings.HasPrefix(value, "/") ||
 		(len(value) >= 3 && value[1] == ':' && (value[2] == '\\' || value[2] == '/'))
@@ -856,16 +867,15 @@ func containsCloseoutRootMarker(value string) bool {
 
 func safeCloseoutRef(ref string) bool {
 	ref = strings.TrimSpace(ref)
-	if ref == "" || len(ref) > 160 {
+	if ref == "" {
 		return false
 	}
-	for _, r := range ref {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
-			continue
-		}
-		return false
-	}
-	return true
+	return !strings.Contains(ref, "\\") &&
+		!strings.Contains(ref, "..") &&
+		!strings.HasPrefix(ref, "/") &&
+		!filepath.IsAbs(ref) &&
+		!unsafeText(ref) &&
+		closeoutRefPattern.MatchString(ref)
 }
 
 func safeProjectPath(path string) bool {
