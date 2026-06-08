@@ -96,6 +96,7 @@ type WorkflowStep struct {
 	FilesToEdit             []string `json:"files_to_edit,omitempty"`
 	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
 	VerificationRequirement string   `json:"verification_requirement,omitempty"`
+	GitOpsVerificationMode  string   `json:"gitops_verification_mode,omitempty"`
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
 	ReviewGate              string   `json:"review_gate,omitempty"`

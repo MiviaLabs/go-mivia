@@ -35,6 +35,7 @@ files_to_read = ["configs/workflows/mass/governed-smoke-gitops.toml"]
 files_to_edit = [".agentic/automation-smoke.md"]
 likely_files_affected = [".agentic/automation-smoke.md"]
 verification_requirement = "runner verifies the bounded diff and GitOps evidence refs"
+gitops_verification_mode = "bounded_smoke"
 expected_output = "one safe smoke marker file update committed and pushed by runner GitOps"
 failure_criteria = "fail if any file outside .agentic/automation-smoke.md is changed or GitOps cannot create a draft PR"
 resume_instructions = "resume by checking the smoke Work Task, git commit ref, push ref, and draft PR ref"

@@ -155,10 +155,10 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		input.TestResults = append(input.TestResults, preCommitVerificationTests...)
 	}
 	if len(preCommitVerificationRefs) > 0 {
-			status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
-			if err != nil {
-				return PostTaskResult{}, gitOpsStageFailure("git_status_after_precommit_verification", err)
-			}
+		status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
+		if err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("git_status_after_precommit_verification", err)
+		}
 		if strings.TrimSpace(status.Stdout) == "" {
 			result := PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}
 			result.EvidenceRefs = append(result.EvidenceRefs, preCommitVerificationRefs...)
@@ -246,7 +246,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		if err := svc.validateBranchPolicy(branch); err != nil {
 			return PostTaskResult{}, gitOpsStageFailure("validate_push_branch_policy", err)
 		}
-		if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", "--no-verify", svc.options.RemoteName, "HEAD:"+branch); err != nil {
+		if _, err := svc.gitPush(ctx, workDir, branch); err != nil {
 			return PostTaskResult{}, gitOpsStageFailure("git_push", err)
 		}
 		result.PushRef = "git-push-" + safeHash(branch)
@@ -308,7 +308,7 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 	if err != nil {
 		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_render", err)
 	}
-	if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", "--no-verify", svc.options.RemoteName, "HEAD:"+branch); err != nil {
+	if _, err := svc.gitPush(ctx, workDir, branch); err != nil {
 		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_push", err)
 	}
 	prRef, err := svc.ensureDraftPR(ctx, workDir, rendered)
@@ -526,21 +526,28 @@ func (svc *Service) validatePushConfig() error {
 	if !svc.options.PushAfterTask {
 		return nil
 	}
-	if strings.TrimSpace(svc.options.SSHPrivateKeyPath) == "" || strings.TrimSpace(svc.options.SSHKnownHostsPath) == "" {
-		return fmt.Errorf("%w: ssh key and known hosts are required for push", ErrInvalidInput)
+	hasSSH := strings.TrimSpace(svc.options.SSHPrivateKeyPath) != "" || strings.TrimSpace(svc.options.SSHKnownHostsPath) != ""
+	hasGitHubTokenRef := strings.TrimSpace(svc.options.GitHubTokenEnv) != "" || strings.TrimSpace(svc.options.GitHubTokenFile) != ""
+	if !hasSSH && !hasGitHubTokenRef {
+		return fmt.Errorf("%w: push auth requires ssh key and known hosts or github token reference", ErrInvalidInput)
 	}
-	for name, value := range map[string]string{
-		"ssh key":         svc.options.SSHPrivateKeyPath,
-		"ssh known hosts": svc.options.SSHKnownHostsPath,
-	} {
-		if !filepath.IsAbs(value) || strings.ContainsAny(value, "\x00\r\n") {
-			return fmt.Errorf("%w: %s path must be absolute and safe", ErrInvalidInput, name)
+	if hasSSH {
+		if strings.TrimSpace(svc.options.SSHPrivateKeyPath) == "" || strings.TrimSpace(svc.options.SSHKnownHostsPath) == "" {
+			return fmt.Errorf("%w: ssh key and known hosts are required for push", ErrInvalidInput)
 		}
-		if err := requireReadableFile(value); err != nil {
-			return fmt.Errorf("%w: %s file is unavailable", ErrInvalidInput, name)
+		for name, value := range map[string]string{
+			"ssh key":         svc.options.SSHPrivateKeyPath,
+			"ssh known hosts": svc.options.SSHKnownHostsPath,
+		} {
+			if !filepath.IsAbs(value) || strings.ContainsAny(value, "\x00\r\n") {
+				return fmt.Errorf("%w: %s path must be absolute and safe", ErrInvalidInput, name)
+			}
+			if err := requireReadableFile(value); err != nil {
+				return fmt.Errorf("%w: %s file is unavailable", ErrInvalidInput, name)
+			}
 		}
 	}
-	if svc.options.DraftPRAfterPush {
+	if hasGitHubTokenRef || svc.options.DraftPRAfterPush {
 		tokenEnv := strings.TrimSpace(svc.options.GitHubTokenEnv)
 		tokenFile := strings.TrimSpace(svc.options.GitHubTokenFile)
 		if tokenEnv != "" && strings.TrimSpace(os.Getenv(tokenEnv)) == "" {
@@ -557,7 +564,6 @@ func (svc *Service) validatePushConfig() error {
 	}
 	return nil
 }
-
 func (svc *Service) validateDraftPRAuth(ctx context.Context, workDir string) error {
 	if !svc.options.PushAfterTask || !svc.options.DraftPRAfterPush {
 		return nil
@@ -746,6 +752,16 @@ func (svc *Service) git(ctx context.Context, dir string, env []string, args ...s
 	return svc.run(ctx, Command{Path: "git", Args: args, Dir: dir, Env: env})
 }
 
+func (svc *Service) gitPush(ctx context.Context, workDir string, branch string) (CommandResult, error) {
+	args := []string{"push", "--no-verify", svc.options.RemoteName, "HEAD:" + branch}
+	env := svc.gitSSHEnv()
+	if githubEnv := svc.githubEnv(); len(githubEnv) > 0 {
+		args = append([]string{"-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"}, args...)
+		env = append(env, githubEnv...)
+	}
+	return svc.git(ctx, workDir, env, args...)
+}
+
 func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) error {
 	workDir = strings.TrimSpace(workDir)
 	if workDir == "" || !filepath.IsAbs(workDir) || strings.ContainsAny(workDir, "\x00\r\n") {
@@ -907,6 +923,7 @@ func invalidInputFailureDetail(message string) string {
 		detail string
 	}{
 		{needle: "ssh key and known hosts are required", detail: "ssh_config_required"},
+		{needle: "push auth requires ssh key and known hosts or github token reference", detail: "push_auth_required"},
 		{needle: "ssh key file is unavailable", detail: "ssh_key_unavailable"},
 		{needle: "ssh known hosts file is unavailable", detail: "ssh_known_hosts_unavailable"},
 		{needle: "github token reference required", detail: "github_token_required"},
@@ -967,6 +984,9 @@ func (svc *Service) authorEmail() (string, error) {
 }
 
 func (svc *Service) gitSSHEnv() []string {
+	if strings.TrimSpace(svc.options.SSHPrivateKeyPath) == "" || strings.TrimSpace(svc.options.SSHKnownHostsPath) == "" {
+		return nil
+	}
 	command := "ssh -i " + shellQuote(svc.options.SSHPrivateKeyPath) + " -o IdentitiesOnly=yes -o UserKnownHostsFile=" + shellQuote(svc.options.SSHKnownHostsPath)
 	return []string{"GIT_SSH_COMMAND=" + command}
 }

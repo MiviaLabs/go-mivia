@@ -338,7 +338,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	}
 	runGitOps := !readOnlyReviewRun && (taskMetadataErr != nil || shouldRunGitOpsForTask(taskMetadata))
 	if isGitOpsPostTaskRecoveryRun(claimed.Run) {
-		status, failureCategory, durationMS, evidenceRefs := runGitOpsPostTaskRecovery(ctx, client, gitOps, projectID, runWorkDir, agentID, claimed)
+		status, failureCategory, durationMS, evidenceRefs := runGitOpsPostTaskRecovery(ctx, client, gitOpsOptions, projectID, runWorkDir, agentID, claimed)
 		failureCategory = gitOpsRecoveryFailureCategoryOrFallback(status, failureCategory)
 		if status != projectautomation.RunStatusCompleted && strings.TrimSpace(failureCategory) != "" {
 			evidenceRefs = append(evidenceRefs, "gitops-failure:"+failureCategory)
@@ -449,7 +449,8 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			failureCategory = "automation_task_closeout_missing"
 		}
 		if status == projectautomation.RunStatusCompleted && !readOnlyReviewRun && shouldRunGitOpsPostTask(taskMetadata) {
-			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
+			taskGitOps := projectgitops.New(gitOpsOptionsForTask(gitOpsOptions, taskMetadata))
+			gitResult, err := taskGitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 			if err != nil {
 				status = projectautomation.RunStatusFailed
 				failureCategory = gitOpsFailureCategoryForRunner(err)
@@ -592,7 +593,7 @@ func isReadOnlyReviewRun(claimed projectautomation.ClaimedRun) bool {
 	return strings.HasPrefix(strings.TrimSpace(claimed.CodexInput.TaskRef), "review-")
 }
 
-func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps *projectgitops.Service, projectID string, runWorkDir string, agentID string, claimed projectautomation.ClaimedRun) (string, string, int64, []string) {
+func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOpsOptions projectgitops.Options, projectID string, runWorkDir string, agentID string, claimed projectautomation.ClaimedRun) (string, string, int64, []string) {
 	started := time.Now()
 	taskMetadata, err := client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
 	if err != nil {
@@ -604,6 +605,7 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 	if failure := gitOpsPostTaskCloseoutFailure(taskMetadata); failure != "" {
 		return projectautomation.RunStatusFailed, failure, time.Since(started).Milliseconds(), []string{"gitops-failure:" + failure}
 	}
+	gitOps := newGitOpsService(gitOpsOptionsForTask(gitOpsOptions, taskMetadata))
 	gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 	if err != nil {
 		return projectautomation.RunStatusFailed, gitOpsFailureCategoryForRunner(err), time.Since(started).Milliseconds(), gitOpsFailureEvidenceRefs(err)
@@ -617,8 +619,39 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 	return projectautomation.RunStatusCompleted, "", time.Since(started).Milliseconds(), evidenceRefs
 }
 
+var newGitOpsService = projectgitops.New
+
 func shouldRunGitOpsPostTask(task runnerWorkTaskMetadata) bool {
 	return gitOpsPostTaskCloseoutFailure(task) == ""
+}
+
+func gitOpsOptionsForTask(options projectgitops.Options, task runnerWorkTaskMetadata) projectgitops.Options {
+	if taskUsesBoundedSmokeGitOpsVerification(task) {
+		options.Verification = projectgitops.VerificationProfile{}
+	}
+	return options
+}
+
+func taskUsesBoundedSmokeGitOpsVerification(task runnerWorkTaskMetadata) bool {
+	if strings.TrimSpace(task.GitOpsVerificationMode) != "bounded_smoke" {
+		return false
+	}
+	if strings.TrimSpace(task.TaskRef) != "smoke-draft-pr" {
+		return false
+	}
+	if len(task.FilesToEdit) != 1 || strings.TrimSpace(task.FilesToEdit[0]) != ".agentic/automation-smoke.md" {
+		return false
+	}
+	return containsRunnerString(task.EvidenceRefs, "gitops-smoke-ref")
+}
+
+func containsRunnerString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func gitOpsPostTaskCloseoutFailure(task runnerWorkTaskMetadata) string {
@@ -1093,17 +1126,19 @@ type runnerWorkPlan struct {
 }
 
 type runnerWorkTaskMetadata struct {
-	ID                 string   `json:"id"`
-	TaskRef            string   `json:"task_ref,omitempty"`
-	Title              string   `json:"title,omitempty"`
-	Status             string   `json:"status,omitempty"`
-	BlockedReason      string   `json:"blocked_reason,omitempty"`
-	FilesToEdit        []string `json:"files_to_edit,omitempty"`
-	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
-	ClaimRefs          []string `json:"claim_refs,omitempty"`
-	ReviewResultRefs   []string `json:"review_result_refs,omitempty"`
-	ReviewExemptReason string   `json:"review_exempt_reason,omitempty"`
-	VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
+	ID                     string   `json:"id"`
+	TaskRef                string   `json:"task_ref,omitempty"`
+	Title                  string   `json:"title,omitempty"`
+	Status                 string   `json:"status,omitempty"`
+	BlockedReason          string   `json:"blocked_reason,omitempty"`
+	GitOpsVerificationMode string   `json:"gitops_verification_mode,omitempty"`
+	FilesToEdit            []string `json:"files_to_edit,omitempty"`
+	LikelyFilesAffected    []string `json:"likely_files_affected,omitempty"`
+	EvidenceRefs           []string `json:"evidence_refs,omitempty"`
+	ClaimRefs              []string `json:"claim_refs,omitempty"`
+	ReviewResultRefs       []string `json:"review_result_refs,omitempty"`
+	ReviewExemptReason     string   `json:"review_exempt_reason,omitempty"`
+	VerifierResultRefs     []string `json:"verifier_result_refs,omitempty"`
 }
 
 var errNoQueuedRun = errors.New("no queued automation run")

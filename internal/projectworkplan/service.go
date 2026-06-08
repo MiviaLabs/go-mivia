@@ -344,6 +344,10 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	if err != nil {
 		return WorkTask{}, err
 	}
+	gitOpsVerificationMode, err := safeOptionalRef(input.GitOpsVerificationMode, "gitops_verification_mode")
+	if err != nil {
+		return WorkTask{}, err
+	}
 	expected, err := safeOptionalText(input.ExpectedOutput, "expected_output", 500)
 	if err != nil {
 		return WorkTask{}, err
@@ -409,7 +413,7 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 			return WorkTask{}, fmt.Errorf("%w: create task status cannot be terminal", ErrInvalidInput)
 		}
 	}
-	return WorkTask{ID: svc.newID("work_task"), ProjectID: projectID, PlanID: planID, TaskRef: taskRef, Title: title, Description: description, Status: status, OwnerAgent: owner, TraceID: traceID, EvidenceNeeded: evidence, ContextPackRefs: contextRefs, FilesToRead: filesToRead, FilesToEdit: filesToEdit, LikelyFilesAffected: files, DependencyTaskIDs: deps, VerificationRequirement: verify, ExpectedOutput: expected, FailureCriteria: failure, ReviewGate: reviewGate, ResumeInstructions: resume, KnowledgeCandidateRefs: knowledgeRefs, AgentRunIDs: optionalRefSlice(runID), DecompositionQuality: quality, AcceptanceCriteria: acceptanceCriteria, StopConditions: stopConditions, VerifierLadder: verifierLadder, RegressionApplicability: regressionApplicability, DownstreamImpactRefs: downstreamImpactRefs, OutputContract: outputContract, CreatedAt: now, UpdatedAt: now}, nil
+	return WorkTask{ID: svc.newID("work_task"), ProjectID: projectID, PlanID: planID, TaskRef: taskRef, Title: title, Description: description, Status: status, OwnerAgent: owner, TraceID: traceID, EvidenceNeeded: evidence, ContextPackRefs: contextRefs, FilesToRead: filesToRead, FilesToEdit: filesToEdit, LikelyFilesAffected: files, DependencyTaskIDs: deps, VerificationRequirement: verify, GitOpsVerificationMode: gitOpsVerificationMode, ExpectedOutput: expected, FailureCriteria: failure, ReviewGate: reviewGate, ResumeInstructions: resume, KnowledgeCandidateRefs: knowledgeRefs, AgentRunIDs: optionalRefSlice(runID), DecompositionQuality: quality, AcceptanceCriteria: acceptanceCriteria, StopConditions: stopConditions, VerifierLadder: verifierLadder, RegressionApplicability: regressionApplicability, DownstreamImpactRefs: downstreamImpactRefs, OutputContract: outputContract, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (svc *Service) GetWorkTask(ctx context.Context, projectID, taskID string) (WorkTask, error) {

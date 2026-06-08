@@ -265,6 +265,36 @@ func TestShouldRunGitOpsPostTaskRequiresCloseoutReady(t *testing.T) {
 	}
 }
 
+func TestGitOpsOptionsForTaskUsesBoundedSmokeVerificationOnlyForGuardedSmokeTask(t *testing.T) {
+	base := projectgitops.Options{Verification: projectgitops.VerificationProfile{
+		BootstrapCommands: []string{"pnpm install --frozen-lockfile"},
+		AlwaysBeforePR:    []string{"pnpm exec nx affected -t lint"},
+		Env:               map[string]string{"CI": "true"},
+	}}
+	smoke := runnerWorkTaskMetadata{
+		TaskRef:                "smoke-draft-pr",
+		GitOpsVerificationMode: "bounded_smoke",
+		FilesToEdit:            []string{".agentic/automation-smoke.md"},
+		EvidenceRefs:           []string{"gitops-smoke-ref"},
+	}
+	if got := gitOpsOptionsForTask(base, smoke); len(got.Verification.BootstrapCommands) != 0 || len(got.Verification.AlwaysBeforePR) != 0 || len(got.Verification.Env) != 0 {
+		t.Fatalf("expected bounded smoke task to clear project verification, got %+v", got.Verification)
+	}
+	smoke.EvidenceRefs = nil
+	if got := gitOpsOptionsForTask(base, smoke); len(got.Verification.AlwaysBeforePR) == 0 {
+		t.Fatalf("expected missing smoke evidence to keep strict project verification")
+	}
+	ordinary := runnerWorkTaskMetadata{
+		TaskRef:                "implement-change",
+		GitOpsVerificationMode: "bounded_smoke",
+		FilesToEdit:            []string{".agentic/automation-smoke.md"},
+		EvidenceRefs:           []string{"gitops-smoke-ref"},
+	}
+	if got := gitOpsOptionsForTask(base, ordinary); len(got.Verification.AlwaysBeforePR) == 0 {
+		t.Fatalf("expected ordinary task to keep strict project verification")
+	}
+}
+
 func TestResolveRunWorkDirFallsBackForSharedPlan(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1073,11 +1103,16 @@ func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
 		{},
 		{Stdout: "abc123def456\n"},
 	}}
-	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+	gitOpsOptions := projectgitops.Options{
 		Enabled:              true,
 		CommitAfterTask:      true,
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
-	}, runner)
+	}
+	oldNewGitOpsService := newGitOpsService
+	newGitOpsService = func(options projectgitops.Options) *projectgitops.Service {
+		return projectgitops.NewWithRunner(options, runner)
+	}
+	defer func() { newGitOpsService = oldNewGitOpsService }()
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1099,7 +1134,7 @@ func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "project-1", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "project-1", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:           "run-1",
 			ProjectID:    "project-1",
@@ -1123,10 +1158,10 @@ func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
 }
 
 func TestRunGitOpsPostTaskRecoveryRequiresVerifierRefs(t *testing.T) {
-	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+	gitOpsOptions := projectgitops.Options{
 		Enabled:         true,
 		CommitAfterTask: true,
-	}, &gitOpsRecordingRunner{})
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
@@ -1146,7 +1181,7 @@ func TestRunGitOpsPostTaskRecoveryRequiresVerifierRefs(t *testing.T) {
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:          "run-1",
 			ProjectID:   "mass-monorepo",
@@ -1165,10 +1200,10 @@ func TestRunGitOpsPostTaskRecoveryRequiresVerifierRefs(t *testing.T) {
 }
 
 func TestRunGitOpsPostTaskRecoveryRequiresReviewRefs(t *testing.T) {
-	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+	gitOpsOptions := projectgitops.Options{
 		Enabled:         true,
 		CommitAfterTask: true,
-	}, &gitOpsRecordingRunner{})
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
@@ -1188,7 +1223,7 @@ func TestRunGitOpsPostTaskRecoveryRequiresReviewRefs(t *testing.T) {
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:          "run-1",
 			ProjectID:   "mass-monorepo",
@@ -1234,7 +1269,7 @@ func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
 			errors.New("pr create failed"),
 		},
 	}
-	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+	gitOpsOptions := projectgitops.Options{
 		Enabled:              true,
 		CommitAfterTask:      true,
 		PushAfterTask:        true,
@@ -1243,7 +1278,12 @@ func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
 		SSHPrivateKeyPath:    sshKey,
 		SSHKnownHostsPath:    knownHosts,
 		GitHubTokenEnv:       "GH_TOKEN",
-	}, runner)
+	}
+	oldNewGitOpsService := newGitOpsService
+	newGitOpsService = func(options projectgitops.Options) *projectgitops.Service {
+		return projectgitops.NewWithRunner(options, runner)
+	}
+	defer func() { newGitOpsService = oldNewGitOpsService }()
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
 	t.Setenv("GH_TOKEN", "token")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1265,7 +1305,7 @@ func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:           "run-1",
 			ProjectID:    "mass-monorepo",
@@ -1284,14 +1324,14 @@ func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
 
 func TestRunGitOpsPostTaskRecoveryReportsMissingRunnerSSHMount(t *testing.T) {
 	_, knownHosts := testRunnerGitOpsCredentialFiles(t)
-	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+	gitOpsOptions := projectgitops.Options{
 		Enabled:              true,
 		CommitAfterTask:      true,
 		PushAfterTask:        true,
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
 		SSHPrivateKeyPath:    filepath.Join(t.TempDir(), "missing_id_ed25519"),
 		SSHKnownHostsPath:    knownHosts,
-	}, &gitOpsRecordingRunner{})
+	}
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1312,7 +1352,7 @@ func TestRunGitOpsPostTaskRecoveryReportsMissingRunnerSSHMount(t *testing.T) {
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:          "run-1",
 			ProjectID:   "mass-monorepo",

@@ -85,6 +85,7 @@ type WorkTask struct {
 	LikelyFilesAffected     []string  `json:"likely_files_affected,omitempty"`
 	DependencyTaskIDs       []string  `json:"dependency_task_ids,omitempty"`
 	VerificationRequirement string    `json:"verification_requirement"`
+	GitOpsVerificationMode  string    `json:"gitops_verification_mode,omitempty"`
 	ExpectedOutput          string    `json:"expected_output,omitempty"`
 	FailureCriteria         string    `json:"failure_criteria,omitempty"`
 	ReviewGate              string    `json:"review_gate,omitempty"`
@@ -187,6 +188,7 @@ type CreateWorkTaskInput struct {
 	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
 	DependencyTaskIDs       []string `json:"dependency_task_ids,omitempty"`
 	VerificationRequirement string   `json:"verification_requirement"`
+	GitOpsVerificationMode  string   `json:"gitops_verification_mode,omitempty"`
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
 	ReviewGate              string   `json:"review_gate,omitempty"`

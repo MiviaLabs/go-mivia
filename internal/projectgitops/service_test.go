@@ -180,6 +180,58 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 	}
 }
 
+func TestPostTaskPushUsesGitHubTokenCredentialHelper(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M .agentic/automation-smoke.md\n"},
+		{Stdout: "chore-MASS-0000-smoke\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+		{},
+	}}
+	t.Setenv("GH_TOKEN", "test-token")
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		RemoteName:        "origin",
+		GitHubTokenEnv:    "GH_TOKEN",
+		BranchNamePattern: "^chore-MASS-[0-9]+(-[a-z0-9-]+)*$",
+	}, runner)
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{".agentic/automation-smoke.md"},
+	})
+	if err != nil {
+		t.Fatalf("expected token-backed push to succeed: %v", err)
+	}
+	if result.PushRef == "" {
+		t.Fatalf("expected push ref, got %+v", result)
+	}
+	push := runner.commands[len(runner.commands)-1]
+	joinedArgs := strings.Join(push.Args, "\n")
+	for _, want := range []string{"credential.helper=", "credential.helper=!gh auth git-credential", "push", "HEAD:chore-MASS-0000-smoke"} {
+		if !strings.Contains(joinedArgs, want) {
+			t.Fatalf("expected push args to contain %q, got %#v", want, push.Args)
+		}
+	}
+	if !containsEnv(push.Env, "GH_TOKEN=test-token") {
+		t.Fatalf("expected GH_TOKEN env on push command, got %+v", push.Env)
+	}
+	if hasEnvPrefix(push.Env, "GIT_SSH_COMMAND=") {
+		t.Fatalf("did not expect SSH env for token-only push, got %+v", push.Env)
+	}
+}
+
 func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testing.T) {
 	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{
@@ -637,7 +689,7 @@ func TestFailureCategoryWithDetailPreservesInvalidGitOpsConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected invalid push config")
 	}
-	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_ssh_config_required" {
+	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_push_auth_required" {
 		t.Fatalf("expected detailed invalid input category, got %q", got)
 	}
 }
