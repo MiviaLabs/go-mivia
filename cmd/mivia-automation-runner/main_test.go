@@ -3073,6 +3073,20 @@ func TestValidateGovernedCloseoutRejectsServerInvalidBlockReason(t *testing.T) {
 	}
 }
 
+func TestGovernedCloseoutFailureCategoryPreservesChildTaskServerErrorCode(t *testing.T) {
+	err := governedCloseoutError{
+		category: governedCloseoutApplyFailed,
+		err: fmt.Errorf("child_task_create_failed: server returned 400 Bad Request: %s", `{"error":{"code":"invalid_project_work_task_input","message":"evidence_needed contains unsafe content"}}`),
+	}
+	category := governedCloseoutFailureCategory(err)
+	if !strings.HasPrefix(category, "governed_closeout_apply_failed_child_task_create_failed_invalid_project_work_task_input") {
+		t.Fatalf("expected child task server validation code to be preserved, got %q", category)
+	}
+	if strings.Contains(category, "server_returned_400") {
+		t.Fatalf("expected server status boilerplate to be excluded, got %q", category)
+	}
+}
+
 func TestParseGovernedCloseoutTrimsServerInvalidOutcomeSummary(t *testing.T) {
 	output, err := parseGovernedCloseoutOutput(fmt.Sprintf(`{
 		"closeout_action":"needs_review",

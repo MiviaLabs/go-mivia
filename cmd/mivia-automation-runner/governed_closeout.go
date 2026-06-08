@@ -68,6 +68,9 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	normalizedText := governedCloseoutNormalizeFailureMarkerText(text)
 	if strings.Contains(text, "child_task_create_failed") {
+		if detail := governedCloseoutServerErrorDetail(text, "child_task_create_failed"); detail != "" {
+			return detail
+		}
 		for _, marker := range []string{
 			"invalid_project_work_task_input",
 			"invalid_project_workplan_input",
@@ -102,6 +105,42 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 		}
 	}
 	return governedCloseoutSanitizedFailureDetail(text, category, "")
+}
+
+func governedCloseoutServerErrorDetail(text string, prefix string) string {
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end <= start {
+		return ""
+	}
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(text[start:end+1]), &body); err != nil {
+		return ""
+	}
+	code := firstNonEmpty(body.Error.Code, body.Code)
+	message := firstNonEmpty(body.Error.Message, body.Message)
+	codeDetail := governedCloseoutNormalizeFailureMarkerText(code)
+	if codeDetail == "" {
+		return ""
+	}
+	if prefix != "" {
+		codeDetail = strings.Trim(prefix, "_") + "_" + codeDetail
+	}
+	messageDetail := governedCloseoutNormalizeFailureMarkerText(message)
+	if messageDetail != "" {
+		codeDetail += "_" + messageDetail
+	}
+	if len(codeDetail) > 100 {
+		codeDetail = strings.TrimRight(codeDetail[:100], "_")
+	}
+	return codeDetail
 }
 
 func governedCloseoutNormalizeFailureMarkerText(text string) string {
