@@ -3979,17 +3979,21 @@ func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent
 }
 
 func taskNeedsPostImplementationReview(task projectworkplan.WorkTask) bool {
-	if isReviewTask(task) || len(task.FilesToEdit) == 0 {
+	if isReviewTask(task) || isReadOnlyScannerTask(task) {
 		return false
 	}
 	if len(task.ReviewResultRefs) > 0 {
+		return false
+	}
+	hasReviewGate := strings.TrimSpace(task.ReviewGate) != ""
+	if len(task.FilesToEdit) == 0 && !hasReviewGate {
 		return false
 	}
 	switch task.Status {
 	case projectworkplan.WorkTaskStatusNeedsReview:
 		return true
 	case projectworkplan.WorkTaskStatusVerifying:
-		return strings.TrimSpace(task.ReviewGate) != ""
+		return hasReviewGate
 	default:
 		return false
 	}
@@ -5230,6 +5234,9 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 	switch task.Status {
 	case projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying:
 	default:
+		return false
+	}
+	if taskNeedsPostImplementationReview(task) {
 		return false
 	}
 	if isReadOnlyScannerTask(task) && readOnlyScannerTaskHasCloseoutOutput(task) {

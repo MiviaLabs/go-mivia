@@ -7255,6 +7255,76 @@ func TestClaimNextRunQueuesReviewForBoundedGitOpsTaskMissingDraftPREvidence(t *t
 	}
 }
 
+func TestClaimNextRunQueuesReviewForPostValidationGitOpsSmokeTaskWithoutFilesToEdit(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("post-validation-task", "final-pr-readiness", nil)
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.OwnerAgent = "validation-orchestrator"
+	task.ClaimedByRunID = "run-post-validation"
+	task.FilesToEdit = nil
+	task.ReviewGate = "post-implementation-validation-review required before GitOps readiness"
+	task.EvidenceRefs = []string{"automation_run:run-post-validation", "gitops-smoke-ref", "smoke-chain-ref"}
+	reviewTask := readyTask("review-post-validation-task", "review-final-pr-readiness", nil)
+	reviewTask.Status = projectworkplan.WorkTaskStatusPlanned
+	reviewTask.OwnerAgent = "validation-reviewer"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive}},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task, reviewTask.ID: reviewTask},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/post-validation",
+		Title:           "Post Validation",
+		Purpose:         "Run post-validation GitOps smoke gate",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "validation-orchestrator",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	_, err = svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review-post-validation",
+		Title:           "Review Post Validation",
+		Purpose:         "Review post-validation GitOps smoke gate",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "validation-reviewer",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "post_implementation_review",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation review returned error: %v", err)
+	}
+	run := AutomationRun{ID: "run-post-validation", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID, PlanID: "plan-1", TaskID: task.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: "external_codex_cli_completed_verification_required"}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.TaskID != reviewTask.ID || claimed.Run.ParentRunID != run.ID || claimed.Run.SafeSummary != RunSafeSummaryPostImplementationReviewQueued {
+		t.Fatalf("expected post-validation review run before GitOps closeout, got %#v", claimed.Run)
+	}
+	parent, err := svc.GetRun(ctx, "project-1", run.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if parent.Status != RunStatusVerifying || parent.WorkTaskStatus != projectworkplan.WorkTaskStatusNeedsReview {
+		t.Fatalf("parent run must remain verifying at the review gate, got %#v", parent)
+	}
+}
+
 func TestClaimNextRunSyncsVerifyingRunWorkTaskStatusWhenNotReadyForCloseout(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("planner-task", "create-confirmed-bug-work-plans-audit-alpha", []string{"repo-audit-scope"})
