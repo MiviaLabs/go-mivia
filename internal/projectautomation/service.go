@@ -5199,7 +5199,7 @@ func taskNeedsGitOpsPostTaskRecovery(run AutomationRun, task projectworkplan.Wor
 	if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
 		return false
 	}
-	if len(task.ReviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" {
+	if len(task.ReviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" && !isGitOpsTailTask(task) {
 		return false
 	}
 	for _, ref := range append(append([]string{}, task.EvidenceRefs...), task.ClaimRefs...) {
@@ -5262,6 +5262,13 @@ func automationReviewExemptReason(task projectworkplan.WorkTask) string {
 	default:
 		return ""
 	}
+}
+
+func isGitOpsTailTask(task projectworkplan.WorkTask) bool {
+	ref := strings.ToLower(strings.TrimSpace(task.TaskRef))
+	return ref == "final-pr-readiness" ||
+		strings.Contains(ref, "draft-pr") ||
+		strings.Contains(ref, "gitops")
 }
 
 func metadataOnlyTaskHasCloseoutEvidence(task projectworkplan.WorkTask) bool {

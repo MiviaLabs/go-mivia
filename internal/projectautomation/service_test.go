@@ -7120,6 +7120,113 @@ func TestClaimNextRunClosesNoConfirmedBugPlannerWithoutSecondaryReview(t *testin
 	}
 }
 
+func TestClaimNextRunQueuesReviewForBoundedGitOpsTaskAfterDraftPREvidence(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("smoke-task", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.OwnerAgent = "smoke-gitops-worker"
+	task.ClaimedByRunID = "run-smoke"
+	task.FilesToEdit = []string{".agentic/automation-smoke.md"}
+	task.EvidenceRefs = []string{
+		"automation_run:run-smoke",
+		"gitops-smoke-ref",
+		"gitops-commit:abc123",
+		"gitops-push:origin/chore-MASS-0000-governed-smoke",
+		"draft-pr:https://github.com/MiviaLabs/go-mivia/pull/1",
+	}
+	task.VerifierResultRefs = []string{"bounded-smoke-marker-present"}
+	task.Outcome = "Bounded smoke marker is present with exactly the requested single safe line."
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive}},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/smoke-gitops",
+		Title:           "Smoke GitOps",
+		Purpose:         "Run smoke GitOps worker",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "smoke-gitops-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	run := AutomationRun{ID: "run-smoke", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID, PlanID: "plan-1", TaskID: task.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: "external_codex_cli_completed_verification_required"}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimedReview, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimedReview.Run.ParentRunID != run.ID || claimedReview.Run.SafeSummary != RunSafeSummaryPostImplementationReviewQueued || !strings.HasPrefix(claimedReview.CodexInput.TaskRef, "review-") {
+		t.Fatalf("expected queued review after gitops evidence, got run=%#v input=%#v", claimedReview.Run, claimedReview.CodexInput)
+	}
+	completed, err := svc.GetRun(ctx, "project-1", run.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if completed.Status != RunStatusVerifying || completed.WorkTaskStatus != projectworkplan.WorkTaskStatusNeedsReview {
+		t.Fatalf("expected worker to remain verifying until review completes, got %#v", completed)
+	}
+	worker := fake.tasks[task.ID]
+	if worker.Status != projectworkplan.WorkTaskStatusNeedsReview || !contains(worker.EvidenceRefs, "draft-pr:https://github.com/MiviaLabs/go-mivia/pull/1") {
+		t.Fatalf("expected worker to retain draft PR evidence while awaiting review, got %#v", worker)
+	}
+}
+
+func TestClaimNextRunRecoversBoundedGitOpsTaskMissingDraftPREvidence(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("smoke-task", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.OwnerAgent = "smoke-gitops-worker"
+	task.ClaimedByRunID = "run-smoke"
+	task.FilesToEdit = []string{".agentic/automation-smoke.md"}
+	task.EvidenceRefs = []string{"automation_run:run-smoke", "gitops-smoke-ref"}
+	task.VerifierResultRefs = []string{"bounded-smoke-marker-present"}
+	task.Outcome = "Bounded smoke marker is present with exactly the requested single safe line."
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive}},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/smoke-gitops",
+		Title:           "Smoke GitOps",
+		Purpose:         "Run smoke GitOps worker",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "smoke-gitops-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	run := AutomationRun{ID: "run-smoke", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID, PlanID: "plan-1", TaskID: task.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: "external_codex_cli_completed_verification_required"}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != run.ID || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
+		t.Fatalf("expected same run reclaimed for gitops recovery, got %#v", claimed.Run)
+	}
+}
+
 func TestClaimNextRunSyncsVerifyingRunWorkTaskStatusWhenNotReadyForCloseout(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("planner-task", "create-confirmed-bug-work-plans-audit-alpha", []string{"repo-audit-scope"})
