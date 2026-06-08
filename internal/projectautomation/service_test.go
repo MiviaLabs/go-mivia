@@ -8347,6 +8347,61 @@ func TestCompleteAttemptAcceptsStaleFailedReportAfterRunAdvancedToVerifying(t *t
 	}
 }
 
+func TestCompleteAttemptAcceptsLateFailedReportAfterTaskTerminalCloseout(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "review-a", nil)
+	task.Status = projectworkplan.WorkTaskStatusDone
+	task.AgentRunIDs = []string{"run-a"}
+	task.VerifierResultRefs = []string{"verifier:run-a"}
+	task.ReviewExemptReason = "read-only review task closeout handled by automation runner"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createTestAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusCompleted,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    1,
+		SafeSummary:     "external_codex_cli_verified_task_done",
+		ClaimID:         "claim-a",
+		RunnerID:        "runner-a",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		FinishedAt:      now,
+		LastHeartbeatAt: now,
+		LeaseExpiresAt:  now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       automation.ProjectID,
+		RunID:           "run-a",
+		Status:          RunStatusFailed,
+		FailureCategory: "automation_task_closeout_failed",
+		ClaimID:         "claim-a",
+		RunnerID:        "runner-a",
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error for late terminal-task report: %v", err)
+	}
+	if run.Status != RunStatusCompleted || run.FailureCategory != "" {
+		t.Fatalf("expected existing completed run to remain durable, got %+v", run)
+	}
+	if len(store.attempts) != 0 {
+		t.Fatalf("expected late terminal-task report to skip attempt write, got %d attempts", len(store.attempts))
+	}
+}
+
 func TestCompleteAttemptAcceptsCompletedReportAfterAuditReconciliationFailure(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "create-confirmed-bug-plan", []string{"internal/foo.go"})

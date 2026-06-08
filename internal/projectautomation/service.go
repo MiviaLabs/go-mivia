@@ -1706,6 +1706,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if status == RunStatusFailed && svc.failedAttemptMatchesAdvancedTask(ctx, run) {
 			return run, nil
 		}
+		if svc.attemptMatchesTerminalTaskForRun(ctx, run, status, claimID, runnerID) {
+			return run, nil
+		}
 		if status == RunStatusCompleted && terminalAuditRemediationFailureAlreadyRecorded(run) && claimMatchesTerminalRun(run, claimID, runnerID) {
 			return run, nil
 		}
@@ -2034,6 +2037,30 @@ func (svc *Service) failedAttemptMatchesAdvancedTask(ctx context.Context, run Au
 	}
 }
 
+func (svc *Service) attemptMatchesTerminalTaskForRun(ctx context.Context, run AutomationRun, status string, claimID string, runnerID string) bool {
+	if svc == nil || svc.workTasks == nil || run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return false
+	}
+	if !isTerminalRunStatus(status) || !claimMatchesTerminalRun(run, claimID, runnerID) {
+		return false
+	}
+	switch run.Status {
+	case RunStatusCompleted, RunStatusFailed, RunStatusBlocked, RunStatusCancelled, RunStatusTimeout, RunStatusVerifying:
+	default:
+		return false
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil || !taskOwnedByRun(task, run.ID) {
+		return false
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusDone, projectworkplan.WorkTaskStatusFailed, projectworkplan.WorkTaskStatusBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
 func (svc *Service) externallyClaimedTaskOwnsRun(ctx context.Context, run AutomationRun) bool {
 	if svc == nil || svc.workTasks == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" || strings.TrimSpace(run.ID) == "" {
 		return false
@@ -2043,6 +2070,14 @@ func (svc *Service) externallyClaimedTaskOwnsRun(ctx context.Context, run Automa
 		return false
 	}
 	return strings.TrimSpace(task.ClaimedByRunID) == run.ID
+}
+
+func taskOwnedByRun(task projectworkplan.WorkTask, runID string) bool {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return false
+	}
+	return strings.TrimSpace(task.ClaimedByRunID) == runID || containsRef(task.AgentRunIDs, runID)
 }
 
 func terminalAttemptAlreadyRecorded(run AutomationRun, status string) bool {
