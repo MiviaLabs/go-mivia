@@ -4490,6 +4490,31 @@ func governedWorkflowStepInstructions(taskRef string) []string {
 			"This governance step must not approve GitOps readiness when there is no implementation diff and no existing branch/PR evidence for the ticket.",
 			"If no diff exists after implementation, block this task with no-implementation-diff instead of approving PR readiness.",
 		})
+	case "collect-final-scope":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This post-validation step must collect bounded final scope refs: changed files, implementation task refs, downstream impact refs, regression-test refs, generated artifact refs, and local agentic evidence.",
+			"If final scope evidence is missing, stale, too broad, or contains unreviewed changes, block with the exact missing final-scope ref.",
+		})
+	case "validate-regression-and-downstream":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This post-validation step must independently validate regression-test evidence, downstream reachability, affected targets, contracts, generated artifacts, and sensitive-risk negative coverage.",
+			"If validation evidence is missing or not feasible, block with the exact missing regression or downstream ref.",
+		})
+	case "run-final-verification":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This post-validation step must verify concrete implementation outputs with feasible regression checks first, then affected lint/typecheck/test/policy/generated-artifact/diff checks.",
+			"If a required verifier cannot run or fails, block with the first failed verifier ref.",
+		})
+	case "final-pr-readiness":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This post-validation step must approve GitOps only after validation review refs, verifier refs, regression evidence, generated artifact checks, branch policy, PR metadata, and metadata redaction checks are complete.",
+			"If GitOps readiness evidence is incomplete or unsafe, block with the exact missing readiness ref.",
+		})
+	case "smoke-draft-pr":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This smoke GitOps step must create or update only the bounded smoke marker file requested by the task, then return governed closeout JSON so the runner can exercise commit, push, and draft PR creation.",
+			"If the bounded smoke marker cannot be created safely, block with smoke-marker-unavailable.",
+		})
 	default:
 		return nil
 	}
@@ -4514,7 +4539,12 @@ func isGovernedWorkflowTaskRef(taskRef string) bool {
 		"run-implementation-batch",
 		"review-implementation-batch",
 		"orchestrator-verification",
-		"pr-gitops-readiness":
+		"pr-gitops-readiness",
+		"collect-final-scope",
+		"validate-regression-and-downstream",
+		"run-final-verification",
+		"final-pr-readiness",
+		"smoke-draft-pr":
 		return true
 	default:
 		return false

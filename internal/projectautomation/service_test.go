@@ -251,6 +251,26 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 			"must not approve GitOps readiness when there is no implementation diff",
 			"no-implementation-diff",
 		},
+		"collect-final-scope": {
+			"must collect bounded final scope refs",
+			"missing final-scope ref",
+		},
+		"validate-regression-and-downstream": {
+			"must independently validate regression-test evidence",
+			"missing regression or downstream ref",
+		},
+		"run-final-verification": {
+			"must verify concrete implementation outputs",
+			"first failed verifier ref",
+		},
+		"final-pr-readiness": {
+			"must approve GitOps only after validation review refs",
+			"missing readiness ref",
+		},
+		"smoke-draft-pr": {
+			"must create or update only the bounded smoke marker file",
+			"runner can exercise commit, push, and draft PR creation",
+		},
 	}
 	for taskRef, wants := range cases {
 		input := codexInputForRun(run, projectworkplan.WorkTask{ID: "task-1", PlanID: "plan-1", TaskRef: taskRef})

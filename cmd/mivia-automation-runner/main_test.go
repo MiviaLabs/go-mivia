@@ -824,6 +824,7 @@ func TestShouldAutoCloseoutMetadataOnlyTaskRejectsFalseGreenGovernanceSteps(t *t
 		"validate-regression-and-downstream",
 		"run-final-verification",
 		"final-pr-readiness",
+		"smoke-draft-pr",
 	} {
 		if shouldAutoCloseoutMetadataOnlyTask(false, runnerWorkTaskMetadata{TaskRef: taskRef}) {
 			t.Fatalf("governance step %q must require explicit closeout evidence", taskRef)
@@ -1151,6 +1152,11 @@ func TestRunOnceFailsGovernanceStepsWithoutExplicitCloseout(t *testing.T) {
 		"review-implementation-batch",
 		"orchestrator-verification",
 		"pr-gitops-readiness",
+		"collect-final-scope",
+		"validate-regression-and-downstream",
+		"run-final-verification",
+		"final-pr-readiness",
+		"smoke-draft-pr",
 	} {
 		t.Run(taskRef, func(t *testing.T) {
 			setReadableCodexHome(t)
@@ -2084,6 +2090,7 @@ func TestGovernedCloseoutTasksDoNotUseCodexOutputSchema(t *testing.T) {
 		"validate-regression-and-downstream",
 		"run-final-verification",
 		"final-pr-readiness",
+		"smoke-draft-pr",
 	} {
 		t.Run(taskRef, func(t *testing.T) {
 			task := runnerWorkTaskMetadata{TaskRef: taskRef}

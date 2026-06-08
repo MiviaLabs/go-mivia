@@ -1585,7 +1585,8 @@ func taskRequiresExplicitGovernedCloseout(task runnerWorkTaskMetadata) bool {
 		"collect-final-scope",
 		"validate-regression-and-downstream",
 		"run-final-verification",
-		"final-pr-readiness":
+		"final-pr-readiness",
+		"smoke-draft-pr":
 		return true
 	default:
 		return false
