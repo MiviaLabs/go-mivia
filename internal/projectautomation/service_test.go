@@ -2885,6 +2885,20 @@ func TestQueueOutstandingPostImplementationReviewUsesUniqueRefWhenPriorReviewTas
 	if err != nil {
 		t.Fatalf("CreateWorkTask review returned error: %v", err)
 	}
+	closedSuffixedReview, err := workSvc.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  plan.ID,
+		TaskRef:                 "review-smoke-draft-pr-" + target.ID,
+		Title:                   "Closed suffixed review",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              "codex-reviewer",
+		Description:             "Closed suffixed prior review.",
+		VerificationRequirement: "closed suffixed prior review",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkTask suffixed review returned error: %v", err)
+	}
 	if _, err := workSvc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: closedReview.ID, RunID: "old-review-run", TraceID: "old-review-run"}); err != nil {
 		t.Fatalf("ClaimWorkTask review returned error: %v", err)
 	}
@@ -2908,6 +2922,30 @@ func TestQueueOutstandingPostImplementationReviewUsesUniqueRefWhenPriorReviewTas
 		ReviewExemptReason: "historical review task",
 	}); err != nil {
 		t.Fatalf("CompleteWorkTask review returned error: %v", err)
+	}
+	if _, err := workSvc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: closedSuffixedReview.ID, RunID: "old-suffixed-review-run", TraceID: "old-suffixed-review-run"}); err != nil {
+		t.Fatalf("ClaimWorkTask suffixed review returned error: %v", err)
+	}
+	if _, err := workSvc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: closedSuffixedReview.ID, RunID: "old-suffixed-review-run", TraceID: "old-suffixed-review-run"}); err != nil {
+		t.Fatalf("StartWorkTask suffixed review returned error: %v", err)
+	}
+	if _, err := workSvc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: closedSuffixedReview.ID, RunID: "old-suffixed-review-run", TraceID: "old-suffixed-review-run", SafeNextAction: "close prior suffixed review"},
+		Status:              projectworkplan.WorkTaskStatusNeedsReview,
+	}); err != nil {
+		t.Fatalf("UpdateWorkTaskStatus suffixed review returned error: %v", err)
+	}
+	if _, err := workSvc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             closedSuffixedReview.ID,
+		RunID:              "old-suffixed-review-run",
+		TraceID:            "old-suffixed-review-run",
+		Outcome:            "prior suffixed review closed",
+		SafeNextAction:     "keep historical suffixed review closed",
+		VerifierResultRefs: []string{"verifier.review.old-suffixed"},
+		ReviewExemptReason: "historical suffixed review task",
+	}); err != nil {
+		t.Fatalf("CompleteWorkTask suffixed review returned error: %v", err)
 	}
 	if _, err := workSvc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: target.ID, RunID: "parent-run", TraceID: "parent-run"}); err != nil {
 		t.Fatalf("ClaimWorkTask target returned error: %v", err)
@@ -2967,14 +3005,15 @@ func TestQueueOutstandingPostImplementationReviewUsesUniqueRefWhenPriorReviewTas
 	if err != nil {
 		t.Fatalf("ListOpenWorkTasks returned error: %v", err)
 	}
+	expectedRef := "review-smoke-draft-pr-" + target.ID + "-parent-run"
 	found := false
 	for _, task := range tasks {
-		if strings.HasPrefix(task.TaskRef, "review-smoke-draft-pr-") && task.Status == projectworkplan.WorkTaskStatusReady {
+		if task.TaskRef == expectedRef && task.Status == projectworkplan.WorkTaskStatusReady {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected suffixed ready review task, got %#v", tasks)
+		t.Fatalf("expected ready review task %q, got %#v", expectedRef, tasks)
 	}
 }
 

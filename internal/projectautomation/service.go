@@ -3902,7 +3902,15 @@ func (svc *Service) createRecoveryPostImplementationReviewTask(ctx context.Conte
 	if !ok || workPlans == nil {
 		return projectworkplan.WorkTask{}, fmt.Errorf("%w: post_implementation_review_task_missing", ErrInvalidInput)
 	}
-	return svc.createRecoveryPostImplementationReviewTaskWithRef(ctx, workPlans, run, target, reviewTaskRef)
+	var lastErr error
+	for _, candidateRef := range svc.recoveryPostImplementationReviewTaskRefs(run, target, reviewTaskRef) {
+		task, err := svc.createRecoveryPostImplementationReviewTaskWithRef(ctx, workPlans, run, target, candidateRef)
+		if err == nil || !isDuplicateWorkTaskRefError(err) {
+			return task, err
+		}
+		lastErr = err
+	}
+	return projectworkplan.WorkTask{}, lastErr
 }
 
 func (svc *Service) createRecoveryPostImplementationReviewTaskWithRef(ctx context.Context, workPlans remediationWorkPlanAPI, run AutomationRun, target projectworkplan.WorkTask, reviewTaskRef string) (projectworkplan.WorkTask, error) {
@@ -3929,10 +3937,19 @@ func (svc *Service) createRecoveryPostImplementationReviewTaskWithRef(ctx contex
 		ResumeInstructions:      "Review implementation task " + targetLabel + " only. Attach review_result_ref to that implementation task, then complete this review task.",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	})
-	if err == nil || !isDuplicateWorkTaskRefError(err) || strings.Contains(reviewTaskRef, "-"+target.ID) {
-		return task, err
+	return task, err
+}
+
+func (svc *Service) recoveryPostImplementationReviewTaskRefs(run AutomationRun, target projectworkplan.WorkTask, baseRef string) []string {
+	refs := []string{baseRef}
+	if target.ID != "" {
+		refs = append(refs, baseRef+"-"+target.ID)
 	}
-	return svc.createRecoveryPostImplementationReviewTaskWithRef(ctx, workPlans, run, target, reviewTaskRef+"-"+target.ID)
+	if run.ID != "" {
+		refs = append(refs, baseRef+"-"+safeBranchToken(firstNonEmpty(target.ID, target.TaskRef))+"-"+safeBranchToken(run.ID))
+	}
+	refs = append(refs, baseRef+"-"+safeBranchToken(svc.newID("review_task_ref")))
+	return uniqueRefs(refs)
 }
 
 func isDuplicateWorkTaskRefError(err error) bool {
