@@ -213,7 +213,16 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 		t.Fatalf("CreateWorkTask returned error: %v", err)
 	}
 	store := newTestStore()
-	svc := New(store, workSvc, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc := New(store, workSvc, Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  RunnerExecutionExternal,
+		MaxParallelTasks: 1,
+		PermissionResolver: &fakePermissionResolver{metadata: PermissionSnapshotMetadata{
+			PermissionRef:      "permission_snapshot:snapshot-worker",
+			AllowedRunnerKinds: []string{RunnerKindCodexCLI},
+		}},
+	})
 	svc.newID = deterministicAutomationIDs("automation_existing_review", "automation_worker", "automation_run_worker", "claim_worker", "automation_review_recovery", "automation_run_review", "claim_review")
 	if _, err := svc.CreateAutomation(ctx, CreateAutomationInput{
 		ProjectID:       "project-1",
@@ -240,7 +249,8 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 		PlanID:          plan.ID,
 		AllowedTaskRefs: []string{task.TaskRef},
 		TriggerKind:     TriggerKindAutomatic,
-		PermissionRef:   "permission/default",
+		PermissionRef:   "permission_snapshot:snapshot-worker",
+		SourceKind:      AutomationSourceWorkflow,
 	})
 	if err != nil {
 		t.Fatalf("CreateAutomation returned error: %v", err)
@@ -299,6 +309,9 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 	}
 	if reviewAutomation.SchedulePolicy != "post_implementation_review" || reviewAutomation.TriggerKind != TriggerKindAutomatic {
 		t.Fatalf("expected automatic post-implementation review recovery automation, got %#v", reviewAutomation)
+	}
+	if reviewAutomation.SourceKind != AutomationSourceWorkflow || reviewAutomation.PermissionRef != "permission_snapshot:snapshot-worker" {
+		t.Fatalf("expected recovery review automation to inherit workflow permission snapshot, got %#v", reviewAutomation)
 	}
 	reviewRuns, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: reviewAutomation.ID, PlanID: plan.ID})
 	if err != nil {
@@ -1405,7 +1418,7 @@ func TestCompleteAttemptBlocksFailedGovernedCloseoutAfterReplacementRetryLimit(t
 			TaskID:          task.ID,
 			Status:          RunStatusFailed,
 			RunnerKind:      RunnerKindCodexCLI,
-			FailureCategory: "governed_closeout_validation_failed",
+			FailureCategory: "governed_closeout_apply_failed",
 			SafeSummary:     "governed_closeout_failed_requeue_implementation",
 		}); err != nil {
 			t.Fatalf("CreateRun returned error: %v", err)
@@ -3122,7 +3135,8 @@ func TestQueueOutstandingPostImplementationReviewUsesUniqueRefWhenPriorReviewTas
 		PlanID:          plan.ID,
 		AllowedTaskRefs: []string{target.TaskRef},
 		TriggerKind:     TriggerKindAutomatic,
-		PermissionRef:   "permission/default",
+		PermissionRef:   "permission_snapshot:snapshot-worker",
+		SourceKind:      AutomationSourceWorkflow,
 	})
 	if err != nil {
 		t.Fatalf("CreateAutomation returned error: %v", err)
@@ -5545,6 +5559,121 @@ func TestCompleteAttemptQueuesPostImplementationReview(t *testing.T) {
 	}
 }
 
+func TestQueuePostImplementationReviewUsesCompiledReviewGateAutomation(t *testing.T) {
+	ctx := context.Background()
+	target := readyTask("task-a", "fix-finding-a", []string{"internal/foo.go"})
+	target.FilesToEdit = []string{"internal/foo.go"}
+	target.Status = projectworkplan.WorkTaskStatusNeedsReview
+	reviewTask := readyTask("task-review", "review-fix-finding-a-implementation-review", []string{"internal/foo.go"})
+	reviewTask.Status = projectworkplan.WorkTaskStatusPlanned
+	reviewTask.OwnerAgent = "codex-reviewer"
+	reviewTask.DependencyTaskIDs = []string{target.ID}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{target.ID: target, reviewTask.ID: reviewTask}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       target.ProjectID,
+		AutomationRef:   "auto/review-fix-finding-a",
+		Title:           "Review fix finding",
+		Purpose:         "Run the compiled post-implementation review gate.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-reviewer",
+		PlanID:          target.PlanID,
+		AllowedTaskRefs: []string{reviewTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "on-ready-task",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	parent := AutomationRun{
+		ID: "run-parent", ProjectID: target.ProjectID, AutomationID: "automation-parent", AgentID: target.OwnerAgent,
+		PlanID: target.PlanID, TaskID: target.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI,
+		UpdatedAt: time.Unix(100, 0).UTC(),
+	}
+	if _, err := store.CreateRun(ctx, parent); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.queuePostImplementationReview(ctx, parent); err != nil {
+		t.Fatalf("queuePostImplementationReview returned error: %v", err)
+	}
+	updatedReview := fake.tasks[reviewTask.ID]
+	if updatedReview.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected compiled review gate task to be readied, got %#v", updatedReview)
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: target.ProjectID, AutomationID: automation.ID, PlanID: target.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].TaskID != reviewTask.ID || runs[0].Status != RunStatusQueued {
+		t.Fatalf("expected queued compiled review run, got %#v", runs)
+	}
+	automations, err := store.ListAutomations(ctx, AutomationFilter{ProjectID: target.ProjectID, Status: AutomationStatusEnabled})
+	if err != nil {
+		t.Fatalf("ListAutomations returned error: %v", err)
+	}
+	for _, candidate := range automations {
+		if candidate.ID != automation.ID && candidate.SchedulePolicy == "post_implementation_review" {
+			t.Fatalf("expected no recovery automation when compiled review gate exists, got %#v", candidate)
+		}
+	}
+}
+
+func TestCreateRecoveryPostImplementationReviewAutomationSanitizesRefs(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	svc := New(store, &fakeWorkTasks{}, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	parent := AutomationRun{
+		ID:        "automation_run_parent",
+		ProjectID: "project-1",
+		PlanID:    "work_plan_parent",
+		TraceID:   "trace_parent",
+	}
+	parentAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       parent.ProjectID,
+		AutomationRef:   "auto/decompose-work-plan",
+		Title:           "Decompose work plan",
+		Purpose:         "Create governed child tasks.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-worker",
+		PlanID:          parent.PlanID,
+		AllowedTaskRefs: []string{"decompose_work_plan"},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission_snapshot:snapshot-worker",
+		SourceKind:      AutomationSourceWorkflow,
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	parent.AutomationID = parentAutomation.ID
+	reviewTask := projectworkplan.WorkTask{
+		ID:         "work_task_review",
+		ProjectID:  "project-1",
+		PlanID:     "work_plan_parent",
+		TaskRef:    "review-decompose_work_plan-planning_readiness_review",
+		OwnerAgent: "planning-reviewer",
+	}
+
+	automation, err := svc.createRecoveryPostImplementationReviewAutomation(ctx, parent, reviewTask)
+	if err != nil {
+		t.Fatalf("createRecoveryPostImplementationReviewAutomation returned error: %v", err)
+	}
+	if strings.Contains(automation.AutomationRef, "_") {
+		t.Fatalf("automation ref should be service-ref safe, got %q", automation.AutomationRef)
+	}
+	if automation.SourceKind != AutomationSourceWorkflow {
+		t.Fatalf("recovery review automation must preserve workflow source kind, got %q", automation.SourceKind)
+	}
+	if automation.PermissionRef != parentAutomation.PermissionRef {
+		t.Fatalf("recovery review automation must inherit permission snapshot, got %q", automation.PermissionRef)
+	}
+	if automation.AllowedTaskRefs[0] != reviewTask.ID || automation.AllowedTaskRefs[1] != reviewTask.TaskRef {
+		t.Fatalf("allowed task refs lost original task identity: %#v", automation.AllowedTaskRefs)
+	}
+}
+
 func TestCompleteAttemptDoesNotQueuePostImplementationReviewForReadOnlyAuditTask(t *testing.T) {
 	ctx := context.Background()
 	auditTask := readyTask("task-audit", "scan-for-candidate-bugs", []string{"internal/foo.go"})
@@ -6774,12 +6903,37 @@ func TestClaimNextRunRecoversMissingPostImplementationReview(t *testing.T) {
 	implementationTask.Status = projectworkplan.WorkTaskStatusNeedsReview
 	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{implementationTask.ID: implementationTask}}
 	store := newTestStore()
-	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc := New(store, fake, Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  RunnerExecutionExternal,
+		MaxParallelTasks: 1,
+		PermissionResolver: &fakePermissionResolver{metadata: PermissionSnapshotMetadata{
+			PermissionRef:      "permission_snapshot:snapshot-worker",
+			AllowedRunnerKinds: []string{RunnerKindCodexCLI},
+		}},
+	})
 	svc.codexAvailable = func() bool { return false }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/old",
+		Title:           "Old automation",
+		Purpose:         "Old verifying automation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "planning-worker",
+		PlanID:          implementationTask.PlanID,
+		AllowedTaskRefs: []string{implementationTask.ID, implementationTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission_snapshot:snapshot-worker",
+		SourceKind:      AutomationSourceWorkflow,
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
 	oldRun := AutomationRun{
 		ID:           "automation_run_old",
 		ProjectID:    "project-1",
-		AutomationID: "automation-old",
+		AutomationID: automation.ID,
 		PlanID:       "plan-1",
 		TaskID:       implementationTask.ID,
 		Status:       RunStatusVerifying,
@@ -9533,11 +9687,18 @@ type fakePermissionResolver struct {
 	err      error
 }
 
-func (fake *fakePermissionResolver) CheckAutomationPermission(context.Context, PermissionCheckInput) (PermissionSnapshotMetadata, error) {
+func (fake *fakePermissionResolver) CheckAutomationPermission(_ context.Context, input PermissionCheckInput) (PermissionSnapshotMetadata, error) {
 	if fake.err != nil {
 		return PermissionSnapshotMetadata{}, fake.err
 	}
-	return fake.metadata, nil
+	metadata := fake.metadata
+	if metadata.PermissionRef == "" {
+		metadata.PermissionRef = input.PermissionRef
+	}
+	if metadata.AgentID == "" {
+		metadata.AgentID = input.AgentID
+	}
+	return metadata, nil
 }
 
 type testStore struct {

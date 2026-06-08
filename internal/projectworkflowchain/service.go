@@ -542,7 +542,6 @@ func (svc *Service) gitOpsFinalizeMetadata(ctx context.Context, run ChainRun) (g
 			}
 			if stage.StageRef == "implementation" {
 				metadata.AllowedPathspecs = appendUniqueMany(metadata.AllowedPathspecs, task.FilesToEdit)
-				metadata.AllowedPathspecs = appendUniqueMany(metadata.AllowedPathspecs, task.LikelyFilesAffected)
 			}
 			metadata.ReviewRefs = appendUniqueMany(metadata.ReviewRefs, task.ReviewResultRefs)
 			metadata.VerifierRefs = appendUniqueMany(metadata.VerifierRefs, task.VerifierResultRefs)

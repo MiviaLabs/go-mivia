@@ -1873,6 +1873,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if isNonRetryableCodexExecutionFailure(failureCategory) {
 			return svc.blockTaskAfterNonRetryableCodexExecutionFailure(ctx, run, failureCategory)
 		}
+		if isTerminalGovernedCloseoutFailure(failureCategory) {
+			return svc.blockTaskAfterTerminalAttempt(ctx, run, failureCategory)
+		}
 		if isRecoverableGovernedCloseoutFailure(failureCategory) {
 			return svc.requeueTaskAfterGovernedCloseoutFailure(ctx, run, failureCategory)
 		}
@@ -3850,14 +3853,28 @@ func isNonRetryableCodexExecutionFailure(category string) bool {
 
 func isRecoverableGovernedCloseoutFailure(category string) bool {
 	category = strings.TrimSpace(category)
+	if isTerminalGovernedCloseoutFailure(category) {
+		return false
+	}
 	for _, prefix := range []string{
 		"automation_task_closeout_failed",
 		"automation_task_closeout_missing",
 		"governed_closeout_apply_failed",
-		"governed_closeout_invalid_json",
 		"governed_closeout_output_missing",
 		"governed_closeout_readback_failed",
 		"governed_closeout_schema_create_failed",
+	} {
+		if category == prefix || strings.HasPrefix(category, prefix+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+func isTerminalGovernedCloseoutFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	for _, prefix := range []string{
+		"governed_closeout_invalid_json",
 		"governed_closeout_validation_failed",
 	} {
 		if category == prefix || strings.HasPrefix(category, prefix+"_") {
@@ -3989,7 +4006,7 @@ func (svc *Service) queueReviewForImplementationTask(ctx context.Context, run Au
 	}
 	reviewTaskRef := "review-" + target.TaskRef
 	for _, task := range tasks {
-		if task.TaskRef != reviewTaskRef {
+		if !matchesPostImplementationReviewTaskRef(task.TaskRef, reviewTaskRef) {
 			continue
 		}
 		if task.Status == projectworkplan.WorkTaskStatusDone {
@@ -4036,7 +4053,10 @@ func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent
 		return err
 	}
 	for _, automation := range automations {
-		if automation.PlanID != parent.PlanID || automation.TriggerKind != TriggerKindAutomatic || automation.SchedulePolicy != "post_implementation_review" {
+		if automation.PlanID != parent.PlanID || automation.TriggerKind != TriggerKindAutomatic {
+			continue
+		}
+		if automation.SchedulePolicy != "post_implementation_review" && validateAllowedTaskRef(automation, reviewTask) != nil {
 			continue
 		}
 		if validateAllowedTaskRef(automation, reviewTask) != nil {
@@ -4069,6 +4089,15 @@ func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent
 	return svc.queuePostImplementationReviewRun(ctx, AutomationRun{
 		ID: parent.ID, ProjectID: parent.ProjectID, PlanID: parent.PlanID, RunnerKind: parent.RunnerKind,
 	}, reviewTaskForAutomation(reviewTask, automation))
+}
+
+func matchesPostImplementationReviewTaskRef(taskRef string, baseRef string) bool {
+	taskRef = strings.TrimSpace(taskRef)
+	baseRef = strings.TrimSpace(baseRef)
+	if taskRef == "" || baseRef == "" {
+		return false
+	}
+	return taskRef == baseRef || strings.HasPrefix(taskRef, baseRef+"-")
 }
 
 func taskNeedsPostImplementationReview(task projectworkplan.WorkTask) bool {
@@ -4155,9 +4184,18 @@ func isDuplicateWorkTaskRefError(err error) bool {
 }
 
 func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) (Automation, error) {
-	automationRef := "auto-review-" + safeBranchToken(reviewTask.TaskRef) + "-" + safeBranchToken(firstNonEmpty(parent.PlanID, reviewTask.PlanID, parent.ID))
+	reviewTaskToken := safeAutomationRefToken(reviewTask.TaskRef)
+	parentToken := safeAutomationRefToken(firstNonEmpty(parent.PlanID, reviewTask.PlanID, parent.ID))
+	automationRef := "auto-review-" + reviewTaskToken + "-" + parentToken
 	if automationRef == "auto-review-" {
 		automationRef += reviewTask.ID
+	}
+	parentAutomation, err := svc.store.GetAutomation(ctx, parent.ProjectID, parent.AutomationID)
+	if err != nil {
+		return Automation{}, err
+	}
+	if err := validatePermissionSnapshotRef(parentAutomation.PermissionRef); err != nil {
+		return Automation{}, err
 	}
 	return svc.CreateAutomation(ctx, CreateAutomationInput{
 		ProjectID:       parent.ProjectID,
@@ -4170,8 +4208,8 @@ func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context
 		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
 		TriggerKind:     TriggerKindAutomatic,
 		SchedulePolicy:  "post_implementation_review",
-		PermissionRef:   "permission-remediation-review-" + safeBranchToken(reviewTask.TaskRef),
-		SourceKind:      AutomationSourceManual,
+		PermissionRef:   parentAutomation.PermissionRef,
+		SourceKind:      AutomationSourceWorkflow,
 		CreatedByRunID:  parent.ID,
 		TraceID:         firstNonEmpty(parent.TraceID, parent.ID),
 	})
@@ -5748,6 +5786,16 @@ func safeBranchToken(value string) string {
 	}
 	if len(token) > 80 {
 		return token[:80]
+	}
+	return token
+}
+
+func safeAutomationRefToken(value string) string {
+	token := safeBranchToken(value)
+	token = strings.ReplaceAll(token, "_", "-")
+	token = strings.Trim(token, ".-")
+	if token == "" {
+		return "automation"
 	}
 	return token
 }

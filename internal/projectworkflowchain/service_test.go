@@ -264,8 +264,8 @@ func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *tes
 		t.Fatalf("expected one GitOps finalization with implementation plan, got %#v", finalizer.inputs)
 	}
 	input := finalizer.inputs[0]
-	if !containsString(input.AllowedPathspecs, "internal/projectworkflowchain/service.go") || !containsString(input.AllowedPathspecs, "cmd/mivia-server") {
-		t.Fatalf("expected implementation pathspecs in GitOps finalization, got %#v", input.AllowedPathspecs)
+	if !containsString(input.AllowedPathspecs, "internal/projectworkflowchain/service.go") || containsString(input.AllowedPathspecs, "cmd/mivia-server") {
+		t.Fatalf("expected only explicit implementation edit pathspecs in GitOps finalization, got %#v", input.AllowedPathspecs)
 	}
 	if !containsString(input.ReviewRefs, "review:task-post-validation") || !containsString(input.VerifierRefs, "verifier:task-post-validation") {
 		t.Fatalf("expected stage review and verifier refs in GitOps finalization, got reviews=%#v verifiers=%#v", input.ReviewRefs, input.VerifierRefs)
@@ -689,6 +689,27 @@ func containsString(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestGitOpsFinalizeMetadataUsesExplicitEditScopeOnly(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newTestChainStore(), &fakeWorkflowAPI{}, &fakeWorkPlans{}, []Config{testConfig()})
+	run := ChainRun{
+		ID:        "chain-run-1",
+		ProjectID: "project-1",
+		StageRuns: []StageRun{{
+			StageRef:    "implementation",
+			WorkTaskIDs: []string{"task-implementation"},
+		}},
+	}
+
+	metadata, err := svc.gitOpsFinalizeMetadata(ctx, run)
+	if err != nil {
+		t.Fatalf("gitOpsFinalizeMetadata returned error: %v", err)
+	}
+	if len(metadata.AllowedPathspecs) != 1 || metadata.AllowedPathspecs[0] != "internal/projectworkflowchain/service.go" {
+		t.Fatalf("allowed pathspecs should use explicit edit scope only, got %#v", metadata.AllowedPathspecs)
+	}
 }
 
 type fakeWorkPlans struct {
