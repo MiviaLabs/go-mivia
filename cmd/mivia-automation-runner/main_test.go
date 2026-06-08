@@ -188,6 +188,18 @@ func TestGitOpsFailureEvidenceRefsAlwaysNameClassifiedFailure(t *testing.T) {
 	}
 }
 
+func TestGitOpsFailureCategoryForRunnerDoesNotExposeUnclassifiedPostTask(t *testing.T) {
+	err := errors.New("")
+	category := gitOpsFailureCategoryForRunner(err)
+	if category != "gitops_post_task_failed_runner_post_task" {
+		t.Fatalf("expected runner post-task fallback category, got %q", category)
+	}
+	refs := gitOpsFailureEvidenceRefs(err)
+	if strings.Join(refs, ",") != "gitops-failure:gitops_post_task_failed_runner_post_task" {
+		t.Fatalf("expected runner post-task fallback evidence ref, got %+v", refs)
+	}
+}
+
 func TestGitOpsFailureEvidenceRefsNameRuntimeSetupFailure(t *testing.T) {
 	err := fmt.Errorf("%w: safe_directory_home", projectgitops.ErrRuntimeFailure)
 	refs := gitOpsFailureEvidenceRefs(err)

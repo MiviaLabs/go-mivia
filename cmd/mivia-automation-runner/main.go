@@ -445,7 +445,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 			if err != nil {
 				status = projectautomation.RunStatusFailed
-				failureCategory = projectgitops.FailureCategoryWithDetail(err)
+				failureCategory = gitOpsFailureCategoryForRunner(err)
 				evidenceRefs = append(evidenceRefs, gitOpsFailureEvidenceRefs(err)...)
 			} else {
 				evidenceRefs = append(evidenceRefs, gitResult.EvidenceRefs...)
@@ -550,13 +550,21 @@ func gitOpsDirtyScopeEvidenceRefs(err error) []string {
 }
 
 func gitOpsFailureEvidenceRefs(err error) []string {
-	category := strings.TrimSpace(projectgitops.FailureCategoryWithDetail(err))
+	category := gitOpsFailureCategoryForRunner(err)
 	out := make([]string, 0, 1)
 	if category != "" {
 		out = append(out, "gitops-failure:"+category)
 	}
 	out = append(out, gitOpsDirtyScopeEvidenceRefs(err)...)
 	return out
+}
+
+func gitOpsFailureCategoryForRunner(err error) string {
+	category := strings.TrimSpace(projectgitops.FailureCategoryWithDetail(err))
+	if category == "gitops_post_task_failed_unclassified" {
+		return "gitops_post_task_failed_runner_post_task"
+	}
+	return category
 }
 
 func isReadOnlyReviewRun(claimed projectautomation.ClaimedRun) bool {
@@ -577,7 +585,7 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 	}
 	gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 	if err != nil {
-		return projectautomation.RunStatusFailed, projectgitops.FailureCategoryWithDetail(err), time.Since(started).Milliseconds(), gitOpsFailureEvidenceRefs(err)
+		return projectautomation.RunStatusFailed, gitOpsFailureCategoryForRunner(err), time.Since(started).Milliseconds(), gitOpsFailureEvidenceRefs(err)
 	}
 	evidenceRefs := append([]string(nil), gitResult.EvidenceRefs...)
 	for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
