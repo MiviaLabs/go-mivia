@@ -1468,6 +1468,9 @@ func (svc *Service) reconcileExhaustedGitOpsRecoveryRuns(ctx context.Context, pr
 		if err != nil || (!taskHasGitOpsRecoveryCloseout(task) && !isRecoverableRecoveryFailure(run.FailureCategory)) {
 			continue
 		}
+		if isTerminalAutomationTaskStatus(task.Status) {
+			continue
+		}
 		if !taskOwnsGitOpsRecoveryRun(task, run) {
 			continue
 		}
@@ -3107,6 +3110,10 @@ func isTerminalIncompleteTaskStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func isTerminalAutomationTaskStatus(status string) bool {
+	return status == projectworkplan.WorkTaskStatusDone || isTerminalIncompleteTaskStatus(status)
 }
 
 func (svc *Service) updatePlanAfterTerminalTask(ctx context.Context, task projectworkplan.WorkTask) error {

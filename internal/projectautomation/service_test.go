@@ -2667,6 +2667,124 @@ func TestReconcileExhaustedGitOpsRecoveryBlocksAfterReplacementRetryLimit(t *tes
 	}
 }
 
+func TestClaimNextRunIgnoresExhaustedGitOpsRecoveryForCompletedTask(t *testing.T) {
+	ctx := context.Background()
+	workStore := workstore.NewMemoryStore()
+	workSvc := projectworkplan.New(workStore)
+	plan, err := workSvc.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
+		ProjectID:   "project-1",
+		PlanRef:     "plan-completed-gitops-history",
+		Title:       "Completed GitOps history",
+		GoalSummary: "Old failed recovery runs must not reopen completed work.",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkPlan returned error: %v", err)
+	}
+	plan, err = workSvc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         plan.ID,
+		Status:         projectworkplan.WorkPlanStatusActive,
+		SafeNextAction: "activate",
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkPlanStatus returned error: %v", err)
+	}
+	task, err := workSvc.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  plan.ID,
+		TaskRef:                 "smoke-draft-pr",
+		Title:                   "Smoke Draft PR",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              "smoke-gitops-worker",
+		Description:             "Create smoke marker.",
+		FilesToEdit:             []string{".agentic/automation-smoke.md"},
+		LikelyFilesAffected:     []string{".agentic/automation-smoke.md"},
+		VerificationRequirement: "runner verifies GitOps refs",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkTask returned error: %v", err)
+	}
+	if _, err := workSvc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-2", TraceID: "run-2"}); err != nil {
+		t.Fatalf("ClaimWorkTask returned error: %v", err)
+	}
+	if _, err := workSvc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-2", TraceID: "run-2"}); err != nil {
+		t.Fatalf("StartWorkTask returned error: %v", err)
+	}
+	if _, err := workSvc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:      "project-1",
+			TaskID:         task.ID,
+			RunID:          "run-2",
+			TraceID:        "run-2",
+			SafeNextAction: "review completed implementation",
+		},
+		Status: projectworkplan.WorkTaskStatusNeedsReview,
+	}); err != nil {
+		t.Fatalf("UpdateWorkTaskStatus returned error: %v", err)
+	}
+	if _, err := workSvc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             task.ID,
+		RunID:              "run-2",
+		TraceID:            "run-2",
+		Outcome:            "already completed by a later successful run",
+		SafeNextAction:     "leave completed task closed",
+		VerifierResultRefs: []string{"gitops-pr:draft"},
+		ReviewExemptReason: "test completed task",
+	}); err != nil {
+		t.Fatalf("CompleteWorkTask returned error: %v", err)
+	}
+	store := newTestStore()
+	svc := New(store, workSvc, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/smoke-draft-pr",
+		Title:           "Smoke GitOps",
+		Purpose:         "Run smoke GitOps task.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "smoke-gitops-worker",
+		PlanID:          plan.ID,
+		AllowedTaskRefs: []string{task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	for i := 0; i < defaultAutomationMaxReplacementRunsPerTask; i++ {
+		runID := fmt.Sprintf("run-%d", i)
+		if _, err := store.CreateRun(ctx, AutomationRun{
+			ID:              runID,
+			ProjectID:       "project-1",
+			AutomationID:    automation.ID,
+			AgentID:         automation.AgentID,
+			PlanID:          plan.ID,
+			TaskID:          task.ID,
+			Status:          RunStatusFailed,
+			RunnerKind:      RunnerKindCodexCLI,
+			AttemptCount:    defaultAutomationMaxRetries,
+			FailureCategory: "gitops_recovery_failed_requires_implementation",
+			SafeSummary:     RunSafeSummaryGitOpsPostTaskRecovery,
+			UpdatedAt:       time.Unix(int64(i+1), 0).UTC(),
+		}); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+
+	_, err = svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected completed task history to be ignored, got %v", err)
+	}
+	completed, err := workSvc.GetWorkTask(ctx, "project-1", task.ID)
+	if err != nil {
+		t.Fatalf("GetWorkTask returned error: %v", err)
+	}
+	if completed.Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("completed task must stay done, got %#v", completed)
+	}
+}
+
 func TestQueueReadyDependentAutomationIgnoresOldFailuresAfterSystemFixRecoveryMarker(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
