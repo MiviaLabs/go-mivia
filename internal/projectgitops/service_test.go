@@ -605,8 +605,15 @@ func TestFailureCategoryWithDetailPreservesRawPostTaskDetail(t *testing.T) {
 
 func TestFailureCategoryWithDetailNamesEmptyRawPostTaskFailure(t *testing.T) {
 	err := errors.New("")
-	if got := FailureCategoryWithDetail(err); got != "gitops_post_task_failed_unknown" {
-		t.Fatalf("expected unknown raw post-task category, got %q", got)
+	if got := FailureCategoryWithDetail(err); got != "gitops_post_task_failed_unclassified" {
+		t.Fatalf("expected unclassified raw post-task category, got %q", got)
+	}
+}
+
+func TestFailureCategoryWithDetailReportsRuntimeSetupFailure(t *testing.T) {
+	err := runtimeFailure("safe_directory_home", errors.New(""))
+	if got := FailureCategoryWithDetail(err); got != "gitops_runtime_failed_safe_directory_home" {
+		t.Fatalf("expected precise runtime setup category, got %q", got)
 	}
 }
 

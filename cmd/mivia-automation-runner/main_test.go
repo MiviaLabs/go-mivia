@@ -188,6 +188,14 @@ func TestGitOpsFailureEvidenceRefsAlwaysNameClassifiedFailure(t *testing.T) {
 	}
 }
 
+func TestGitOpsFailureEvidenceRefsNameRuntimeSetupFailure(t *testing.T) {
+	err := fmt.Errorf("%w: safe_directory_home", projectgitops.ErrRuntimeFailure)
+	refs := gitOpsFailureEvidenceRefs(err)
+	if strings.Join(refs, ",") != "gitops-failure:gitops_runtime_failed_safe_directory_home" {
+		t.Fatalf("expected classified runtime setup evidence ref, got %+v", refs)
+	}
+}
+
 func TestGitOpsFailureEvidenceRefsIncludeDirtyScopePaths(t *testing.T) {
 	err := projectgitops.DirtyWorktreeScopeError{Paths: []string{"apps/domain/src/module.ts"}}
 	refs := gitOpsFailureEvidenceRefs(err)

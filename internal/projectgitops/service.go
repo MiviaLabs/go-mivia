@@ -21,6 +21,7 @@ var (
 	ErrCommandFailed      = errors.New("git operations command failed")
 	ErrDirtyWorktree      = errors.New("git operations dirty worktree")
 	ErrDirtyWorktreeScope = errors.New("git operations dirty worktree outside task scope")
+	ErrRuntimeFailure     = errors.New("git operations runtime setup failed")
 	ErrVerificationFailed = errors.New("git operations verification failed")
 )
 
@@ -357,6 +358,8 @@ func FailureCategory(err error) string {
 		return "gitops_invalid_input"
 	case errors.Is(err, ErrCommandFailed):
 		return "gitops_command_failed"
+	case errors.Is(err, ErrRuntimeFailure):
+		return "gitops_runtime_failed"
 	default:
 		return "gitops_post_task_failed"
 	}
@@ -382,6 +385,11 @@ func FailureCategoryWithDetail(err error) string {
 		return category
 	case "gitops_invalid_input":
 		if detail := invalidInputFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
+		return category
+	case "gitops_runtime_failed":
+		if detail := runtimeFailureDetail(err.Error()); detail != "" {
 			return category + "_" + detail
 		}
 		return category
@@ -477,7 +485,7 @@ func (svc *Service) runVerifierCommand(ctx context.Context, workDir string, comm
 func verifierEnv(values map[string]string, workDir string) ([]string, error) {
 	configHome := filepath.Join(os.TempDir(), "mivia-gitops-verifier-"+safeHash(workDir), ".config")
 	if err := os.MkdirAll(configHome, 0o700); err != nil {
-		return nil, err
+		return nil, runtimeFailure("verifier_config_home", err)
 	}
 	out := []string{"XDG_CONFIG_HOME=" + configHome}
 	if len(values) == 0 {
@@ -748,7 +756,7 @@ func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) err
 	}
 	home := filepath.Join(os.TempDir(), "mivia-gitops-home-"+safeHash(workDir))
 	if err := os.MkdirAll(home, 0o700); err != nil {
-		return err
+		return runtimeFailure("safe_directory_home", err)
 	}
 	env := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config")}
 	_, err := svc.git(ctx, workDir, env, "config", "--global", "--add", "safe.directory", workDir)
@@ -761,6 +769,17 @@ func safeGitDirectoryArg(dir string) string {
 		return ""
 	}
 	return dir
+}
+
+func runtimeFailure(detail string, cause error) error {
+	detail = safeFailureToken(detail)
+	if detail == "" {
+		detail = "unclassified"
+	}
+	if cause == nil || strings.TrimSpace(cause.Error()) == "" {
+		return fmt.Errorf("%w: %s", ErrRuntimeFailure, detail)
+	}
+	return fmt.Errorf("%w: %s", ErrRuntimeFailure, detail)
 }
 
 func (svc *Service) run(ctx context.Context, command Command) (CommandResult, error) {
@@ -831,7 +850,34 @@ func genericGitOpsFailureDetail(message string) string {
 			return detail
 		}
 	}
-	return "unknown"
+	return "unclassified"
+}
+
+func runtimeFailureDetail(message string) string {
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, item := range []struct {
+		needle string
+		detail string
+	}{
+		{needle: "verifier_config_home", detail: "verifier_config_home"},
+		{needle: "safe_directory_home", detail: "safe_directory_home"},
+		{needle: "mkdir", detail: "mkdir"},
+		{needle: "permission denied", detail: "permission_denied"},
+		{needle: "no space", detail: "no_space"},
+		{needle: "read-only", detail: "read_only"},
+		{needle: "timeout", detail: "timeout"},
+	} {
+		if strings.Contains(message, item.needle) {
+			return item.detail
+		}
+	}
+	fields := strings.Fields(message)
+	for i := len(fields) - 1; i >= 0; i-- {
+		if detail := safeFailureToken(fields[i]); detail != "" {
+			return detail
+		}
+	}
+	return "unclassified"
 }
 
 func invalidInputFailureDetail(message string) string {
