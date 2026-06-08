@@ -98,6 +98,9 @@ func TestComposeRunnerDefaultsToInImageCodexBinary(t *testing.T) {
 			if !strings.Contains(text, "configs/mivia-server.") {
 				t.Fatalf("runner compose config must mount a server config file: %s", path)
 			}
+			if path == "../../docker-compose.yml" && !strings.Contains(text, "MIVIA_AUTOMATION_PROJECT_ID") {
+				t.Fatalf("runner compose config must expose project scoping: %s", path)
+			}
 		})
 	}
 }

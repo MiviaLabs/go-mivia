@@ -307,7 +307,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		return 1, true, false
 	}
 	if !ok {
-		fmt.Fprintln(os.Stdout, "no queued automation run")
+		fmt.Fprintf(os.Stdout, "no queued automation run for project %s\n", projectID)
 		return 0, true, false
 	}
 	stopHeartbeat := client.startHeartbeat(ctx, projectID, claimed.Run)

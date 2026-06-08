@@ -106,6 +106,8 @@ services:
       - mivia-automation-runner
       - --server
       - http://mivia-server:8080
+      - --project
+      - "${MIVIA_AUTOMATION_PROJECT_ID:-}"
       - --watch
       - --poll-interval
       - "${MIVIA_AUTOMATION_RUNNER_POLL_INTERVAL:-5s}"
@@ -170,6 +172,7 @@ volumes:
 #       disable: true
 #     environment:
 #       MIVIA_CONFIG_PATH: /app/configs/mivia-server.local.toml
+#       MIVIA_AUTOMATION_PROJECT_ID: example-service
 #       MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-1000}"
 #       MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-1000}"
 #       MIVIA_RUNTIME_HOME: /home/example
