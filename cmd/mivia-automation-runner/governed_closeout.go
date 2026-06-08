@@ -388,7 +388,7 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 		if normalizeGovernedCloseoutObjectTextField(task, "regression_test_applicability") {
 			changed = true
 		}
-		if normalizeGovernedCloseoutObjectTextField(task, "output_contract") {
+		if normalizeGovernedCloseoutStructuredTextField(task, "output_contract", closeoutWorkTaskTextMax) {
 			changed = true
 		}
 		for _, field := range textArrayFields {
@@ -500,6 +500,42 @@ func normalizeGovernedCloseoutObjectTextField(task map[string]json.RawMessage, f
 	}
 	task[field] = encoded
 	return true
+}
+
+func normalizeGovernedCloseoutStructuredTextField(task map[string]json.RawMessage, field string, max int) bool {
+	rawValue, ok := task[field]
+	if !ok || rawJSONValueIsStringOrNull(rawValue) {
+		return false
+	}
+	value, err := closeoutTextFromObject(rawValue)
+	if err != nil {
+		value = compactJSONText(rawValue)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if len(value) > max {
+		value = value[:max]
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	task[field] = encoded
+	return true
+}
+
+func compactJSONText(raw json.RawMessage) string {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 func closeoutTextFromObject(raw json.RawMessage) (string, error) {
@@ -962,7 +998,14 @@ func safeCloseoutRef(ref string) bool {
 
 func safeProjectPath(path string) bool {
 	path = strings.TrimSpace(path)
-	if path == "" || unsafeText(path) || strings.HasPrefix(path, "~") {
+	if path == "" ||
+		unsafeText(path) ||
+		strings.HasPrefix(path, "~") ||
+		strings.HasPrefix(path, "/") ||
+		strings.HasPrefix(path, "\\") ||
+		strings.Contains(path, "\\") ||
+		strings.Contains(path, ":") ||
+		filepath.IsAbs(path) {
 		return false
 	}
 	clean := filepath.Clean(filepath.ToSlash(path))

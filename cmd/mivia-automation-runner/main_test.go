@@ -1859,6 +1859,25 @@ func TestParseGovernedCloseoutNormalizesObjectOutputContract(t *testing.T) {
 	}
 }
 
+func TestParseGovernedCloseoutNormalizesStructuredOutputContract(t *testing.T) {
+	payload := strings.Replace(
+		governedCloseoutFixtureJSON(),
+		`"output_contract":"code change with verifier evidence"`,
+		`"output_contract":{"artifacts":["code change","verifier evidence"],"required_refs":["evidence","verifier"]}`,
+		1,
+	)
+	output, err := parseGovernedCloseoutOutput(payload)
+	if err != nil {
+		t.Fatalf("structured output_contract should normalize before type validation: %v", err)
+	}
+	if got := output.ChildTasks[0].OutputContract; !strings.Contains(got, `"artifacts"`) || !strings.Contains(got, `"required_refs"`) {
+		t.Fatalf("expected structured output_contract to be preserved as bounded JSON text, got %q", got)
+	}
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("normalized structured output_contract should pass governed validation: %v", err)
+	}
+}
+
 func TestValidateGovernedCloseoutRejectsChildTaskMetadataBeforeREST(t *testing.T) {
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	output.ChildTasks[0].ExpectedOutput = strings.Repeat("x", closeoutWorkTaskTextMax+1)
@@ -1879,6 +1898,13 @@ func TestValidateGovernedCloseoutRejectsChildTaskMetadataBeforeREST(t *testing.T
 	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
 	if !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutValidationFailed) || !strings.Contains(err.Error(), "governance metadata") {
 		t.Fatalf("expected missing governance validation failure, got %v", err)
+	}
+
+	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].FilesToRead = []string{"apps/example/file.ts:42"}
+	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if got := governedCloseoutFailureCategory(err); !strings.HasPrefix(got, "governed_closeout_validation_failed_unsafe_child_task_path") {
+		t.Fatalf("expected REST-compatible unsafe path validation failure, got %v (%q)", err, got)
 	}
 }
 
