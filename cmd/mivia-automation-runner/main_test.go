@@ -2816,6 +2816,30 @@ func TestParseGovernedCloseoutNormalizesChildTaskStructuredDecompositionQualityO
 	}
 }
 
+func TestParseGovernedCloseoutIgnoresSafeTopLevelFileMetadata(t *testing.T) {
+	output, err := parseGovernedCloseoutOutput(`{
+		"closeout_action":"needs_review",
+		"outcome":"smoke marker updated",
+		"safe_next_action":"runner gitops",
+		"evidence_refs":["gitops-smoke-ref"],
+		"verifier_result_refs":[],
+		"child_tasks":[],
+		"block_reason":"",
+		"failure_reason":"",
+		"changed_files":[".agentic/automation-smoke.md"],
+		"files_changed":[".agentic/automation-smoke.md"],
+		"modified_files":[".agentic/automation-smoke.md"],
+		"created_files":[".agentic/automation-smoke.md"],
+		"deleted_files":[]
+	}`)
+	if err != nil {
+		t.Fatalf("expected safe top-level file metadata to be ignored, got %v", err)
+	}
+	if output.CloseoutAction != "needs_review" || output.Outcome != "smoke marker updated" {
+		t.Fatalf("unexpected parsed closeout: %+v", output)
+	}
+}
+
 func TestParseGovernedCloseoutNormalizesChildTaskRegressionApplicabilityObject(t *testing.T) {
 	output, err := parseGovernedCloseoutOutput(`{
 		"closeout_action":"needs_review",

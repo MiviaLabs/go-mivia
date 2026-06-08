@@ -190,6 +190,11 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 			"verifier_result_refs": closeoutRefArraySchema(),
 			"block_reason":         map[string]any{"type": "string", "maxLength": 1200},
 			"failure_reason":       map[string]any{"type": "string", "maxLength": 1200},
+			"changed_files":        closeoutPathArraySchema(),
+			"files_changed":        closeoutPathArraySchema(),
+			"modified_files":       closeoutPathArraySchema(),
+			"created_files":        closeoutPathArraySchema(),
+			"deleted_files":        closeoutPathArraySchema(),
 			"child_tasks": map[string]any{
 				"type":     "array",
 				"maxItems": 50,
@@ -285,6 +290,12 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 		}
 		delete(fields, "summary")
 		jsonText = ""
+	}
+	for _, field := range []string{"changed_files", "files_changed", "modified_files", "created_files", "deleted_files"} {
+		if _, ok := fields[field]; ok {
+			delete(fields, field)
+			jsonText = ""
+		}
 	}
 	if normalizeGovernedCloseoutBoundedTextField(fields, "outcome", closeoutWorkTaskTextMax) {
 		jsonText = ""
