@@ -5100,6 +5100,7 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 	category = strings.TrimSpace(category)
 	return category == "gitops_dirty_worktree_scope" ||
 		category == "gitops_post_task_failed" ||
+		strings.HasPrefix(category, "gitops_post_task_failed_") ||
 		category == "gitops_verification_failed" ||
 		strings.HasPrefix(category, "gitops_verification_failed_") ||
 		category == "gitops_invalid_input_no_changed_files_matched"

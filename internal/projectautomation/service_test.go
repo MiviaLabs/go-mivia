@@ -8167,6 +8167,57 @@ func TestCompleteAttemptRequeuesImplementationAfterGitOpsRecoveryFailure(t *test
 	}
 }
 
+func TestCompleteAttemptRequeuesImplementationAfterDetailedGitOpsPostTaskFailure(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.EvidenceRefs = []string{"implementation/evidence"}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusRunning,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    2,
+		SafeSummary:     RunSafeSummaryGitOpsPostTaskRecovery,
+		FailureCategory: "",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       automation.ProjectID,
+		RunID:           "run-a",
+		Status:          RunStatusFailed,
+		FailureCategory: "gitops_post_task_failed_commit_author_email_file",
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_recovery_failed_requires_implementation" || !strings.Contains(run.SafeSummary, "gitops_post_task_failed_commit_author_email_file") {
+		t.Fatalf("expected detailed GitOps recovery reroute, got %+v", run)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusReady || requeuedTask.ClaimedByRunID != "" {
+		t.Fatalf("expected task to be ready for implementation, got %+v", requeuedTask)
+	}
+}
+
 func TestCompleteAttemptExpandsScopeForDirtyPathsUnderLikelyFiles(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"apps/domain/src/service.ts"})

@@ -18,7 +18,7 @@ const (
 
 var (
 	conventionalSubjectPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(\([A-Za-z0-9][A-Za-z0-9._/-]*\))?!?: [^\r\n]+$`)
-	metadataRefPattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
+	metadataRefPattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$`)
 )
 
 var allowedTemplatePlaceholders = map[string]bool{
@@ -201,7 +201,7 @@ func validateRenderInput(input PostTaskInput) error {
 		if strings.TrimSpace(value) == "" {
 			continue
 		}
-		if _, err := safeMetadataLine(name, value, 200); err != nil {
+		if _, err := safeMetadataLine(name, value, gitOpsMetadataLineMax); err != nil {
 			return err
 		}
 	}
@@ -216,7 +216,7 @@ func validateRenderInput(input PostTaskInput) error {
 			return err
 		}
 	}
-	if _, err := safeMetadataLines("test results", input.TestResults, 300); err != nil {
+	if _, err := safeMetadataLines("test results", input.TestResults, gitOpsTestResultLineMax); err != nil {
 		return err
 	}
 	if strings.Contains(input.CommitBody, "\x00") {
@@ -228,10 +228,10 @@ func validateRenderInput(input PostTaskInput) error {
 func templateValues(input PostTaskInput) map[string]string {
 	reviewRefs, _ := safeMetadataRefs("review refs", input.ReviewRefs)
 	verifierRefs, _ := safeMetadataRefs("verifier refs", input.VerifierRefs)
-	testResults, _ := safeMetadataLines("test results", input.TestResults, 300)
-	taskRef, _ := safeMetadataLine("task ref", input.TaskRef, 200)
-	taskTitle, _ := safeMetadataLine("task title", input.TaskTitle, 200)
-	branchName, _ := safeMetadataLine("branch name", input.BranchName, 200)
+	testResults, _ := safeMetadataLines("test results", input.TestResults, gitOpsTestResultLineMax)
+	taskRef, _ := safeMetadataLine("task ref", input.TaskRef, gitOpsMetadataLineMax)
+	taskTitle, _ := safeMetadataLine("task title", input.TaskTitle, gitOpsMetadataLineMax)
+	branchName, _ := safeMetadataLine("branch name", input.BranchName, gitOpsMetadataLineMax)
 	ticketRef := extractTicketRef(branchName, taskRef, taskTitle)
 
 	return map[string]string{
@@ -252,6 +252,11 @@ func templateValues(input PostTaskInput) map[string]string {
 }
 
 var ticketRefPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
+
+const (
+	gitOpsMetadataLineMax   = 2048
+	gitOpsTestResultLineMax = 4096
+)
 
 func extractTicketRef(values ...string) string {
 	for _, value := range values {
@@ -379,6 +384,9 @@ func safeMetadataRefs(name string, values []string) ([]string, error) {
 		}
 		if strings.Contains(trimmed, "..") || strings.Contains(trimmed, "\\") || strings.HasPrefix(trimmed, "/") || !metadataRefPattern.MatchString(trimmed) {
 			return nil, fmt.Errorf("%w: unsafe %s", ErrInvalidInput, name)
+		}
+		if len(trimmed) > gitOpsMetadataLineMax {
+			return nil, fmt.Errorf("%w: %s is too long", ErrInvalidInput, name)
 		}
 		if !seen[trimmed] {
 			seen[trimmed] = true

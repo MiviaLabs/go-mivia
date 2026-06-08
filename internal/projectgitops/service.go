@@ -383,6 +383,9 @@ func FailureCategoryWithDetail(err error) string {
 		}
 		return category
 	default:
+		if detail := genericGitOpsFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
 		return category
 	}
 }
@@ -788,6 +791,34 @@ func gitOpsFailureDetail(message string) string {
 	return safeFailureToken(fields[len(fields)-1])
 }
 
+func genericGitOpsFailureDetail(message string) string {
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, item := range []struct {
+		needle string
+		detail string
+	}{
+		{needle: "commit author email file", detail: "commit_author_email_file"},
+		{needle: "safe directory", detail: "safe_directory"},
+		{needle: "workdir", detail: "workdir"},
+		{needle: "render", detail: "render"},
+		{needle: "github", detail: "github"},
+		{needle: "pull request", detail: "pull_request"},
+		{needle: "permission denied", detail: "permission_denied"},
+		{needle: "timeout", detail: "timeout"},
+	} {
+		if strings.Contains(message, item.needle) {
+			return item.detail
+		}
+	}
+	fields := strings.Fields(message)
+	for i := len(fields) - 1; i >= 0; i-- {
+		if detail := safeFailureToken(fields[i]); detail != "" {
+			return detail
+		}
+	}
+	return ""
+}
+
 func invalidInputFailureDetail(message string) string {
 	message = strings.ToLower(strings.TrimSpace(message))
 	for _, item := range []struct {
@@ -807,6 +838,7 @@ func invalidInputFailureDetail(message string) string {
 		{needle: "branch name is too long", detail: "branch_name_too_long"},
 		{needle: "task ref is too long", detail: "task_ref_too_long"},
 		{needle: "task title is too long", detail: "task_title_too_long"},
+		{needle: "commit author email file is unavailable", detail: "commit_author_email_file_unavailable"},
 		{needle: "invalid conventional commit pr title", detail: "pr_title_invalid"},
 		{needle: "invalid conventional commit subject", detail: "commit_subject_invalid"},
 		{needle: "workdir must be absolute", detail: "workdir_invalid"},
@@ -845,7 +877,7 @@ func (svc *Service) authorEmail() (string, error) {
 	if path := strings.TrimSpace(svc.options.CommitAuthorEmailFile); path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("%w: commit author email file is unavailable", ErrInvalidInput)
 		}
 		return strings.TrimSpace(string(data)), nil
 	}

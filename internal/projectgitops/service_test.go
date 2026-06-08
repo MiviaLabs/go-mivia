@@ -596,6 +596,13 @@ func TestFailureCategoryWithDetailPreservesCommandStep(t *testing.T) {
 	}
 }
 
+func TestFailureCategoryWithDetailPreservesRawPostTaskDetail(t *testing.T) {
+	err := errors.New("commit author email file read failed")
+	if got := FailureCategoryWithDetail(err); got != "gitops_post_task_failed_commit_author_email_file" {
+		t.Fatalf("expected detailed raw post-task category, got %q", got)
+	}
+}
+
 func TestFailureCategoryWithDetailPreservesInvalidGitOpsConfig(t *testing.T) {
 	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, PushAfterTask: true}, &recordingRunner{})
 	_, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})
@@ -623,6 +630,43 @@ func TestFailureCategoryWithDetailReportsMissingSSHKeyBeforePush(t *testing.T) {
 	}
 	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_ssh_key_unavailable" {
 		t.Fatalf("expected missing ssh key category, got %q", got)
+	}
+}
+
+func TestFailureCategoryWithDetailReportsMissingCommitAuthorEmailFile(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M .agentic/automation-smoke.md\n"},
+		{Stdout: "chore-MASS-0000-governed-smoke-gitops\n"},
+		{},
+		{},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:               true,
+		CommitAfterTask:       true,
+		CommitAuthorName:      "Mivia Automation",
+		CommitAuthorEmailFile: filepath.Join(t.TempDir(), "missing-email"),
+		RemoteName:            "origin",
+		GitHubCLIPath:         "gh",
+	}, runner)
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		TaskRef:          "smoke-draft-pr",
+		TaskTitle:        "Smoke Draft PR",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{".agentic/automation-smoke.md"},
+	})
+	if err == nil {
+		t.Fatal("expected missing commit author email file error")
+	}
+	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_commit_author_email_file_unavailable" {
+		t.Fatalf("expected missing author email file category, got %q", got)
 	}
 }
 
@@ -975,6 +1019,47 @@ func TestRenderUsesConfiguredConventionsAndMetadata(t *testing.T) {
 	} {
 		if !strings.Contains(rendered.PullRequestBody, want) {
 			t.Fatalf("PR body missing %q:\n%s", want, rendered.PullRequestBody)
+		}
+	}
+}
+
+func TestRenderAllowsLongSafeGitOpsMetadata(t *testing.T) {
+	longTaskRef := "workflow/" + strings.Repeat("safe-ref-segment-", 24)
+	longBranch := "chore-MASS-0000-" + strings.Repeat("safe-branch-segment-", 18)
+	longReviewRef := "review:" + strings.Repeat("safe-ref-segment-", 24)
+	longTestResult := "go test ./internal/projectgitops: passed " + strings.Repeat("safe-output-segment ", 30)
+
+	rendered, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         longTaskRef,
+		TaskTitle:       "Smoke Draft PR",
+		BranchName:      longBranch,
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+		ReviewRefs:      []string{longReviewRef},
+		VerifierRefs:    []string{"verifier:focused-tests"},
+		TestResults:     []string{longTestResult},
+	}, Conventions{
+		CommitType:               "chore",
+		CommitSummaryTemplate:    "finish smoke draft pr",
+		PullRequestTitleTemplate: "{{commit_subject}}",
+		WhatChangedTemplate:      "Implemented {{work_task_ref}} on {{branch_name}}.",
+		HowVerifiedTemplate:      "{{review_refs}}\n{{verifier_refs}}",
+		TestsTemplate:            "{{test_results}}",
+	})
+	if err != nil {
+		t.Fatalf("expected long safe metadata to render: %v", err)
+	}
+	if len(longTaskRef) <= 300 || len(longBranch) <= 300 || len(longReviewRef) <= 300 {
+		t.Fatalf("test fixture must exceed old 300-char caps")
+	}
+	for _, want := range []string{longTaskRef, longBranch, longReviewRef, longTestResult} {
+		want = strings.TrimSpace(want)
+		if !strings.Contains(rendered.PullRequestBody, want) && !strings.Contains(rendered.CommitBody, want) {
+			t.Fatalf("rendered output missing long safe metadata %q", want)
 		}
 	}
 }
