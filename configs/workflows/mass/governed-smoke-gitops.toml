@@ -9,7 +9,7 @@ status = "enabled"
 id = "smoke-gitops-worker"
 display_name = "Smoke GitOps Worker"
 purpose = "Create one bounded smoke marker file so the runner can commit, push, and open a draft PR."
-instructions = "Create or update only .agentic/automation-smoke.md with one short safe line naming the smoke input ref. Do not inspect Jira, run broad tests, touch other files, or include secrets."
+instructions = "Create or update only .agentic/automation-smoke.md with exactly one short safe line: smoke input ref: {{user_request_ref}}. Do not inspect Jira, run broad tests, touch other files, or include secrets."
 allowed_skills = ["mivia-mcp"]
 allowed_tools = [
   "projects.get",
@@ -29,7 +29,7 @@ id = "smoke-draft-pr"
 kind = "work_task"
 title = "Smoke Draft PR"
 agent = "smoke-gitops-worker"
-description = "Create or update the bounded smoke marker file so the runner exercises GitOps commit, push, and draft PR creation."
+description = "Create or update the bounded smoke marker file with exactly this safe input ref value: {{user_request_ref}}. This lets the runner exercise GitOps commit, push, and draft PR creation."
 evidence_needed = ["smoke-chain-ref", "gitops-smoke-ref"]
 files_to_read = ["configs/workflows/mass/governed-smoke-gitops.toml"]
 files_to_edit = [".agentic/automation-smoke.md"]

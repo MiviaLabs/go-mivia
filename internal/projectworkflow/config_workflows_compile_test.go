@@ -181,6 +181,14 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	if !strings.HasPrefix(smokePlan.GitBranchRef, "chore-MASS-0000-governed-smoke-gitops-compile-") || strings.Contains(smokePlan.GitBranchRef, "input-smoke") {
 		t.Fatalf("MASS smoke GitOps branch must satisfy ticket branch policy with fake MASS-0000, got %q", smokePlan.GitBranchRef)
 	}
+	smokeTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "mass-monorepo", PlanID: smokeResult.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list MASS smoke GitOps tasks: %v", err)
+	}
+	smokeTask := compiledTaskByRef(t, smokeTasks, "smoke-draft-pr")
+	if !strings.Contains(smokeTask.Description, "input:smoke-20260608g") || strings.Contains(smokeTask.Description, "{{user_request_ref}}") {
+		t.Fatalf("MASS smoke GitOps task must compile concrete input ref into worker packet, got %q", smokeTask.Description)
+	}
 
 	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"), "mass-monorepo")
 	assertMassAgentsCanReadLocalTicketEvidence(t, implementation)

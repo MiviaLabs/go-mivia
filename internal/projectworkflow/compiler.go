@@ -110,7 +110,7 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 
 	taskByStep := map[string]projectworkplan.WorkTask{}
 	for _, item := range graph.tasks {
-		created, err := svc.workPlans.CreateWorkTask(ctx, svc.compileTaskInput(workflow, plan.ID, item.step, graph.gatesByStep[item.step.ID], taskByStep, runID, traceID))
+		created, err := svc.workPlans.CreateWorkTask(ctx, svc.compileTaskInput(workflow, plan.ID, userRequestRef, item.step, graph.gatesByStep[item.step.ID], taskByStep, runID, traceID))
 		if err != nil {
 			return result, fmt.Errorf("create compiled work task %s: %w", item.step.ID, err)
 		}
@@ -414,18 +414,20 @@ func (svc *Service) ensureCompileSnapshots(ctx context.Context, workflow Workflo
 	return out, nil
 }
 
-func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string, step WorkflowStep, gates []WorkflowReviewGate, taskByStep map[string]projectworkplan.WorkTask, runID string, traceID string) projectworkplan.CreateWorkTaskInput {
+func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string, userRequestRef string, step WorkflowStep, gates []WorkflowReviewGate, taskByStep map[string]projectworkplan.WorkTask, runID string, traceID string) projectworkplan.CreateWorkTaskInput {
 	evidence := append([]string(nil), step.EvidenceNeeded...)
 	for _, gate := range gates {
 		evidence = append(evidence, "review gate "+gate.ID)
 	}
 	acceptanceCriteria, stopConditions, verifierLadder, regressionApplicability, downstreamImpactRefs, outputContract := workflowStepGovernance(step)
+	description := renderCompileTaskText(step.Description, workflow, userRequestRef)
+	agentInstructions := renderCompileTaskText(workflowAgentInstructions(workflow, step.Agent), workflow, userRequestRef)
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               workflow.ProjectID,
 		PlanID:                  planID,
 		TaskRef:                 step.ID,
 		Title:                   step.Title,
-		Description:             descriptionWithAgentInstructions(step.Description, workflowAgentInstructions(workflow, step.Agent)),
+		Description:             descriptionWithAgentInstructions(description, agentInstructions),
 		OwnerAgent:              step.Agent,
 		RunID:                   runID,
 		TraceID:                 firstNonEmpty(traceID, workflow.TraceID),
@@ -435,11 +437,11 @@ func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string,
 		FilesToEdit:             step.FilesToEdit,
 		LikelyFilesAffected:     step.LikelyFilesAffected,
 		DependencyTaskIDs:       nil,
-		VerificationRequirement: firstNonEmpty(step.VerificationRequirement, "orchestrator runs focused verifier"),
-		ExpectedOutput:          firstNonEmpty(step.ExpectedOutput, "bounded implementation artifact"),
-		FailureCriteria:         firstNonEmpty(step.FailureCriteria, "block if evidence or verifier scope is missing"),
+		VerificationRequirement: firstNonEmpty(renderCompileTaskText(step.VerificationRequirement, workflow, userRequestRef), "orchestrator runs focused verifier"),
+		ExpectedOutput:          firstNonEmpty(renderCompileTaskText(step.ExpectedOutput, workflow, userRequestRef), "bounded implementation artifact"),
+		FailureCriteria:         firstNonEmpty(renderCompileTaskText(step.FailureCriteria, workflow, userRequestRef), "block if evidence or verifier scope is missing"),
 		ReviewGate:              firstNonEmpty(step.ReviewGate, compileReviewGate(gates)),
-		ResumeInstructions:      firstNonEmpty(step.ResumeInstructions, "resume from task metadata and attached refs only"),
+		ResumeInstructions:      firstNonEmpty(renderCompileTaskText(step.ResumeInstructions, workflow, userRequestRef), "resume from task metadata and attached refs only"),
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 		AcceptanceCriteria:      acceptanceCriteria,
 		StopConditions:          stopConditions,
@@ -489,6 +491,25 @@ func workflowStepGovernance(step WorkflowStep) ([]string, []string, []string, st
 		outputContract = "planned child Work Tasks with complete governance metadata and no hidden chat context"
 	}
 	return acceptanceCriteria, stopConditions, verifierLadder, regressionApplicability, downstreamImpactRefs, outputContract
+}
+
+func renderCompileTaskText(value string, workflow WorkflowDefinition, userRequestRef string) string {
+	out := strings.TrimSpace(value)
+	if out == "" {
+		return ""
+	}
+	replacements := map[string]string{
+		"{{project_id}}":        workflow.ProjectID,
+		"{{workflow_id}}":       workflow.ID,
+		"{{workflow_ref}}":      workflow.WorkflowRef,
+		"{{user_request_ref}}":  userRequestRef,
+		"{{created_by_run_id}}": workflow.CreatedByRunID,
+		"{{trace_id}}":          workflow.TraceID,
+	}
+	for placeholder, replacement := range replacements {
+		out = strings.ReplaceAll(out, placeholder, strings.TrimSpace(replacement))
+	}
+	return out
 }
 
 func (svc *Service) reviewTaskInput(workflow WorkflowDefinition, planID string, reviewed projectworkplan.WorkTask, gate WorkflowReviewGate, runID string, traceID string) projectworkplan.CreateWorkTaskInput {
