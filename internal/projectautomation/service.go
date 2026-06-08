@@ -2174,7 +2174,7 @@ func normalizeGitOpsRecoveryFailureCategory(category string, evidenceRefs []stri
 		}
 	}
 	if category == "gitops_post_task_failed" {
-		return "gitops_post_task_failed_unknown"
+		return "gitops_post_task_failed_unclassified"
 	}
 	return category
 }
@@ -2218,7 +2218,7 @@ func isUnrecoverableGitOpsPostTaskExecutionFailure(category string) bool {
 func gitOpsRecoveryBlockedReason(category string) string {
 	category = safeFailure(category)
 	if category == "" {
-		return "GitOps recovery blocked by an unknown post-task failure."
+		return "GitOps recovery blocked by an unclassified post-task failure."
 	}
 	return "GitOps recovery blocked after " + category + "."
 }

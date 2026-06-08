@@ -3920,10 +3920,10 @@ func TestGitOpsRecoveryRequeueBoundsStoredLongResumeInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if updatedRun.Status != RunStatusBlocked || updatedRun.FailureCategory != "gitops_post_task_failed_unknown" {
+	if updatedRun.Status != RunStatusBlocked || updatedRun.FailureCategory != "gitops_post_task_failed_unclassified" {
 		t.Fatalf("expected blocked GitOps run, got %#v", updatedRun)
 	}
-	if !strings.Contains(updatedRun.SafeSummary, "gitops_post_task_failed_unknown") {
+	if !strings.Contains(updatedRun.SafeSummary, "gitops_post_task_failed_unclassified") {
 		t.Fatalf("expected blocked safe summary to preserve original failure category, got %q", updatedRun.SafeSummary)
 	}
 }
@@ -8429,10 +8429,10 @@ func TestCompleteAttemptBlocksAfterDetailedGitOpsPostTaskRecoveryFailure(t *test
 	}
 }
 
-func TestNormalizeGitOpsRecoveryFailureCategoryNamesUnknownBareFailure(t *testing.T) {
+func TestNormalizeGitOpsRecoveryFailureCategoryNamesUnclassifiedBareFailure(t *testing.T) {
 	got := normalizeGitOpsRecoveryFailureCategory("gitops_post_task_failed", nil)
-	if got != "gitops_post_task_failed_unknown" {
-		t.Fatalf("expected bare GitOps recovery failure to be explicit unknown, got %q", got)
+	if got != "gitops_post_task_failed_unclassified" {
+		t.Fatalf("expected bare GitOps recovery failure to be explicit unclassified, got %q", got)
 	}
 }
 
@@ -8631,7 +8631,7 @@ func TestClaimNextRunRequeuesExhaustedGitOpsRecoveryAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if exhausted.Status != RunStatusBlocked || exhausted.FailureCategory != "gitops_post_task_failed_unknown" || !strings.Contains(exhausted.SafeSummary, "gitops_post_task_failed_unknown") {
+	if exhausted.Status != RunStatusBlocked || exhausted.FailureCategory != "gitops_post_task_failed_unclassified" || !strings.Contains(exhausted.SafeSummary, "gitops_post_task_failed_unclassified") {
 		t.Fatalf("expected exhausted run to block with GitOps failure, got %+v", exhausted)
 	}
 	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusBlocked {
