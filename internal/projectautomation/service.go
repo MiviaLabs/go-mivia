@@ -960,80 +960,80 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		return ClaimedRun{}, err
 	}
 	if err := svc.reconcileQueuedRunsFromTerminalPlans(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_queued_terminal_plans", err)
 	}
 	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return claimed, claimNextStepError("claim_interrupted_starting", err)
 	}
 	if err := svc.reconcileRunningRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_running", err)
 	}
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_verifying", err)
 	}
 	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_interrupted_progressed", err)
 	}
 	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_recoverable_pre_execution", err)
 	}
 	if err := svc.reconcileExhaustedPreExecutionRecoveryRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_exhausted_pre_execution", err)
 	}
 	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_exhausted_gitops", err)
 	}
 	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_stale_ready_recovery", err)
 	}
 	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return claimed, claimNextStepError("claim_pre_execution_recovery", err)
 	}
 	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return claimed, claimNextStepError("claim_gitops_post_task_recovery", err)
 	}
 	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return claimed, claimNextStepError("claim_post_implementation_review_recovery", err)
 	}
 	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return claimed, claimNextStepError("claim_interrupted_starting_after_recovery", err)
 	}
 	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_ready_automations", err)
 	}
 	claimed, ok, skippedReason, err := svc.claimFirstQueuedRun(ctx, projectID, agentID, runnerID)
 	if err != nil || ok {
 		return claimed, err
 	}
 	if err := svc.reconcileRunningRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_running_after_claim", err)
 	}
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_verifying_after_claim", err)
 	}
 	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_interrupted_progressed_after_claim", err)
 	}
 	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_recoverable_pre_execution_after_claim", err)
 	}
 	if err := svc.reconcileExhaustedPreExecutionRecoveryRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_exhausted_pre_execution_after_claim", err)
 	}
 	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_exhausted_gitops_after_claim", err)
 	}
 	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_stale_ready_recovery_after_claim", err)
 	}
 	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("queue_outstanding_post_implementation_reviews", err)
 	}
 	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return claimed, claimNextStepError("claim_interrupted_starting_after_review_queue", err)
 	}
 	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_ready_automations_after_review_queue", err)
 	}
 	claimed, ok, skippedReasonAfterReconcile, err := svc.claimFirstQueuedRun(ctx, projectID, agentID, runnerID)
 	if err != nil || ok {
@@ -1046,6 +1046,16 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 		return ClaimedRun{}, fmt.Errorf("%w: queued automation runs not claimable: %s", ErrInvalidInput, skippedReason)
 	}
 	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
+}
+
+func claimNextStepError(step string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrInvalidInput) || errors.Is(err, projectworkplan.ErrInvalidInput) {
+		return fmt.Errorf("%w: claim_next_%s_failed:%s", ErrInvalidInput, step, safeFailure(err.Error()))
+	}
+	return err
 }
 
 func (svc *Service) claimFirstQueuedRun(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, string, error) {

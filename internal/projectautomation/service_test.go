@@ -2785,6 +2785,54 @@ func TestClaimNextRunIgnoresExhaustedGitOpsRecoveryForCompletedTask(t *testing.T
 	}
 }
 
+func TestClaimNextRunDoesNotRetryGitOpsRecoveryForCompletedTask(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	task.Status = projectworkplan.WorkTaskStatusDone
+	task.ClaimedByRunID = "successful-run"
+	task.AgentRunIDs = []string{"failed-run", "successful-run"}
+	task.EvidenceRefs = []string{"automation_run:failed-run", "gitops-smoke-ref"}
+	task.ReviewResultRefs = []string{"review_result_task-a_approved"}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "failed-run",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  projectworkplan.WorkTaskStatusReady,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries - 1,
+		FailureCategory: "gitops_recovery_failed_requires_implementation",
+		SafeSummary:     RunSafeSummaryGitOpsPostTaskRecovery,
+		UpdatedAt:       time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	_, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected completed GitOps recovery history to be ignored, got %v", err)
+	}
+	run, err := store.GetRun(ctx, automation.ProjectID, "failed-run")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if run.Status != RunStatusFailed {
+		t.Fatalf("completed task history must not be retried, got %#v", run)
+	}
+}
+
 func TestQueueReadyDependentAutomationIgnoresOldFailuresAfterSystemFixRecoveryMarker(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
