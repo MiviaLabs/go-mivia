@@ -20,7 +20,7 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	svc, workflowStore, workPlans, automations := newCompileFixture()
 	workflowStore.seedWorkflow(baseCompileWorkflow())
 
-	result, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "request-1", CreatedByRunID: "run-1", TraceID: "trace-1"})
+	result, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "request-1", ContextPackRefs: []string{"jira-context:MASS-1044:summary", "jira-context:MASS-1044:scope"}, CreatedByRunID: "run-1", TraceID: "trace-1"})
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}
@@ -70,6 +70,9 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	}
 	if !containsString(impl.EvidenceNeeded, "review gate review-implement") {
 		t.Fatalf("implementation task missing review requirement: %#v", impl.EvidenceNeeded)
+	}
+	if !containsString(impl.ContextPackRefs, "context-pack:workflow-compiler") || !containsString(impl.ContextPackRefs, "jira-context:MASS-1044:scope") {
+		t.Fatalf("implementation task missing workflow or compile context refs: %#v", impl.ContextPackRefs)
 	}
 	reviewer := taskByRef(t, tasks, "review-implement-step-review-implement")
 	if reviewer.OwnerAgent != "reviewer" {

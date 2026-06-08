@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
@@ -37,6 +38,10 @@ type GitOpsFinalizer interface {
 	FinalizeWorkflowChain(context.Context, GitOpsFinalizeInput) (GitOpsFinalizeResult, error)
 }
 
+type LocalContextReader interface {
+	ReadLocalContent(context.Context, projectintegrations.LocalReadInput) (projectintegrations.RichContentReadResult, error)
+}
+
 type GitOpsFinalizeInput struct {
 	ProjectID      string
 	ChainRunID     string
@@ -63,6 +68,7 @@ type Service struct {
 	workflows       WorkflowAPI
 	workPlans       WorkPlanAPI
 	gitOpsFinalizer GitOpsFinalizer
+	localContexts   LocalContextReader
 	configs         []Config
 	now             func() time.Time
 	newID           func(string) string
@@ -74,6 +80,10 @@ func New(store Store, workflows WorkflowAPI, workPlans WorkPlanAPI, configs []Co
 
 func (svc *Service) SetGitOpsFinalizer(finalizer GitOpsFinalizer) {
 	svc.gitOpsFinalizer = finalizer
+}
+
+func (svc *Service) SetLocalContextReader(reader LocalContextReader) {
+	svc.localContexts = reader
 }
 
 func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, error) {
@@ -110,8 +120,12 @@ func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, e
 	if err := svc.validateConfiguredWorkflows(ctx, cfg); err != nil {
 		return StartResult{}, err
 	}
+	contextRefs, err := svc.resolveContextRefs(ctx, cfg, inputRef)
+	if err != nil {
+		return StartResult{}, err
+	}
 	if input.DryRun {
-		return svc.dryRunStart(ctx, cfg, inputRef, runID, traceID)
+		return svc.dryRunStart(ctx, cfg, inputRef, contextRefs, runID, traceID)
 	}
 	if svc.workPlans == nil {
 		return StartResult{}, fmt.Errorf("%w: work plan service is required", ErrInvalidInput)
@@ -125,7 +139,7 @@ func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, e
 		ChainRef:       cfg.ChainRef,
 		InputRef:       inputRef,
 		Status:         ChainStatusPlanned,
-		ContextRefs:    contextRefsForInput(cfg, inputRef),
+		ContextRefs:    contextRefs,
 		CreatedByRunID: runID,
 		TraceID:        traceID,
 		CreatedAt:      now,
@@ -512,10 +526,10 @@ func gitOpsSourceWorkPlanID(run ChainRun) string {
 	return run.WorkPlanIDs[len(run.WorkPlanIDs)-1]
 }
 
-func (svc *Service) dryRunStart(ctx context.Context, cfg Config, inputRef string, runID string, traceID string) (StartResult, error) {
-	result := StartResult{ProjectID: cfg.ProjectID, ChainRef: cfg.ChainRef, InputRef: inputRef, Status: ChainStatusPlanned, DryRun: true, NextAction: "dry run only; no Work Plans or automations created"}
+func (svc *Service) dryRunStart(ctx context.Context, cfg Config, inputRef string, contextRefs []string, runID string, traceID string) (StartResult, error) {
+	result := StartResult{ProjectID: cfg.ProjectID, ChainRef: cfg.ChainRef, InputRef: inputRef, Status: ChainStatusPlanned, ContextRefs: append([]string(nil), contextRefs...), DryRun: true, NextAction: "dry run only; no Work Plans or automations created"}
 	for _, stage := range cfg.Stages {
-		stageRun, err := svc.compileStage(ctx, cfg, ChainRun{InputRef: inputRef, CreatedByRunID: runID, TraceID: traceID}, stage, true)
+		stageRun, err := svc.compileStage(ctx, cfg, ChainRun{InputRef: inputRef, ContextRefs: contextRefs, CreatedByRunID: runID, TraceID: traceID}, stage, true)
 		if err != nil {
 			return StartResult{}, err
 		}
@@ -550,13 +564,14 @@ func (svc *Service) compileStageMetadata(ctx context.Context, cfg Config, run Ch
 		title = title + " / " + stage.StageRef
 	}
 	compiled, err := svc.workflows.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{
-		ProjectID:      cfg.ProjectID,
-		WorkflowID:     workflow.ID,
-		UserRequestRef: run.InputRef,
-		CreatedByRunID: firstNonEmpty(run.CreatedByRunID, run.ID),
-		TraceID:        run.TraceID,
-		TitleOverride:  title,
-		DryRun:         dryRun,
+		ProjectID:       cfg.ProjectID,
+		WorkflowID:      workflow.ID,
+		UserRequestRef:  run.InputRef,
+		ContextPackRefs: run.ContextRefs,
+		CreatedByRunID:  firstNonEmpty(run.CreatedByRunID, run.ID),
+		TraceID:         run.TraceID,
+		TitleOverride:   title,
+		DryRun:          dryRun,
 	})
 	if err != nil {
 		return StageRun{}, projectworkflow.WorkflowCompileResult{}, err
@@ -714,6 +729,7 @@ func startResult(run ChainRun, dryRun bool) StartResult {
 		InputRef:       run.InputRef,
 		Status:         run.Status,
 		ChainRunID:     run.ID,
+		ContextRefs:    append([]string(nil), run.ContextRefs...),
 		StageRuns:      append([]StageRun(nil), run.StageRuns...),
 		WorkPlanIDs:    append([]string(nil), run.WorkPlanIDs...),
 		AutomationIDs:  append([]string(nil), run.AutomationIDs...),
@@ -721,6 +737,31 @@ func startResult(run ChainRun, dryRun bool) StartResult {
 		NextAction:     run.NextAction,
 		PullRequestRef: run.PullRequestRef,
 	}
+}
+
+func (svc *Service) resolveContextRefs(ctx context.Context, cfg Config, inputRef string) ([]string, error) {
+	refs := contextRefsForInput(cfg, inputRef)
+	if cfg.ContextMode != ContextModeLocalIngested || cfg.ContextProvider != ContextProviderJira {
+		return refs, nil
+	}
+	if svc.localContexts == nil {
+		return nil, fmt.Errorf("%w: local_ingested Jira context reader is required for workflow chain", ErrInvalidInput)
+	}
+	issueKey := strings.TrimPrefix(inputRef, "jira:")
+	result, err := svc.localContexts.ReadLocalContent(ctx, projectintegrations.LocalReadInput{
+		ProjectID:     cfg.ProjectID,
+		Provider:      projectintegrations.ProviderJira,
+		ItemIDOrKey:   issueKey,
+		MaxChunkBytes: 4096,
+		MaxChunks:     12,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: local_ingested Jira context unavailable for %s: %v", ErrInvalidInput, issueKey, err)
+	}
+	if err := validateJiraTicketContext(issueKey, result); err != nil {
+		return nil, err
+	}
+	return appendUniqueMany(refs, jiraTicketContextRefs(issueKey)), nil
 }
 
 func contextRefsForInput(cfg Config, inputRef string) []string {
@@ -733,6 +774,49 @@ func contextRefsForInput(cfg Config, inputRef string) []string {
 		return []string{"repo:" + strings.TrimPrefix(inputRef, "input:")}
 	default:
 		return nil
+	}
+}
+
+func validateJiraTicketContext(issueKey string, result projectintegrations.RichContentReadResult) error {
+	if strings.TrimSpace(result.Artifact.ItemKey) == "" && strings.TrimSpace(result.Artifact.ItemID) == "" {
+		return fmt.Errorf("%w: local_ingested Jira context missing artifact for %s", ErrInvalidInput, issueKey)
+	}
+	hasSummary := false
+	hasScope := false
+	for _, chunk := range result.Chunks {
+		if strings.TrimSpace(chunk.Text) == "" {
+			continue
+		}
+		field := strings.ToLower(strings.TrimSpace(firstNonEmpty(chunk.FieldName, chunk.Label)))
+		switch field {
+		case "summary":
+			hasSummary = true
+		case "description", "acceptance", "acceptance_criteria", "acceptance criteria":
+			hasScope = true
+		default:
+			if strings.Contains(field, "description") || strings.Contains(field, "acceptance") {
+				hasScope = true
+			}
+		}
+	}
+	var missing []string
+	if !hasSummary {
+		missing = append(missing, "summary")
+	}
+	if !hasScope {
+		missing = append(missing, "description_or_acceptance_criteria")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w: local_ingested Jira context for %s missing %s", ErrInvalidInput, issueKey, strings.Join(missing, ","))
+	}
+	return nil
+}
+
+func jiraTicketContextRefs(issueKey string) []string {
+	issueKey = strings.TrimSpace(issueKey)
+	return []string{
+		"jira-context:" + issueKey + ":summary",
+		"jira-context:" + issueKey + ":scope",
 	}
 }
 

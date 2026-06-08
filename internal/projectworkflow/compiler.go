@@ -45,6 +45,10 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 	if err != nil {
 		return WorkflowCompileResult{}, err
 	}
+	contextPackRefs, err := safeCompileRefs(input.ContextPackRefs, "context_pack_refs")
+	if err != nil {
+		return WorkflowCompileResult{}, err
+	}
 	titleOverride, err := safeOptionalCompileText(input.TitleOverride, "title_override", 200)
 	if err != nil {
 		return WorkflowCompileResult{}, err
@@ -110,7 +114,7 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 
 	taskByStep := map[string]projectworkplan.WorkTask{}
 	for _, item := range graph.tasks {
-		created, err := svc.workPlans.CreateWorkTask(ctx, svc.compileTaskInput(workflow, plan.ID, userRequestRef, item.step, graph.gatesByStep[item.step.ID], taskByStep, runID, traceID))
+		created, err := svc.workPlans.CreateWorkTask(ctx, svc.compileTaskInput(workflow, plan.ID, userRequestRef, contextPackRefs, item.step, graph.gatesByStep[item.step.ID], taskByStep, runID, traceID))
 		if err != nil {
 			return result, fmt.Errorf("create compiled work task %s: %w", item.step.ID, err)
 		}
@@ -414,7 +418,7 @@ func (svc *Service) ensureCompileSnapshots(ctx context.Context, workflow Workflo
 	return out, nil
 }
 
-func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string, userRequestRef string, step WorkflowStep, gates []WorkflowReviewGate, taskByStep map[string]projectworkplan.WorkTask, runID string, traceID string) projectworkplan.CreateWorkTaskInput {
+func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string, userRequestRef string, compileContextPackRefs []string, step WorkflowStep, gates []WorkflowReviewGate, taskByStep map[string]projectworkplan.WorkTask, runID string, traceID string) projectworkplan.CreateWorkTaskInput {
 	evidence := append([]string(nil), step.EvidenceNeeded...)
 	for _, gate := range gates {
 		evidence = append(evidence, "review gate "+gate.ID)
@@ -432,7 +436,7 @@ func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string,
 		RunID:                   runID,
 		TraceID:                 firstNonEmpty(traceID, workflow.TraceID),
 		EvidenceNeeded:          fallbackList(evidence, "implementation-evidence-required"),
-		ContextPackRefs:         step.ContextPackRefs,
+		ContextPackRefs:         appendUniqueMany(append([]string(nil), step.ContextPackRefs...), compileContextPackRefs),
 		FilesToRead:             step.FilesToRead,
 		FilesToEdit:             step.FilesToEdit,
 		LikelyFilesAffected:     step.LikelyFilesAffected,
@@ -451,6 +455,39 @@ func (svc *Service) compileTaskInput(workflow WorkflowDefinition, planID string,
 		DownstreamImpactRefs:    downstreamImpactRefs,
 		OutputContract:          outputContract,
 	}
+}
+
+func safeCompileRefs(values []string, field string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		safe, err := safeOptionalWorkflowRef(value, field)
+		if err != nil {
+			return nil, err
+		}
+		if safe != "" {
+			out = appendUnique(out, safe)
+		}
+	}
+	return out, nil
+}
+
+func appendUnique(values []string, next string) []string {
+	if strings.TrimSpace(next) == "" {
+		return values
+	}
+	for _, value := range values {
+		if value == next {
+			return values
+		}
+	}
+	return append(values, next)
+}
+
+func appendUniqueMany(values []string, next []string) []string {
+	for _, value := range next {
+		values = appendUnique(values, value)
+	}
+	return values
 }
 
 func workflowStepGovernance(step WorkflowStep) ([]string, []string, []string, string, []string, string) {

@@ -273,6 +273,7 @@ func run() error {
 		return err
 	}
 	projectWorkflowChainService := projectworkflowchain.New(chainstore.NewLadybugStore(metadataPersistentGraph), projectWorkflowService, projectWorkPlanService, workflowChainConfigs(cfg))
+	projectWorkflowChainService.SetLocalContextReader(projectIntegrationService)
 	projectWorkPlanService.SetStatusChangeHandler(workPlanStatusFanout{handlers: []projectworkplan.WorkPlanStatusChangeHandler{projectAutomationService, projectWorkflowChainService}})
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
 		LiveUpdatesEnabled:       cfg.Ingestion.LiveUpdatesEnabled,

@@ -108,6 +108,7 @@ type StartResult struct {
 	ChainRef       string     `json:"chain_ref"`
 	InputRef       string     `json:"input_ref"`
 	Status         string     `json:"status"`
+	ContextRefs    []string   `json:"context_refs,omitempty"`
 	ChainRunID     string     `json:"chain_run_id,omitempty"`
 	StageRuns      []StageRun `json:"stage_runs,omitempty"`
 	WorkPlanIDs    []string   `json:"work_plan_ids,omitempty"`

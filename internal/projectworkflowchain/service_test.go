@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
@@ -61,6 +62,58 @@ func TestStartDryRunRejectsUnsafeInputAndDoesNotCreateRun(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Fatalf("dry run persisted runs: %#v", runs)
+	}
+}
+
+func TestStartDryRunPreflightsLocalJiraContextBeforePersistence(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	svc := New(store, workflows, &fakeWorkPlans{}, []Config{localIngestedTestConfig()})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContext("MASS-1044", true)})
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", DryRun: true})
+	if err != nil {
+		t.Fatalf("dry-run start: %v", err)
+	}
+	if !containsString(result.ContextRefs, "jira-context:MASS-1044:summary") || !containsString(result.ContextRefs, "jira-context:MASS-1044:scope") {
+		t.Fatalf("dry run missing verified context refs: %#v", result.ContextRefs)
+	}
+	if len(workflows.compileInputs) != 3 {
+		t.Fatalf("expected dry run to compile all stages, got %d", len(workflows.compileInputs))
+	}
+	if !containsString(workflows.compileInputs[0].ContextPackRefs, "jira-context:MASS-1044:scope") {
+		t.Fatalf("compile input missing context refs: %#v", workflows.compileInputs[0])
+	}
+	runs, err := store.ListChainRuns(ctx, ChainFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("dry run persisted runs: %#v", runs)
+	}
+}
+
+func TestStartRejectsLocalJiraContextMissingScopeBeforeRunCreation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	svc := New(store, workflows, &fakeWorkPlans{}, []Config{localIngestedTestConfig()})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContext("MASS-1044", false)})
+
+	_, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "description_or_acceptance_criteria") {
+		t.Fatalf("expected missing scope rejection, got %v", err)
+	}
+	runs, err := store.ListChainRuns(ctx, ChainFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("invalid context must not create chain runs: %#v", runs)
+	}
+	if len(workflows.compileInputs) != 0 {
+		t.Fatalf("invalid context must not compile workflows: %#v", workflows.compileInputs)
 	}
 }
 
@@ -477,7 +530,6 @@ func testConfig() Config {
 		InputKind:            InputKindJiraIssueKey,
 		InputPattern:         "^MASS-[0-9]+$",
 		ContextProvider:      ContextProviderJira,
-		ContextMode:          ContextModeLocalIngested,
 		DefaultTitleTemplate: "{{input_ref}} governed delivery",
 		GitOpsMode:           GitOpsModeDraftPRAfterValidation,
 		GitOpsEnabled:        true,
@@ -487,6 +539,12 @@ func testConfig() Config {
 			{StageRef: "post-validation", WorkflowRef: "governed-post-implementation-validation", Trigger: TriggerAfterStageReviewPassed, DependsOn: []string{"implementation"}, RequiredStatusBeforeNext: StageStatusCompleted},
 		},
 	}
+}
+
+func localIngestedTestConfig() Config {
+	cfg := testConfig()
+	cfg.ContextMode = ContextModeLocalIngested
+	return cfg
 }
 
 func enabledWorkflows() []projectworkflow.WorkflowDefinition {
@@ -500,6 +558,7 @@ func enabledWorkflows() []projectworkflow.WorkflowDefinition {
 type fakeWorkflowAPI struct {
 	workflows      []projectworkflow.WorkflowDefinition
 	failWorkflowID string
+	compileInputs  []projectworkflow.WorkflowCompileInput
 }
 
 func (fake *fakeWorkflowAPI) ListWorkflows(_ context.Context, filter projectworkflow.WorkflowFilter) ([]projectworkflow.WorkflowDefinition, error) {
@@ -513,6 +572,7 @@ func (fake *fakeWorkflowAPI) ListWorkflows(_ context.Context, filter projectwork
 }
 
 func (fake *fakeWorkflowAPI) CompileWorkflow(_ context.Context, input projectworkflow.WorkflowCompileInput) (projectworkflow.WorkflowCompileResult, error) {
+	fake.compileInputs = append(fake.compileInputs, input)
 	if input.WorkflowID == fake.failWorkflowID {
 		return projectworkflow.WorkflowCompileResult{}, errors.New("compile failed")
 	}
@@ -532,6 +592,50 @@ func (fake *fakeWorkflowAPI) CompileWorkflow(_ context.Context, input projectwor
 		AutomationIDs: []string{"automation-" + stage},
 		DryRun:        input.DryRun,
 	}, nil
+}
+
+type fakeLocalContextReader struct {
+	result projectintegrations.RichContentReadResult
+	err    error
+}
+
+func (fake fakeLocalContextReader) ReadLocalContent(_ context.Context, _ projectintegrations.LocalReadInput) (projectintegrations.RichContentReadResult, error) {
+	if fake.err != nil {
+		return projectintegrations.RichContentReadResult{}, fake.err
+	}
+	return fake.result, nil
+}
+
+func localJiraContext(issueKey string, includeScope bool) projectintegrations.RichContentReadResult {
+	chunks := []projectintegrations.RichContentChunkView{{
+		ItemKey:   issueKey,
+		FieldName: "summary",
+		Text:      "Implement bounded automation ticket delivery",
+	}}
+	if includeScope {
+		chunks = append(chunks, projectintegrations.RichContentChunkView{
+			ItemKey:   issueKey,
+			FieldName: "description",
+			Text:      "Acceptance criteria: decompose, implement, verify, and open a draft PR.",
+		})
+	}
+	return projectintegrations.RichContentReadResult{
+		Artifact: projectintegrations.RichContentArtifact{
+			ID:      "integration-artifact-1",
+			ItemID:  "10001",
+			ItemKey: issueKey,
+		},
+		Chunks: chunks,
+	}
+}
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeWorkPlans struct {

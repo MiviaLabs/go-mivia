@@ -132,13 +132,14 @@ type WorkflowValidationIssue struct {
 }
 
 type WorkflowCompileInput struct {
-	ProjectID      string `json:"project_id,omitempty"`
-	WorkflowID     string `json:"workflow_id"`
-	UserRequestRef string `json:"user_request_ref,omitempty"`
-	CreatedByRunID string `json:"created_by_run_id,omitempty"`
-	TraceID        string `json:"trace_id,omitempty"`
-	TitleOverride  string `json:"title_override,omitempty"`
-	DryRun         bool   `json:"dry_run,omitempty"`
+	ProjectID       string   `json:"project_id,omitempty"`
+	WorkflowID      string   `json:"workflow_id"`
+	UserRequestRef  string   `json:"user_request_ref,omitempty"`
+	ContextPackRefs []string `json:"context_pack_refs,omitempty"`
+	CreatedByRunID  string   `json:"created_by_run_id,omitempty"`
+	TraceID         string   `json:"trace_id,omitempty"`
+	TitleOverride   string   `json:"title_override,omitempty"`
+	DryRun          bool     `json:"dry_run,omitempty"`
 }
 
 type WorkflowCompileResult struct {
