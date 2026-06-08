@@ -638,7 +638,7 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	now := svc.now()
 	run := AutomationRun{
 		ID: svc.newID("automation_run"), ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID,
-		TaskID: taskID, Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: orchestratorRunID,
+		TaskID: taskID, WorkTaskStatus: resolvedTask.Status, Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: orchestratorRunID,
 		ParentRunID: parentRunID, TraceID: automation.TraceID, CreatedAt: now, UpdatedAt: now,
 	}
 	return svc.store.CreateRun(ctx, run)
@@ -2671,7 +2671,7 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 			}
 			return svc.reconcileVerifyingRun(ctx, updated)
 		}
-		if (svc.externalRunLeaseExpired(run) || svc.runStartedBeforeService(run) || externalRunNeverClaimed(run)) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
+		if (svc.externalRunLeaseExpired(run) || svc.runStartedBeforeService(run) || svc.externalRunNeverClaimedExpired(run)) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
 			return svc.requeueAbandonedRunningRun(ctx, run, task)
 		}
 		return run, nil
@@ -2760,6 +2760,20 @@ func (svc *Service) externalRunLeaseExpired(run AutomationRun) bool {
 
 func externalRunNeverClaimed(run AutomationRun) bool {
 	return run.ClaimID == "" && run.RunnerID == "" && run.ClaimedAt.IsZero() && run.LastHeartbeatAt.IsZero() && run.LeaseExpiresAt.IsZero()
+}
+
+func (svc *Service) externalRunNeverClaimedExpired(run AutomationRun) bool {
+	if svc == nil || !externalRunNeverClaimed(run) {
+		return false
+	}
+	marker := run.UpdatedAt
+	if marker.IsZero() {
+		marker = run.StartedAt
+	}
+	if marker.IsZero() {
+		return false
+	}
+	return !svc.now().Before(marker.Add(defaultExternalRunLeaseTTL))
 }
 
 func (svc *Service) externalClaimStillActive(run AutomationRun) bool {
@@ -3471,6 +3485,7 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 		AgentID:           firstNonEmpty(task.OwnerAgent, automation.AgentID),
 		PlanID:            task.PlanID,
 		TaskID:            task.ID,
+		WorkTaskStatus:    task.Status,
 		Status:            RunStatusQueued,
 		RunnerKind:        RunnerKindCodexCLI,
 		AttemptCount:      0,
@@ -3913,9 +3928,9 @@ func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent
 		reviewRun := AutomationRun{
 			ID: svc.newID("automation_run"), ProjectID: parent.ProjectID, AutomationID: automation.ID,
 			AgentID: firstNonEmpty(reviewTask.OwnerAgent, automation.AgentID), PlanID: parent.PlanID, TaskID: reviewTask.ID,
-			Status: RunStatusQueued, RunnerKind: firstNonEmpty(parent.RunnerKind, RunnerKindCodexCLI), AttemptCount: 0,
+			WorkTaskStatus: reviewTask.Status, Status: RunStatusQueued, RunnerKind: firstNonEmpty(parent.RunnerKind, RunnerKindCodexCLI), AttemptCount: 0,
 			OrchestratorRunID: "post-review:" + parent.ID, ParentRunID: parent.ID,
-			SafeSummary: RunSafeSummaryPostImplementationReviewQueued, CreatedAt: now, UpdatedAt: now,
+			TraceID: parent.TraceID, SafeSummary: RunSafeSummaryPostImplementationReviewQueued, CreatedAt: now, UpdatedAt: now,
 		}
 		_, err = svc.store.CreateRun(ctx, reviewRun)
 		return err
@@ -4914,8 +4929,8 @@ func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, auto
 		reviewRun := AutomationRun{
 			ID: svc.newID("automation_run"), ProjectID: automation.ProjectID, AutomationID: reviewAutomation.ID,
 			AgentID: firstNonEmpty(task.OwnerAgent, reviewAutomation.AgentID), PlanID: task.PlanID, TaskID: task.ID,
-			Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: input.OrchestratorRunID,
-			ParentRunID: input.ParentRunID, SafeSummary: "automation_review_gate_queued", CreatedAt: now, UpdatedAt: now,
+			WorkTaskStatus: task.Status, Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: input.OrchestratorRunID,
+			ParentRunID: input.ParentRunID, TraceID: firstNonEmpty(automation.TraceID, input.OrchestratorRunID), SafeSummary: "automation_review_gate_queued", CreatedAt: now, UpdatedAt: now,
 		}
 		if _, err := svc.store.CreateRun(ctx, reviewRun); err != nil {
 			return err

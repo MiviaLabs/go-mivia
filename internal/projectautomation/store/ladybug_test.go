@@ -205,6 +205,53 @@ func TestLadybugStorePreservesAdvancedRunFromStaleRecoveryUpdate(t *testing.T) {
 	}
 }
 
+func TestLadybugStorePersistsFirstExternalClaimForQueuedPostReviewRun(t *testing.T) {
+	ctx := context.Background()
+	graph := ladybug.NewMemoryGraph()
+	store := bootstrappedAutomationStore(t, ctx, graph)
+	now := time.Unix(100, 0).UTC()
+	run := projectautomation.AutomationRun{
+		ID:           "run-review",
+		ProjectID:    "project-a",
+		AutomationID: "automation-review",
+		AgentID:      "codex-reviewer",
+		PlanID:       "plan-1",
+		TaskID:       "review-task-1",
+		Status:       projectautomation.RunStatusQueued,
+		RunnerKind:   projectautomation.RunnerKindCodexCLI,
+		SafeSummary:  projectautomation.RunSafeSummaryPostImplementationReviewQueued,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	claimed := run
+	claimed.Status = projectautomation.RunStatusRunning
+	claimed.ClaimID = "claim-review"
+	claimed.RunnerID = "runner-1"
+	claimed.ClaimedAt = now.Add(time.Second)
+	claimed.LastHeartbeatAt = claimed.ClaimedAt
+	claimed.LeaseExpiresAt = claimed.ClaimedAt.Add(90 * time.Second)
+	claimed.StartedAt = claimed.ClaimedAt
+	claimed.UpdatedAt = claimed.ClaimedAt
+
+	got, err := store.UpdateRun(ctx, claimed)
+	if err != nil {
+		t.Fatalf("update claimed review run: %v", err)
+	}
+	if got.Status != projectautomation.RunStatusRunning || got.ClaimID != claimed.ClaimID || got.RunnerID != claimed.RunnerID {
+		t.Fatalf("expected first external claim to persist, got %#v", got)
+	}
+	persisted, err := store.GetRun(ctx, run.ProjectID, run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if persisted.Status != projectautomation.RunStatusRunning || persisted.ClaimID != claimed.ClaimID || persisted.RunnerID != claimed.RunnerID {
+		t.Fatalf("expected persisted run to keep claim fields, got %#v", persisted)
+	}
+}
+
 func bootstrappedAutomationStore(t *testing.T, ctx context.Context, graph ladybug.Graph) *LadybugStore {
 	t.Helper()
 	store, err := NewBootstrappedLadybugStore(ctx, graph)
