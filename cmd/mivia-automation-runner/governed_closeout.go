@@ -155,7 +155,7 @@ type governedCloseoutWorkTask struct {
 func createGovernedCloseoutSchemaFile() (string, func(), error) {
 	childTaskProperties := map[string]any{
 		"task_ref":                      map[string]any{"type": "string", "maxLength": 200},
-		"title":                         map[string]any{"type": "string", "maxLength": 300},
+		"title":                         map[string]any{"type": "string", "maxLength": closeoutWorkTaskShortTextMax},
 		"description":                   map[string]any{"type": "string", "maxLength": closeoutChildTaskDescriptionMax},
 		"status":                        map[string]any{"type": "string", "maxLength": 40},
 		"owner_agent":                   map[string]any{"type": "string", "maxLength": 120},
@@ -169,7 +169,7 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 		"expected_output":               map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
 		"failure_criteria":              map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
 		"review_gate":                   map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
-		"resume_instructions":           map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
+		"resume_instructions":           map[string]any{"type": "string"},
 		"decomposition_quality":         map[string]any{"type": "string", "maxLength": 80},
 		"acceptance_criteria":           closeoutTextArraySchema(),
 		"stop_conditions":               closeoutTextArraySchema(),
@@ -220,7 +220,7 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 }
 
 func closeoutRefSchema() map[string]any {
-	return map[string]any{"type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"}
+	return map[string]any{"type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$"}
 }
 
 func closeoutRefArraySchema() map[string]any {
@@ -228,7 +228,7 @@ func closeoutRefArraySchema() map[string]any {
 }
 
 func closeoutPathArraySchema() map[string]any {
-	return map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 300, "pattern": "^[A-Za-z0-9][A-Za-z0-9._/@+-]*$"}}
+	return map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._/@+-]*$"}}
 }
 
 func closeoutTextArraySchema() map[string]any {

@@ -180,6 +180,15 @@ func TestGitOpsDirtyScopeEvidenceRefsUseRejectedPaths(t *testing.T) {
 	}
 }
 
+func TestShouldRunGitOpsForFinalPRReadinessWithoutFilesToEdit(t *testing.T) {
+	if !shouldRunGitOpsForTask(runnerWorkTaskMetadata{TaskRef: "final-pr-readiness"}) {
+		t.Fatal("final-pr-readiness must run GitOps so a clean ahead branch can be pushed and converted to a draft PR")
+	}
+	if shouldRunGitOpsForTask(runnerWorkTaskMetadata{TaskRef: "run-final-verification"}) {
+		t.Fatal("read-only validation tasks must not enter GitOps without files_to_edit")
+	}
+}
+
 func TestResolveRunWorkDirFallsBackForSharedPlan(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -811,6 +820,10 @@ func TestShouldAutoCloseoutMetadataOnlyTaskRejectsFalseGreenGovernanceSteps(t *t
 		"review-implementation-batch",
 		"orchestrator-verification",
 		"pr-gitops-readiness",
+		"collect-final-scope",
+		"validate-regression-and-downstream",
+		"run-final-verification",
+		"final-pr-readiness",
 	} {
 		if shouldAutoCloseoutMetadataOnlyTask(false, runnerWorkTaskMetadata{TaskRef: taskRef}) {
 			t.Fatalf("governance step %q must require explicit closeout evidence", taskRef)
@@ -1973,8 +1986,17 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 	if strings.Contains(schemaText, "ready_for_worker") {
 		t.Fatalf("schema must not require non-existent decomposition quality constant: %s", schemaText)
 	}
-	if strings.Contains(schemaText, "._:-") {
-		t.Fatalf("closeout ref schema must match runner validation and reject colon refs: %s", schemaText)
+	for _, want := range []string{
+		`^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$`,
+		`"title":{"maxLength":200`,
+		`"resume_instructions":{"type":"string"}`,
+	} {
+		if !strings.Contains(schemaText, want) {
+			t.Fatalf("schema must mirror Work Task REST boundaries for %s: %s", want, schemaText)
+		}
+	}
+	if strings.Contains(schemaText, `"files_to_read":{"items":{"maxLength":300`) || strings.Contains(schemaText, `"resume_instructions":{"maxLength":500`) || strings.Contains(schemaText, `"title":{"maxLength":300`) {
+		t.Fatalf("schema must not reintroduce runner-only Work Task limits: %s", schemaText)
 	}
 	var schema map[string]any
 	if err := json.Unmarshal(data, &schema); err != nil {
@@ -2058,6 +2080,10 @@ func TestGovernedCloseoutTasksDoNotUseCodexOutputSchema(t *testing.T) {
 		"review-implementation-batch",
 		"orchestrator-verification",
 		"pr-gitops-readiness",
+		"collect-final-scope",
+		"validate-regression-and-downstream",
+		"run-final-verification",
+		"final-pr-readiness",
 	} {
 		t.Run(taskRef, func(t *testing.T) {
 			task := runnerWorkTaskMetadata{TaskRef: taskRef}

@@ -85,6 +85,9 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	if len(workPlans.released) != 1 || workPlans.released[0] != "task-decomposition" {
 		t.Fatalf("expected first stage task release, got %#v", workPlans.released)
 	}
+	if got, want := strings.Join(workPlans.events[:2], ","), "release:task-decomposition,activate:plan-decomposition"; got != want {
+		t.Fatalf("stage activation must release tasks before plan active event, got %s", got)
+	}
 
 	err = svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone})
 	if err != nil {
@@ -99,6 +102,9 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	}
 	if workPlans.activations[1] != "plan-implementation" {
 		t.Fatalf("expected implementation plan activation, got %#v", workPlans.activations)
+	}
+	if got, want := strings.Join(workPlans.events[2:4], ","), "release:task-implementation,activate:plan-implementation"; got != want {
+		t.Fatalf("next stage activation must release tasks before plan active event, got %s", got)
 	}
 }
 
@@ -531,6 +537,7 @@ func (fake *fakeWorkflowAPI) CompileWorkflow(_ context.Context, input projectwor
 type fakeWorkPlans struct {
 	activations []string
 	released    []string
+	events      []string
 }
 
 func (fake *fakeWorkPlans) GetWorkPlan(_ context.Context, projectID string, planID string) (projectworkplan.WorkPlan, error) {
@@ -539,6 +546,7 @@ func (fake *fakeWorkPlans) GetWorkPlan(_ context.Context, projectID string, plan
 
 func (fake *fakeWorkPlans) UpdateWorkPlanStatus(_ context.Context, input projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error) {
 	fake.activations = append(fake.activations, input.PlanID)
+	fake.events = append(fake.events, "activate:"+input.PlanID)
 	return projectworkplan.WorkPlan{ID: input.PlanID, ProjectID: input.ProjectID, Status: input.Status}, nil
 }
 
@@ -564,6 +572,7 @@ func (fake *fakeWorkPlans) ListOpenWorkTasks(_ context.Context, filter projectwo
 
 func (fake *fakeWorkPlans) UpdateWorkTaskStatus(_ context.Context, input projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error) {
 	fake.released = append(fake.released, input.TaskID)
+	fake.events = append(fake.events, "release:"+input.TaskID)
 	return projectworkplan.WorkTask{ID: input.TaskID, ProjectID: input.ProjectID, Status: input.Status}, nil
 }
 

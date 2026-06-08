@@ -579,6 +579,9 @@ func (svc *Service) compileStageMetadata(ctx context.Context, cfg Config, run Ch
 }
 
 func (svc *Service) activateCompiledStage(ctx context.Context, cfg Config, run ChainRun, compiled projectworkflow.WorkflowCompileResult) error {
+	if err := svc.releaseCompiledTasks(ctx, cfg.ProjectID, compiled, run); err != nil {
+		return err
+	}
 	if compiled.WorkPlanID != "" {
 		if _, err := svc.workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
 			ProjectID:      cfg.ProjectID,
@@ -590,9 +593,6 @@ func (svc *Service) activateCompiledStage(ctx context.Context, cfg Config, run C
 		}); err != nil {
 			return err
 		}
-	}
-	if err := svc.releaseCompiledTasks(ctx, cfg.ProjectID, compiled, run); err != nil {
-		return err
 	}
 	return nil
 }

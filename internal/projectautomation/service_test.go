@@ -70,6 +70,83 @@ func TestCallAutomationToolCreateAcceptsCommonCompatibilityAliases(t *testing.T)
 	}
 }
 
+func TestSubmitRunQueuesRequiredReviewTaskUnderDedicatedReviewAutomation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	reviewTask := projectworkplan.WorkTask{
+		ID:          "review-task-1",
+		ProjectID:   "project-1",
+		PlanID:      "plan-1",
+		TaskRef:     "review-implementation-batch",
+		Title:       "Review implementation batch",
+		Status:      projectworkplan.WorkTaskStatusPlanned,
+		OwnerAgent:  "review-agent",
+		Description: "Review implementation output.",
+	}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{reviewTask.ID: reviewTask},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, AllowManualRunner: true})
+	svc.newID = deterministicAutomationIDs("automation_impl", "automation_review", "automation_run_review", "automation_run_impl")
+	implementation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:             "project-1",
+		AutomationRef:         "auto/implementation",
+		Title:                 "Implementation automation",
+		Purpose:               "Run implementation tasks.",
+		Status:                AutomationStatusEnabled,
+		AgentID:               "impl-agent",
+		PlanID:                "plan-1",
+		AllowedTaskRefs:       []string{"implementation-task-1"},
+		RequiredReviewTaskIDs: []string{reviewTask.ID},
+		TriggerKind:           TriggerKindAutomatic,
+		PermissionRef:         "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation implementation returned error: %v", err)
+	}
+	reviewAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review",
+		Title:           "Review automation",
+		Purpose:         "Run review tasks.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "review-agent",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation review returned error: %v", err)
+	}
+	run, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: "project-1", AutomationID: implementation.ID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	if run.Status != RunStatusBlocked || run.FailureCategory != "automation_review_gate_open" {
+		t.Fatalf("implementation run must stay blocked behind review gate, got %#v", run)
+	}
+	reviewRuns, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: reviewAutomation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns review automation returned error: %v", err)
+	}
+	if len(reviewRuns) != 1 || reviewRuns[0].TaskID != reviewTask.ID || reviewRuns[0].Status != RunStatusQueued {
+		t.Fatalf("expected queued review run under dedicated review automation, got %#v", reviewRuns)
+	}
+	implementationRuns, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: implementation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns implementation automation returned error: %v", err)
+	}
+	for _, queued := range implementationRuns {
+		if queued.TaskID == reviewTask.ID && queued.SafeSummary == "automation_review_gate_queued" {
+			t.Fatalf("review task must not be queued under implementation automation: %#v", implementationRuns)
+		}
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -77,6 +154,18 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func deterministicAutomationIDs(values ...string) func(string) string {
+	index := 0
+	return func(prefix string) string {
+		if index >= len(values) {
+			return prefix + "_extra"
+		}
+		value := values[index]
+		index++
+		return value
+	}
 }
 
 func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {

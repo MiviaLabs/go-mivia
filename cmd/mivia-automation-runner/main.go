@@ -502,6 +502,9 @@ func (client *runnerClient) shouldRunProjectCleanup(projectID string, baseWorkDi
 }
 
 func shouldRunGitOpsForTask(task runnerWorkTaskMetadata) bool {
+	if strings.TrimSpace(task.TaskRef) == "final-pr-readiness" {
+		return true
+	}
 	return len(task.FilesToEdit) > 0
 }
 
@@ -1578,7 +1581,11 @@ func taskRequiresExplicitGovernedCloseout(task runnerWorkTaskMetadata) bool {
 		"run-implementation-batch",
 		"review-implementation-batch",
 		"orchestrator-verification",
-		"pr-gitops-readiness":
+		"pr-gitops-readiness",
+		"collect-final-scope",
+		"validate-regression-and-downstream",
+		"run-final-verification",
+		"final-pr-readiness":
 		return true
 	default:
 		return false

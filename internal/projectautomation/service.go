@@ -4706,7 +4706,11 @@ func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, auto
 		if err := svc.validateRunPlanExecutable(ctx, AutomationRun{ProjectID: automation.ProjectID, PlanID: automation.PlanID}, task); err != nil {
 			return err
 		}
-		existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: automation.PlanID})
+		reviewAutomation, err := svc.reviewAutomationForTask(ctx, automation, task)
+		if err != nil {
+			return err
+		}
+		existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: reviewAutomation.ID, PlanID: automation.PlanID})
 		if err != nil {
 			return err
 		}
@@ -4722,8 +4726,8 @@ func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, auto
 		}
 		now := svc.now()
 		reviewRun := AutomationRun{
-			ID: svc.newID("automation_run"), ProjectID: automation.ProjectID, AutomationID: automation.ID,
-			AgentID: firstNonEmpty(task.OwnerAgent, automation.AgentID), PlanID: task.PlanID, TaskID: task.ID,
+			ID: svc.newID("automation_run"), ProjectID: automation.ProjectID, AutomationID: reviewAutomation.ID,
+			AgentID: firstNonEmpty(task.OwnerAgent, reviewAutomation.AgentID), PlanID: task.PlanID, TaskID: task.ID,
 			Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: input.OrchestratorRunID,
 			ParentRunID: input.ParentRunID, SafeSummary: "automation_review_gate_queued", CreatedAt: now, UpdatedAt: now,
 		}
@@ -4732,6 +4736,35 @@ func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, auto
 		}
 	}
 	return nil
+}
+
+func (svc *Service) reviewAutomationForTask(ctx context.Context, fallback Automation, task projectworkplan.WorkTask) (Automation, error) {
+	if strings.TrimSpace(task.ID) == "" {
+		return fallback, nil
+	}
+	automations, err := svc.store.ListAutomations(ctx, AutomationFilter{ProjectID: fallback.ProjectID, Status: AutomationStatusEnabled})
+	if err != nil {
+		return Automation{}, err
+	}
+	for _, candidate := range automations {
+		if candidate.ID == fallback.ID || candidate.PlanID != fallback.PlanID {
+			continue
+		}
+		if automationAllowsTask(candidate, task) {
+			return candidate, nil
+		}
+	}
+	return fallback, nil
+}
+
+func automationAllowsTask(automation Automation, task projectworkplan.WorkTask) bool {
+	for _, allowed := range automation.AllowedTaskRefs {
+		switch strings.TrimSpace(allowed) {
+		case task.ID, task.TaskRef:
+			return true
+		}
+	}
+	return false
 }
 
 func (svc *Service) requiredAutomationReviewsDone(ctx context.Context, automation Automation) bool {
