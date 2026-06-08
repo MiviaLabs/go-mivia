@@ -3908,12 +3908,13 @@ func (svc *Service) createRecoveryPostImplementationReviewTask(ctx context.Conte
 func (svc *Service) createRecoveryPostImplementationReviewTaskWithRef(ctx context.Context, workPlans remediationWorkPlanAPI, run AutomationRun, target projectworkplan.WorkTask, reviewTaskRef string) (projectworkplan.WorkTask, error) {
 	reviewerAgentID := independentReviewerAgent(target.OwnerAgent)
 	files := uniqueRefs(append(append(append([]string{}, target.FilesToRead...), target.FilesToEdit...), target.LikelyFilesAffected...))
+	targetLabel := firstNonEmpty(target.TaskRef, "implementation-task")
 	task, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
 		ProjectID:               run.ProjectID,
 		PlanID:                  run.PlanID,
 		TaskRef:                 reviewTaskRef,
 		Title:                   "Review remediation " + target.TaskRef,
-		Description:             "Independently review implementation task " + target.ID + " after automation runner completion.",
+		Description:             "Independently review implementation task " + targetLabel + " after automation runner completion.",
 		Status:                  projectworkplan.WorkTaskStatusReady,
 		OwnerAgent:              reviewerAgentID,
 		RunID:                   run.ID,
@@ -3921,17 +3922,21 @@ func (svc *Service) createRecoveryPostImplementationReviewTaskWithRef(ctx contex
 		EvidenceNeeded:          safeWorkerEvidenceRefs([]string{"review-target-" + target.ID, "implementation-task-" + target.ID, "implementation-output-refs"}),
 		FilesToRead:             files,
 		LikelyFilesAffected:     files,
-		VerificationRequirement: "Attach an independent review_result_ref to implementation task " + target.ID + " before completion.",
-		ExpectedOutput:          "Independent review decision for implementation task " + target.ID + " with review refs attached to the implementation task.",
+		VerificationRequirement: "Attach an independent review_result_ref to implementation task " + targetLabel + " before completion.",
+		ExpectedOutput:          "Independent review decision for implementation task " + targetLabel + " with review refs attached to the implementation task.",
 		FailureCriteria:         "Block on self-review, missing implementation evidence, missing verifier refs, unsafe payloads, or unclear approval decision.",
 		ReviewGate:              "independent-reviewer-must-not-be-" + target.OwnerAgent,
-		ResumeInstructions:      "Review implementation task " + target.ID + " only. Attach review_result_ref to that implementation task, then complete this review task.",
+		ResumeInstructions:      "Review implementation task " + targetLabel + " only. Attach review_result_ref to that implementation task, then complete this review task.",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	})
-	if err == nil || !errors.Is(err, workplanstore.ErrDuplicate) || strings.Contains(reviewTaskRef, "-"+target.ID) {
+	if err == nil || !isDuplicateWorkTaskRefError(err) || strings.Contains(reviewTaskRef, "-"+target.ID) {
 		return task, err
 	}
 	return svc.createRecoveryPostImplementationReviewTaskWithRef(ctx, workPlans, run, target, reviewTaskRef+"-"+target.ID)
+}
+
+func isDuplicateWorkTaskRefError(err error) bool {
+	return errors.Is(err, workplanstore.ErrDuplicate) || strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "duplicate work task ref in plan")
 }
 
 func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) (Automation, error) {

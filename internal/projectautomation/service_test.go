@@ -191,7 +191,7 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 	}
 	store := newTestStore()
 	svc := New(store, workSvc, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
-	svc.newID = deterministicAutomationIDs("automation_existing_review", "automation_worker", "automation_run_worker", "automation_review_recovery", "automation_run_review")
+	svc.newID = deterministicAutomationIDs("automation_existing_review", "automation_worker", "automation_run_worker", "claim_worker", "automation_review_recovery", "automation_run_review", "claim_review")
 	if _, err := svc.CreateAutomation(ctx, CreateAutomationInput{
 		ProjectID:       "project-1",
 		AutomationRef:   "auto-review-review-smoke-draft-pr",
@@ -2975,6 +2975,12 @@ func TestQueueOutstandingPostImplementationReviewUsesUniqueRefWhenPriorReviewTas
 	}
 	if !found {
 		t.Fatalf("expected suffixed ready review task, got %#v", tasks)
+	}
+}
+
+func TestIsDuplicateWorkTaskRefErrorAcceptsLadybugMessage(t *testing.T) {
+	if !isDuplicateWorkTaskRefError(fmt.Errorf("duplicate work task ref in plan: review-smoke-draft-pr")) {
+		t.Fatal("expected Ladybug duplicate task-ref message to be recognized")
 	}
 }
 
