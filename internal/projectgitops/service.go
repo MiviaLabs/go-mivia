@@ -272,22 +272,22 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 		var err error
 		branch, err = svc.currentBranch(ctx, workDir)
 		if err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_current_branch", err)
 		}
 	}
 	input.BranchName = branch
 	branch, err := svc.normalizeBranchForPolicy(ctx, workDir, input)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_branch_policy", err)
 	}
 	input.BranchName = branch
 	preRefs, preTests, err := svc.runPreCommitVerification(ctx, workDir)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_precommit_verification", err)
 	}
 	postRefs, postTests, err := svc.runPostCommitVerification(ctx, workDir)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_postcommit_verification", err)
 	}
 	if len(preTests) > 0 || len(postTests) > 0 {
 		input.TestResults = append(input.TestResults, preTests...)
@@ -296,7 +296,7 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 	if len(preRefs) > 0 || len(postRefs) > 0 {
 		status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
 		if err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_status_after_verification", err)
 		}
 		if strings.TrimSpace(status.Stdout) != "" {
 			return PostTaskResult{}, fmt.Errorf("%w: verification dirtied clean-ahead branch", ErrDirtyWorktree)
@@ -306,14 +306,14 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 	}
 	rendered, err := Render(input, svc.options.Conventions)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_render", err)
 	}
 	if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", "--no-verify", svc.options.RemoteName, "HEAD:"+branch); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_push", err)
 	}
 	prRef, err := svc.ensureDraftPR(ctx, workDir, rendered)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_draft_pr", err)
 	}
 	result.NoChanges = false
 	result.PushRef = "git-push-" + safeHash(branch)
