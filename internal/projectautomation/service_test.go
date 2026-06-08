@@ -7283,6 +7283,20 @@ func TestClaimNextRunClaimsLegacyBoundedSmokeGitOpsRecoveryWithoutMode(t *testin
 	if claimed.Run.ID != parentRun.ID || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery || claimed.Run.FailureCategory != "" {
 		t.Fatalf("expected legacy bounded smoke run claimed for GitOps recovery, got %#v", claimed.Run)
 	}
+	completed, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:    claimed.Run.ProjectID,
+		RunID:        claimed.Run.ID,
+		ClaimID:      claimed.Run.ClaimID,
+		RunnerID:     claimed.Run.RunnerID,
+		Status:       RunStatusCompleted,
+		EvidenceRefs: []string{"git-commit-created", "git-push-completed", "draft-pr-ready"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt legacy bounded smoke returned error: %v", err)
+	}
+	if completed.Status != RunStatusCompleted || completed.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected legacy bounded smoke completion, got %#v", completed)
+	}
 }
 
 func TestClaimNextRunClosesReadOnlyScannerAndQueuesDependentReview(t *testing.T) {

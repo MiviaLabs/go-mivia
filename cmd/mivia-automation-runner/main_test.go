@@ -1215,11 +1215,11 @@ func TestRunGitOpsPostTaskRecoveryRequiresVerifierRefs(t *testing.T) {
 		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
 			writeJSON(t, w, runnerWorkTaskMetadata{
 				ID:               "task-1",
-				TaskRef:          "smoke-draft-pr",
-				Title:            "Smoke Draft PR",
+				TaskRef:          "ordinary-gitops-task",
+				Title:            "Ordinary GitOps Task",
 				Status:           "needs_review",
 				FilesToEdit:      []string{".agentic/automation-smoke.md"},
-				EvidenceRefs:     []string{"gitops-smoke-ref"},
+				EvidenceRefs:     []string{"ordinary-gitops-ref"},
 				ReviewResultRefs: []string{"review_result_task_1_passed"},
 			})
 		default:
@@ -1354,6 +1354,77 @@ func TestRunGitOpsPostTaskRecoveryAllowsBoundedSmokeWithoutManualCloseoutRefs(t 
 	})
 	if status != projectautomation.RunStatusCompleted || failure != "" {
 		t.Fatalf("expected bounded smoke recovery completion, got status=%q failure=%q", status, failure)
+	}
+	if !containsRunnerString(evidenceRefs, "git-commit-abc123def456") || !containsRunnerString(evidenceRefs, "draft-pr-ready") {
+		t.Fatalf("expected commit and draft PR evidence, got %+v", evidenceRefs)
+	}
+}
+
+func TestRunGitOpsPostTaskRecoveryAllowsLegacyBoundedSmokeWithReviewRef(t *testing.T) {
+	sshKey, knownHosts := testRunnerGitOpsCredentialFiles(t)
+	runner := &gitOpsRecordingRunner{results: []projectgitops.CommandResult{
+		{},
+		{Stdout: "?? .agentic/automation-smoke.md\n"},
+		{Stdout: "chore-smoke-20260608-governed-smoke-gitops\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+		{},
+		{},
+		{Stdout: "https://github.com/example/repo/pull/123\n"},
+	}}
+	gitOpsOptions := projectgitops.Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		DraftPRAfterPush:     true,
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
+		GitHubTokenEnv:       "GH_TOKEN",
+		GitHubCLIPath:        "gh",
+	}
+	oldNewGitOpsService := newGitOpsService
+	newGitOpsService = func(options projectgitops.Options) *projectgitops.Service {
+		return projectgitops.NewWithRunner(options, runner)
+	}
+	defer func() { newGitOpsService = oldNewGitOpsService }()
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	t.Setenv("GH_TOKEN", "token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:               "task-1",
+				TaskRef:          "smoke-draft-pr",
+				Title:            "Smoke Draft PR",
+				Status:           "needs_review",
+				FilesToEdit:      []string{".agentic/automation-smoke.md"},
+				EvidenceRefs:     []string{"automation_run:run-1", "gitops-smoke-ref", "smoke-chain-ref"},
+				ReviewResultRefs: []string{"review_result_work_task_approved"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:           "run-1",
+			ProjectID:    "mass-monorepo",
+			AutomationID: "automation-1",
+			AgentID:      "agent-1",
+			PlanID:       "plan-1",
+			TaskID:       "task-1",
+			SafeSummary:  projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+		},
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{".agentic/automation-smoke.md"}},
+	})
+	if status != projectautomation.RunStatusCompleted || failure != "" {
+		t.Fatalf("expected legacy bounded smoke recovery completion, got status=%q failure=%q", status, failure)
 	}
 	if !containsRunnerString(evidenceRefs, "git-commit-abc123def456") || !containsRunnerString(evidenceRefs, "draft-pr-ready") {
 		t.Fatalf("expected commit and draft PR evidence, got %+v", evidenceRefs)
@@ -3076,7 +3147,7 @@ func TestValidateGovernedCloseoutRejectsServerInvalidBlockReason(t *testing.T) {
 func TestGovernedCloseoutFailureCategoryPreservesChildTaskServerErrorCode(t *testing.T) {
 	err := governedCloseoutError{
 		category: governedCloseoutApplyFailed,
-		err: fmt.Errorf("child_task_create_failed: server returned 400 Bad Request: %s", `{"error":{"code":"invalid_project_work_task_input","message":"evidence_needed contains unsafe content"}}`),
+		err:      fmt.Errorf("child_task_create_failed: server returned 400 Bad Request: %s", `{"error":{"code":"invalid_project_work_task_input","message":"evidence_needed contains unsafe content"}}`),
 	}
 	category := governedCloseoutFailureCategory(err)
 	if !strings.HasPrefix(category, "governed_closeout_apply_failed_child_task_create_failed_invalid_project_work_task_input") {

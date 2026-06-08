@@ -3153,8 +3153,10 @@ func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun
 		ReviewResultRefs:   append([]string(nil), task.ReviewResultRefs...),
 	}
 	if reason := automationReviewExemptReason(task); reason != "" {
-		action.ReviewResultRefs = nil
-		action.ReviewExemptReason = reason
+		if !taskUsesBoundedSmokeGitOpsVerification(task) || len(action.ReviewResultRefs) == 0 {
+			action.ReviewResultRefs = nil
+			action.ReviewExemptReason = reason
+		}
 	}
 	if isNoConfirmedBugPlannerTask(task) && len(action.ClaimRefs) == 0 {
 		action.ClaimRefs = []string{"claim.no-confirmed-bug-remediation-not-required"}
@@ -5456,16 +5458,19 @@ func taskUsesBoundedSmokeGitOpsVerification(task projectworkplan.WorkTask) bool 
 	if mode != "" && mode != "bounded_smoke" {
 		return false
 	}
-	if mode == "" && taskHasGitOpsCompletionRef(task) {
-		return false
-	}
 	if strings.TrimSpace(task.TaskRef) != "smoke-draft-pr" {
 		return false
 	}
 	if len(task.FilesToEdit) != 1 || strings.TrimSpace(task.FilesToEdit[0]) != ".agentic/automation-smoke.md" {
 		return false
 	}
-	return containsRef(task.EvidenceRefs, "gitops-smoke-ref")
+	if !containsRef(task.EvidenceRefs, "gitops-smoke-ref") {
+		return false
+	}
+	if mode == "bounded_smoke" {
+		return true
+	}
+	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != ""
 }
 
 func isReviewTask(task projectworkplan.WorkTask) bool {

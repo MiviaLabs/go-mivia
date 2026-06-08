@@ -645,7 +645,8 @@ func gitOpsOptionsForTask(options projectgitops.Options, task runnerWorkTaskMeta
 }
 
 func taskUsesBoundedSmokeGitOpsVerification(task runnerWorkTaskMetadata) bool {
-	if strings.TrimSpace(task.GitOpsVerificationMode) != "bounded_smoke" {
+	mode := strings.TrimSpace(task.GitOpsVerificationMode)
+	if mode != "" && mode != "bounded_smoke" {
 		return false
 	}
 	if strings.TrimSpace(task.TaskRef) != "smoke-draft-pr" {
@@ -654,7 +655,13 @@ func taskUsesBoundedSmokeGitOpsVerification(task runnerWorkTaskMetadata) bool {
 	if len(task.FilesToEdit) != 1 || strings.TrimSpace(task.FilesToEdit[0]) != ".agentic/automation-smoke.md" {
 		return false
 	}
-	return containsRunnerString(task.EvidenceRefs, "gitops-smoke-ref")
+	if !containsRunnerString(task.EvidenceRefs, "gitops-smoke-ref") {
+		return false
+	}
+	if mode == "bounded_smoke" {
+		return true
+	}
+	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != ""
 }
 
 func containsRunnerString(values []string, expected string) bool {
