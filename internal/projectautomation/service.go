@@ -1438,6 +1438,7 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 		run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
 		run.StartedAt = now
 		run.FinishedAt = time.Time{}
+		run.FailureCategory = ""
 		svc.applyExternalClaim(&run, runnerID, now)
 		run.UpdatedAt = now
 		claimed, err := svc.store.UpdateRun(ctx, run)
@@ -3123,19 +3124,23 @@ func (svc *Service) reconcilePostImplementationReviewParent(ctx context.Context,
 		return nil
 	}
 	parentTask, err := svc.workTasks.GetWorkTask(ctx, parent.ProjectID, parent.TaskID)
-	if err != nil || !taskNeedsPostImplementationReview(parentTask) {
+	if err != nil {
 		return nil
 	}
-	reviewRef := "review_result_" + safeBranchToken(parentTask.ID) + "_approved"
-	if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
-		ProjectID:       parentTask.ProjectID,
-		TaskID:          parentTask.ID,
-		Ref:             reviewRef,
-		AttachedByRunID: reviewRun.ID,
-		TraceID:         firstNonEmpty(reviewRun.TraceID, reviewRun.ID),
-		Note:            "post-implementation review completed",
-	}); err != nil {
-		return err
+	if taskNeedsPostImplementationReview(parentTask) {
+		reviewRef := "review_result_" + safeBranchToken(parentTask.ID) + "_approved"
+		if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+			ProjectID:       parentTask.ProjectID,
+			TaskID:          parentTask.ID,
+			Ref:             reviewRef,
+			AttachedByRunID: reviewRun.ID,
+			TraceID:         firstNonEmpty(reviewRun.TraceID, reviewRun.ID),
+			Note:            "post-implementation review completed",
+		}); err != nil {
+			return err
+		}
+	} else if !taskReadyForAutomationCloseout(parentTask) {
+		return nil
 	}
 	_, err = svc.reconcileVerifyingRun(ctx, parent)
 	return err

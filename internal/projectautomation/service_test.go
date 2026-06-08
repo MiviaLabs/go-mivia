@@ -4028,7 +4028,7 @@ func TestClaimNextRunRecoversVerifyingWriteTaskMissingGitOpsRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimNextRun returned error: %v", err)
 	}
-	if claimed.Run.ID != "run-a" || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery || claimed.Run.FailureCategory != "gitops_post_task_failed" {
+	if claimed.Run.ID != "run-a" || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery || claimed.Run.FailureCategory != "" {
 		t.Fatalf("expected GitOps recovery run, got %#v", claimed.Run)
 	}
 }
@@ -6791,6 +6791,85 @@ func TestClaimNextRunReconcilesReviewTaskWithoutSecondaryReview(t *testing.T) {
 	}
 	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusDone || fake.tasks[task.ID].ReviewExemptReason == "" {
 		t.Fatalf("expected review task done with exemption, got %#v", fake.tasks[task.ID])
+	}
+}
+
+func TestReviewCompletionReconcilesAlreadyReviewedParent(t *testing.T) {
+	ctx := context.Background()
+	parentTask := readyTask("task-a", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	parentTask.FilesToEdit = []string{".agentic/automation-smoke.md"}
+	parentTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	parentTask.ClaimedByRunID = "run-parent"
+	parentTask.AgentRunIDs = []string{"run-parent"}
+	parentTask.VerifierResultRefs = []string{"bounded-diff-check"}
+	parentTask.ReviewResultRefs = []string{"review_result_independent_review_approved_smoke_draft_pr"}
+	reviewTask := readyTask("review-task-a", "review-smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	reviewTask.Status = projectworkplan.WorkTaskStatusVerifying
+	reviewTask.OwnerAgent = "codex-reviewer"
+	reviewTask.VerifierResultRefs = []string{"verifier/review"}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive}},
+		tasks: map[string]projectworkplan.WorkTask{parentTask.ID: parentTask, reviewTask.ID: reviewTask},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/smoke-draft-pr",
+		Title:           "Smoke GitOps worker",
+		Purpose:         "Run smoke GitOps task.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "smoke-gitops-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{parentTask.ID, parentTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	parentRun := AutomationRun{
+		ID: "run-parent", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID, PlanID: "plan-1", TaskID: parentTask.ID,
+		Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: "external_codex_cli_completed_verification_required",
+	}
+	if _, err := store.CreateRun(ctx, parentRun); err != nil {
+		t.Fatalf("CreateRun parent returned error: %v", err)
+	}
+	reviewRun := AutomationRun{
+		ID: "run-review", ProjectID: "project-1", PlanID: "plan-1", TaskID: reviewTask.ID,
+		Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: RunSafeSummaryPostImplementationReviewQueued,
+		ParentRunID: parentRun.ID,
+	}
+	if _, err := store.CreateRun(ctx, reviewRun); err != nil {
+		t.Fatalf("CreateRun review returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("expected first claim to reconcile review and claim parent GitOps recovery, got %v", err)
+	}
+	completedReview, err := store.GetRun(ctx, "project-1", reviewRun.ID)
+	if err != nil {
+		t.Fatalf("GetRun review returned error: %v", err)
+	}
+	if completedReview.Status != RunStatusCompleted {
+		t.Fatalf("expected review run completed, got %#v", completedReview)
+	}
+	completedParent, err := store.GetRun(ctx, "project-1", parentRun.ID)
+	if err != nil {
+		t.Fatalf("GetRun parent returned error: %v", err)
+	}
+	if completedParent.Status != RunStatusRunning || completedParent.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery || completedParent.FailureCategory != "" {
+		t.Fatalf("expected parent run to be claimed for GitOps recovery after review, got %#v", completedParent)
+	}
+	if fake.tasks[parentTask.ID].Status != projectworkplan.WorkTaskStatusNeedsReview {
+		t.Fatalf("expected parent task to remain reviewed pending GitOps recovery, got %#v", fake.tasks[parentTask.ID])
+	}
+	if got := len(fake.reviewRefs); got != 0 {
+		t.Fatalf("expected no synthetic review ref when parent already had review, got %#v", fake.reviewRefs)
+	}
+	if claimed.Run.ID != parentRun.ID || claimed.Run.Status != RunStatusRunning || claimed.Run.FailureCategory != "" {
+		t.Fatalf("expected parent GitOps recovery claim, got %#v", claimed.Run)
 	}
 }
 
