@@ -2624,7 +2624,7 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 			}
 			return svc.reconcileVerifyingRun(ctx, updated)
 		}
-		if (svc.externalRunLeaseExpired(run) || svc.runStartedBeforeService(run)) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
+		if (svc.externalRunLeaseExpired(run) || svc.runStartedBeforeService(run) || externalRunNeverClaimed(run)) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
 			return svc.requeueAbandonedRunningRun(ctx, run, task)
 		}
 		return run, nil
@@ -2709,6 +2709,10 @@ func (svc *Service) externalRunLeaseExpired(run AutomationRun) bool {
 		return false
 	}
 	return !svc.now().Before(run.LeaseExpiresAt)
+}
+
+func externalRunNeverClaimed(run AutomationRun) bool {
+	return run.ClaimID == "" && run.RunnerID == "" && run.ClaimedAt.IsZero() && run.LastHeartbeatAt.IsZero() && run.LeaseExpiresAt.IsZero()
 }
 
 func (svc *Service) externalClaimStillActive(run AutomationRun) bool {

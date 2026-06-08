@@ -5946,6 +5946,67 @@ func TestRequeueAbandonedRunningRunSkipsStaleSnapshotAfterDurableFailure(t *test
 	}
 }
 
+func TestReconcileRunningRunsRequeuesNeverClaimedStartingRun(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "review-smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-never-claimed"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.startedAt = time.Unix(50, 0).UTC()
+	svc.now = func() time.Time { return time.Unix(120, 0).UTC() }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review-smoke-draft-pr",
+		Title:           "Review smoke draft PR",
+		Purpose:         "Review completed smoke implementation.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-reviewer",
+		PlanID:          task.PlanID,
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-never-claimed",
+		ProjectID:      "project-1",
+		AutomationID:   automation.ID,
+		AgentID:        "codex-reviewer",
+		PlanID:         task.PlanID,
+		TaskID:         task.ID,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusClaimed,
+		Status:         RunStatusStarting,
+		RunnerKind:     RunnerKindCodexCLI,
+		SafeSummary:    RunSafeSummaryPostImplementationReviewQueued,
+		UpdatedAt:      time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.reconcileRunningRuns(ctx, "project-1"); err != nil {
+		t.Fatalf("reconcileRunningRuns returned error: %v", err)
+	}
+	updated, err := store.GetRun(ctx, "project-1", "run-never-claimed")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if updated.Status != RunStatusTimeout || updated.FailureCategory != "external_runner_interrupted" {
+		t.Fatalf("expected never-claimed starting run to be timed out, got %#v", updated)
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected task requeued to ready, got %#v", fake.tasks[task.ID])
+	}
+}
+
 func TestReconcileInterruptedRunWithProgressedTaskMovesToVerifying(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "fix-confirmed-bug", []string{"internal/foo.go"})
