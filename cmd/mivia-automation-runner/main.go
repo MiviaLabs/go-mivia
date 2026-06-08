@@ -345,6 +345,9 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			DurationMS:      durationMS,
 			EvidenceRefs:    evidenceRefs,
 		}
+		if status != projectautomation.RunStatusCompleted && strings.TrimSpace(failureCategory) != "" {
+			fmt.Fprintf(os.Stdout, "automation run %s reporting %s failure_category=%s\n", claimed.Run.ID, status, failureCategory)
+		}
 		completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run, result)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
