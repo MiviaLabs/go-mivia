@@ -3015,6 +3015,9 @@ func (svc *Service) completeRunAfterTaskDone(ctx context.Context, run Automation
 	if err != nil {
 		return AutomationRun{}, err
 	}
+	if err := svc.reconcilePostImplementationReviewParent(ctx, updated); err != nil {
+		return updated, err
+	}
 	if err := svc.reconcileReadyDependentAutomations(ctx, task.ProjectID, task.PlanID, task.ID); err != nil {
 		return updated, nil
 	}
@@ -3022,6 +3025,36 @@ func (svc *Service) completeRunAfterTaskDone(ctx context.Context, run Automation
 		return updated, nil
 	}
 	return updated, nil
+}
+
+func (svc *Service) reconcilePostImplementationReviewParent(ctx context.Context, reviewRun AutomationRun) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(reviewRun.ParentRunID) == "" {
+		return nil
+	}
+	if strings.TrimSpace(reviewRun.SafeSummary) != RunSafeSummaryVerifiedTaskDone {
+		return nil
+	}
+	parent, err := svc.store.GetRun(ctx, reviewRun.ProjectID, reviewRun.ParentRunID)
+	if err != nil || parent.Status != RunStatusVerifying || strings.TrimSpace(parent.TaskID) == "" {
+		return nil
+	}
+	parentTask, err := svc.workTasks.GetWorkTask(ctx, parent.ProjectID, parent.TaskID)
+	if err != nil || !taskNeedsPostImplementationReview(parentTask) {
+		return nil
+	}
+	reviewRef := "review_result_" + safeBranchToken(parentTask.ID) + "_approved"
+	if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+		ProjectID:       parentTask.ProjectID,
+		TaskID:          parentTask.ID,
+		Ref:             reviewRef,
+		AttachedByRunID: reviewRun.ID,
+		TraceID:         firstNonEmpty(reviewRun.TraceID, reviewRun.ID),
+		Note:            "post-implementation review completed",
+	}); err != nil {
+		return err
+	}
+	_, err = svc.reconcileVerifyingRun(ctx, parent)
+	return err
 }
 
 func (svc *Service) finishRunAfterTaskTerminal(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
@@ -5014,7 +5047,10 @@ func taskNeedsGitOpsPostTaskRecovery(run AutomationRun, task projectworkplan.Wor
 	}
 	for _, ref := range append(append([]string{}, task.EvidenceRefs...), task.ClaimRefs...) {
 		normalized := strings.ToLower(strings.TrimSpace(ref))
-		if strings.HasPrefix(normalized, "git-commit") ||
+		if strings.HasPrefix(normalized, "gitops-commit") ||
+			strings.HasPrefix(normalized, "gitops-push") ||
+			strings.HasPrefix(normalized, "gitops-pr") ||
+			strings.HasPrefix(normalized, "git-commit") ||
 			strings.HasPrefix(normalized, "git-push") ||
 			strings.HasPrefix(normalized, "draft-pr") ||
 			strings.Contains(normalized, "git-no-changes") ||
@@ -5037,7 +5073,7 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 	if !isReadOnlyScannerTask(task) && len(task.FilesToEdit) == 0 && metadataOnlyTaskHasCloseoutEvidence(task) {
 		return true
 	}
-	if len(task.VerifierResultRefs) == 0 {
+	if len(automationCloseoutVerifierRefs(task)) == 0 {
 		return false
 	}
 	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" || automationReviewExemptReason(task) != ""
@@ -5103,7 +5139,26 @@ func automationCloseoutVerifierRefs(task projectworkplan.WorkTask) []string {
 	if len(refs) == 0 && !isReadOnlyScannerTask(task) && len(task.FilesToEdit) == 0 && metadataOnlyTaskHasCloseoutEvidence(task) {
 		refs = append(refs, "verifier.automation.metadata-only-output")
 	}
+	if len(refs) == 0 && len(task.FilesToEdit) > 0 && gitOpsTaskHasCloseoutEvidence(task) {
+		refs = append(refs, "verifier.automation.gitops-output")
+	}
 	return refs
+}
+
+func gitOpsTaskHasCloseoutEvidence(task projectworkplan.WorkTask) bool {
+	for _, ref := range task.EvidenceRefs {
+		value := strings.ToLower(strings.TrimSpace(ref))
+		if strings.HasPrefix(value, "gitops-commit") ||
+			strings.HasPrefix(value, "gitops-push") ||
+			strings.HasPrefix(value, "gitops-pr") ||
+			strings.HasPrefix(value, "git-commit") ||
+			strings.HasPrefix(value, "git-push") ||
+			strings.HasPrefix(value, "draft-pr") ||
+			strings.Contains(value, "draft-pr-ready") {
+			return true
+		}
+	}
+	return false
 }
 
 func isMeaningfulScannerEvidenceRef(ref string) bool {

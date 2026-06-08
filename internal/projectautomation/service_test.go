@@ -191,7 +191,7 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 	}
 	store := newTestStore()
 	svc := New(store, workSvc, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
-	svc.newID = deterministicAutomationIDs("automation_worker", "automation_run_worker", "automation_review_recovery", "automation_run_review")
+	svc.newID = deterministicAutomationIDs("automation_existing_review", "automation_worker", "automation_run_worker", "automation_review_recovery", "automation_run_review")
 	if _, err := svc.CreateAutomation(ctx, CreateAutomationInput{
 		ProjectID:       "project-1",
 		AutomationRef:   "auto-review-review-smoke-draft-pr",
@@ -297,6 +297,60 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 	}
 	if durableReview.Status != RunStatusRunning || durableReview.ClaimID != claimedReview.Run.ClaimID || durableReview.LastHeartbeatAt.IsZero() || durableReview.LeaseExpiresAt.IsZero() {
 		t.Fatalf("durable review run must preserve external claim fields, got %#v", durableReview)
+	}
+	if _, err := workSvc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:      "project-1",
+			TaskID:         claimedReview.Run.TaskID,
+			RunID:          claimedReview.Run.ID,
+			TraceID:        claimedReview.Run.ID,
+			SafeNextAction: "review closeout",
+		},
+		Status: projectworkplan.WorkTaskStatusVerifying,
+	}); err != nil {
+		t.Fatalf("UpdateWorkTaskStatus review returned error: %v", err)
+	}
+	if _, err := workSvc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             claimedReview.Run.TaskID,
+		RunID:              claimedReview.Run.ID,
+		TraceID:            claimedReview.Run.ID,
+		Outcome:            "independent review approved the smoke GitOps task",
+		SafeNextAction:     "release parent GitOps task",
+		VerifierResultRefs: []string{"verifier.review.approved"},
+		ReviewExemptReason: "review task is the independent review gate",
+	}); err != nil {
+		t.Fatalf("CompleteWorkTask review returned error: %v", err)
+	}
+	completedReview, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID: "project-1",
+		RunID:     claimedReview.Run.ID,
+		ClaimID:   claimedReview.Run.ClaimID,
+		RunnerID:  claimedReview.Run.RunnerID,
+		Status:    RunStatusCompleted,
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt review returned error: %v", err)
+	}
+	if completedReview.Status != RunStatusCompleted {
+		t.Fatalf("review run must complete, got %#v", completedReview)
+	}
+	parentRun, err := store.GetRun(ctx, "project-1", claimed.Run.ID)
+	if err != nil {
+		t.Fatalf("GetRun parent returned error: %v", err)
+	}
+	parentTask, err := workSvc.GetWorkTask(ctx, "project-1", task.ID)
+	if err != nil {
+		t.Fatalf("GetWorkTask parent returned error: %v", err)
+	}
+	if parentRun.Status != RunStatusCompleted || parentTask.Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("review completion must close parent GitOps task, run=%#v task=%#v", parentRun, parentTask)
+	}
+	if len(parentTask.ReviewResultRefs) == 0 {
+		t.Fatalf("parent task must receive review refs from review run, got %#v", parentTask)
+	}
+	if len(parentTask.VerifierResultRefs) == 0 {
+		t.Fatalf("parent GitOps evidence must satisfy verifier refs for closeout, got %#v", parentTask)
 	}
 }
 
