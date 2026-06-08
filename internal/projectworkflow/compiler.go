@@ -720,12 +720,23 @@ func renderCompileBranchSummary(template string, userRequestRef string, workflow
 	if template == "" {
 		return ""
 	}
-	ticket := strings.TrimPrefix(userRequestRef, "jira:")
+	ticket := compileTicketRef(userRequestRef)
 	out := strings.ReplaceAll(template, "{{ticket_ref}}", ticket)
 	out = strings.ReplaceAll(out, "{{user_request_ref}}", userRequestRef)
 	out = strings.ReplaceAll(out, "{{workflow_ref}}", workflowRef)
 	out = strings.ReplaceAll(out, "{{token}}", token)
 	return safeCompileBranchName(out)
+}
+
+func compileTicketRef(userRequestRef string) string {
+	userRequestRef = strings.TrimSpace(userRequestRef)
+	if strings.HasPrefix(userRequestRef, "jira:") {
+		ticket := strings.TrimSpace(strings.TrimPrefix(userRequestRef, "jira:"))
+		if ticket != "" {
+			return ticket
+		}
+	}
+	return "MASS-0000"
 }
 
 func compileUniqueBranchSummary(summary string, token string) string {

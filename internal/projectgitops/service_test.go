@@ -489,6 +489,59 @@ func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing
 	}
 }
 
+func TestPostTaskDerivesFakeMassBranchForTicketlessSmokeInputBranch(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: "?? .agentic/automation-smoke.md\n"},
+		{},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+		{},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		RemoteName:           "origin",
+		BranchPrefix:         "",
+		BranchNamePattern:    `^(feat|fix|docs|chore|refactor|hotfix|revert)-MASS-[0-9]+(-[a-z0-9-]+)*$|^chore-smoke-[A-Za-z0-9._+-]{1,80}(-[a-z0-9-]+)*$`,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		SSHPrivateKeyPath:    "/tmp/id_ed25519",
+		SSHKnownHostsPath:    "/tmp/known_hosts",
+		GitHubCLIPath:        "gh",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "mass-monorepo",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		TaskRef:          "smoke-draft-pr",
+		TaskTitle:        "Smoke Draft PR",
+		BranchName:       "chore-input-smoke-20260608g-governed-smoke-gitops-compile-a13ce1fb8c207136",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "smoke-gitops-worker",
+		AllowedPathspecs: []string{".agentic/automation-smoke.md"},
+	})
+	if err != nil {
+		t.Fatalf("expected ticketless smoke branch to be normalized and committed: %v", err)
+	}
+	if result.CommitRef != "git-commit-abc123def456" {
+		t.Fatalf("unexpected commit ref: %#v", result)
+	}
+	if got := strings.Join(runner.commands[2].Args, " "); got != "-c safe.directory=/tmp/worktree checkout -B chore-MASS-0000-smoke-draft-pr" {
+		t.Fatalf("expected fake MASS-0000 smoke branch checkout, got %q", got)
+	}
+	if got := strings.Join(runner.commands[3].Args, " "); got != "-c safe.directory=/tmp/worktree add -- .agentic/automation-smoke.md" {
+		t.Fatalf("expected only smoke marker staged, got %q", got)
+	}
+}
+
 func TestFailureCategoryUsesBranchPolicyError(t *testing.T) {
 	err := fmt.Errorf("%w: %w: branch mismatch", ErrInvalidInput, ErrBranchPolicy)
 	if got := FailureCategory(err); got != "gitops_branch_policy_failed" {

@@ -160,6 +160,19 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 		t.Fatalf("MASS decompose-work-plan must compile first-class governance fields, got %#v", compiledDecomposeTask)
 	}
 
+	smokeGitOps := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-smoke-gitops.toml"), "mass-monorepo")
+	smokeResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: smokeGitOps.ProjectID, WorkflowID: smokeGitOps.ID, UserRequestRef: "input:smoke-20260608g", CreatedByRunID: "same-smoke-run"})
+	if err != nil {
+		t.Fatalf("compile MASS smoke GitOps workflow: %v", err)
+	}
+	smokePlan, err := workPlans.GetWorkPlan(ctx, "mass-monorepo", smokeResult.WorkPlanID)
+	if err != nil {
+		t.Fatalf("get MASS smoke GitOps plan: %v", err)
+	}
+	if !strings.HasPrefix(smokePlan.GitBranchRef, "chore-MASS-0000-governed-smoke-gitops-compile-") || strings.Contains(smokePlan.GitBranchRef, "input-smoke") {
+		t.Fatalf("MASS smoke GitOps branch must satisfy ticket branch policy with fake MASS-0000, got %q", smokePlan.GitBranchRef)
+	}
+
 	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"), "mass-monorepo")
 	assertMassAgentsCanReadLocalTicketEvidence(t, implementation)
 	for i := 0; i < 2; i++ {
