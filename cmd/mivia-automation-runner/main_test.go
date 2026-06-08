@@ -189,12 +189,18 @@ func TestGitOpsFailureEvidenceRefsAlwaysNameClassifiedFailure(t *testing.T) {
 }
 
 func TestGitOpsFailureCategoryForRunnerDoesNotExposeUnclassifiedPostTask(t *testing.T) {
-	err := errors.New("")
-	category := gitOpsFailureCategoryForRunner(err)
-	if category != "gitops_post_task_failed_runner_post_task" {
-		t.Fatalf("expected runner post-task fallback category, got %q", category)
+	for name, err := range map[string]error{
+		"bare":         errors.New(""),
+		"unclassified": errors.New(" "),
+	} {
+		t.Run(name, func(t *testing.T) {
+			category := gitOpsFailureCategoryForRunner(err)
+			if category != "gitops_post_task_failed_runner_post_task" {
+				t.Fatalf("expected runner post-task fallback category, got %q", category)
+			}
+		})
 	}
-	refs := gitOpsFailureEvidenceRefs(err)
+	refs := gitOpsFailureEvidenceRefs(errors.New(""))
 	if strings.Join(refs, ",") != "gitops-failure:gitops_post_task_failed_runner_post_task" {
 		t.Fatalf("expected runner post-task fallback evidence ref, got %+v", refs)
 	}

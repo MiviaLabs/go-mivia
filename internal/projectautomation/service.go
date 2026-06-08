@@ -2173,8 +2173,8 @@ func normalizeGitOpsRecoveryFailureCategory(category string, evidenceRefs []stri
 			return safeFailure(candidate)
 		}
 	}
-	if category == "gitops_post_task_failed" {
-		return "gitops_post_task_failed_unclassified"
+	if category == "gitops_post_task_failed" || category == "gitops_post_task_failed_unclassified" {
+		return "gitops_post_task_failed_runner_post_task"
 	}
 	return category
 }
