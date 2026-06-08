@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1878,6 +1879,30 @@ func TestParseGovernedCloseoutNormalizesStructuredOutputContract(t *testing.T) {
 	}
 }
 
+func TestParseGovernedCloseoutTruncatesTopLevelCloseoutReasons(t *testing.T) {
+	longReason := strings.Repeat("x", closeoutWorkTaskTextMax+25)
+	payload := `{
+		"closeout_action":"block",
+		"outcome":"blocked",
+		"safe_next_action":"retry after context is available",
+		"evidence_refs":[],
+		"verifier_result_refs":[],
+		"child_tasks":[],
+		"block_reason":` + strconv.Quote(longReason) + `,
+		"failure_reason":` + strconv.Quote(longReason) + `
+	}`
+	output, err := parseGovernedCloseoutOutput(payload)
+	if err != nil {
+		t.Fatalf("oversized closeout reasons should normalize before validation: %v", err)
+	}
+	if len(output.BlockReason) != closeoutWorkTaskTextMax || len(output.FailureReason) != closeoutWorkTaskTextMax {
+		t.Fatalf("expected closeout reasons to be truncated to %d, got block=%d failure=%d", closeoutWorkTaskTextMax, len(output.BlockReason), len(output.FailureReason))
+	}
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("normalized closeout reasons should pass governed validation: %v", err)
+	}
+}
+
 func TestValidateGovernedCloseoutRejectsChildTaskMetadataBeforeREST(t *testing.T) {
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	output.ChildTasks[0].ExpectedOutput = strings.Repeat("x", closeoutWorkTaskTextMax+1)
@@ -1905,6 +1930,21 @@ func TestValidateGovernedCloseoutRejectsChildTaskMetadataBeforeREST(t *testing.T
 	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
 	if got := governedCloseoutFailureCategory(err); !strings.HasPrefix(got, "governed_closeout_validation_failed_unsafe_child_task_path") {
 		t.Fatalf("expected REST-compatible unsafe path validation failure, got %v (%q)", err, got)
+	}
+
+	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].FilesToRead = []string{"apps/example/file\tname.ts"}
+	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if got := governedCloseoutFailureCategory(err); !strings.HasPrefix(got, "governed_closeout_validation_failed_unsafe_child_task_path") {
+		t.Fatalf("expected tabbed path validation failure, got %v (%q)", err, got)
+	}
+}
+
+func TestValidateGovernedCloseoutAllowsSafeProhibitionPhrases(t *testing.T) {
+	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].FailureCriteria = "block when the output would include raw source"
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("safe prohibition phrasing should not be treated as unsafe content: %v", err)
 	}
 }
 

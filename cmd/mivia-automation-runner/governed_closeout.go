@@ -353,6 +353,12 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 	if normalizeGovernedCloseoutBoundedTextField(fields, "safe_next_action", closeoutWorkTaskTextMax) {
 		jsonText = ""
 	}
+	if normalizeGovernedCloseoutBoundedTextField(fields, "block_reason", closeoutWorkTaskTextMax) {
+		jsonText = ""
+	}
+	if normalizeGovernedCloseoutBoundedTextField(fields, "failure_reason", closeoutWorkTaskTextMax) {
+		jsonText = ""
+	}
 	rawTasks, ok := fields["child_tasks"]
 	if !ok || len(bytes.TrimSpace(rawTasks)) == 0 || string(bytes.TrimSpace(rawTasks)) == "null" {
 		if jsonText != "" {
@@ -914,7 +920,7 @@ func validateGovernedChildTextList(values []string, name string, max int) error 
 func unsafeText(value string) bool {
 	value = strings.TrimSpace(value)
 	lower := redactCloseoutSafeProhibitionPhrases(strings.ToLower(value))
-	return strings.ContainsAny(value, "\x00\r\n") ||
+	return strings.ContainsAny(value, "\x00\r\n\t") ||
 		closeoutEmailPattern.MatchString(value) ||
 		closeoutPhonePattern.MatchString(value) ||
 		strings.Contains(lower, "secret=") ||
@@ -943,7 +949,7 @@ func unsafeText(value string) bool {
 }
 
 func redactCloseoutSafeProhibitionPhrases(value string) string {
-	if strings.Contains(value, "no raw prompt") || strings.Contains(value, "never store") || strings.Contains(value, "must not store") || strings.Contains(value, "do not store") || strings.Contains(value, "must not expose") || strings.Contains(value, "do not expose") || strings.Contains(value, "must not include") || strings.Contains(value, "do not include") {
+	if strings.Contains(value, "no raw prompt") || strings.Contains(value, "never store") || strings.Contains(value, "must not store") || strings.Contains(value, "do not store") || strings.Contains(value, "would store") || strings.Contains(value, "must not expose") || strings.Contains(value, "do not expose") || strings.Contains(value, "would expose") || strings.Contains(value, "must not include") || strings.Contains(value, "do not include") || strings.Contains(value, "would include") || strings.Contains(value, "prohibited") {
 		for _, marker := range []string{
 			"raw prompts",
 			"raw prompt",
@@ -969,6 +975,11 @@ func redactCloseoutSafeProhibitionPhrases(value string) string {
 			"path",
 		} {
 			value = strings.ReplaceAll(value, marker, "")
+		}
+	}
+	for _, prefix := range []string{"no", "never store", "must not store", "do not store", "would store", "must not expose", "do not expose", "would expose", "must not include", "do not include", "would include"} {
+		for _, marker := range []string{"raw prompts", "raw prompt", "raw completions", "raw completion", "raw source", "source dumps", "source dump", "raw stderr", "provider payloads", "provider payload", "credentials", "credential", "secrets", "secret", "roots", "root", "paths", "path"} {
+			value = strings.ReplaceAll(value, prefix+" "+marker, "")
 		}
 	}
 	return value
@@ -1005,6 +1016,7 @@ func safeProjectPath(path string) bool {
 		strings.HasPrefix(path, "\\") ||
 		strings.Contains(path, "\\") ||
 		strings.Contains(path, ":") ||
+		strings.ContainsAny(path, "\x00\r\n\t") ||
 		filepath.IsAbs(path) {
 		return false
 	}
