@@ -80,6 +80,9 @@ func TestComposeRunnerDefaultsToInImageCodexBinary(t *testing.T) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			data, err := os.ReadFile(path)
 			if err != nil {
+				if os.IsNotExist(err) && strings.HasPrefix(filepath.Base(path), ".") {
+					t.Skipf("local compose override is optional: %s", path)
+				}
 				t.Fatalf("read compose file: %v", err)
 			}
 			text := string(data)
@@ -88,6 +91,12 @@ func TestComposeRunnerDefaultsToInImageCodexBinary(t *testing.T) {
 			}
 			if strings.Contains(text, "${MIVIA_AUTOMATION_CODEX_BINARY:-codex}") {
 				t.Fatalf("runner compose default must not fall back to PATH codex: %s", path)
+			}
+			if !strings.Contains(text, "MIVIA_CONFIG_PATH") {
+				t.Fatalf("runner compose config must pass an explicit config path: %s", path)
+			}
+			if !strings.Contains(text, "configs/mivia-server.") {
+				t.Fatalf("runner compose config must mount a server config file: %s", path)
 			}
 		})
 	}

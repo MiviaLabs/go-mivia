@@ -122,6 +122,7 @@ services:
       - "--codex-bypass-approvals-and-sandbox=${MIVIA_AUTOMATION_CODEX_BYPASS:-true}"
       - "--codex-smoke-preflight=${MIVIA_AUTOMATION_CODEX_SMOKE_PREFLIGHT:-false}"
     environment:
+      MIVIA_CONFIG_PATH: "${MIVIA_AUTOMATION_CONFIG_PATH:-/app/configs/mivia-server.compose.toml}"
       MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-10001}"
       MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-10001}"
       MIVIA_RUNTIME_HOME: "${MIVIA_AUTOMATION_HOME:-/home/mivia}"
@@ -129,6 +130,7 @@ services:
       MIVIA_GIT_AUTHOR_EMAIL: "${MIVIA_GIT_AUTHOR_EMAIL:-}"
     volumes:
       - mivia-data:/var/lib/mivia
+      - ./configs/mivia-server.compose.toml:/app/configs/mivia-server.compose.toml:ro
       # Mount a project workspace to /workspace and Codex auth to the runner
       # user's CODEX_HOME in an ignored local override when the runner should
       # execute real Codex CLI work from a container.
@@ -167,6 +169,9 @@ volumes:
 #     healthcheck:
 #       disable: true
 #     environment:
+#       MIVIA_CONFIG_PATH: /app/configs/mivia-server.local.toml
 #       MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-1000}"
 #       MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-1000}"
 #       MIVIA_RUNTIME_HOME: /home/example
+#     volumes:
+#       - ./configs/mivia-server.local.toml:/app/configs/mivia-server.local.toml:ro
