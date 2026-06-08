@@ -617,6 +617,20 @@ func TestFailureCategoryWithDetailReportsRuntimeSetupFailure(t *testing.T) {
 	}
 }
 
+func TestGitOpsStageFailureWrapsRawEmptyErrorWithStage(t *testing.T) {
+	err := gitOpsStageFailure("render", errors.New(""))
+	if got := FailureCategoryWithDetail(err); got != "gitops_runtime_failed_render" {
+		t.Fatalf("expected raw stage failure to be classified by stage, got %q", got)
+	}
+}
+
+func TestGitOpsStageFailurePreservesKnownCommandFailure(t *testing.T) {
+	err := gitOpsStageFailure("draft_pr", fmt.Errorf("%w: gh_pr_create", ErrCommandFailed))
+	if got := FailureCategoryWithDetail(err); got != "gitops_command_failed_gh_pr_create" {
+		t.Fatalf("expected known command failure to be preserved, got %q", got)
+	}
+}
+
 func TestFailureCategoryWithDetailPreservesInvalidGitOpsConfig(t *testing.T) {
 	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, PushAfterTask: true}, &recordingRunner{})
 	_, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})

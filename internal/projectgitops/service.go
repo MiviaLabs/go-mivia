@@ -130,18 +130,18 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		return PostTaskResult{}, fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
 	}
 	if err := svc.validatePushConfig(); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("validate_push_config", err)
 	}
 	if err := svc.validateDraftPRAuth(ctx, workDir); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("validate_draft_pr_auth", err)
 	}
 
 	if err := svc.ensureSafeDirectory(ctx, workDir); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("safe_directory", err)
 	}
 	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("git_status", err)
 	}
 	if strings.TrimSpace(status.Stdout) == "" {
 		return svc.finalizeCleanAheadBranch(ctx, workDir, input, PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}})
@@ -149,16 +149,16 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 
 	preCommitVerificationRefs, preCommitVerificationTests, err := svc.runPreCommitVerification(ctx, workDir)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("precommit_verification", err)
 	}
 	if len(preCommitVerificationTests) > 0 {
 		input.TestResults = append(input.TestResults, preCommitVerificationTests...)
 	}
 	if len(preCommitVerificationRefs) > 0 {
-		status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
-		if err != nil {
-			return PostTaskResult{}, err
-		}
+			status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
+			if err != nil {
+				return PostTaskResult{}, gitOpsStageFailure("git_status_after_precommit_verification", err)
+			}
 		if strings.TrimSpace(status.Stdout) == "" {
 			result := PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}
 			result.EvidenceRefs = append(result.EvidenceRefs, preCommitVerificationRefs...)
@@ -184,23 +184,23 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	}
 	branch, err := svc.normalizeBranchForPolicy(ctx, workDir, input)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("branch_policy", err)
 	}
 	input.BranchName = branch
 	rendered, err := Render(input, svc.options.Conventions)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("render", err)
 	}
 	addArgs := append([]string{"add", "--"}, changedPathspecs...)
 	if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("git_add", err)
 	}
 	if _, err := svc.git(ctx, workDir, nil, "diff", "--cached", "--check"); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("git_diff_check", err)
 	}
 	email, err := svc.authorEmail()
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("author_email", err)
 	}
 	env := []string{
 		"GIT_AUTHOR_NAME=" + svc.options.CommitAuthorName,
@@ -210,25 +210,25 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		env = append(env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
 	}
 	if _, err := svc.git(ctx, workDir, env, "commit", "--no-verify", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("git_commit", err)
 	}
 	postCommitVerificationRefs, postCommitVerificationTests, err := svc.runPostCommitVerification(ctx, workDir)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("postcommit_verification", err)
 	}
 	if len(postCommitVerificationTests) > 0 {
 		input.TestResults = append(input.TestResults, postCommitVerificationTests...)
 		rendered, err = Render(input, svc.options.Conventions)
 		if err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("render_after_postcommit_verification", err)
 		}
 		if _, err := svc.git(ctx, workDir, env, "commit", "--amend", "--no-verify", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("git_commit_amend", err)
 		}
 	}
 	sha, err := svc.git(ctx, workDir, nil, "rev-parse", "--short=12", "HEAD")
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("git_rev_parse_head", err)
 	}
 	result := PostTaskResult{
 		CommitRef:    "git-commit-" + strings.TrimSpace(sha.Stdout),
@@ -240,21 +240,21 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 			var err error
 			branch, err = svc.currentBranch(ctx, workDir)
 			if err != nil {
-				return PostTaskResult{}, err
+				return PostTaskResult{}, gitOpsStageFailure("current_branch", err)
 			}
 		}
 		if err := svc.validateBranchPolicy(branch); err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("validate_push_branch_policy", err)
 		}
 		if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", "--no-verify", svc.options.RemoteName, "HEAD:"+branch); err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("git_push", err)
 		}
 		result.PushRef = "git-push-" + safeHash(branch)
 		result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed")
 		if svc.options.DraftPRAfterPush {
 			prRef, err := svc.ensureDraftPR(ctx, workDir, rendered)
 			if err != nil {
-				return PostTaskResult{}, err
+				return PostTaskResult{}, gitOpsStageFailure("draft_pr", err)
 			}
 			result.PullRequestRef = prRef
 			result.EvidenceRefs = append(result.EvidenceRefs, "draft-pr-ready")
@@ -780,6 +780,26 @@ func runtimeFailure(detail string, cause error) error {
 		return fmt.Errorf("%w: %s", ErrRuntimeFailure, detail)
 	}
 	return fmt.Errorf("%w: %s", ErrRuntimeFailure, detail)
+}
+
+func gitOpsStageFailure(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, sentinel := range []error{
+		ErrInvalidInput,
+		ErrBranchPolicy,
+		ErrCommandFailed,
+		ErrDirtyWorktree,
+		ErrDirtyWorktreeScope,
+		ErrRuntimeFailure,
+		ErrVerificationFailed,
+	} {
+		if errors.Is(err, sentinel) {
+			return err
+		}
+	}
+	return runtimeFailure(stage, err)
 }
 
 func (svc *Service) run(ctx context.Context, command Command) (CommandResult, error) {
