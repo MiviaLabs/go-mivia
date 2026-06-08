@@ -816,7 +816,7 @@ func genericGitOpsFailureDetail(message string) string {
 			return detail
 		}
 	}
-	return ""
+	return "unknown"
 }
 
 func invalidInputFailureDetail(message string) string {

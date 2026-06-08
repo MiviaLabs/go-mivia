@@ -1030,7 +1030,7 @@ func validateTaskTransition(from, to string) error {
 		WorkTaskStatusClaimed:     {WorkTaskStatusInProgress, WorkTaskStatusReady, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusInProgress:  {WorkTaskStatusReady, WorkTaskStatusBlocked, WorkTaskStatusNeedsReview, WorkTaskStatusVerifying, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusBlocked:     {WorkTaskStatusReady, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
-		WorkTaskStatusNeedsReview: {WorkTaskStatusReady, WorkTaskStatusVerifying, WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
+		WorkTaskStatusNeedsReview: {WorkTaskStatusReady, WorkTaskStatusVerifying, WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusVerifying:   {WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusDone:        {WorkTaskStatusSuperseded},
 		WorkTaskStatusFailed:      {WorkTaskStatusSuperseded},

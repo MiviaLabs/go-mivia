@@ -603,6 +603,13 @@ func TestFailureCategoryWithDetailPreservesRawPostTaskDetail(t *testing.T) {
 	}
 }
 
+func TestFailureCategoryWithDetailNamesEmptyRawPostTaskFailure(t *testing.T) {
+	err := errors.New("")
+	if got := FailureCategoryWithDetail(err); got != "gitops_post_task_failed_unknown" {
+		t.Fatalf("expected unknown raw post-task category, got %q", got)
+	}
+}
+
 func TestFailureCategoryWithDetailPreservesInvalidGitOpsConfig(t *testing.T) {
 	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, PushAfterTask: true}, &recordingRunner{})
 	_, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})

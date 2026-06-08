@@ -2096,8 +2096,8 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
 	}
-	if isTerminalGitOpsPostTaskBlocker(category) {
-		return svc.blockTaskAfterGitOpsRecoveryBlocker(ctx, updater, run, task, category)
+	if isTerminalGitOpsPostTaskBlocker(category) || isUnrecoverableGitOpsPostTaskExecutionFailure(category) {
+		return svc.blockTaskAfterGitOpsRecoveryBlocker(ctx, run, task, category)
 	}
 	dirtyPaths := dirtyPathsFromEvidenceRefs(evidenceRefs)
 	if strings.TrimSpace(category) == "gitops_dirty_worktree_scope" && len(dirtyPaths) > 0 {
@@ -2158,19 +2158,16 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 	return updated, nil
 }
 
-func (svc *Service) blockTaskAfterGitOpsRecoveryBlocker(ctx context.Context, updater workTaskStatusUpdater, run AutomationRun, task projectworkplan.WorkTask, category string) (AutomationRun, error) {
+func (svc *Service) blockTaskAfterGitOpsRecoveryBlocker(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask, category string) (AutomationRun, error) {
 	reason := gitOpsRecoveryBlockedReason(category)
-	blockedTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
-		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
-			ProjectID:          task.ProjectID,
-			TaskID:             task.ID,
-			SafeNextAction:     "gitops_recovery_blocked",
-			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
-			TraceID:            firstNonEmpty(run.TraceID, run.ID),
-			BlockedReason:      reason,
-			ResumeInstructions: recoveryResumeInstructions(reason + " Fix GitOps configuration, credentials, branch policy, push, or PR setup before rerunning."),
-		},
-		Status: projectworkplan.WorkTaskStatusBlocked,
+	blockedTask, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		SafeNextAction:     "gitops_recovery_blocked",
+		RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+		TraceID:            firstNonEmpty(run.TraceID, run.ID),
+		BlockedReason:      reason,
+		ResumeInstructions: recoveryResumeInstructions(reason + " Fix GitOps configuration, credentials, branch policy, push, or PR setup before rerunning."),
 	})
 	if err != nil {
 		return AutomationRun{}, err
@@ -2189,6 +2186,11 @@ func (svc *Service) blockTaskAfterGitOpsRecoveryBlocker(ctx context.Context, upd
 
 func gitOpsRecoveryImplementationFailureCategory(category string) string {
 	return "gitops_recovery_failed_requires_implementation"
+}
+
+func isUnrecoverableGitOpsPostTaskExecutionFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return category == "gitops_post_task_failed" || strings.HasPrefix(category, "gitops_post_task_failed_")
 }
 
 func gitOpsRecoveryBlockedReason(category string) string {

@@ -423,6 +423,46 @@ func TestServiceTaskTransitions(t *testing.T) {
 	if started.BlockedReason != "" || len(started.BlockedByTaskIDs) != 0 {
 		t.Fatalf("expected active task to stay clear of blocker metadata, got %#v", started)
 	}
+
+	reviewBlockTarget, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-review-block"))
+	if err != nil {
+		t.Fatalf("create review block target: %v", err)
+	}
+	reviewBlockTarget, err = svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: reviewBlockTarget.ID, RunID: "run-review-block"})
+	if err != nil {
+		t.Fatalf("claim review block target: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: reviewBlockTarget.ID, RunID: "run-review-block"}); err != nil {
+		t.Fatalf("start review block target: %v", err)
+	}
+	if _, err := svc.AttachReviewResult(ctx, projectworkplan.AttachInput{
+		ProjectID:       "project-1",
+		TaskID:          reviewBlockTarget.ID,
+		Ref:             "review-result-ref",
+		AttachedByRunID: "run-independent-review",
+	}); err != nil {
+		t.Fatalf("attach review result to block target: %v", err)
+	}
+	needsReview, err := svc.GetWorkTask(ctx, "project-1", reviewBlockTarget.ID)
+	if err != nil {
+		t.Fatalf("get review block target: %v", err)
+	}
+	if needsReview.Status != projectworkplan.WorkTaskStatusNeedsReview {
+		t.Fatalf("expected needs_review before blocker, got %#v", needsReview)
+	}
+	blockedFromReview, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             reviewBlockTarget.ID,
+		RunID:              "run-review-block",
+		BlockedReason:      "gitops post-task failed",
+		ResumeInstructions: "fix gitops configuration before rerun",
+	})
+	if err != nil {
+		t.Fatalf("block needs_review target: %v", err)
+	}
+	if blockedFromReview.Status != projectworkplan.WorkTaskStatusBlocked || blockedFromReview.BlockedReason != "gitops post-task failed" {
+		t.Fatalf("expected needs_review task to block with reason, got %#v", blockedFromReview)
+	}
 }
 
 func TestServiceIntentionalResumeInstructionUpdatesAllowLongSafeTextAndRejectUnsafeText(t *testing.T) {

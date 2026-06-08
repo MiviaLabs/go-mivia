@@ -3889,24 +3889,24 @@ func TestGitOpsRecoveryRequeueBoundsStoredLongResumeInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorkTask returned error: %v", err)
 	}
-	if updatedTask.Status != projectworkplan.WorkTaskStatusReady || updatedTask.ClaimedByRunID != "" {
-		t.Fatalf("expected task to be ready and unclaimed, got %#v", updatedTask)
+	if updatedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected task to be blocked, got %#v", updatedTask)
 	}
 	if len(updatedTask.ResumeInstructions) > projectworkplan.MaxResumeInstructionsLength {
 		t.Fatalf("expected bounded resume instructions, got length %d", len(updatedTask.ResumeInstructions))
 	}
-	if !strings.Contains(updatedTask.ResumeInstructions, "GitOps recovery failed with gitops_post_task_failed") {
-		t.Fatalf("expected recovery instructions, got %q", updatedTask.ResumeInstructions)
+	if !strings.Contains(updatedTask.BlockedReason, "gitops_post_task_failed") {
+		t.Fatalf("expected blocked reason to preserve GitOps category, got %q", updatedTask.BlockedReason)
 	}
 	updatedRun, err := automationStore.GetRun(ctx, "project-1", "run-gitops")
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if updatedRun.FailureCategory != "gitops_recovery_failed_requires_implementation" {
-		t.Fatalf("expected stable requeue failure category, got %q", updatedRun.FailureCategory)
+	if updatedRun.Status != RunStatusBlocked || updatedRun.FailureCategory != "gitops_post_task_failed" {
+		t.Fatalf("expected blocked GitOps run, got %#v", updatedRun)
 	}
 	if !strings.Contains(updatedRun.SafeSummary, "gitops_post_task_failed") {
-		t.Fatalf("expected safe summary to preserve original failure category, got %q", updatedRun.SafeSummary)
+		t.Fatalf("expected blocked safe summary to preserve original failure category, got %q", updatedRun.SafeSummary)
 	}
 }
 
@@ -3992,8 +3992,8 @@ func TestGitOpsRecoveryRequeueUsesImplementationClaimForAttachedRecoveryRun(t *t
 	if err != nil {
 		t.Fatalf("GetWorkTask returned error: %v", err)
 	}
-	if updatedTask.Status != projectworkplan.WorkTaskStatusReady || updatedTask.ClaimedByRunID != "" {
-		t.Fatalf("expected task to be ready and unclaimed, got %#v", updatedTask)
+	if updatedTask.Status != projectworkplan.WorkTaskStatusBlocked || updatedTask.BlockedReason == "" {
+		t.Fatalf("expected task to be blocked with GitOps reason, got %#v", updatedTask)
 	}
 }
 
@@ -8167,7 +8167,7 @@ func TestCompleteAttemptRequeuesImplementationAfterGitOpsRecoveryFailure(t *test
 	}
 }
 
-func TestCompleteAttemptRequeuesImplementationAfterDetailedGitOpsPostTaskFailure(t *testing.T) {
+func TestCompleteAttemptBlocksAfterDetailedGitOpsPostTaskRecoveryFailure(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
 	task.Status = projectworkplan.WorkTaskStatusVerifying
@@ -8209,12 +8209,12 @@ func TestCompleteAttemptRequeuesImplementationAfterDetailedGitOpsPostTaskFailure
 	if err != nil {
 		t.Fatalf("CompleteAttempt returned error: %v", err)
 	}
-	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_recovery_failed_requires_implementation" || !strings.Contains(run.SafeSummary, "gitops_post_task_failed_commit_author_email_file") {
-		t.Fatalf("expected detailed GitOps recovery reroute, got %+v", run)
+	if run.Status != RunStatusBlocked || run.FailureCategory != "gitops_post_task_failed_commit_author_email_file" || !strings.Contains(run.SafeSummary, "gitops_post_task_failed_commit_author_email_file") {
+		t.Fatalf("expected detailed GitOps recovery block, got %+v", run)
 	}
-	requeuedTask := fake.tasks[task.ID]
-	if requeuedTask.Status != projectworkplan.WorkTaskStatusReady || requeuedTask.ClaimedByRunID != "" {
-		t.Fatalf("expected task to be ready for implementation, got %+v", requeuedTask)
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked || !strings.Contains(blockedTask.BlockedReason, "gitops_post_task_failed_commit_author_email_file") {
+		t.Fatalf("expected task to be blocked with detailed GitOps reason, got %+v", blockedTask)
 	}
 }
 
@@ -8396,21 +8396,18 @@ func TestClaimNextRunRequeuesExhaustedGitOpsRecoveryAfterRestart(t *testing.T) {
 	}
 
 	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
-	if err != nil {
-		t.Fatalf("ClaimNextRun returned error: %v", err)
-	}
-	if claimed.Run.ID == "run-a" || claimed.Run.TaskID != task.ID || claimed.Run.Status != RunStatusRunning {
-		t.Fatalf("expected replacement implementation run, got %+v", claimed.Run)
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after exhausted GitOps block, got run=%+v err=%v", claimed.Run, err)
 	}
 	exhausted, err := store.GetRun(ctx, automation.ProjectID, "run-a")
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if exhausted.FailureCategory != "gitops_recovery_failed_requires_implementation" || !strings.Contains(exhausted.SafeSummary, "gitops_post_task_failed") {
-		t.Fatalf("expected exhausted run to be terminalized for implementation, got %+v", exhausted)
+	if exhausted.Status != RunStatusBlocked || exhausted.FailureCategory != "gitops_post_task_failed" || !strings.Contains(exhausted.SafeSummary, "gitops_post_task_failed") {
+		t.Fatalf("expected exhausted run to block with GitOps failure, got %+v", exhausted)
 	}
-	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusInProgress || fake.tasks[task.ID].ClaimedByRunID != claimed.Run.ID {
-		t.Fatalf("expected replacement claim to restart task, got task=%+v run=%+v", fake.tasks[task.ID], claimed.Run)
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected task to be blocked after exhausted GitOps recovery, got %+v", fake.tasks[task.ID])
 	}
 }
 
