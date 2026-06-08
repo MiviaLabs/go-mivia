@@ -658,6 +658,9 @@ func gitOpsPostTaskCloseoutFailure(task runnerWorkTaskMetadata) string {
 	if !shouldRunGitOpsForTask(task) {
 		return "automation_task_closeout_not_gitops_task"
 	}
+	if taskUsesBoundedSmokeGitOpsVerification(task) {
+		return ""
+	}
 	if len(task.VerifierResultRefs) == 0 {
 		return "automation_task_closeout_missing_verifier_refs"
 	}
@@ -890,6 +893,16 @@ func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID st
 	if taskTitle == "" {
 		taskTitle = claimed.CodexInput.Title
 	}
+	reviewRefs := append([]string(nil), taskMetadata.ReviewResultRefs...)
+	verifierRefs := append([]string(nil), taskMetadata.VerifierResultRefs...)
+	if taskUsesBoundedSmokeGitOpsVerification(taskMetadata) {
+		if len(reviewRefs) == 0 {
+			reviewRefs = []string{"bounded-smoke-review-exempt"}
+		}
+		if len(verifierRefs) == 0 {
+			verifierRefs = []string{"bounded-smoke-verifier"}
+		}
+	}
 	return projectgitops.PostTaskInput{
 		WorkDir:          workDir,
 		ProjectID:        firstNonEmpty(claimed.Run.ProjectID, projectID),
@@ -901,8 +914,8 @@ func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID st
 		AutomationRunID:  firstNonEmpty(claimed.Run.ID, claimed.CodexInput.AutomationRunID),
 		OperatorID:       firstNonEmpty(claimed.Run.AgentID, fallbackOperatorID),
 		AllowedPathspecs: gitOpsTaskPathspecs(claimed, taskMetadata),
-		ReviewRefs:       append([]string(nil), taskMetadata.ReviewResultRefs...),
-		VerifierRefs:     append([]string(nil), taskMetadata.VerifierResultRefs...),
+		ReviewRefs:       reviewRefs,
+		VerifierRefs:     verifierRefs,
 	}
 }
 

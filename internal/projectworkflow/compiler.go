@@ -503,7 +503,7 @@ func renderCompileTaskText(value string, workflow WorkflowDefinition, userReques
 		"{{project_id}}":        workflow.ProjectID,
 		"{{workflow_id}}":       workflow.ID,
 		"{{workflow_ref}}":      workflow.WorkflowRef,
-		"{{user_request_ref}}":  userRequestRef,
+		"{{user_request_ref}}":  firstNonEmpty(userRequestRef, "unspecified-request"),
 		"{{created_by_run_id}}": workflow.CreatedByRunID,
 		"{{trace_id}}":          workflow.TraceID,
 	}

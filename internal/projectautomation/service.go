@@ -5271,6 +5271,9 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 	default:
 		return false
 	}
+	if taskUsesBoundedSmokeGitOpsVerification(task) {
+		return true
+	}
 	if taskNeedsPostImplementationReview(task) {
 		return false
 	}
@@ -5284,6 +5287,19 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 		return false
 	}
 	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" || automationReviewExemptReason(task) != ""
+}
+
+func taskUsesBoundedSmokeGitOpsVerification(task projectworkplan.WorkTask) bool {
+	if strings.TrimSpace(task.GitOpsVerificationMode) != "bounded_smoke" {
+		return false
+	}
+	if strings.TrimSpace(task.TaskRef) != "smoke-draft-pr" {
+		return false
+	}
+	if len(task.FilesToEdit) != 1 || strings.TrimSpace(task.FilesToEdit[0]) != ".agentic/automation-smoke.md" {
+		return false
+	}
+	return containsRef(task.EvidenceRefs, "gitops-smoke-ref")
 }
 
 func isReviewTask(task projectworkplan.WorkTask) bool {

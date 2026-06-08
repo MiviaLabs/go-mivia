@@ -6892,6 +6892,54 @@ func TestReviewCompletionReconcilesAlreadyReviewedParent(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunClaimsBoundedSmokeGitOpsRecoveryWithoutManualReviewRefs(t *testing.T) {
+	ctx := context.Background()
+	parentTask := readyTask("task-a", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	parentTask.FilesToEdit = []string{".agentic/automation-smoke.md"}
+	parentTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	parentTask.ClaimedByRunID = "run-parent"
+	parentTask.AgentRunIDs = []string{"run-parent"}
+	parentTask.EvidenceRefs = []string{"gitops-smoke-ref"}
+	parentTask.VerifierResultRefs = []string{"smoke-chain-ref"}
+	parentTask.GitOpsVerificationMode = "bounded_smoke"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive}},
+		tasks: map[string]projectworkplan.WorkTask{parentTask.ID: parentTask},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/smoke-draft-pr",
+		Title:           "Smoke GitOps worker",
+		Purpose:         "Run smoke GitOps task.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "smoke-gitops-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{parentTask.ID, parentTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	parentRun := AutomationRun{
+		ID: "run-parent", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID, PlanID: "plan-1", TaskID: parentTask.ID,
+		Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: "external_codex_cli_completed_verification_required",
+	}
+	if _, err := store.CreateRun(ctx, parentRun); err != nil {
+		t.Fatalf("CreateRun parent returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("expected bounded smoke parent GitOps recovery claim, got %v", err)
+	}
+	if claimed.Run.ID != parentRun.ID || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery || claimed.Run.FailureCategory != "" {
+		t.Fatalf("expected bounded smoke run claimed for GitOps recovery, got %#v", claimed.Run)
+	}
+}
+
 func TestClaimNextRunClosesReadOnlyScannerAndQueuesDependentReview(t *testing.T) {
 	ctx := context.Background()
 	scan := readyTask("scan-task-a", "scan-for-candidate-bugs-audit-alpha", []string{"repo-audit-scope"})

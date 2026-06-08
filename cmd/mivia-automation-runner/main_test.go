@@ -263,6 +263,15 @@ func TestShouldRunGitOpsPostTaskRequiresCloseoutReady(t *testing.T) {
 	if !shouldRunGitOpsPostTask(task) {
 		t.Fatal("GitOps post-task should allow an explicit review exemption")
 	}
+	task = runnerWorkTaskMetadata{
+		TaskRef:                "smoke-draft-pr",
+		FilesToEdit:            []string{".agentic/automation-smoke.md"},
+		EvidenceRefs:           []string{"gitops-smoke-ref"},
+		GitOpsVerificationMode: "bounded_smoke",
+	}
+	if !shouldRunGitOpsPostTask(task) {
+		t.Fatal("bounded smoke GitOps must not require manual verifier/review refs before post-task GitOps")
+	}
 }
 
 func TestGitOpsOptionsForTaskUsesBoundedSmokeVerificationOnlyForGuardedSmokeTask(t *testing.T) {
@@ -890,6 +899,32 @@ func TestGitOpsPostTaskInputCarriesRunAndTaskMetadata(t *testing.T) {
 	}
 }
 
+func TestGitOpsPostTaskInputAddsBoundedSmokeCloseoutRefs(t *testing.T) {
+	input := gitOpsPostTaskInput("mass-monorepo", "/tmp/worktree", "fallback-operator", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:           "automation_run_1",
+			ProjectID:    "mass-monorepo",
+			AutomationID: "automation_1",
+			AgentID:      "smoke-gitops-worker",
+			PlanID:       "work_plan_1",
+			TaskID:       "work_task_1",
+		},
+		CodexInput: projectautomation.CodexTaskInput{
+			LikelyFilesAffected: []string{".agentic/automation-smoke.md"},
+		},
+	}, runnerWorkTaskMetadata{
+		TaskRef:                "smoke-draft-pr",
+		Title:                  "Smoke Draft PR",
+		FilesToEdit:            []string{".agentic/automation-smoke.md"},
+		EvidenceRefs:           []string{"gitops-smoke-ref"},
+		GitOpsVerificationMode: "bounded_smoke",
+	})
+
+	if strings.Join(input.ReviewRefs, ",") != "bounded-smoke-review-exempt" || strings.Join(input.VerifierRefs, ",") != "bounded-smoke-verifier" {
+		t.Fatalf("expected synthetic bounded smoke refs, got %+v", input)
+	}
+}
+
 func TestReadOnlyReviewRunSkipsGitOpsMutationGuards(t *testing.T) {
 	if !isReadOnlyReviewRun(projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{SafeSummary: projectautomation.RunSafeSummaryPostImplementationReviewQueued},
@@ -1238,6 +1273,77 @@ func TestRunGitOpsPostTaskRecoveryRequiresReviewRefs(t *testing.T) {
 	}
 	if strings.Join(evidenceRefs, ",") != "gitops-failure:automation_task_closeout_missing_review_refs" {
 		t.Fatalf("expected safe failure evidence, got %+v", evidenceRefs)
+	}
+}
+
+func TestRunGitOpsPostTaskRecoveryAllowsBoundedSmokeWithoutManualCloseoutRefs(t *testing.T) {
+	sshKey, knownHosts := testRunnerGitOpsCredentialFiles(t)
+	runner := &gitOpsRecordingRunner{results: []projectgitops.CommandResult{
+		{},
+		{Stdout: "?? .agentic/automation-smoke.md\n"},
+		{Stdout: "chore-smoke-20260608-governed-smoke-gitops\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+		{},
+		{},
+		{Stdout: "https://github.com/example/repo/pull/123\n"},
+	}}
+	gitOpsOptions := projectgitops.Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		DraftPRAfterPush:     true,
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
+		GitHubTokenEnv:       "GH_TOKEN",
+		GitHubCLIPath:        "gh",
+	}
+	oldNewGitOpsService := newGitOpsService
+	newGitOpsService = func(options projectgitops.Options) *projectgitops.Service {
+		return projectgitops.NewWithRunner(options, runner)
+	}
+	defer func() { newGitOpsService = oldNewGitOpsService }()
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	t.Setenv("GH_TOKEN", "token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:                     "task-1",
+				TaskRef:                "smoke-draft-pr",
+				Title:                  "Smoke Draft PR",
+				Status:                 "needs_review",
+				FilesToEdit:            []string{".agentic/automation-smoke.md"},
+				EvidenceRefs:           []string{"gitops-smoke-ref"},
+				GitOpsVerificationMode: "bounded_smoke",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:           "run-1",
+			ProjectID:    "mass-monorepo",
+			AutomationID: "automation-1",
+			AgentID:      "agent-1",
+			PlanID:       "plan-1",
+			TaskID:       "task-1",
+			SafeSummary:  projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+		},
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{".agentic/automation-smoke.md"}},
+	})
+	if status != projectautomation.RunStatusCompleted || failure != "" {
+		t.Fatalf("expected bounded smoke recovery completion, got status=%q failure=%q", status, failure)
+	}
+	if !containsRunnerString(evidenceRefs, "git-commit-abc123def456") || !containsRunnerString(evidenceRefs, "draft-pr-ready") {
+		t.Fatalf("expected commit and draft PR evidence, got %+v", evidenceRefs)
 	}
 }
 

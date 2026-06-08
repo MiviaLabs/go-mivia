@@ -219,6 +219,31 @@ func TestCompileWorkflowUsesFakeMassTicketForTicketlessSmokeBranch(t *testing.T)
 	}
 }
 
+func TestCompileWorkflowRendersSafeUserRequestFallbackWhenOmitted(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, workPlans, _ := newCompileFixture()
+	workflow := baseCompileWorkflow()
+	workflow.Agents[0].Instructions = "Create exactly one line: smoke input ref: {{user_request_ref}}."
+	workflow.Steps[0].Description = "Write smoke input ref: {{user_request_ref}}."
+	workflowStore.seedWorkflow(workflow)
+
+	result, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: result.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	task := taskByRef(t, tasks, "implement-step")
+	if !strings.Contains(task.Description, "smoke input ref: unspecified-request.") {
+		t.Fatalf("expected safe fallback user request ref, got %q", task.Description)
+	}
+	if strings.Contains(task.Description, "smoke input ref: .") || strings.Contains(task.Description, "{{user_request_ref}}") {
+		t.Fatalf("compiled task kept unsafe or unresolved user request placeholder: %q", task.Description)
+	}
+}
+
 func TestCompileWorkflowProjectBranchPolicyStaysUniqueAcrossSameTicketCompiles(t *testing.T) {
 	ctx := context.Background()
 	svc, workflowStore, workPlans, _ := newCompileFixture()
