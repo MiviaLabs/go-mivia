@@ -66,6 +66,7 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 		return ""
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	normalizedText := governedCloseoutNormalizeFailureMarkerText(text)
 	if strings.Contains(text, "child_task_create_failed") {
 		for _, marker := range []string{
 			"invalid_project_work_task_input",
@@ -74,7 +75,7 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 			"invalid_project_workflow_input",
 			"invalid_project_gitops_input",
 		} {
-			if strings.Contains(text, marker) {
+			if strings.Contains(normalizedText, marker) {
 				return "child_task_create_failed_" + marker
 			}
 		}
@@ -96,11 +97,32 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 		"invalid_project_workflow_input",
 		"invalid_project_gitops_input",
 	} {
-		if strings.Contains(text, marker) {
+		if strings.Contains(normalizedText, marker) {
 			return marker
 		}
 	}
 	return governedCloseoutSanitizedFailureDetail(text, category, "")
+}
+
+func governedCloseoutNormalizeFailureMarkerText(text string) string {
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range strings.ToLower(text) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+			lastUnderscore = false
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastUnderscore = false
+		default:
+			if !lastUnderscore && builder.Len() > 0 {
+				builder.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	return strings.Trim(builder.String(), "_")
 }
 
 func governedCloseoutSanitizedFailureDetail(text string, category string, prefix string) string {

@@ -1822,6 +1822,12 @@ func TestGovernedCloseoutFailureCategoryIncludesSafeDetail(t *testing.T) {
 	if !strings.HasPrefix(got, "governed_closeout_apply_failed_child_task_create_failed_") || !strings.Contains(got, "invalid_project_work_task_input") {
 		t.Fatalf("expected child task create failure to keep nested server detail, got %q", got)
 	}
+
+	err = governedCloseoutError{category: governedCloseoutApplyFailed, err: errors.New("child_task_create_failed: server returned 400 Bad Request: error code: invalid project work task input: resume_instructions contains unsafe content")}
+	got = governedCloseoutFailureCategory(err)
+	if !strings.HasPrefix(got, "governed_closeout_apply_failed_child_task_create_failed_") || !strings.Contains(got, "invalid_project_work_task_input") {
+		t.Fatalf("expected spaced child task validation marker to be preserved, got %q", got)
+	}
 }
 
 func TestParseGovernedCloseoutAllowsExtraChildTaskGovernanceFields(t *testing.T) {
