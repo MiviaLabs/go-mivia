@@ -4627,6 +4627,23 @@ func TestCreateRemediationFromFindingRequiresConfirmedFinding(t *testing.T) {
 	}
 }
 
+func TestCreateRemediationFromFindingRequiresPermissionSnapshot(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newTestStore(), &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{}}, Options{Enabled: true, RunnerEnabled: true})
+
+	_, err := svc.CreateRemediationFromFinding(ctx, CreateRemediationFromFindingInput{
+		ProjectID:               "project-1",
+		FindingRef:              "finding-1",
+		FindingStatus:           "confirmed",
+		Title:                   "Fix finding",
+		Summary:                 "Fix confirmed issue.",
+		VerificationRequirement: "Run focused tests.",
+	})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "missing_permission_snapshot_ref") {
+		t.Fatalf("expected missing permission snapshot error, got %v", err)
+	}
+}
+
 func TestCreateRemediationFromFindingRedactsTimestampRefsFromHumanText(t *testing.T) {
 	ctx := context.Background()
 	workTasks := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{}}
@@ -4636,6 +4653,7 @@ func TestCreateRemediationFromFindingRedactsTimestampRefsFromHumanText(t *testin
 		ProjectID:               "project-1",
 		FindingRef:              "claim.family-pricing-promo-user.confirmed.20260605112847",
 		FindingStatus:           "confirmed",
+		PermissionSnapshotRef:   "permission_snapshot:remediation-test",
 		Title:                   "Fix family pricing promo code user context",
 		Summary:                 "Repair confirmed family pricing promo code user context handling.",
 		Severity:                "medium",
@@ -4687,6 +4705,7 @@ func TestCreateRemediationFromFindingResumesExistingPartialPlan(t *testing.T) {
 		ProjectID:               "project-1",
 		FindingRef:              findingRef,
 		FindingStatus:           "confirmed",
+		PermissionSnapshotRef:   "permission_snapshot:remediation-test",
 		Title:                   "Fix family pricing promo code user context",
 		Summary:                 "Repair confirmed family pricing promo code user context handling.",
 		Severity:                "medium",
@@ -4720,6 +4739,7 @@ func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *te
 		ProjectID:               "project-1",
 		FindingRef:              "finding:review-1",
 		FindingStatus:           "confirmed",
+		PermissionSnapshotRef:   "permission_snapshot:remediation-test",
 		Title:                   "Fix confirmed review finding",
 		Summary:                 "Repair the confirmed review finding.",
 		Severity:                "high",
@@ -4754,8 +4774,14 @@ func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *te
 	if result.Automation.TriggerKind != TriggerKindAutomatic || result.Automation.Status != AutomationStatusEnabled {
 		t.Fatalf("unexpected remediation automation: %#v", result.Automation)
 	}
+	if result.Automation.SourceKind != AutomationSourceWorkflow || result.Automation.PermissionRef != "permission_snapshot:remediation-test" {
+		t.Fatalf("expected workflow remediation automation with permission snapshot, got source=%q permission=%q", result.Automation.SourceKind, result.Automation.PermissionRef)
+	}
 	if result.ReviewAutomation.TriggerKind != TriggerKindAutomatic || result.ReviewAutomation.Status != AutomationStatusEnabled || result.ReviewAutomation.SchedulePolicy != "post_implementation_review" {
 		t.Fatalf("unexpected review automation: %#v", result.ReviewAutomation)
+	}
+	if result.ReviewAutomation.SourceKind != AutomationSourceWorkflow || result.ReviewAutomation.PermissionRef != "permission_snapshot:remediation-test" {
+		t.Fatalf("expected workflow review automation with permission snapshot, got source=%q permission=%q", result.ReviewAutomation.SourceKind, result.ReviewAutomation.PermissionRef)
 	}
 	if !contains(result.ReviewAutomation.AllowedTaskRefs, result.ReviewTask.ID) || !contains(result.ReviewAutomation.AllowedTaskRefs, result.ReviewTask.TaskRef) {
 		t.Fatalf("review automation must target review task id/ref, got %#v", result.ReviewAutomation.AllowedTaskRefs)
@@ -4811,6 +4837,7 @@ func TestCreateRemediationFromFindingInheritsBaseRefFromCreatorRunPlan(t *testin
 		ProjectID:               "project-1",
 		FindingRef:              "finding.audit-base-inheritance",
 		FindingStatus:           "confirmed",
+		PermissionSnapshotRef:   "permission_snapshot:remediation-test",
 		Title:                   "Fix audit base inheritance",
 		Summary:                 "Repair deterministic remediation base ref selection.",
 		CreatedByRunID:          "audit-run",
@@ -4836,6 +4863,7 @@ func TestCreateRemediationFromFindingScopesSharedAuditGitRefsPerFinding(t *testi
 		ProjectID:               "project-1",
 		FindingRef:              "finding.active-journey-plaintext-location",
 		FindingStatus:           "confirmed",
+		PermissionSnapshotRef:   "permission_snapshot:remediation-test",
 		Title:                   "Fix active journey plaintext locations",
 		Summary:                 "Repair active journey location storage.",
 		GitBaseRef:              "main",
@@ -4851,6 +4879,7 @@ func TestCreateRemediationFromFindingScopesSharedAuditGitRefsPerFinding(t *testi
 		ProjectID:               "project-1",
 		FindingRef:              "finding.sos-activity-stubs-succeed",
 		FindingStatus:           "confirmed",
+		PermissionSnapshotRef:   "permission_snapshot:remediation-test",
 		Title:                   "Fix SOS activity stubs",
 		Summary:                 "Repair SOS activity failure behavior.",
 		GitBaseRef:              "main",
@@ -9042,6 +9071,7 @@ func TestCreateRemediationFromFindingAddsLikelyDirectoriesToEditScope(t *testing
 		ProjectID:               "project-1",
 		FindingRef:              "confirmed-finding-scope",
 		FindingStatus:           "confirmed",
+		PermissionSnapshotRef:   "permission_snapshot:remediation-test",
 		Title:                   "Fix scoped issue",
 		Summary:                 "Fix confirmed behavior without broad unsafe edits.",
 		ImplementationAgentID:   "codex-worker",
@@ -9055,6 +9085,72 @@ func TestCreateRemediationFromFindingAddsLikelyDirectoriesToEditScope(t *testing
 	}
 	if !containsString(result.WorkTask.FilesToEdit, "apps/domain/src") || !containsString(result.WorkTask.FilesToEdit, "apps/domain/test") {
 		t.Fatalf("expected likely directories in files_to_edit, got %+v", result.WorkTask.FilesToEdit)
+	}
+}
+
+func TestQueueReviewForImplementationTaskIgnoresPrefixCollision(t *testing.T) {
+	ctx := context.Background()
+	target := projectworkplan.WorkTask{
+		ID: "task-foo", ProjectID: "project-1", PlanID: "plan-1", TaskRef: "foo", Status: projectworkplan.WorkTaskStatusNeedsReview,
+		OwnerAgent: "worker-a", FilesToEdit: []string{"internal/projectautomation/service.go"}, ReviewGate: "independent-review",
+		VerificationRequirement: "review required", DecompositionQuality: projectworkplan.DecompositionReady,
+	}
+	wrongTarget := projectworkplan.WorkTask{
+		ID: "task-foo-bar", ProjectID: "project-1", PlanID: "plan-1", TaskRef: "foo-bar", Status: projectworkplan.WorkTaskStatusDone,
+		VerificationRequirement: "done", DecompositionQuality: projectworkplan.DecompositionReady,
+	}
+	wrongReview := projectworkplan.WorkTask{
+		ID: "review-foo-bar", ProjectID: "project-1", PlanID: "plan-1", TaskRef: "review-foo-bar-gate", Status: projectworkplan.WorkTaskStatusReady,
+		OwnerAgent: "reviewer", DependencyTaskIDs: []string{wrongTarget.ID},
+		VerificationRequirement: "review wrong target", DecompositionQuality: projectworkplan.DecompositionReady,
+	}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		target.ID:      target,
+		wrongTarget.ID: wrongTarget,
+		wrongReview.ID: wrongReview,
+	}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true})
+	if _, err := store.CreateAutomation(ctx, Automation{
+		ID: "parent-auto", ProjectID: "project-1", AutomationRef: "auto-foo", Status: AutomationStatusEnabled,
+		AgentID: "worker-a", PlanID: "plan-1", TriggerKind: TriggerKindAutomatic,
+		SourceKind: AutomationSourceWorkflow, PermissionRef: "permission_snapshot:workflow-worker",
+	}); err != nil {
+		t.Fatalf("CreateAutomation parent returned error: %v", err)
+	}
+	if _, err := store.CreateAutomation(ctx, Automation{
+		ID: "wrong-review-auto", ProjectID: "project-1", AutomationRef: "auto-review-foo-bar", Status: AutomationStatusEnabled,
+		AgentID: "reviewer", PlanID: "plan-1", AllowedTaskRefs: []string{wrongReview.ID, wrongReview.TaskRef},
+		TriggerKind: TriggerKindAutomatic, SchedulePolicy: "post_implementation_review",
+		SourceKind: AutomationSourceWorkflow, PermissionRef: "permission_snapshot:workflow-reviewer",
+	}); err != nil {
+		t.Fatalf("CreateAutomation wrong review returned error: %v", err)
+	}
+	parent := AutomationRun{
+		ID: "run-parent", ProjectID: "project-1", AutomationID: "parent-auto", AgentID: "worker-a",
+		PlanID: "plan-1", TaskID: target.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI,
+	}
+
+	if err := svc.queueReviewForImplementationTask(ctx, parent, target); err != nil {
+		t.Fatalf("queueReviewForImplementationTask returned error: %v", err)
+	}
+	for _, run := range store.runs {
+		if run.TaskID == wrongReview.ID {
+			t.Fatalf("queued prefix-colliding review task: %#v", run)
+		}
+	}
+	recoveryTask, ok := fake.tasks["work_task_review-foo"]
+	if !ok {
+		t.Fatalf("expected recovery review task for exact target, got tasks %#v", fake.tasks)
+	}
+	var queuedRecovery bool
+	for _, run := range store.runs {
+		if run.TaskID == recoveryTask.ID && run.Status == RunStatusQueued {
+			queuedRecovery = true
+		}
+	}
+	if !queuedRecovery {
+		t.Fatalf("expected queued recovery review run, got runs %#v", store.runs)
 	}
 }
 
@@ -9647,6 +9743,7 @@ func (fake *fakeWorkTasks) CreateWorkTask(_ context.Context, input projectworkpl
 		FilesToRead:             append([]string(nil), input.FilesToRead...),
 		FilesToEdit:             append([]string(nil), input.FilesToEdit...),
 		LikelyFilesAffected:     append([]string(nil), input.LikelyFilesAffected...),
+		DependencyTaskIDs:       append([]string(nil), input.DependencyTaskIDs...),
 		VerificationRequirement: input.VerificationRequirement,
 		ExpectedOutput:          input.ExpectedOutput,
 		FailureCriteria:         input.FailureCriteria,

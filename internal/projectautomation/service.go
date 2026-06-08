@@ -145,6 +145,10 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
 	}
+	permissionSnapshotRef, err := svc.remediationPermissionSnapshotRef(ctx, projectID, input.PermissionSnapshotRef, runID)
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
 	gitBaseRef, err := safeOptionalRef(input.GitBaseRef, "git_base_ref")
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
@@ -286,8 +290,8 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		AllowedTaskRefs: []string{task.ID, task.TaskRef},
 		TriggerKind:     TriggerKindAutomatic,
 		SchedulePolicy:  "work_plan_status_trigger",
-		PermissionRef:   "permission-remediation-" + findingRef,
-		SourceKind:      AutomationSourceManual,
+		PermissionRef:   permissionSnapshotRef,
+		SourceKind:      AutomationSourceWorkflow,
 		CreatedByRunID:  runID,
 		TraceID:         traceID,
 	}
@@ -306,8 +310,8 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
 		TriggerKind:     TriggerKindAutomatic,
 		SchedulePolicy:  "post_implementation_review",
-		PermissionRef:   "permission-remediation-review-" + findingRef,
-		SourceKind:      AutomationSourceManual,
+		PermissionRef:   permissionSnapshotRef,
+		SourceKind:      AutomationSourceWorkflow,
 		CreatedByRunID:  runID,
 		TraceID:         traceID,
 	}
@@ -330,6 +334,40 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		result.Activated = true
 	}
 	return result, nil
+}
+
+func (svc *Service) remediationPermissionSnapshotRef(ctx context.Context, projectID string, explicitRef string, runID string) (string, error) {
+	permissionRef, err := safeOptionalRef(explicitRef, "permission_snapshot_ref")
+	if err != nil {
+		return "", err
+	}
+	if permissionRef != "" {
+		if !strings.HasPrefix(permissionRef, PermissionSnapshotRefPrefix) {
+			permissionRef = PermissionSnapshotRefPrefix + permissionRef
+		}
+		if err := validatePermissionSnapshotRef(permissionRef); err != nil {
+			return "", err
+		}
+		return permissionRef, nil
+	}
+	if strings.TrimSpace(runID) == "" {
+		return "", fmt.Errorf("%w: missing_permission_snapshot_ref", ErrInvalidInput)
+	}
+	run, err := svc.store.GetRun(ctx, projectID, runID)
+	if err != nil {
+		return "", fmt.Errorf("%w: missing_permission_snapshot_ref", ErrInvalidInput)
+	}
+	if strings.TrimSpace(run.AutomationID) == "" {
+		return "", fmt.Errorf("%w: missing_permission_snapshot_ref", ErrInvalidInput)
+	}
+	automation, err := svc.store.GetAutomation(ctx, projectID, run.AutomationID)
+	if err != nil {
+		return "", fmt.Errorf("%w: missing_permission_snapshot_ref", ErrInvalidInput)
+	}
+	if err := validatePermissionSnapshotRef(automation.PermissionRef); err != nil {
+		return "", err
+	}
+	return automation.PermissionRef, nil
 }
 
 func (svc *Service) remediationBaseRefFromCreatorRun(ctx context.Context, workPlans remediationWorkPlanAPI, projectID string, runID string) (string, error) {
@@ -4006,7 +4044,7 @@ func (svc *Service) queueReviewForImplementationTask(ctx context.Context, run Au
 	}
 	reviewTaskRef := "review-" + target.TaskRef
 	for _, task := range tasks {
-		if !matchesPostImplementationReviewTaskRef(task.TaskRef, reviewTaskRef) {
+		if !matchesPostImplementationReviewTask(task, target, reviewTaskRef) {
 			continue
 		}
 		if task.Status == projectworkplan.WorkTaskStatusDone {
@@ -4091,13 +4129,22 @@ func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent
 	}, reviewTaskForAutomation(reviewTask, automation))
 }
 
-func matchesPostImplementationReviewTaskRef(taskRef string, baseRef string) bool {
-	taskRef = strings.TrimSpace(taskRef)
+func matchesPostImplementationReviewTask(task projectworkplan.WorkTask, target projectworkplan.WorkTask, baseRef string) bool {
+	taskRef := strings.TrimSpace(task.TaskRef)
 	baseRef = strings.TrimSpace(baseRef)
 	if taskRef == "" || baseRef == "" {
 		return false
 	}
-	return taskRef == baseRef || strings.HasPrefix(taskRef, baseRef+"-")
+	if taskRef == baseRef {
+		return true
+	}
+	if !strings.HasPrefix(taskRef, baseRef+"-") {
+		return false
+	}
+	if strings.TrimSpace(target.ID) == "" {
+		return true
+	}
+	return containsRef(task.DependencyTaskIDs, target.ID)
 }
 
 func taskNeedsPostImplementationReview(task projectworkplan.WorkTask) bool {
@@ -4194,8 +4241,14 @@ func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context
 	if err != nil {
 		return Automation{}, err
 	}
-	if err := validatePermissionSnapshotRef(parentAutomation.PermissionRef); err != nil {
-		return Automation{}, err
+	sourceKind := parentAutomation.SourceKind
+	if sourceKind == "" {
+		sourceKind = AutomationSourceManual
+	}
+	if sourceKind == AutomationSourceWorkflow {
+		if err := validatePermissionSnapshotRef(parentAutomation.PermissionRef); err != nil {
+			return Automation{}, err
+		}
 	}
 	return svc.CreateAutomation(ctx, CreateAutomationInput{
 		ProjectID:       parent.ProjectID,
@@ -4209,7 +4262,7 @@ func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context
 		TriggerKind:     TriggerKindAutomatic,
 		SchedulePolicy:  "post_implementation_review",
 		PermissionRef:   parentAutomation.PermissionRef,
-		SourceKind:      AutomationSourceWorkflow,
+		SourceKind:      sourceKind,
 		CreatedByRunID:  parent.ID,
 		TraceID:         firstNonEmpty(parent.TraceID, parent.ID),
 	})
