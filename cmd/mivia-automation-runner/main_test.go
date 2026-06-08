@@ -180,6 +180,24 @@ func TestGitOpsDirtyScopeEvidenceRefsUseRejectedPaths(t *testing.T) {
 	}
 }
 
+func TestGitOpsFailureEvidenceRefsAlwaysNameClassifiedFailure(t *testing.T) {
+	err := fmt.Errorf("%w: no safe task pathspecs", projectgitops.ErrInvalidInput)
+	refs := gitOpsFailureEvidenceRefs(err)
+	if strings.Join(refs, ",") != "gitops-failure:gitops_invalid_input_no_safe_task_pathspecs" {
+		t.Fatalf("expected classified gitops failure evidence ref, got %+v", refs)
+	}
+}
+
+func TestGitOpsFailureEvidenceRefsIncludeDirtyScopePaths(t *testing.T) {
+	err := projectgitops.DirtyWorktreeScopeError{Paths: []string{"apps/domain/src/module.ts"}}
+	refs := gitOpsFailureEvidenceRefs(err)
+	got := strings.Join(refs, ",")
+	want := "gitops-failure:gitops_dirty_worktree_scope,gitops-dirty-path:apps/domain/src/module.ts"
+	if got != want {
+		t.Fatalf("expected classified dirty-scope evidence refs, got %+v", refs)
+	}
+}
+
 func TestShouldRunGitOpsForFinalPRReadinessWithoutFilesToEdit(t *testing.T) {
 	if !shouldRunGitOpsForTask(runnerWorkTaskMetadata{TaskRef: "final-pr-readiness"}) {
 		t.Fatal("final-pr-readiness must run GitOps so a clean ahead branch can be pushed and converted to a draft PR")

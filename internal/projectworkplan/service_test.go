@@ -843,6 +843,34 @@ func TestServiceMCPAdapterAcceptsDocumentedActionFields(t *testing.T) {
 	}
 }
 
+func TestServiceMCPAdapterAcceptsLongGitOpsDirtyPathEvidence(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-long-gitops-evidence")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-long-gitops-evidence"))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	longPath := "apps/" + strings.Repeat("nested/", 55) + "feature/service_test.go"
+	if len(longPath) <= 300 {
+		t.Fatalf("test path must exceed former 300 char limit, got %d", len(longPath))
+	}
+	ref := "gitops-dirty-path:" + longPath
+	updated := callWorkPlanTool(t, svc, "projects.work_tasks.update_status", map[string]any{
+		"id":            "project-1",
+		"task_id":       task.ID,
+		"status":        "ready",
+		"evidence_refs": []string{ref},
+	}).(projectworkplan.WorkTask)
+	if !contains(updated.EvidenceRefs, ref) {
+		t.Fatalf("expected long GitOps dirty path evidence to be preserved, got %#v", updated.EvidenceRefs)
+	}
+}
+
 func TestServiceCompletionRequiresIndependentReviewOrExemption(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

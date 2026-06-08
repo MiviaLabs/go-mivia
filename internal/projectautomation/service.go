@@ -5395,13 +5395,36 @@ func safeRefList(values []string, field string) ([]string, error) {
 	}
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		safe, err := safeRef(value, field)
+		safe, err := safeRefListValue(value, field)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, safe)
 	}
 	return out, nil
+}
+
+func safeRefListValue(value, field string) (string, error) {
+	if field == "evidence_refs" {
+		return safeEvidenceRef(value, field)
+	}
+	return safeRef(value, field)
+}
+
+func safeEvidenceRef(value, field string) (string, error) {
+	if safe, err := safeRef(value, field); err == nil {
+		return safe, nil
+	}
+	value = strings.TrimSpace(value)
+	const prefix = "gitops-dirty-path:"
+	if !strings.HasPrefix(value, prefix) {
+		return "", fmt.Errorf("%w: %s must be a safe ref", ErrInvalidInput, field)
+	}
+	path := filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(value, prefix)))
+	if len(value) > 2048 || !isSafeTaskPath(path) || emailPattern.MatchString(path) || phonePattern.MatchString(path) {
+		return "", fmt.Errorf("%w: %s must be a safe ref", ErrInvalidInput, field)
+	}
+	return prefix + path, nil
 }
 
 func safeFileList(values []string, field string) ([]string, error) {

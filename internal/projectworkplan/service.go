@@ -1220,13 +1220,36 @@ func safeTextList(values []string, name string, max int) ([]string, error) {
 func safeRefList(values []string, name string) ([]string, error) {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		safe, err := safeRef(value, name)
+		safe, err := safeRefListValue(value, name)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, safe)
 	}
 	return unique(out), nil
+}
+
+func safeRefListValue(value string, name string) (string, error) {
+	if name == "evidence_refs" {
+		return safeEvidenceRef(value, name)
+	}
+	return safeRef(value, name)
+}
+
+func safeEvidenceRef(value string, name string) (string, error) {
+	if safe, err := safeRef(value, name); err == nil {
+		return safe, nil
+	}
+	value = strings.TrimSpace(value)
+	const prefix = "gitops-dirty-path:"
+	if !strings.HasPrefix(value, prefix) {
+		return "", fmt.Errorf("%w: %s is unsafe", ErrInvalidInput, name)
+	}
+	path := filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(value, prefix)))
+	if len(value) > 2048 || !safePathToken(path) || emailPattern.MatchString(path) || phonePattern.MatchString(path) {
+		return "", fmt.Errorf("%w: %s is unsafe", ErrInvalidInput, name)
+	}
+	return prefix + path, nil
 }
 
 func safePathList(values []string, name string) ([]string, error) {

@@ -621,6 +621,14 @@ func TestFailureCategoryWithDetailPreservesInvalidGitOpsConfig(t *testing.T) {
 	}
 }
 
+func TestFailureCategoryWithDetailDoesNotEmbedDirtyScopePath(t *testing.T) {
+	longPath := strings.Repeat("apps/domain/src/", 30) + "module.ts"
+	err := DirtyWorktreeScopeError{Paths: []string{longPath}}
+	if got := FailureCategoryWithDetail(err); got != "gitops_dirty_worktree_scope" {
+		t.Fatalf("dirty-scope category must not embed changed path, got %q", got)
+	}
+}
+
 func TestFailureCategoryWithDetailReportsMissingSSHKeyBeforePush(t *testing.T) {
 	_, knownHosts := testGitOpsCredentialFiles(t)
 	svc := NewWithRunner(Options{

@@ -3165,6 +3165,24 @@ func TestSafeFileListAllowsLongRelativePathsAndRejectsUnsafePaths(t *testing.T) 
 	}
 }
 
+func TestSafeRefListAllowsLongGitOpsDirtyPathEvidence(t *testing.T) {
+	longPath := "apps/" + strings.Repeat("nested/", 55) + "feature/service_test.go"
+	if len(longPath) <= 300 {
+		t.Fatalf("test path must exceed former 300 char limit, got %d", len(longPath))
+	}
+	ref := "gitops-dirty-path:" + longPath
+	refs, err := safeRefList([]string{ref}, "evidence_refs")
+	if err != nil {
+		t.Fatalf("safeRefList rejected long GitOps dirty path evidence: %v", err)
+	}
+	if len(refs) != 1 || refs[0] != ref {
+		t.Fatalf("unexpected evidence refs: %#v", refs)
+	}
+	if _, err := safeRefList([]string{"claim:" + longPath}, "claim_refs"); err == nil {
+		t.Fatal("non-evidence refs must keep the bounded safe-ref format")
+	}
+}
+
 func TestIsSafeTaskPathAllowsLongRelativePathsAndRejectsUnsafePaths(t *testing.T) {
 	longPath := "packages/" + strings.Repeat("deep/", 60) + "workflow.ts"
 	if len(longPath) <= 300 {

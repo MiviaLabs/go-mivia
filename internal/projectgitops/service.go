@@ -382,6 +382,8 @@ func FailureCategoryWithDetail(err error) string {
 			return category + "_" + detail
 		}
 		return category
+	case "gitops_dirty_worktree", "gitops_dirty_worktree_scope", "gitops_branch_policy_failed":
+		return category
 	default:
 		if detail := genericGitOpsFailureDetail(err.Error()); detail != "" {
 			return category + "_" + detail
