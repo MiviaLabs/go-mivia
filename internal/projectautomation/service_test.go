@@ -7238,6 +7238,53 @@ func TestClaimNextRunClaimsBoundedSmokeGitOpsRecoveryWithoutManualReviewRefs(t *
 	}
 }
 
+func TestClaimNextRunClaimsLegacyBoundedSmokeGitOpsRecoveryWithoutMode(t *testing.T) {
+	ctx := context.Background()
+	parentTask := readyTask("task-a", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	parentTask.FilesToEdit = []string{".agentic/automation-smoke.md"}
+	parentTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	parentTask.ClaimedByRunID = "run-parent"
+	parentTask.AgentRunIDs = []string{"run-parent"}
+	parentTask.EvidenceRefs = []string{"automation_run:run-parent", "gitops-smoke-ref", "review_result_approved_smoke", "smoke-chain-ref"}
+	parentTask.ReviewResultRefs = []string{"review_result_work_task_approved"}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive}},
+		tasks: map[string]projectworkplan.WorkTask{parentTask.ID: parentTask},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/smoke-draft-pr",
+		Title:           "Smoke GitOps worker",
+		Purpose:         "Run smoke GitOps task.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "smoke-gitops-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{parentTask.ID, parentTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	parentRun := AutomationRun{
+		ID: "run-parent", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID, PlanID: "plan-1", TaskID: parentTask.ID,
+		Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: "external_codex_cli_completed_verification_required",
+	}
+	if _, err := store.CreateRun(ctx, parentRun); err != nil {
+		t.Fatalf("CreateRun parent returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("expected legacy bounded smoke parent GitOps recovery claim, got %v", err)
+	}
+	if claimed.Run.ID != parentRun.ID || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery || claimed.Run.FailureCategory != "" {
+		t.Fatalf("expected legacy bounded smoke run claimed for GitOps recovery, got %#v", claimed.Run)
+	}
+}
+
 func TestClaimNextRunClosesReadOnlyScannerAndQueuesDependentReview(t *testing.T) {
 	ctx := context.Background()
 	scan := readyTask("scan-task-a", "scan-for-candidate-bugs-audit-alpha", []string{"repo-audit-scope"})
@@ -9532,6 +9579,53 @@ func TestReviewGateRunUsesEffectiveAgentPermission(t *testing.T) {
 	}
 	if updated.Status != RunStatusPolicyDenied || updated.FailureCategory != "invalid_project_automation_input:_permission_agent_mismatch" {
 		t.Fatalf("expected reviewer permission mismatch denial, got %#v", updated)
+	}
+}
+
+func TestSubmitRunRejectsUnsafeCallerMetadataBeforeReviewGateQueue(t *testing.T) {
+	ctx := context.Background()
+	reviewTask := readyTask("automation-review", "automation-review", []string{"internal/review.go"})
+	reviewTask.OwnerAgent = "reviewer-1"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a":            readyTask("task-a", "allowed-task", []string{"internal/foo.go"}),
+		"automation-review": reviewTask,
+	}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1, PermissionResolver: &fakePermissionResolver{metadata: PermissionSnapshotMetadata{AgentID: "agent-1", AllowedRunnerKinds: []string{RunnerKindCodexCLI}}}})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:             "project-1",
+		AutomationRef:         "workflow/review-gated",
+		Title:                 "Workflow Review Automation",
+		Purpose:               "Require independent review before implementation",
+		AgentID:               "agent-1",
+		PlanID:                "plan-1",
+		AllowedTaskRefs:       []string{"allowed-task"},
+		RequiredReviewTaskIDs: []string{"automation-review"},
+		PermissionRef:         "permission_snapshot:snapshot-1",
+		SourceKind:            AutomationSourceWorkflow,
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+
+	_, err = svc.SubmitRun(ctx, SubmitRunInput{
+		ProjectID:         automation.ProjectID,
+		AutomationID:      automation.ID,
+		TaskID:            "task-a",
+		RunnerKind:        RunnerKindCodexCLI,
+		OrchestratorRunID: "raw prompt leak",
+		ParentRunID:       "parent-run",
+	})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "orchestrator_run_id") {
+		t.Fatalf("expected invalid orchestrator metadata error, got %v", err)
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	for _, run := range runs {
+		if run.TaskID == "automation-review" || run.OrchestratorRunID == "raw prompt leak" {
+			t.Fatalf("unsafe metadata queued before validation: %#v", run)
+		}
 	}
 }
 

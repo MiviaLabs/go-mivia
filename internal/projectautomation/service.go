@@ -634,6 +634,16 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 			return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, runPlanFailureCategory(err))
 		}
 	}
+	orchestratorRunID, err := safeOptionalRef(input.OrchestratorRunID, "orchestrator_run_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	parentRunID, err := safeOptionalRef(input.ParentRunID, "parent_run_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	input.OrchestratorRunID = orchestratorRunID
+	input.ParentRunID = parentRunID
 	if err := svc.ensureRequiredAutomationReviewRuns(ctx, automation, runnerKind, input); err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, err.Error())
 	}
@@ -664,14 +674,6 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	}
 	if err := svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID, owner); err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
-	}
-	orchestratorRunID, err := safeOptionalRef(input.OrchestratorRunID, "orchestrator_run_id")
-	if err != nil {
-		return AutomationRun{}, err
-	}
-	parentRunID, err := safeOptionalRef(input.ParentRunID, "parent_run_id")
-	if err != nil {
-		return AutomationRun{}, err
 	}
 	now := svc.now()
 	run := AutomationRun{
@@ -5402,6 +5404,13 @@ func taskNeedsGitOpsPostTaskRecovery(run AutomationRun, task projectworkplan.Wor
 	if !taskReadyForAutomationCloseout(task) {
 		return false
 	}
+	if taskHasGitOpsCompletionRef(task) {
+		return false
+	}
+	return true
+}
+
+func taskHasGitOpsCompletionRef(task projectworkplan.WorkTask) bool {
 	for _, ref := range append(append([]string{}, task.EvidenceRefs...), task.ClaimRefs...) {
 		normalized := strings.ToLower(strings.TrimSpace(ref))
 		if strings.HasPrefix(normalized, "gitops-commit") ||
@@ -5412,10 +5421,10 @@ func taskNeedsGitOpsPostTaskRecovery(run AutomationRun, task projectworkplan.Wor
 			strings.HasPrefix(normalized, "draft-pr") ||
 			strings.Contains(normalized, "git-no-changes") ||
 			strings.Contains(normalized, "draft-pr-ready") {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
@@ -5443,7 +5452,11 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 }
 
 func taskUsesBoundedSmokeGitOpsVerification(task projectworkplan.WorkTask) bool {
-	if strings.TrimSpace(task.GitOpsVerificationMode) != "bounded_smoke" {
+	mode := strings.TrimSpace(task.GitOpsVerificationMode)
+	if mode != "" && mode != "bounded_smoke" {
+		return false
+	}
+	if mode == "" && taskHasGitOpsCompletionRef(task) {
 		return false
 	}
 	if strings.TrimSpace(task.TaskRef) != "smoke-draft-pr" {
