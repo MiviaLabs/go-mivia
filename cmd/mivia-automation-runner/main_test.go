@@ -1999,6 +1999,48 @@ func TestApplyGovernedCloseoutCreatesChildTasksAndMovesWrapperToNeedsReview(t *t
 	}
 }
 
+func TestApplyGovernedCloseoutReusesMatchingExistingChildTaskAfterConflict(t *testing.T) {
+	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	child := output.ChildTasks[0]
+	var childCreateAttempts atomic.Int32
+	var statusMoved atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans/plan-1/tasks":
+			childCreateAttempts.Add(1)
+			http.Error(w, `{"error":{"code":"conflict","message":"project work plan resource already exists"}}`, http.StatusConflict)
+		case "/api/v1/projects/project-1/work-tasks":
+			if r.URL.Query().Get("plan_id") != "plan-1" {
+				t.Fatalf("expected plan filter, got %q", r.URL.RawQuery)
+			}
+			writeJSON(t, w, map[string]any{"work_tasks": []runnerWorkTaskMetadata{matchingRunnerChildTask(child)}})
+		case "/api/v1/projects/project-1/work-tasks/task-1/evidence":
+			writeJSON(t, w, map[string]string{"ref": "evidence.governed"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/verifier-results":
+			writeJSON(t, w, map[string]string{"ref": "verifier.governed"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/status":
+			statusMoved.Add(1)
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}})
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}, VerifierResultRefs: []string{"verifier.governed"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	err := client.applyGovernedCloseoutFromOutput(t.Context(), "project-1", projectautomation.ClaimedRun{
+		Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", PlanID: "plan-1", TaskID: "task-1", TraceID: "trace-1"},
+		CodexInput: projectautomation.CodexTaskInput{PlanID: "plan-1", TaskID: "task-1"},
+	}, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "in_progress"}, governedCloseoutFixtureJSON())
+	if err != nil {
+		t.Fatalf("expected matching child conflict to be idempotent, got %v", err)
+	}
+	if childCreateAttempts.Load() != 1 || statusMoved.Load() != 1 {
+		t.Fatalf("expected one child create attempt and wrapper status move, got create=%d status=%d", childCreateAttempts.Load(), statusMoved.Load())
+	}
+}
+
 func TestApplyGovernedCloseoutReportsWrapperStatusFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -2250,6 +2292,27 @@ func TestRunOnceWithNoConfiguredProjectsExitsIdle(t *testing.T) {
 	}
 }
 
+func TestWatchWithNoConfiguredProjectsFailsUnlessExplicitlyAllowed(t *testing.T) {
+	setReadableCodexHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/projects" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(t, w, map[string]any{"projects": []map[string]any{}})
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--codex", "/bin/true", "--watch", "--poll-interval", "1ms"})
+	if status == 0 {
+		t.Fatal("watch mode with no configured projects must fail without explicit allowance")
+	}
+	status = run([]string{"--server", server.URL, "--codex", "/bin/true", "--watch", "--poll-interval", "1ms", "--idle-exit-after", "1ms", "--allow-no-projects"})
+	if status != 0 {
+		t.Fatalf("expected explicit no-project allowance to idle, got %d", status)
+	}
+}
+
 func TestWatchContinuesAfterReportedTaskFailure(t *testing.T) {
 	setReadableCodexHome(t)
 	codexPath := fakeCodex(t, 1)
@@ -2312,7 +2375,7 @@ func TestWatchRetriesProjectDiscoveryFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	status := run([]string{"--server", server.URL, "--codex", "/bin/true", "--watch", "--poll-interval", "1ms", "--idle-exit-after", "5ms"})
+	status := run([]string{"--server", server.URL, "--codex", "/bin/true", "--watch", "--poll-interval", "1ms", "--idle-exit-after", "5ms", "--allow-no-projects"})
 	if status != 0 {
 		t.Fatalf("watch should retry project discovery failure and exit idle with 0, got %d", status)
 	}
@@ -2605,17 +2668,20 @@ func TestCheckCodexConfigReadableUsesCodexHome(t *testing.T) {
 	t.Setenv("CODEX_HOME", codexHome)
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
 
-	if err := checkCodexConfigReadable(); err != nil {
+	if err := checkCodexConfigReadable(true); err != nil {
 		t.Fatalf("expected readable CODEX_HOME config to pass: %v", err)
 	}
 }
 
-func TestCheckCodexConfigReadableAllowsMissingConfig(t *testing.T) {
+func TestCheckCodexConfigReadableRejectsMissingConfigByDefault(t *testing.T) {
 	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "missing-codex-home"))
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
 
-	if err := checkCodexConfigReadable(); err != nil {
-		t.Fatalf("expected missing Codex config to pass: %v", err)
+	if err := checkCodexConfigReadable(true); !errors.Is(err, projectautomation.ErrInvalidInput) || !strings.Contains(err.Error(), "codex_config_missing") {
+		t.Fatalf("expected codex_config_missing invalid input, got %v", err)
+	}
+	if err := checkCodexConfigReadable(false); err != nil {
+		t.Fatalf("expected explicit missing-config allowance to pass: %v", err)
 	}
 }
 
@@ -2635,7 +2701,7 @@ func TestCheckCodexConfigReadableClassifiesPermissionDenied(t *testing.T) {
 	t.Setenv("CODEX_HOME", codexHome)
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
 
-	if err := checkCodexConfigReadable(); !errors.Is(err, projectautomation.ErrInvalidInput) || !strings.Contains(err.Error(), "codex_config_unreadable") {
+	if err := checkCodexConfigReadable(true); !errors.Is(err, projectautomation.ErrInvalidInput) || !strings.Contains(err.Error(), "codex_config_unreadable") {
 		t.Fatalf("expected codex_config_unreadable invalid input, got %v", err)
 	}
 }
@@ -2739,6 +2805,35 @@ func governedCloseoutFixtureJSON() string {
 		"block_reason":"",
 		"failure_reason":""
 	}`
+}
+
+func matchingRunnerChildTask(child governedCloseoutWorkTask) runnerWorkTaskMetadata {
+	return runnerWorkTaskMetadata{
+		ID:                      "child-1",
+		TaskRef:                 child.TaskRef,
+		Title:                   child.Title,
+		Description:             child.Description,
+		Status:                  "planned",
+		OwnerAgent:              child.OwnerAgent,
+		EvidenceNeeded:          child.EvidenceNeeded,
+		ContextPackRefs:         child.ContextPackRefs,
+		FilesToRead:             child.FilesToRead,
+		FilesToEdit:             child.FilesToEdit,
+		LikelyFilesAffected:     child.LikelyFilesAffected,
+		DependencyTaskIDs:       child.DependencyTaskIDs,
+		VerificationRequirement: child.VerificationRequirement,
+		ExpectedOutput:          child.ExpectedOutput,
+		FailureCriteria:         child.FailureCriteria,
+		ReviewGate:              child.ReviewGate,
+		ResumeInstructions:      child.ResumeInstructions,
+		DecompositionQuality:    child.DecompositionQuality,
+		AcceptanceCriteria:      child.AcceptanceCriteria,
+		StopConditions:          child.StopConditions,
+		VerifierLadder:          child.VerifierLadder,
+		RegressionApplicability: child.RegressionApplicability,
+		DownstreamImpactRefs:    child.DownstreamImpactRefs,
+		OutputContract:          child.OutputContract,
+	}
 }
 
 func mustParseGovernedCloseout(t *testing.T, payload string) governedCloseoutOutput {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -320,7 +321,7 @@ func (store *LadybugStore) ensureUniquePlanRef(ctx context.Context, projectID st
 	}
 	for _, node := range nodes {
 		if node.Properties["id"] != currentID {
-			return fmt.Errorf("duplicate work plan ref in project: %s", planRef)
+			return fmt.Errorf("%w: duplicate work plan ref in project: %s", ErrDuplicate, planRef)
 		}
 	}
 	return nil
@@ -333,7 +334,7 @@ func (store *LadybugStore) ensureUniqueTaskRef(ctx context.Context, projectID st
 	}
 	for _, node := range nodes {
 		if node.Properties["id"] != currentID {
-			return fmt.Errorf("duplicate work task ref in plan: %s", taskRef)
+			return fmt.Errorf("%w: duplicate work task ref in plan: %s", ErrDuplicate, taskRef)
 		}
 	}
 	return nil
@@ -550,12 +551,25 @@ func parseTime(value string) time.Time {
 }
 
 func joinList(values []string) string {
-	return strings.Join(values, ",")
+	if len(values) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return strings.Join(values, ",")
+	}
+	return string(data)
 }
 
 func splitList(value string) []string {
 	if value == "" {
 		return nil
+	}
+	if strings.HasPrefix(strings.TrimSpace(value), "[") {
+		var values []string
+		if err := json.Unmarshal([]byte(value), &values); err == nil {
+			return values
+		}
 	}
 	return strings.Split(value, ",")
 }
@@ -593,6 +607,10 @@ func cloneWorkTask(task model.WorkTask) model.WorkTask {
 	task.ReviewResultRefs = cloneStrings(task.ReviewResultRefs)
 	task.ArtifactRefs = cloneStrings(task.ArtifactRefs)
 	task.AgentRunIDs = cloneStrings(task.AgentRunIDs)
+	task.AcceptanceCriteria = cloneStrings(task.AcceptanceCriteria)
+	task.StopConditions = cloneStrings(task.StopConditions)
+	task.VerifierLadder = cloneStrings(task.VerifierLadder)
+	task.DownstreamImpactRefs = cloneStrings(task.DownstreamImpactRefs)
 	return task
 }
 

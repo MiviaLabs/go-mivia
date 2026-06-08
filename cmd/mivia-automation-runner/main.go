@@ -38,6 +38,8 @@ func run(args []string) int {
 	codexSandbox := flags.String("codex-sandbox", "workspace-write", "sandbox mode passed to codex exec")
 	codexBypass := flags.Bool("codex-bypass-approvals-and-sandbox", true, "pass Codex CLI's non-interactive approval and sandbox bypass flag")
 	codexSmokePreflight := flags.Bool("codex-smoke-preflight", false, "run a non-mutating codex exec smoke test in --codex-cd before claiming work")
+	allowMissingCodexConfig := flags.Bool("allow-missing-codex-config", false, "allow runner startup without CODEX_HOME/config.toml")
+	allowNoProjects := flags.Bool("allow-no-projects", false, "allow watch mode to idle when project discovery returns no configured projects")
 	once := flags.Bool("once", true, "claim and run one queued task, then exit")
 	watch := flags.Bool("watch", false, "continuously claim queued tasks until interrupted")
 	pollInterval := flags.Duration("poll-interval", 5*time.Second, "poll interval when once is false")
@@ -68,7 +70,7 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "codex launcher unavailable: %v\n", err)
 		return 1
 	}
-	if err := checkCodexConfigReadable(); err != nil {
+	if err := checkCodexConfigReadable(!*allowMissingCodexConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "codex runtime config unavailable: %v\n", err)
 		return 1
 	}
@@ -88,6 +90,10 @@ func run(args []string) int {
 			}
 			time.Sleep(*pollInterval)
 			continue
+		}
+		if *watch && strings.TrimSpace(*projectID) == "" && len(projectIDs) == 0 && !*allowNoProjects {
+			fmt.Fprintln(os.Stderr, "project discovery returned no configured projects")
+			return 1
 		}
 		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, cfg, projectIDs, strings.TrimSpace(*agentID), codexOptions)
 		if *once || !keepWatching {
@@ -161,15 +167,21 @@ func checkCodexLauncher(ctx context.Context, codexOptions codexLaunchOptions) er
 	}
 }
 
-func checkCodexConfigReadable() error {
+func checkCodexConfigReadable(required bool) error {
 	configPath := codexConfigPath()
 	if strings.TrimSpace(configPath) == "" {
-		return nil
+		if !required {
+			return nil
+		}
+		return fmt.Errorf("%w: codex_config_missing", projectautomation.ErrInvalidInput)
 	}
 	info, err := os.Stat(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			if !required {
+				return nil
+			}
+			return fmt.Errorf("%w: codex_config_missing", projectautomation.ErrInvalidInput)
 		}
 		if errors.Is(err, os.ErrPermission) {
 			return fmt.Errorf("%w: codex_config_unreadable", projectautomation.ErrInvalidInput)
@@ -1139,19 +1151,37 @@ type runnerWorkPlan struct {
 }
 
 type runnerWorkTaskMetadata struct {
-	ID                     string   `json:"id"`
-	TaskRef                string   `json:"task_ref,omitempty"`
-	Title                  string   `json:"title,omitempty"`
-	Status                 string   `json:"status,omitempty"`
-	BlockedReason          string   `json:"blocked_reason,omitempty"`
-	GitOpsVerificationMode string   `json:"gitops_verification_mode,omitempty"`
-	FilesToEdit            []string `json:"files_to_edit,omitempty"`
-	LikelyFilesAffected    []string `json:"likely_files_affected,omitempty"`
-	EvidenceRefs           []string `json:"evidence_refs,omitempty"`
-	ClaimRefs              []string `json:"claim_refs,omitempty"`
-	ReviewResultRefs       []string `json:"review_result_refs,omitempty"`
-	ReviewExemptReason     string   `json:"review_exempt_reason,omitempty"`
-	VerifierResultRefs     []string `json:"verifier_result_refs,omitempty"`
+	ID                      string   `json:"id"`
+	TaskRef                 string   `json:"task_ref,omitempty"`
+	Title                   string   `json:"title,omitempty"`
+	Description             string   `json:"description,omitempty"`
+	Status                  string   `json:"status,omitempty"`
+	BlockedReason           string   `json:"blocked_reason,omitempty"`
+	OwnerAgent              string   `json:"owner_agent,omitempty"`
+	GitOpsVerificationMode  string   `json:"gitops_verification_mode,omitempty"`
+	EvidenceNeeded          []string `json:"evidence_needed,omitempty"`
+	ContextPackRefs         []string `json:"context_pack_refs,omitempty"`
+	FilesToRead             []string `json:"files_to_read,omitempty"`
+	FilesToEdit             []string `json:"files_to_edit,omitempty"`
+	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
+	DependencyTaskIDs       []string `json:"dependency_task_ids,omitempty"`
+	VerificationRequirement string   `json:"verification_requirement,omitempty"`
+	ExpectedOutput          string   `json:"expected_output,omitempty"`
+	FailureCriteria         string   `json:"failure_criteria,omitempty"`
+	ReviewGate              string   `json:"review_gate,omitempty"`
+	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
+	EvidenceRefs            []string `json:"evidence_refs,omitempty"`
+	ClaimRefs               []string `json:"claim_refs,omitempty"`
+	ReviewResultRefs        []string `json:"review_result_refs,omitempty"`
+	ReviewExemptReason      string   `json:"review_exempt_reason,omitempty"`
+	VerifierResultRefs      []string `json:"verifier_result_refs,omitempty"`
+	DecompositionQuality    string   `json:"decomposition_quality,omitempty"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string   `json:"output_contract,omitempty"`
 }
 
 var errNoQueuedRun = errors.New("no queued automation run")

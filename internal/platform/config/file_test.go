@@ -24,6 +24,25 @@ func TestLoadFileConfig_ExampleConfigParses(t *testing.T) {
 	}
 }
 
+func TestLoadFileConfig_ExampleWorkflowDefinitionPathsExist(t *testing.T) {
+	root := repoRoot(t)
+	path := filepath.Join(root, "configs", "mivia-server.example.toml")
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected example config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected example config to apply: %v", err)
+	}
+	for _, definitionPath := range merged.Workflows.DefinitionPaths {
+		if _, err := os.Stat(filepath.Join(root, definitionPath)); err != nil {
+			t.Fatalf("workflow definition path %q must exist: %v", definitionPath, err)
+		}
+	}
+}
+
 func TestLoadFileConfig_RejectsUnknownTopLevelField(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1

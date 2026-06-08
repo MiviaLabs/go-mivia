@@ -954,7 +954,7 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 		}
 		for _, child := range output.ChildTasks {
 			input := governedChildTaskCreateInput(child, runID, traceID)
-			if _, err := client.post(ctx, fmt.Sprintf("/api/v1/projects/%s/work-plans/%s/tasks", url.PathEscape(projectID), url.PathEscape(planID)), input, nil); err != nil {
+			if err := client.ensureGovernedChildTask(ctx, projectID, planID, child, input); err != nil {
 				return fmt.Errorf("child_task_create_failed: %w", err)
 			}
 		}
@@ -1023,6 +1023,84 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 	default:
 		return fmt.Errorf("%w: invalid closeout action", projectautomation.ErrInvalidInput)
 	}
+}
+
+func (client *runnerClient) ensureGovernedChildTask(ctx context.Context, projectID string, planID string, child governedCloseoutWorkTask, input any) error {
+	path := fmt.Sprintf("/api/v1/projects/%s/work-plans/%s/tasks", url.PathEscape(projectID), url.PathEscape(planID))
+	if _, err := client.post(ctx, path, input, nil); err == nil {
+		return nil
+	} else if !runnerErrorIsConflict(err) {
+		return err
+	}
+	existing, err := client.getWorkTaskByRef(ctx, projectID, planID, child.TaskRef)
+	if err != nil {
+		return err
+	}
+	if !governedChildTaskMatches(existing, child) {
+		return fmt.Errorf("%w: duplicate child task_ref has different metadata", projectautomation.ErrInvalidInput)
+	}
+	return nil
+}
+
+func runnerErrorIsConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "409 Conflict")
+}
+
+func (client *runnerClient) getWorkTaskByRef(ctx context.Context, projectID string, planID string, taskRef string) (runnerWorkTaskMetadata, error) {
+	var response struct {
+		WorkTasks []runnerWorkTaskMetadata `json:"work_tasks"`
+	}
+	path := fmt.Sprintf("/api/v1/projects/%s/work-tasks?plan_id=%s", url.PathEscape(projectID), url.QueryEscape(planID))
+	if _, err := client.get(ctx, path, &response); err != nil {
+		return runnerWorkTaskMetadata{}, err
+	}
+	for _, task := range response.WorkTasks {
+		if task.TaskRef == taskRef {
+			return task, nil
+		}
+	}
+	return runnerWorkTaskMetadata{}, fmt.Errorf("%w: duplicate child task_ref not found", projectautomation.ErrInvalidInput)
+}
+
+func governedChildTaskMatches(existing runnerWorkTaskMetadata, child governedCloseoutWorkTask) bool {
+	return existing.TaskRef == child.TaskRef &&
+		existing.Title == child.Title &&
+		existing.Description == child.Description &&
+		existing.OwnerAgent == child.OwnerAgent &&
+		equalStringSet(existing.EvidenceNeeded, child.EvidenceNeeded) &&
+		equalStringSet(existing.ContextPackRefs, child.ContextPackRefs) &&
+		equalStringSet(existing.FilesToRead, child.FilesToRead) &&
+		equalStringSet(existing.FilesToEdit, child.FilesToEdit) &&
+		equalStringSet(existing.LikelyFilesAffected, child.LikelyFilesAffected) &&
+		equalStringSet(existing.DependencyTaskIDs, child.DependencyTaskIDs) &&
+		existing.VerificationRequirement == child.VerificationRequirement &&
+		existing.ExpectedOutput == child.ExpectedOutput &&
+		existing.FailureCriteria == child.FailureCriteria &&
+		existing.ReviewGate == child.ReviewGate &&
+		existing.ResumeInstructions == child.ResumeInstructions &&
+		existing.DecompositionQuality == child.DecompositionQuality &&
+		equalStringSet(existing.AcceptanceCriteria, child.AcceptanceCriteria) &&
+		equalStringSet(existing.StopConditions, child.StopConditions) &&
+		equalStringSet(existing.VerifierLadder, child.VerifierLadder) &&
+		existing.RegressionApplicability == child.RegressionApplicability &&
+		equalStringSet(existing.DownstreamImpactRefs, child.DownstreamImpactRefs) &&
+		existing.OutputContract == child.OutputContract
+}
+
+func equalStringSet(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	leftCopy := append([]string(nil), left...)
+	rightCopy := append([]string(nil), right...)
+	sort.Strings(leftCopy)
+	sort.Strings(rightCopy)
+	for index := range leftCopy {
+		if leftCopy[index] != rightCopy[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (client *runnerClient) attachGovernedCloseoutVerifierRefs(ctx context.Context, pathBase string, runID string, traceID string, refs []string) error {
