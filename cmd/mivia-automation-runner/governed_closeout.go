@@ -338,6 +338,9 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 		if normalizeGovernedCloseoutObjectTextField(task, "regression_test_applicability") {
 			changed = true
 		}
+		if normalizeGovernedCloseoutObjectTextField(task, "output_contract") {
+			changed = true
+		}
 		for _, field := range textArrayFields {
 			if normalizeGovernedCloseoutObjectTextArrayField(task, field) {
 				changed = true

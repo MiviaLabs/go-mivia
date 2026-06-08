@@ -1828,6 +1828,25 @@ func TestParseGovernedCloseoutAllowsExtraChildTaskGovernanceFields(t *testing.T)
 	}
 }
 
+func TestParseGovernedCloseoutNormalizesObjectOutputContract(t *testing.T) {
+	payload := strings.Replace(
+		governedCloseoutFixtureJSON(),
+		`"output_contract":"code change with verifier evidence"`,
+		`"output_contract":{"summary":"code change with verifier evidence"}`,
+		1,
+	)
+	output, err := parseGovernedCloseoutOutput(payload)
+	if err != nil {
+		t.Fatalf("object output_contract should normalize before type validation: %v", err)
+	}
+	if got, want := output.ChildTasks[0].OutputContract, "code change with verifier evidence"; got != want {
+		t.Fatalf("expected normalized output_contract %q, got %q", want, got)
+	}
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("normalized output_contract should pass governed validation: %v", err)
+	}
+}
+
 func TestValidateGovernedCloseoutRejectsChildTaskMetadataBeforeREST(t *testing.T) {
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	output.ChildTasks[0].ExpectedOutput = strings.Repeat("x", closeoutWorkTaskTextMax+1)

@@ -34,6 +34,26 @@ func TestSubmitRunRequiresCodexWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestGovernedWorkflowCloseoutInstructionsAvoidValidatorForbiddenLiterals(t *testing.T) {
+	instructions := strings.ToLower(strings.Join(governedWorkflowStepInstructions("decompose-work-plan"), "\n"))
+	for _, forbidden := range []string{
+		"raw source",
+		"raw log",
+		"provider payload",
+		"provider_payload",
+		"raw_prompt",
+		"raw_completion",
+		"raw_stderr",
+	} {
+		if strings.Contains(instructions, forbidden) {
+			t.Fatalf("governed closeout instructions must not seed validator-forbidden literal %q: %s", forbidden, instructions)
+		}
+	}
+	if !strings.Contains(instructions, "source-evidence") || !strings.Contains(instructions, "log-evidence") {
+		t.Fatalf("governed closeout instructions should provide safe replacement terms: %s", instructions)
+	}
+}
+
 func TestCallAutomationToolCreateAcceptsCommonCompatibilityAliases(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t, Options{Enabled: true})
