@@ -783,8 +783,10 @@ func validateJiraTicketContext(issueKey string, result projectintegrations.RichC
 	}
 	hasSummary := false
 	hasScope := false
+	hasImplementationEvidence := false
 	for _, chunk := range result.Chunks {
-		if strings.TrimSpace(chunk.Text) == "" {
+		text := strings.ToLower(strings.TrimSpace(chunk.Text))
+		if text == "" {
 			continue
 		}
 		field := strings.ToLower(strings.TrimSpace(firstNonEmpty(chunk.FieldName, chunk.Label)))
@@ -798,6 +800,19 @@ func validateJiraTicketContext(issueKey string, result projectintegrations.RichC
 				hasScope = true
 			}
 		}
+		if containsAny(text,
+			"source anchor",
+			"source anchors",
+			"source-backed",
+			"affected repo",
+			"affected file",
+			"files_to_edit",
+			"regression test",
+			"verifier",
+			"risk areas",
+		) {
+			hasImplementationEvidence = true
+		}
 	}
 	var missing []string
 	if !hasSummary {
@@ -805,6 +820,9 @@ func validateJiraTicketContext(issueKey string, result projectintegrations.RichC
 	}
 	if !hasScope {
 		missing = append(missing, "description_or_acceptance_criteria")
+	}
+	if !hasImplementationEvidence {
+		missing = append(missing, "implementation_evidence")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: local_ingested Jira context for %s missing %s", ErrInvalidInput, issueKey, strings.Join(missing, ","))
@@ -817,7 +835,19 @@ func jiraTicketContextRefs(issueKey string) []string {
 	return []string{
 		"jira-context:" + issueKey + ":summary",
 		"jira-context:" + issueKey + ":scope",
+		"jira-context:" + issueKey + ":implementation-evidence",
+		"jira-context:" + issueKey + ":source-anchors",
+		"jira-context:" + issueKey + ":verifier-scope",
 	}
+}
+
+func containsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func renderTemplate(template string, chainRef string, inputRef string) string {

@@ -79,10 +79,13 @@ func TestStartDryRunPreflightsLocalJiraContextBeforePersistence(t *testing.T) {
 	if !containsString(result.ContextRefs, "jira-context:MASS-1044:summary") || !containsString(result.ContextRefs, "jira-context:MASS-1044:scope") {
 		t.Fatalf("dry run missing verified context refs: %#v", result.ContextRefs)
 	}
+	if !containsString(result.ContextRefs, "jira-context:MASS-1044:implementation-evidence") || !containsString(result.ContextRefs, "jira-context:MASS-1044:source-anchors") || !containsString(result.ContextRefs, "jira-context:MASS-1044:verifier-scope") {
+		t.Fatalf("dry run missing implementation context refs: %#v", result.ContextRefs)
+	}
 	if len(workflows.compileInputs) != 3 {
 		t.Fatalf("expected dry run to compile all stages, got %d", len(workflows.compileInputs))
 	}
-	if !containsString(workflows.compileInputs[0].ContextPackRefs, "jira-context:MASS-1044:scope") {
+	if !containsString(workflows.compileInputs[0].ContextPackRefs, "jira-context:MASS-1044:scope") || !containsString(workflows.compileInputs[0].ContextPackRefs, "jira-context:MASS-1044:implementation-evidence") {
 		t.Fatalf("compile input missing context refs: %#v", workflows.compileInputs[0])
 	}
 	runs, err := store.ListChainRuns(ctx, ChainFilter{ProjectID: "project-1"})
@@ -104,6 +107,29 @@ func TestStartRejectsLocalJiraContextMissingScopeBeforeRunCreation(t *testing.T)
 	_, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "description_or_acceptance_criteria") {
 		t.Fatalf("expected missing scope rejection, got %v", err)
+	}
+	runs, err := store.ListChainRuns(ctx, ChainFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("invalid context must not create chain runs: %#v", runs)
+	}
+	if len(workflows.compileInputs) != 0 {
+		t.Fatalf("invalid context must not compile workflows: %#v", workflows.compileInputs)
+	}
+}
+
+func TestStartRejectsLocalJiraContextMissingImplementationEvidenceBeforeRunCreation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	svc := New(store, workflows, &fakeWorkPlans{}, []Config{localIngestedTestConfig()})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContextWithoutImplementationEvidence("MASS-1044")})
+
+	_, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "implementation_evidence") {
+		t.Fatalf("expected missing implementation evidence rejection, got %v", err)
 	}
 	runs, err := store.ListChainRuns(ctx, ChainFilter{ProjectID: "project-1"})
 	if err != nil {
@@ -616,7 +642,7 @@ func localJiraContext(issueKey string, includeScope bool) projectintegrations.Ri
 		chunks = append(chunks, projectintegrations.RichContentChunkView{
 			ItemKey:   issueKey,
 			FieldName: "description",
-			Text:      "Acceptance criteria: decompose, implement, verify, and open a draft PR.",
+			Text:      "Acceptance criteria: decompose, implement, verify, and open a draft PR. Source anchors and verifier scope identify the implementation evidence.",
 		})
 	}
 	return projectintegrations.RichContentReadResult{
@@ -627,6 +653,16 @@ func localJiraContext(issueKey string, includeScope bool) projectintegrations.Ri
 		},
 		Chunks: chunks,
 	}
+}
+
+func localJiraContextWithoutImplementationEvidence(issueKey string) projectintegrations.RichContentReadResult {
+	result := localJiraContext(issueKey, false)
+	result.Chunks = append(result.Chunks, projectintegrations.RichContentChunkView{
+		ItemKey:   issueKey,
+		FieldName: "description",
+		Text:      "Acceptance criteria: deliver the requested behavior.",
+	})
+	return result
 }
 
 func containsString(values []string, needle string) bool {

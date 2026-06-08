@@ -434,6 +434,7 @@ func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
 		"http://runtime-host:19090/api/v1/projects/project-1/work-tasks/task-1",
 		"record governed system closeout",
 		"use direct HTTP REST against that exact runtime URL",
+		"resolve them from locally ingested Jira via projects.jira_issue_get",
 		"Leave verifier execution and task completion to the orchestrator.",
 	} {
 		if !strings.Contains(prompt, want) {

@@ -4519,6 +4519,7 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	builder.WriteString("- If you confirm a real bug and the task asks for automatic remediation, call projects.automations.create_remediation_from_finding with finding_status=confirmed and activate_plan=true. Do not call projects.automations.run.\n")
 	builder.WriteString("- If no bug is confirmed, attach a no-confirmed-bug evidence ref and move this Work Task to needs_review with that outcome.\n")
 	builder.WriteString("- If native MCP tools are unavailable and the Mivia server URL is present, use direct HTTP REST against that exact runtime URL only when this task is not a governed wrapper task. Do not hard-code hostnames or ports and do not depend on Codex MCP harness configuration.\n")
+	builder.WriteString("- When context refs include jira:<ISSUE> or jira-context:<ISSUE>:<section>, resolve them from locally ingested Jira via projects.jira_issue_get before planning or decomposing implementation work. Do not call live Jira, and store only safe refs in closeout metadata.\n")
 	for _, instruction := range input.RunnerInstructions {
 		writePromptLine(&builder, "-", instruction)
 	}
