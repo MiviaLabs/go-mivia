@@ -5331,6 +5331,36 @@ func TestRunNowExecutesCodexCLIAndLeavesTaskForVerification(t *testing.T) {
 	}
 }
 
+func TestRenderCodexTaskPromptAllowsReadOnlyMCPFallbackForGovernedWrappers(t *testing.T) {
+	prompt := RenderCodexTaskPrompt(CodexTaskInput{
+		ProjectID:       "mass-monorepo",
+		MCPServerURL:    "http://mivia-server:8080",
+		AutomationRunID: "automation-run-1",
+		PlanID:          "work-plan-1",
+		TaskID:          "work-task-1",
+		TaskRef:         "decompose-work-plan",
+		Title:           "Decompose Work Plan",
+		ContextPackRefs: []string{
+			"jira:MASS-1044",
+			"jira-context:MASS-1044:summary",
+		},
+		VerificationRequirement: "verify child task metadata before closeout",
+	})
+	for _, want := range []string{
+		"read-only local MCP JSON-RPC context reads",
+		"projects.jira_issue_get",
+		"do not mutate Work Plans, Work Tasks, automation runs",
+		"resolve them from locally ingested Jira via projects.jira_issue_get",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("rendered governed prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "/api/v1/projects/mass-monorepo/work-tasks/work-task-1/") {
+		t.Fatalf("governed wrapper prompt must not include REST lifecycle closeout endpoints:\n%s", prompt)
+	}
+}
+
 func TestExternalRunNowQueuesWithoutServerSideCodex(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
