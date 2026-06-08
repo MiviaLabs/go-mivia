@@ -2840,6 +2840,25 @@ func TestParseGovernedCloseoutIgnoresSafeTopLevelFileMetadata(t *testing.T) {
 	}
 }
 
+func TestParseGovernedCloseoutNormalizesTopLevelTextObjects(t *testing.T) {
+	output, err := parseGovernedCloseoutOutput(`{
+		"closeout_action":"needs_review",
+		"outcome":{"summary":"smoke marker updated"},
+		"safe_next_action":{"action":"runner gitops"},
+		"evidence_refs":["gitops-smoke-ref"],
+		"verifier_result_refs":[],
+		"child_tasks":[],
+		"block_reason":null,
+		"failure_reason":null
+	}`)
+	if err != nil {
+		t.Fatalf("expected top-level text objects to normalize, got %v", err)
+	}
+	if output.Outcome != "smoke marker updated" || output.SafeNextAction != "runner gitops" || output.BlockReason != "" || output.FailureReason != "" {
+		t.Fatalf("unexpected parsed closeout: %+v", output)
+	}
+}
+
 func TestParseGovernedCloseoutNormalizesChildTaskRegressionApplicabilityObject(t *testing.T) {
 	output, err := parseGovernedCloseoutOutput(`{
 		"closeout_action":"needs_review",

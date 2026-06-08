@@ -407,13 +407,24 @@ func normalizeGovernedCloseoutBoundedTextField(fields map[string]json.RawMessage
 	}
 	var value string
 	if err := json.Unmarshal(rawValue, &value); err != nil {
-		return false
+		if string(bytes.TrimSpace(rawValue)) == "null" {
+			value = ""
+		} else {
+			extracted, extractErr := closeoutTextFromObject(rawValue)
+			if extractErr != nil {
+				return false
+			}
+			value = extracted
+		}
 	}
 	value = strings.TrimSpace(value)
-	if len(value) <= max {
+	if len(value) <= max && rawJSONValueIsStringOrNull(rawValue) {
 		return false
 	}
-	encoded, err := json.Marshal(value[:max])
+	if len(value) > max {
+		value = value[:max]
+	}
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return false
 	}
