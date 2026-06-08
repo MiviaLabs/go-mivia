@@ -206,6 +206,18 @@ func TestGitOpsFailureCategoryForRunnerDoesNotExposeUnclassifiedPostTask(t *test
 	}
 }
 
+func TestGitOpsRecoveryFailureCategoryOrFallbackNamesEmptyFailure(t *testing.T) {
+	if got := gitOpsRecoveryFailureCategoryOrFallback(projectautomation.RunStatusFailed, ""); got != "gitops_post_task_failed_runner_post_task" {
+		t.Fatalf("expected fallback recovery category, got %q", got)
+	}
+	if got := gitOpsRecoveryFailureCategoryOrFallback(projectautomation.RunStatusFailed, "gitops_invalid_input_workdir_invalid"); got != "gitops_invalid_input_workdir_invalid" {
+		t.Fatalf("expected concrete recovery category to be preserved, got %q", got)
+	}
+	if got := gitOpsRecoveryFailureCategoryOrFallback(projectautomation.RunStatusCompleted, ""); got != "" {
+		t.Fatalf("expected completed recovery category to stay empty, got %q", got)
+	}
+}
+
 func TestGitOpsFailureEvidenceRefsNameRuntimeSetupFailure(t *testing.T) {
 	err := fmt.Errorf("%w: safe_directory_home", projectgitops.ErrRuntimeFailure)
 	refs := gitOpsFailureEvidenceRefs(err)

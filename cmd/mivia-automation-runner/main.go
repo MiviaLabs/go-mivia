@@ -339,6 +339,10 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	runGitOps := !readOnlyReviewRun && (taskMetadataErr != nil || shouldRunGitOpsForTask(taskMetadata))
 	if isGitOpsPostTaskRecoveryRun(claimed.Run) {
 		status, failureCategory, durationMS, evidenceRefs := runGitOpsPostTaskRecovery(ctx, client, gitOps, projectID, runWorkDir, agentID, claimed)
+		failureCategory = gitOpsRecoveryFailureCategoryOrFallback(status, failureCategory)
+		if status != projectautomation.RunStatusCompleted && strings.TrimSpace(failureCategory) != "" {
+			evidenceRefs = append(evidenceRefs, "gitops-failure:"+failureCategory)
+		}
 		result := projectautomation.CompleteAttemptInput{
 			Status:          status,
 			FailureCategory: failureCategory,
@@ -571,6 +575,14 @@ func gitOpsFailureCategoryForRunner(err error) string {
 		return "gitops_post_task_failed_runner_post_task"
 	}
 	return category
+}
+
+func gitOpsRecoveryFailureCategoryOrFallback(status string, category string) string {
+	category = strings.TrimSpace(category)
+	if status == projectautomation.RunStatusCompleted || category != "" {
+		return category
+	}
+	return "gitops_post_task_failed_runner_post_task"
 }
 
 func isReadOnlyReviewRun(claimed projectautomation.ClaimedRun) bool {
