@@ -1455,7 +1455,7 @@ func (svc *Service) reconcileExhaustedGitOpsRecoveryRuns(ctx context.Context, pr
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
 	for _, run := range runs {
-		if run.RunnerKind != RunnerKindCodexCLI || !isRecoverableGitOpsPostTaskFailure(run.FailureCategory) {
+		if run.RunnerKind != RunnerKindCodexCLI || (!isRecoverableGitOpsPostTaskFailure(run.FailureCategory) && !isRecoverableRecoveryFailure(run.FailureCategory)) {
 			continue
 		}
 		if svc.canRetryRun(run) {
@@ -1465,10 +1465,16 @@ func (svc *Service) reconcileExhaustedGitOpsRecoveryRuns(ctx context.Context, pr
 			continue
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
-		if err != nil || !taskHasGitOpsRecoveryCloseout(task) {
+		if err != nil || (!taskHasGitOpsRecoveryCloseout(task) && !isRecoverableRecoveryFailure(run.FailureCategory)) {
 			continue
 		}
 		if !taskOwnsGitOpsRecoveryRun(task, run) {
+			continue
+		}
+		if countTerminalReplacementFailures(runs, task) >= defaultAutomationMaxReplacementRunsPerTask {
+			if _, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task, latestTerminalReplacementFailureCategory(runs, task)); err != nil {
+				return err
+			}
 			continue
 		}
 		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory, nil); err != nil {
