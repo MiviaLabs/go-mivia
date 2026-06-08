@@ -768,7 +768,26 @@ func (svc *Service) blockReadyTasksWithoutEnabledAutomation(ctx context.Context,
 		if task.Status != projectworkplan.WorkTaskStatusReady {
 			continue
 		}
-		if hasEnabledAutomationForReadyTask(automations, task) {
+		hasMatch, executableErr := enabledAutomationReadiness(automations, task)
+		if hasMatch && executableErr == nil {
+			continue
+		}
+		if hasMatch && executableErr != nil {
+			category := executableTaskFailureCategory(executableErr)
+			blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+				ProjectID:          task.ProjectID,
+				TaskID:             task.ID,
+				SafeNextAction:     "ready_task_not_executable",
+				TraceID:            "ready-task-not-executable",
+				BlockedReason:      "Ready Work Task has a matching automatic automation but is missing executable metadata: " + category + ".",
+				ResumeInstructions: "Fix the Work Task metadata required by automation execution, then resume the Work Plan.",
+			})
+			if err != nil {
+				return err
+			}
+			if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+				return err
+			}
 			continue
 		}
 		blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
@@ -787,6 +806,40 @@ func (svc *Service) blockReadyTasksWithoutEnabledAutomation(ctx context.Context,
 		}
 	}
 	return nil
+}
+
+func enabledAutomationReadiness(automations []Automation, task projectworkplan.WorkTask) (bool, error) {
+	var executableErr error
+	for _, automation := range automations {
+		if automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || automation.PlanID != task.PlanID {
+			continue
+		}
+		if !containsRef(automation.RequiredReviewTaskIDs, task.ID) && validateAllowedTaskRef(automation, task) != nil {
+			continue
+		}
+		err := validateExecutableTask(task)
+		if err == nil {
+			return true, nil
+		}
+		if executableErr == nil {
+			executableErr = err
+		}
+	}
+	return executableErr != nil, executableErr
+}
+
+func executableTaskFailureCategory(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.TrimSpace(err.Error())
+	if idx := strings.LastIndex(message, ":"); idx >= 0 {
+		message = strings.TrimSpace(message[idx+1:])
+	}
+	if message == "" {
+		return "task_not_executable"
+	}
+	return message
 }
 
 func hasEnabledAutomationForReadyTask(automations []Automation, task projectworkplan.WorkTask) bool {
@@ -3859,6 +3912,11 @@ func (svc *Service) shouldQueueReplacementRunForTask(ctx context.Context, automa
 	if run.Status == RunStatusPolicyDenied &&
 		task.Status == projectworkplan.WorkTaskStatusReady &&
 		strings.Contains(strings.TrimSpace(run.FailureCategory), "task_not_ready") {
+		return true
+	}
+	if run.Status == RunStatusBlocked &&
+		task.Status == projectworkplan.WorkTaskStatusReady &&
+		strings.TrimSpace(run.FailureCategory) == "task_dependencies_not_done" {
 		return true
 	}
 	if run.Status == RunStatusFailed &&

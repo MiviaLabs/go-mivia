@@ -4935,6 +4935,70 @@ func TestWorkPlanStatusTriggerBlocksReadyTaskWithoutEnabledMatchingAutomation(t 
 	}
 }
 
+func TestWorkPlanStatusTriggerBlocksReadyTaskWithMatchingAutomationButMissingExecutableMetadata(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "decompose-work-plan", []string{"internal/foo.go"})
+	task.VerificationRequirement = ""
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{
+		Enabled:         true,
+		RunnerEnabled:   true,
+		RunnerExecution: RunnerExecutionExternal,
+		WorkPlanStatusTrigger: WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       task.ProjectID,
+		AutomationRef:   "auto/decompose",
+		Title:           "Decompose",
+		Purpose:         "Run decomposition.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "worker-1",
+		PlanID:          task.PlanID,
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID: task.ProjectID,
+		PlanID:    task.PlanID,
+		OldStatus: projectworkplan.WorkPlanStatusPlanned,
+		NewStatus: projectworkplan.WorkPlanStatusActive,
+		ChangedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("HandleWorkPlanStatusChanged returned error: %v", err)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected non-executable ready task to block, got %#v", blockedTask)
+	}
+	if !strings.Contains(blockedTask.BlockedReason, "missing_verification") {
+		t.Fatalf("expected executable metadata blocked reason, got %q", blockedTask.BlockedReason)
+	}
+	runs, err := svc.ListRuns(ctx, RunFilter{ProjectID: task.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("expected no queued run for non-executable task, got %#v", runs)
+	}
+	if fake.plans[task.PlanID].Status != projectworkplan.WorkPlanStatusBlocked {
+		t.Fatalf("expected parent plan blocked, got %#v", fake.plans[task.PlanID])
+	}
+}
+
 func TestClaimNextRunBlocksReadyTaskWithoutEnabledMatchingAutomationForActivePlan(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "decompose-work-plan", []string{"internal/foo.go"})
@@ -8897,6 +8961,53 @@ func TestQueueReadyDependentAutomationReplacesBlockedWorkTaskRun(t *testing.T) {
 	}
 	if queued != 1 {
 		t.Fatalf("expected one replacement queued run, got %d runs=%+v", queued, store.runs)
+	}
+}
+
+func TestQueueReadyDependentAutomationReplacesStaleDependencyBlockedRun(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-b", "b", []string{"internal/bar.go"})
+	task.DependencyTaskIDs = []string{"task-a"}
+	dependency := readyTask("task-a", "a", []string{"internal/foo.go"})
+	dependency.Status = projectworkplan.WorkTaskStatusDone
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		dependency.ID: dependency,
+		task.ID:       task,
+	}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-dependencies-blocked",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  projectworkplan.WorkTaskStatusReady,
+		Status:          RunStatusBlocked,
+		RunnerKind:      RunnerKindCodexCLI,
+		FailureCategory: "task_dependencies_not_done",
+		SafeSummary:     "dependency_ready_automation_queued",
+		CreatedAt:       now.Add(-time.Minute),
+		UpdatedAt:       now.Add(-time.Minute),
+		FinishedAt:      now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.queueReadyDependentAutomation(ctx, automation, task); err != nil {
+		t.Fatalf("queueReadyDependentAutomation returned error: %v", err)
+	}
+	var queued int
+	for _, run := range store.runs {
+		if run.TaskID == task.ID && run.Status == RunStatusQueued {
+			queued++
+		}
+	}
+	if queued != 1 {
+		t.Fatalf("expected replacement queued after stale dependency block, got %d runs=%+v", queued, store.runs)
 	}
 }
 

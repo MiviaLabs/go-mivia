@@ -551,20 +551,21 @@ func (finalizer serverWorkflowChainGitOpsFinalizer) FinalizeWorkflowChain(ctx co
 	options := gitOpsOptionsForServerProject(finalizer.cfg, input.ProjectID)
 	options.Verification = gitOpsVerificationForServerProject(finalizer.cfg, input.ProjectID)
 	result, err := projectgitops.New(options).PostTask(ctx, projectgitops.PostTaskInput{
-		WorkDir:         workDir,
-		ProjectID:       input.ProjectID,
-		PlanID:          input.WorkPlan.ID,
-		TaskID:          firstChainTaskID(input),
-		TaskRef:         "workflow-chain-finalize",
-		TaskTitle:       input.InputRef + " workflow chain final GitOps",
-		BranchName:      input.WorkPlan.GitBranchRef,
-		BaseRef:         input.WorkPlan.GitBaseRef,
-		AutomationID:    "workflow-chain-gitops",
-		AutomationRunID: input.ChainRunID,
-		OperatorID:      "mivia-workflow-chain",
-		ReviewRefs:      []string{"workflow-chain-post-validation-passed"},
-		VerifierRefs:    []string{"workflow-chain-post-validation-passed"},
-		TestResults:     []string{"post-validation workflow chain stage completed"},
+		WorkDir:          workDir,
+		ProjectID:        input.ProjectID,
+		PlanID:           input.WorkPlan.ID,
+		TaskID:           firstChainTaskID(input),
+		TaskRef:          "workflow-chain-finalize",
+		TaskTitle:        input.InputRef + " workflow chain final GitOps",
+		BranchName:       input.WorkPlan.GitBranchRef,
+		BaseRef:          input.WorkPlan.GitBaseRef,
+		AutomationID:     "workflow-chain-gitops",
+		AutomationRunID:  input.ChainRunID,
+		OperatorID:       "mivia-workflow-chain",
+		AllowedPathspecs: append([]string(nil), input.AllowedPathspecs...),
+		ReviewRefs:       append([]string(nil), input.ReviewRefs...),
+		VerifierRefs:     append([]string(nil), input.VerifierRefs...),
+		TestResults:      append([]string(nil), input.TestResults...),
 	})
 	if err != nil {
 		return projectworkflowchain.GitOpsFinalizeResult{}, err

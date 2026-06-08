@@ -256,6 +256,16 @@ func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *tes
 	if len(finalizer.inputs) != 1 || finalizer.inputs[0].WorkPlan.ID != "plan-implementation" {
 		t.Fatalf("expected one GitOps finalization with implementation plan, got %#v", finalizer.inputs)
 	}
+	input := finalizer.inputs[0]
+	if !containsString(input.AllowedPathspecs, "internal/projectworkflowchain/service.go") || !containsString(input.AllowedPathspecs, "cmd/mivia-server") {
+		t.Fatalf("expected implementation pathspecs in GitOps finalization, got %#v", input.AllowedPathspecs)
+	}
+	if !containsString(input.ReviewRefs, "review:task-post-validation") || !containsString(input.VerifierRefs, "verifier:task-post-validation") {
+		t.Fatalf("expected stage review and verifier refs in GitOps finalization, got reviews=%#v verifiers=%#v", input.ReviewRefs, input.VerifierRefs)
+	}
+	if !containsString(input.TestResults, "task-post-validation verified by verifier:task-post-validation") {
+		t.Fatalf("expected verifier-derived test result in GitOps finalization, got %#v", input.TestResults)
+	}
 
 	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
 		t.Fatalf("idempotent post-validation event: %v", err)
@@ -688,6 +698,25 @@ func (fake *fakeWorkPlans) UpdateWorkPlanStatus(_ context.Context, input project
 	fake.activations = append(fake.activations, input.PlanID)
 	fake.events = append(fake.events, "activate:"+input.PlanID)
 	return projectworkplan.WorkPlan{ID: input.PlanID, ProjectID: input.ProjectID, Status: input.Status}, nil
+}
+
+func (fake *fakeWorkPlans) GetWorkTask(_ context.Context, projectID string, taskID string) (projectworkplan.WorkTask, error) {
+	stage := strings.TrimPrefix(taskID, "task-")
+	task := projectworkplan.WorkTask{
+		ID:                   taskID,
+		ProjectID:            projectID,
+		PlanID:               "plan-" + stage,
+		TaskRef:              taskID,
+		Status:               projectworkplan.WorkTaskStatusDone,
+		DecompositionQuality: projectworkplan.DecompositionReady,
+		ReviewResultRefs:     []string{"review:" + taskID},
+		VerifierResultRefs:   []string{"verifier:" + taskID},
+	}
+	if stage == "implementation" {
+		task.FilesToEdit = []string{"internal/projectworkflowchain/service.go"}
+		task.LikelyFilesAffected = []string{"cmd/mivia-server"}
+	}
+	return task, nil
 }
 
 func (fake *fakeWorkPlans) ListOpenWorkTasks(_ context.Context, filter projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error) {

@@ -29,6 +29,7 @@ type WorkflowAPI interface {
 
 type WorkPlanAPI interface {
 	GetWorkPlan(context.Context, string, string) (projectworkplan.WorkPlan, error)
+	GetWorkTask(context.Context, string, string) (projectworkplan.WorkTask, error)
 	ListOpenWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error)
 	UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
 	UpdateWorkTaskStatus(context.Context, projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error)
@@ -43,15 +44,19 @@ type LocalContextReader interface {
 }
 
 type GitOpsFinalizeInput struct {
-	ProjectID      string
-	ChainRunID     string
-	ChainRef       string
-	InputRef       string
-	WorkPlan       projectworkplan.WorkPlan
-	StageRuns      []StageRun
-	AutomationIDs  []string
-	CreatedByRunID string
-	TraceID        string
+	ProjectID        string
+	ChainRunID       string
+	ChainRef         string
+	InputRef         string
+	WorkPlan         projectworkplan.WorkPlan
+	StageRuns        []StageRun
+	AutomationIDs    []string
+	AllowedPathspecs []string
+	ReviewRefs       []string
+	VerifierRefs     []string
+	TestResults      []string
+	CreatedByRunID   string
+	TraceID          string
 }
 
 type GitOpsFinalizeResult struct {
@@ -453,16 +458,24 @@ func (svc *Service) finalizeGitOps(ctx context.Context, run *ChainRun) error {
 	if err != nil {
 		return err
 	}
+	metadata, err := svc.gitOpsFinalizeMetadata(ctx, *run)
+	if err != nil {
+		return err
+	}
 	result, err := svc.gitOpsFinalizer.FinalizeWorkflowChain(ctx, GitOpsFinalizeInput{
-		ProjectID:      run.ProjectID,
-		ChainRunID:     run.ID,
-		ChainRef:       run.ChainRef,
-		InputRef:       run.InputRef,
-		WorkPlan:       plan,
-		StageRuns:      append([]StageRun(nil), run.StageRuns...),
-		AutomationIDs:  append([]string(nil), run.AutomationIDs...),
-		CreatedByRunID: run.CreatedByRunID,
-		TraceID:        run.TraceID,
+		ProjectID:        run.ProjectID,
+		ChainRunID:       run.ID,
+		ChainRef:         run.ChainRef,
+		InputRef:         run.InputRef,
+		WorkPlan:         plan,
+		StageRuns:        append([]StageRun(nil), run.StageRuns...),
+		AutomationIDs:    append([]string(nil), run.AutomationIDs...),
+		AllowedPathspecs: append([]string(nil), metadata.AllowedPathspecs...),
+		ReviewRefs:       append([]string(nil), metadata.ReviewRefs...),
+		VerifierRefs:     append([]string(nil), metadata.VerifierRefs...),
+		TestResults:      append([]string(nil), metadata.TestResults...),
+		CreatedByRunID:   run.CreatedByRunID,
+		TraceID:          run.TraceID,
 	})
 	if err != nil {
 		return err
@@ -507,6 +520,47 @@ func gitOpsBlockedReason(err error) string {
 		return "gitops_finalize_failed"
 	}
 	return "gitops_finalize_failed_" + safe
+}
+
+type gitOpsFinalizeMetadata struct {
+	AllowedPathspecs []string
+	ReviewRefs       []string
+	VerifierRefs     []string
+	TestResults      []string
+}
+
+func (svc *Service) gitOpsFinalizeMetadata(ctx context.Context, run ChainRun) (gitOpsFinalizeMetadata, error) {
+	if svc == nil || svc.workPlans == nil {
+		return gitOpsFinalizeMetadata{}, fmt.Errorf("%w: work plan service is required for GitOps finalization metadata", ErrInvalidInput)
+	}
+	var metadata gitOpsFinalizeMetadata
+	for _, stage := range run.StageRuns {
+		for _, taskID := range stage.WorkTaskIDs {
+			task, err := svc.workPlans.GetWorkTask(ctx, run.ProjectID, taskID)
+			if err != nil {
+				return gitOpsFinalizeMetadata{}, err
+			}
+			if stage.StageRef == "implementation" {
+				metadata.AllowedPathspecs = appendUniqueMany(metadata.AllowedPathspecs, task.FilesToEdit)
+				metadata.AllowedPathspecs = appendUniqueMany(metadata.AllowedPathspecs, task.LikelyFilesAffected)
+			}
+			metadata.ReviewRefs = appendUniqueMany(metadata.ReviewRefs, task.ReviewResultRefs)
+			metadata.VerifierRefs = appendUniqueMany(metadata.VerifierRefs, task.VerifierResultRefs)
+			for _, ref := range task.VerifierResultRefs {
+				metadata.TestResults = appendUnique(metadata.TestResults, task.TaskRef+" verified by "+ref)
+			}
+		}
+	}
+	if len(metadata.AllowedPathspecs) == 0 {
+		return gitOpsFinalizeMetadata{}, fmt.Errorf("%w: workflow chain GitOps finalization requires implementation task pathspecs", ErrInvalidInput)
+	}
+	if len(metadata.ReviewRefs) == 0 {
+		return gitOpsFinalizeMetadata{}, fmt.Errorf("%w: workflow chain GitOps finalization requires review result refs", ErrInvalidInput)
+	}
+	if len(metadata.VerifierRefs) == 0 {
+		return gitOpsFinalizeMetadata{}, fmt.Errorf("%w: workflow chain GitOps finalization requires verifier result refs", ErrInvalidInput)
+	}
+	return metadata, nil
 }
 
 func gitOpsSourceWorkPlanID(run ChainRun) string {
