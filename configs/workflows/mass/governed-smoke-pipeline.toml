@@ -1,0 +1,40 @@
+id = "workflow-governed-smoke-pipeline"
+project_id = "mass-monorepo"
+workflow_ref = "governed-smoke-pipeline"
+title = "Governed Smoke Pipeline"
+purpose = "Exercise the automation lifecycle with one cheap read-only task and no Jira, implementation, validation, GitOps, or draft PR stages."
+status = "enabled"
+
+[[agents]]
+id = "smoke-worker"
+display_name = "Smoke Worker"
+purpose = "Run a bounded read-only smoke task and return safe metadata-only completion."
+instructions = "Complete the smoke task with a concise safe outcome. Do not inspect Jira, run tests, edit files, push, or create PRs."
+allowed_skills = ["mivia-mcp"]
+allowed_tools = [
+  "projects.get",
+  "projects.context_health"
+]
+allowed_commands = []
+denied_commands = ["go test ./...", "git push", "git reset --hard"]
+workspace_mode = "read_only"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "2m"
+max_retries = 0
+
+[[steps]]
+id = "smoke-lifecycle"
+kind = "work_task"
+title = "Smoke Lifecycle"
+agent = "smoke-worker"
+description = "Verify that a safe-ref workflow chain can compile, queue one automation run, claim it, and close out the task without Jira or GitOps."
+evidence_needed = ["smoke-chain-ref"]
+files_to_read = ["configs/workflows/mass/governed-smoke-pipeline.toml"]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "runner observes the task close out through metadata-only lifecycle"
+expected_output = "safe smoke lifecycle completion"
+failure_criteria = "fail if the task cannot be claimed or closed out"
+resume_instructions = "resume by checking the smoke chain run, Work Plan, Work Task, and automation run refs"
