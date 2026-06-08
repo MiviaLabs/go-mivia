@@ -1125,6 +1125,7 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 		runs = append(runs, statusRuns...)
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	skippedReason := ""
 	for _, run := range runs {
 		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" {
 			continue
@@ -1136,7 +1137,11 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 			continue
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		reportUnclaimable := strings.TrimSpace(run.SafeSummary) == RunSafeSummaryPostImplementationReviewQueued
 		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+			if reportUnclaimable && skippedReason == "" {
+				skippedReason = "starting_run_task_not_owned"
+			}
 			continue
 		}
 		switch task.Status {
@@ -1146,23 +1151,38 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 		}
 		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
 		if err != nil {
+			if reportUnclaimable && skippedReason == "" {
+				skippedReason = "starting_run_automation_unavailable"
+			}
 			continue
 		}
 		if err := svc.validateAutomationPolicy(ctx, automation, run.RunnerKind, run.TaskID, run.AgentID); err != nil {
+			if reportUnclaimable && skippedReason == "" {
+				skippedReason = "starting_run_policy_denied:" + claimSkipReason(run, err)
+			}
 			continue
 		}
 		if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
 			_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
+			if reportUnclaimable && skippedReason == "" {
+				skippedReason = "starting_run_plan_not_executable:" + runPlanFailureCategory(err)
+			}
 			continue
 		}
 		if !svc.isAutomationReviewTask(automation, run.TaskID) {
 			if err := svc.validateRequiredAutomationReviews(ctx, automation); err != nil {
+				if reportUnclaimable && skippedReason == "" {
+					skippedReason = "starting_run_review_gate_open:" + claimSkipReason(run, err)
+				}
 				continue
 			}
 		}
 		if task.Status != projectworkplan.WorkTaskStatusInProgress {
 			startedTask, err := svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: run.ProjectID, TaskID: task.ID, OwnerAgent: run.AgentID, RunID: run.ID, TraceID: run.TraceID})
 			if err != nil {
+				if reportUnclaimable && skippedReason == "" {
+					skippedReason = "starting_run_task_start_failed"
+				}
 				continue
 			}
 			task = startedTask
@@ -1185,6 +1205,9 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
 		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+	}
+	if skippedReason != "" {
+		return ClaimedRun{}, false, fmt.Errorf("%w: interrupted_starting_run_unclaimable:%s", ErrInvalidInput, skippedReason)
 	}
 	return ClaimedRun{}, false, nil
 }

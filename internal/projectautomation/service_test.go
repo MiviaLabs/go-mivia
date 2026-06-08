@@ -284,6 +284,20 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 	if len(reviewRuns) != 1 || reviewRuns[0].Status != RunStatusQueued {
 		t.Fatalf("expected one queued review run, got %#v", reviewRuns)
 	}
+	claimedReview, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun review returned error: %v", err)
+	}
+	if claimedReview.Run.ID != reviewRuns[0].ID || claimedReview.Run.Status != RunStatusRunning || claimedReview.Run.ClaimID == "" || claimedReview.Run.LastHeartbeatAt.IsZero() || claimedReview.Run.LeaseExpiresAt.IsZero() {
+		t.Fatalf("review claim must be durably running with external claim fields, got %#v", claimedReview.Run)
+	}
+	durableReview, err := store.GetRun(ctx, "project-1", reviewRuns[0].ID)
+	if err != nil {
+		t.Fatalf("GetRun durable review returned error: %v", err)
+	}
+	if durableReview.Status != RunStatusRunning || durableReview.ClaimID != claimedReview.Run.ClaimID || durableReview.LastHeartbeatAt.IsZero() || durableReview.LeaseExpiresAt.IsZero() {
+		t.Fatalf("durable review run must preserve external claim fields, got %#v", durableReview)
+	}
 }
 
 func containsString(values []string, want string) bool {
