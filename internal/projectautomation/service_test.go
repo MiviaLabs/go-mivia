@@ -147,6 +147,145 @@ func TestSubmitRunQueuesRequiredReviewTaskUnderDedicatedReviewAutomation(t *test
 	}
 }
 
+func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *testing.T) {
+	ctx := context.Background()
+	workStore := workstore.NewMemoryStore()
+	workSvc := projectworkplan.New(workStore)
+	plan, err := workSvc.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
+		ProjectID:   "project-1",
+		PlanRef:     "plan-review-recovery",
+		Title:       "Review recovery plan",
+		GoalSummary: "Exercise default post-implementation review recovery.",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkPlan returned error: %v", err)
+	}
+	plan, err = workSvc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         plan.ID,
+		Status:         projectworkplan.WorkPlanStatusActive,
+		SafeNextAction: "activate review recovery test plan",
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkPlanStatus returned error: %v", err)
+	}
+	task, err := workSvc.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  plan.ID,
+		TaskRef:                 "smoke-draft-pr",
+		Title:                   "Smoke Draft PR",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              "smoke-gitops-worker",
+		Description:             "Create one bounded smoke marker file.",
+		EvidenceNeeded:          []string{"gitops-smoke-ref"},
+		FilesToRead:             []string{"configs/workflows/mass/governed-smoke-gitops.toml"},
+		FilesToEdit:             []string{".agentic/automation-smoke.md"},
+		LikelyFilesAffected:     []string{".agentic/automation-smoke.md"},
+		VerificationRequirement: "runner verifies bounded diff and GitOps refs",
+		ExpectedOutput:          "one safe smoke marker file update committed and pushed by runner GitOps",
+		FailureCriteria:         "fail if any file outside the smoke marker changes",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkTask returned error: %v", err)
+	}
+	store := newTestStore()
+	svc := New(store, workSvc, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.newID = deterministicAutomationIDs("automation_worker", "automation_run_worker", "automation_review_recovery", "automation_run_review")
+	if _, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto-review-review-smoke-draft-pr",
+		Title:           "Previous smoke review recovery",
+		Purpose:         "Existing recovery automation from an older plan must not block this plan.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-reviewer",
+		PlanID:          "older-plan",
+		AllowedTaskRefs: []string{"review-smoke-draft-pr"},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "post_implementation_review",
+		PermissionRef:   "permission/default",
+	}); err != nil {
+		t.Fatalf("CreateAutomation existing recovery returned error: %v", err)
+	}
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/smoke-draft-pr",
+		Title:           "Smoke GitOps worker",
+		Purpose:         "Run smoke GitOps task.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "smoke-gitops-worker",
+		PlanID:          plan.ID,
+		AllowedTaskRefs: []string{task.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	queued, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: "project-1", AutomationID: automation.ID, TaskID: task.ID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != queued.ID {
+		t.Fatalf("expected queued worker run to be claimed, got %#v", claimed.Run)
+	}
+	if _, err := workSvc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:      "project-1",
+			TaskID:         task.ID,
+			RunID:          claimed.Run.ID,
+			TraceID:        claimed.Run.ID,
+			SafeNextAction: "worker closeout",
+			EvidenceRefs:   []string{"gitops-smoke-ref"},
+		},
+		Status: projectworkplan.WorkTaskStatusNeedsReview,
+	}); err != nil {
+		t.Fatalf("UpdateWorkTaskStatus returned error: %v", err)
+	}
+	completed, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:    "project-1",
+		RunID:        claimed.Run.ID,
+		ClaimID:      claimed.Run.ClaimID,
+		RunnerID:     claimed.Run.RunnerID,
+		Status:       RunStatusCompleted,
+		EvidenceRefs: []string{"gitops-commit:abc", "gitops-push:abc", "gitops-pr:draft"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if completed.Status != RunStatusVerifying || completed.FailureCategory != "" {
+		t.Fatalf("worker run must remain verifying while review runs, got %#v", completed)
+	}
+	automations, err := store.ListAutomations(ctx, AutomationFilter{ProjectID: "project-1", Status: AutomationStatusEnabled})
+	if err != nil {
+		t.Fatalf("ListAutomations returned error: %v", err)
+	}
+	var reviewAutomation Automation
+	for _, candidate := range automations {
+		if candidate.PlanID == plan.ID && contains(candidate.AllowedTaskRefs, "review-smoke-draft-pr") {
+			reviewAutomation = candidate
+			break
+		}
+	}
+	if reviewAutomation.ID == "" {
+		t.Fatalf("expected recovery review automation, got %#v", automations)
+	}
+	if reviewAutomation.SchedulePolicy != "post_implementation_review" || reviewAutomation.TriggerKind != TriggerKindAutomatic {
+		t.Fatalf("expected automatic post-implementation review recovery automation, got %#v", reviewAutomation)
+	}
+	reviewRuns, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: reviewAutomation.ID, PlanID: plan.ID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(reviewRuns) != 1 || reviewRuns[0].Status != RunStatusQueued {
+		t.Fatalf("expected one queued review run, got %#v", reviewRuns)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

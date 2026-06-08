@@ -3850,7 +3850,7 @@ func (svc *Service) createRecoveryPostImplementationReviewTask(ctx context.Conte
 }
 
 func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) (Automation, error) {
-	automationRef := "auto-review-" + safeBranchToken(reviewTask.TaskRef)
+	automationRef := "auto-review-" + safeBranchToken(reviewTask.TaskRef) + "-" + safeBranchToken(firstNonEmpty(parent.PlanID, reviewTask.PlanID, parent.ID))
 	if automationRef == "auto-review-" {
 		automationRef += reviewTask.ID
 	}

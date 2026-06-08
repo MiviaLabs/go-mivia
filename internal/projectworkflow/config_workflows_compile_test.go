@@ -357,6 +357,48 @@ func TestConfigWorkflowTaskProducingStepsHaveGateOrReviewerRole(t *testing.T) {
 	}
 }
 
+func TestMassConfigWorkflowRequiredReviewGatesCompileReviewAutomations(t *testing.T) {
+	ctx := context.Background()
+	paths, err := configWorkflowPaths()
+	if err != nil {
+		t.Fatalf("glob workflow definitions: %v", err)
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			if !strings.Contains(filepath.ToSlash(path), "/mass/") {
+				t.Skip("MASS workflow review automation invariant")
+			}
+			workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+			automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
+			workflowStore := workflowstore.NewMemoryStore()
+			svc := projectworkflow.New(workflowStore)
+			svc.SetCompilerDependencies(workPlans, automations)
+			workflow := importConfigWorkflow(t, ctx, svc, path, "mass-monorepo")
+			result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: workflow.ProjectID, WorkflowID: workflow.ID, UserRequestRef: "input:smoke-review-automation", CreatedByRunID: "review-automation-test-run"})
+			if err != nil {
+				t.Fatalf("compile workflow: %v", err)
+			}
+			compiledAutomations, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: workflow.ProjectID})
+			if err != nil {
+				t.Fatalf("list automations: %v", err)
+			}
+			planAutomations := configAutomationsForPlan(compiledAutomations, result.WorkPlanID)
+			for _, gate := range workflow.ReviewGates {
+				if !gate.Required {
+					continue
+				}
+				for _, stepID := range gate.AppliesTo {
+					wantRef := "review-" + stepID + "-" + gate.ID
+					reviewAutomation := configAutomationByAllowedRef(t, planAutomations, wantRef)
+					if reviewAutomation.Status != projectautomation.AutomationStatusEnabled || reviewAutomation.TriggerKind != projectautomation.TriggerKindAutomatic {
+						t.Fatalf("review automation %q must be enabled automatic, got %#v", wantRef, reviewAutomation)
+					}
+				}
+			}
+		})
+	}
+}
+
 func stepCoveredByRequiredGate(stepID string, requiredGateByID map[string]projectworkflow.WorkflowReviewGate) bool {
 	for _, gate := range requiredGateByID {
 		if containsConfigString(gate.AppliesTo, stepID) {
