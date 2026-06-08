@@ -4029,6 +4029,7 @@ func TestClaimNextRunRecoversVerifyingWriteTaskMissingGitOpsRefs(t *testing.T) {
 	task.ClaimedByRunID = "run-a"
 	task.FilesToEdit = []string{"internal/foo.go"}
 	task.ReviewResultRefs = []string{"review-approved"}
+	task.VerifierResultRefs = []string{"verifier-focused"}
 	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
 	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
 	svc.now = func() time.Time { return time.Unix(200, 0).UTC() }
@@ -7182,19 +7183,23 @@ func TestClaimNextRunQueuesReviewForBoundedGitOpsTaskAfterDraftPREvidence(t *tes
 	}
 }
 
-func TestClaimNextRunRecoversBoundedGitOpsTaskMissingDraftPREvidence(t *testing.T) {
+func TestClaimNextRunQueuesReviewForBoundedGitOpsTaskMissingDraftPREvidence(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("smoke-task", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
 	task.Status = projectworkplan.WorkTaskStatusNeedsReview
 	task.OwnerAgent = "smoke-gitops-worker"
 	task.ClaimedByRunID = "run-smoke"
 	task.FilesToEdit = []string{".agentic/automation-smoke.md"}
+	task.ReviewGate = "independent_review_required"
 	task.EvidenceRefs = []string{"automation_run:run-smoke", "gitops-smoke-ref"}
 	task.VerifierResultRefs = []string{"bounded-smoke-marker-present"}
 	task.Outcome = "Bounded smoke marker is present with exactly the requested single safe line."
+	reviewTask := readyTask("review-smoke-task", "review-smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	reviewTask.Status = projectworkplan.WorkTaskStatusPlanned
+	reviewTask.OwnerAgent = "codex-reviewer"
 	fake := &fakeWorkTasks{
 		plans: map[string]projectworkplan.WorkPlan{"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive}},
-		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task, reviewTask.ID: reviewTask},
 	}
 	store := newTestStore()
 	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
@@ -7213,6 +7218,22 @@ func TestClaimNextRunRecoversBoundedGitOpsTaskMissingDraftPREvidence(t *testing.
 	if err != nil {
 		t.Fatalf("CreateAutomation returned error: %v", err)
 	}
+	_, err = svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review-smoke-gitops",
+		Title:           "Review Smoke GitOps",
+		Purpose:         "Review smoke GitOps worker output",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-reviewer",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "post_implementation_review",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation review returned error: %v", err)
+	}
 	run := AutomationRun{ID: "run-smoke", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID, PlanID: "plan-1", TaskID: task.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, SafeSummary: "external_codex_cli_completed_verification_required"}
 	if _, err := store.CreateRun(ctx, run); err != nil {
 		t.Fatalf("CreateRun returned error: %v", err)
@@ -7222,8 +7243,15 @@ func TestClaimNextRunRecoversBoundedGitOpsTaskMissingDraftPREvidence(t *testing.
 	if err != nil {
 		t.Fatalf("ClaimNextRun returned error: %v", err)
 	}
-	if claimed.Run.ID != run.ID || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
-		t.Fatalf("expected same run reclaimed for gitops recovery, got %#v", claimed.Run)
+	if claimed.Run.TaskID != reviewTask.ID || claimed.Run.ParentRunID != run.ID || claimed.Run.SafeSummary != RunSafeSummaryPostImplementationReviewQueued {
+		t.Fatalf("expected review run before gitops recovery, got %#v", claimed.Run)
+	}
+	parent, err := svc.GetRun(ctx, "project-1", run.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if parent.Status != RunStatusVerifying || parent.SafeSummary == RunSafeSummaryGitOpsPostTaskRecovery {
+		t.Fatalf("parent run must remain verifying until review refs exist, got %#v", parent)
 	}
 }
 

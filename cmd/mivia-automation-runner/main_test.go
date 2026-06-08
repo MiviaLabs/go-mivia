@@ -245,6 +245,26 @@ func TestShouldRunGitOpsForFinalPRReadinessWithoutFilesToEdit(t *testing.T) {
 	}
 }
 
+func TestShouldRunGitOpsPostTaskRequiresCloseoutReady(t *testing.T) {
+	task := runnerWorkTaskMetadata{
+		TaskRef:            "smoke-draft-pr",
+		FilesToEdit:        []string{".agentic/automation-smoke.md"},
+		VerifierResultRefs: []string{"bounded-smoke-marker-ready"},
+	}
+	if shouldRunGitOpsPostTask(task) {
+		t.Fatal("GitOps post-task must wait for review refs or an explicit review exemption")
+	}
+	task.ReviewResultRefs = []string{"review_result_task_1_passed"}
+	if !shouldRunGitOpsPostTask(task) {
+		t.Fatal("GitOps post-task should run after verifier and review refs exist")
+	}
+	task.ReviewResultRefs = nil
+	task.ReviewExemptReason = "tiny mechanical task reviewed by policy exemption"
+	if !shouldRunGitOpsPostTask(task) {
+		t.Fatal("GitOps post-task should allow an explicit review exemption")
+	}
+}
+
 func TestResolveRunWorkDirFallsBackForSharedPlan(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1067,7 +1087,9 @@ func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
 				TaskRef:            "task/ref",
 				Title:              "Recover GitOps",
 				Status:             "needs_review",
+				FilesToEdit:        []string{"README.md"},
 				EvidenceRefs:       []string{"implementation/evidence"},
+				ReviewResultRefs:   []string{"review/approved"},
 				VerifierResultRefs: []string{"verifier/focused"},
 			})
 		default:
@@ -1097,6 +1119,90 @@ func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
 	}
 	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit --no-verify -m") {
 		t.Fatalf("expected commit command, got %q", got)
+	}
+}
+
+func TestRunGitOpsPostTaskRecoveryRequiresVerifierRefs(t *testing.T) {
+	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+	}, &gitOpsRecordingRunner{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:               "task-1",
+				TaskRef:          "smoke-draft-pr",
+				Title:            "Smoke Draft PR",
+				Status:           "needs_review",
+				FilesToEdit:      []string{".agentic/automation-smoke.md"},
+				EvidenceRefs:     []string{"gitops-smoke-ref"},
+				ReviewResultRefs: []string{"review_result_task_1_passed"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:          "run-1",
+			ProjectID:   "mass-monorepo",
+			PlanID:      "plan-1",
+			TaskID:      "task-1",
+			SafeSummary: projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+		},
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{".agentic/automation-smoke.md"}},
+	})
+	if status != projectautomation.RunStatusFailed || failure != "automation_task_closeout_missing_verifier_refs" {
+		t.Fatalf("expected missing verifier failure, got status=%q failure=%q", status, failure)
+	}
+	if strings.Join(evidenceRefs, ",") != "gitops-failure:automation_task_closeout_missing_verifier_refs" {
+		t.Fatalf("expected safe failure evidence, got %+v", evidenceRefs)
+	}
+}
+
+func TestRunGitOpsPostTaskRecoveryRequiresReviewRefs(t *testing.T) {
+	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+	}, &gitOpsRecordingRunner{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:                 "task-1",
+				TaskRef:            "smoke-draft-pr",
+				Title:              "Smoke Draft PR",
+				Status:             "needs_review",
+				FilesToEdit:        []string{".agentic/automation-smoke.md"},
+				EvidenceRefs:       []string{"gitops-smoke-ref"},
+				VerifierResultRefs: []string{"bounded-smoke-marker-ready"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:          "run-1",
+			ProjectID:   "mass-monorepo",
+			PlanID:      "plan-1",
+			TaskID:      "task-1",
+			SafeSummary: projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+		},
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{".agentic/automation-smoke.md"}},
+	})
+	if status != projectautomation.RunStatusFailed || failure != "automation_task_closeout_missing_review_refs" {
+		t.Fatalf("expected missing review failure, got status=%q failure=%q", status, failure)
+	}
+	if strings.Join(evidenceRefs, ",") != "gitops-failure:automation_task_closeout_missing_review_refs" {
+		t.Fatalf("expected safe failure evidence, got %+v", evidenceRefs)
 	}
 }
 
@@ -1191,12 +1297,13 @@ func TestRunGitOpsPostTaskRecoveryReportsMissingRunnerSSHMount(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
 			writeJSON(t, w, runnerWorkTaskMetadata{
-				ID:               "task-1",
-				TaskRef:          "smoke-draft-pr",
-				Title:            "Smoke Draft PR",
-				Status:           "needs_review",
-				FilesToEdit:      []string{".agentic/automation-smoke.md"},
-				ReviewResultRefs: []string{"review_result_task_1_passed"},
+				ID:                 "task-1",
+				TaskRef:            "smoke-draft-pr",
+				Title:              "Smoke Draft PR",
+				Status:             "needs_review",
+				FilesToEdit:        []string{".agentic/automation-smoke.md"},
+				ReviewResultRefs:   []string{"review_result_task_1_passed"},
+				VerifierResultRefs: []string{"bounded-smoke-marker-ready"},
 			})
 		default:
 			http.NotFound(w, r)

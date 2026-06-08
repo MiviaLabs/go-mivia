@@ -448,7 +448,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			status = projectautomation.RunStatusFailed
 			failureCategory = "automation_task_closeout_missing"
 		}
-		if status == projectautomation.RunStatusCompleted && !readOnlyReviewRun && shouldRunGitOpsForTask(taskMetadata) {
+		if status == projectautomation.RunStatusCompleted && !readOnlyReviewRun && shouldRunGitOpsPostTask(taskMetadata) {
 			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 			if err != nil {
 				status = projectautomation.RunStatusFailed
@@ -601,6 +601,9 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 	if !taskHasGovernedCloseout(taskMetadata) {
 		return projectautomation.RunStatusFailed, "automation_task_closeout_missing", time.Since(started).Milliseconds(), nil
 	}
+	if failure := gitOpsPostTaskCloseoutFailure(taskMetadata); failure != "" {
+		return projectautomation.RunStatusFailed, failure, time.Since(started).Milliseconds(), []string{"gitops-failure:" + failure}
+	}
 	gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 	if err != nil {
 		return projectautomation.RunStatusFailed, gitOpsFailureCategoryForRunner(err), time.Since(started).Milliseconds(), gitOpsFailureEvidenceRefs(err)
@@ -612,6 +615,23 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 		}
 	}
 	return projectautomation.RunStatusCompleted, "", time.Since(started).Milliseconds(), evidenceRefs
+}
+
+func shouldRunGitOpsPostTask(task runnerWorkTaskMetadata) bool {
+	return gitOpsPostTaskCloseoutFailure(task) == ""
+}
+
+func gitOpsPostTaskCloseoutFailure(task runnerWorkTaskMetadata) string {
+	if !shouldRunGitOpsForTask(task) {
+		return "automation_task_closeout_not_gitops_task"
+	}
+	if len(task.VerifierResultRefs) == 0 {
+		return "automation_task_closeout_missing_verifier_refs"
+	}
+	if len(task.ReviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" {
+		return "automation_task_closeout_missing_review_refs"
+	}
+	return ""
 }
 
 func isGitOpsPostTaskRecoveryRun(run projectautomation.AutomationRun) bool {
@@ -1082,6 +1102,7 @@ type runnerWorkTaskMetadata struct {
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 	ClaimRefs          []string `json:"claim_refs,omitempty"`
 	ReviewResultRefs   []string `json:"review_result_refs,omitempty"`
+	ReviewExemptReason string   `json:"review_exempt_reason,omitempty"`
 	VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
 }
 

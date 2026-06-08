@@ -990,11 +990,14 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, claimNextStepError("claim_pre_execution_recovery", err)
 	}
-	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, claimNextStepError("claim_gitops_post_task_recovery", err)
-	}
 	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, claimNextStepError("claim_post_implementation_review_recovery", err)
+	}
+	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("queue_outstanding_post_implementation_reviews_before_gitops", err)
+	}
+	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
+		return claimed, claimNextStepError("claim_gitops_post_task_recovery", err)
 	}
 	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, claimNextStepError("claim_interrupted_starting_after_recovery", err)
@@ -1029,6 +1032,9 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	}
 	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
 		return ClaimedRun{}, claimNextStepError("queue_outstanding_post_implementation_reviews", err)
+	}
+	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
+		return claimed, claimNextStepError("claim_post_implementation_review_recovery_after_review_queue", err)
 	}
 	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
 		return claimed, claimNextStepError("claim_interrupted_starting_after_review_queue", err)
@@ -5201,7 +5207,7 @@ func taskNeedsGitOpsPostTaskRecovery(run AutomationRun, task projectworkplan.Wor
 	if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
 		return false
 	}
-	if len(task.ReviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" && !isGitOpsTailTask(task) {
+	if !taskReadyForAutomationCloseout(task) {
 		return false
 	}
 	for _, ref := range append(append([]string{}, task.EvidenceRefs...), task.ClaimRefs...) {
@@ -5264,13 +5270,6 @@ func automationReviewExemptReason(task projectworkplan.WorkTask) string {
 	default:
 		return ""
 	}
-}
-
-func isGitOpsTailTask(task projectworkplan.WorkTask) bool {
-	ref := strings.ToLower(strings.TrimSpace(task.TaskRef))
-	return ref == "final-pr-readiness" ||
-		strings.Contains(ref, "draft-pr") ||
-		strings.Contains(ref, "gitops")
 }
 
 func metadataOnlyTaskHasCloseoutEvidence(task projectworkplan.WorkTask) bool {
