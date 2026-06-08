@@ -1938,6 +1938,34 @@ func TestValidateGovernedCloseoutRejectsChildTaskMetadataBeforeREST(t *testing.T
 	if got := governedCloseoutFailureCategory(err); !strings.HasPrefix(got, "governed_closeout_validation_failed_unsafe_child_task_path") {
 		t.Fatalf("expected tabbed path validation failure, got %v (%q)", err, got)
 	}
+
+	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].EvidenceNeeded = []string{""}
+	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if got := governedCloseoutFailureCategory(err); !strings.HasPrefix(got, "governed_closeout_validation_failed_child_task_evidence_needed_contains_empty_value") {
+		t.Fatalf("expected empty text-list validation failure, got %v (%q)", err, got)
+	}
+
+	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].ContextPackRefs = []string{""}
+	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if got := governedCloseoutFailureCategory(err); !strings.HasPrefix(got, "governed_closeout_validation_failed_unsafe_child_task_ref") {
+		t.Fatalf("expected empty ref-list validation failure, got %v (%q)", err, got)
+	}
+
+	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].ReviewGate = "do not persist token=value"
+	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if got := governedCloseoutFailureCategory(err); !strings.HasPrefix(got, "governed_closeout_validation_failed_unsafe_child_task_review_gate") {
+		t.Fatalf("expected unsafe optional text validation failure, got %v (%q)", err, got)
+	}
+
+	output = mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].OutputContract = "provider_payload"
+	err = validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if got := governedCloseoutFailureCategory(err); !strings.HasPrefix(got, "governed_closeout_validation_failed_unsafe_child_task_output_contract") {
+		t.Fatalf("expected unsafe output contract validation failure, got %v (%q)", err, got)
+	}
 }
 
 func TestValidateGovernedCloseoutAllowsSafeProhibitionPhrases(t *testing.T) {

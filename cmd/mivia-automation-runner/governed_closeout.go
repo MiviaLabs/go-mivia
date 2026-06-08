@@ -841,6 +841,16 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("unsafe child task %s", name)}
 		}
 	}
+	optionalText := map[string]string{
+		"review_gate":                   task.ReviewGate,
+		"regression_test_applicability": task.RegressionApplicability,
+		"output_contract":               task.OutputContract,
+	}
+	for name, value := range optionalText {
+		if strings.TrimSpace(value) != "" && unsafeText(value) {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("unsafe child task %s", name)}
+		}
+	}
 	if len(task.Description) > closeoutChildTaskDescriptionMax ||
 		len(task.VerificationRequirement) > closeoutWorkTaskTextMax ||
 		len(task.ExpectedOutput) > closeoutWorkTaskTextMax ||
@@ -893,7 +903,7 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 		}
 	}
 	for _, ref := range append(append([]string{}, task.ContextPackRefs...), task.DependencyTaskIDs...) {
-		if strings.TrimSpace(ref) != "" && !safeCloseoutRef(ref) {
+		if !safeCloseoutRef(ref) {
 			return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("unsafe child task ref")}
 		}
 	}
@@ -907,6 +917,9 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 
 func validateGovernedChildTextList(values []string, name string, max int) error {
 	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("child task %s contains empty value", name)}
+		}
 		if len(strings.TrimSpace(value)) > max {
 			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("child task %s exceeds Work Task REST limits", name)}
 		}
