@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
 )
 
 var ErrInvalidInput = errors.New("invalid project automation input")
@@ -3901,9 +3902,13 @@ func (svc *Service) createRecoveryPostImplementationReviewTask(ctx context.Conte
 	if !ok || workPlans == nil {
 		return projectworkplan.WorkTask{}, fmt.Errorf("%w: post_implementation_review_task_missing", ErrInvalidInput)
 	}
+	return svc.createRecoveryPostImplementationReviewTaskWithRef(ctx, workPlans, run, target, reviewTaskRef)
+}
+
+func (svc *Service) createRecoveryPostImplementationReviewTaskWithRef(ctx context.Context, workPlans remediationWorkPlanAPI, run AutomationRun, target projectworkplan.WorkTask, reviewTaskRef string) (projectworkplan.WorkTask, error) {
 	reviewerAgentID := independentReviewerAgent(target.OwnerAgent)
 	files := uniqueRefs(append(append(append([]string{}, target.FilesToRead...), target.FilesToEdit...), target.LikelyFilesAffected...))
-	return workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+	task, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
 		ProjectID:               run.ProjectID,
 		PlanID:                  run.PlanID,
 		TaskRef:                 reviewTaskRef,
@@ -3923,6 +3928,10 @@ func (svc *Service) createRecoveryPostImplementationReviewTask(ctx context.Conte
 		ResumeInstructions:      "Review implementation task " + target.ID + " only. Attach review_result_ref to that implementation task, then complete this review task.",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	})
+	if err == nil || !errors.Is(err, workplanstore.ErrDuplicate) || strings.Contains(reviewTaskRef, "-"+target.ID) {
+		return task, err
+	}
+	return svc.createRecoveryPostImplementationReviewTaskWithRef(ctx, workPlans, run, target, reviewTaskRef+"-"+target.ID)
 }
 
 func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) (Automation, error) {

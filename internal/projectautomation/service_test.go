@@ -2833,6 +2833,151 @@ func TestClaimNextRunDoesNotRetryGitOpsRecoveryForCompletedTask(t *testing.T) {
 	}
 }
 
+func TestQueueOutstandingPostImplementationReviewUsesUniqueRefWhenPriorReviewTaskClosed(t *testing.T) {
+	ctx := context.Background()
+	workStore := workstore.NewMemoryStore()
+	workSvc := projectworkplan.New(workStore)
+	plan, err := workSvc.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
+		ProjectID:   "project-1",
+		PlanRef:     "plan-duplicate-review-ref",
+		Title:       "Duplicate review ref",
+		GoalSummary: "Closed review task history must not block new review recovery.",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkPlan returned error: %v", err)
+	}
+	plan, err = workSvc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         plan.ID,
+		Status:         projectworkplan.WorkPlanStatusActive,
+		SafeNextAction: "activate",
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkPlanStatus returned error: %v", err)
+	}
+	target, err := workSvc.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  plan.ID,
+		TaskRef:                 "smoke-draft-pr",
+		Title:                   "Smoke Draft PR",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              "smoke-gitops-worker",
+		Description:             "Create smoke marker.",
+		FilesToEdit:             []string{".agentic/automation-smoke.md"},
+		LikelyFilesAffected:     []string{".agentic/automation-smoke.md"},
+		VerificationRequirement: "runner verifies GitOps refs",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkTask target returned error: %v", err)
+	}
+	closedReview, err := workSvc.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  plan.ID,
+		TaskRef:                 "review-smoke-draft-pr",
+		Title:                   "Closed review",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              "codex-reviewer",
+		Description:             "Closed prior review.",
+		VerificationRequirement: "closed prior review",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkTask review returned error: %v", err)
+	}
+	if _, err := workSvc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: closedReview.ID, RunID: "old-review-run", TraceID: "old-review-run"}); err != nil {
+		t.Fatalf("ClaimWorkTask review returned error: %v", err)
+	}
+	if _, err := workSvc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: closedReview.ID, RunID: "old-review-run", TraceID: "old-review-run"}); err != nil {
+		t.Fatalf("StartWorkTask review returned error: %v", err)
+	}
+	if _, err := workSvc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: closedReview.ID, RunID: "old-review-run", TraceID: "old-review-run", SafeNextAction: "close prior review"},
+		Status:              projectworkplan.WorkTaskStatusNeedsReview,
+	}); err != nil {
+		t.Fatalf("UpdateWorkTaskStatus review returned error: %v", err)
+	}
+	if _, err := workSvc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             closedReview.ID,
+		RunID:              "old-review-run",
+		TraceID:            "old-review-run",
+		Outcome:            "prior review closed",
+		SafeNextAction:     "keep historical review closed",
+		VerifierResultRefs: []string{"verifier.review.old"},
+		ReviewExemptReason: "historical review task",
+	}); err != nil {
+		t.Fatalf("CompleteWorkTask review returned error: %v", err)
+	}
+	if _, err := workSvc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: target.ID, RunID: "parent-run", TraceID: "parent-run"}); err != nil {
+		t.Fatalf("ClaimWorkTask target returned error: %v", err)
+	}
+	if _, err := workSvc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: target.ID, RunID: "parent-run", TraceID: "parent-run"}); err != nil {
+		t.Fatalf("StartWorkTask target returned error: %v", err)
+	}
+	target, err = workSvc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:      "project-1",
+			TaskID:         target.ID,
+			RunID:          "parent-run",
+			TraceID:        "parent-run",
+			SafeNextAction: "post implementation review required",
+		},
+		Status: projectworkplan.WorkTaskStatusNeedsReview,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkTaskStatus target returned error: %v", err)
+	}
+	store := newTestStore()
+	svc := New(store, workSvc, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/smoke-draft-pr",
+		Title:           "Smoke GitOps",
+		Purpose:         "Run smoke GitOps task.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "smoke-gitops-worker",
+		PlanID:          plan.ID,
+		AllowedTaskRefs: []string{target.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "parent-run",
+		ProjectID:      "project-1",
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         plan.ID,
+		TaskID:         target.ID,
+		WorkTaskStatus: target.Status,
+		Status:         RunStatusVerifying,
+		RunnerKind:     RunnerKindCodexCLI,
+		UpdatedAt:      time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if err := svc.queueOutstandingPostImplementationReviews(ctx, "project-1"); err != nil {
+		t.Fatalf("queueOutstandingPostImplementationReviews returned error: %v", err)
+	}
+	tasks, err := workSvc.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: plan.ID})
+	if err != nil {
+		t.Fatalf("ListOpenWorkTasks returned error: %v", err)
+	}
+	found := false
+	for _, task := range tasks {
+		if strings.HasPrefix(task.TaskRef, "review-smoke-draft-pr-") && task.Status == projectworkplan.WorkTaskStatusReady {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected suffixed ready review task, got %#v", tasks)
+	}
+}
+
 func TestQueueReadyDependentAutomationIgnoresOldFailuresAfterSystemFixRecoveryMarker(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
