@@ -23,6 +23,8 @@ services:
       MIVIA_CONFIG_PATH: "/app/configs/mivia-server.compose.toml"
       MIVIA_INTERNAL_ADDR: "127.0.0.1:18080"
       MIVIA_PUBLIC_PORT: "8080"
+      GH_TOKEN: "${GH_TOKEN:-}"
+      MIVIA_GIT_AUTHOR_EMAIL: "${MIVIA_GIT_AUTHOR_EMAIL:-}"
     volumes:
       # Persistent project graph/search stores are under
       # /var/lib/mivia/projects/<project-id>/.
@@ -123,6 +125,8 @@ services:
       MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-10001}"
       MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-10001}"
       MIVIA_RUNTIME_HOME: "${MIVIA_AUTOMATION_HOME:-/home/mivia}"
+      GH_TOKEN: "${GH_TOKEN:-}"
+      MIVIA_GIT_AUTHOR_EMAIL: "${MIVIA_GIT_AUTHOR_EMAIL:-}"
     volumes:
       - mivia-data:/var/lib/mivia
       # Mount a project workspace to /workspace and Codex auth to the runner

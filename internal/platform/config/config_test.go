@@ -33,6 +33,17 @@ func TestConfigValidate_LocalBind_ReturnsNil(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_DefaultGitOperationsAllowsEmptyBranchPrefix(t *testing.T) {
+	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
+	cfg.GitOperations.Enabled = true
+	cfg.GitOperations.BranchPrefix = ""
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected empty GitOps branch prefix to be valid: %v", err)
+	}
+}
+
 func TestConfigValidate_LiveUpdatesRequireContentGraph(t *testing.T) {
 	cfg := defaultConfig("test.toml")
 	cfg.resolveAutoSettings(runtime.NumCPU())

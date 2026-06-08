@@ -427,7 +427,7 @@ func defaultGitOperations() GitOperations {
 		RequireCleanBeforeTask:       true,
 		CleanupWorktreeAfterPlanDone: true,
 		RemoteName:                   "origin",
-		BranchPrefix:                 "mivia/",
+		BranchPrefix:                 "",
 		CommitAuthorName:             "Mivia Automation",
 		CommitAuthorEmailEnv:         "MIVIA_GIT_AUTHOR_EMAIL",
 		GitHubCLIPath:                "gh",
@@ -907,7 +907,7 @@ func (automation Automation) Validate() error {
 }
 
 func (gitops GitOperations) Validate() error {
-	return gitops.validate("MIVIA_GIT_OPS", false)
+	return gitops.validate("MIVIA_GIT_OPS", true)
 }
 
 func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool) error {

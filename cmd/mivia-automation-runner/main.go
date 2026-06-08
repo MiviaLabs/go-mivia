@@ -1262,7 +1262,7 @@ func (client *runnerClient) resolveTaskScopedRunWorkDir(ctx context.Context, pro
 	}
 	scopedPlan := plan
 	scopedPlan.GitWorktreeRef = appendRefToken(plan.GitWorktreeRef, taskToken)
-	scopedPlan.GitBranchRef = appendRefToken(firstNonEmpty(plan.GitBranchRef, "mivia/task"), taskToken)
+	scopedPlan.GitBranchRef = appendRefToken(firstNonEmpty(plan.GitBranchRef, "task"), taskToken)
 	target, err := dedicatedWorktreePath(baseWorkDir, projectID, scopedPlan.GitWorktreeRef)
 	if err != nil {
 		return "", err

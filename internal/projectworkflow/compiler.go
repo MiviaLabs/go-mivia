@@ -725,9 +725,6 @@ func compileIsolationRefs(workflow WorkflowDefinition, planRef string, userReque
 		branchToken = compileUniqueBranchSummary(summary, token)
 	}
 	branchPrefix := options.BranchPrefix
-	if strings.TrimSpace(branchPrefix) == "" && options.BranchSummaryTemplate == "" {
-		branchPrefix = "mivia/"
-	}
 	return compileIsolation{
 		parallelGroupRef: "workflow/" + token,
 		workspaceRef:     "workflow/" + token,

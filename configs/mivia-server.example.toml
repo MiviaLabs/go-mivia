@@ -130,10 +130,9 @@ draft_pr_after_push = false
 require_clean_before_task = true
 cleanup_worktree_after_plan_done = true
 remote_name = "origin"
-branch_prefix = "mivia/"
-# Optional RE2 branch policy checked before push/PR. Leave empty to rely on
-# branch_prefix only, or set per project when another repository has its own
-# branch convention.
+branch_prefix = ""
+# Optional RE2 branch policy checked before push/PR. Leave empty when the
+# repository does not need an additional branch convention.
 branch_name_pattern = ""
 commit_author_name = "Mivia Automation"
 commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
