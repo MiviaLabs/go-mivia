@@ -2131,6 +2131,7 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
 			TraceID:            firstNonEmpty(run.TraceID, run.ID),
 			ResumeInstructions: gitOpsRecoveryResumeInstructions(category, dirtyPaths),
+			EvidenceRefs:       append([]string(nil), evidenceRefs...),
 		},
 		Status: projectworkplan.WorkTaskStatusReady,
 	})
@@ -2188,6 +2189,7 @@ func (svc *Service) blockTaskAfterGitOpsRecoveryBlocker(ctx context.Context, run
 		TraceID:            firstNonEmpty(run.TraceID, run.ID),
 		BlockedReason:      reason,
 		ResumeInstructions: recoveryResumeInstructions(reason + " Fix GitOps configuration, credentials, branch policy, push, or PR setup before rerunning."),
+		EvidenceRefs:       []string{"gitops-failure:" + safeFailure(category)},
 	})
 	if err != nil {
 		return AutomationRun{}, err

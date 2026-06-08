@@ -8343,6 +8343,7 @@ func TestCompleteAttemptRequeuesImplementationAfterGitOpsRecoveryFailure(t *test
 		RunID:           "run-a",
 		Status:          RunStatusFailed,
 		FailureCategory: "gitops_verification_failed",
+		EvidenceRefs:    []string{"gitops-failure:gitops_verification_failed"},
 	})
 	if err != nil {
 		t.Fatalf("CompleteAttempt returned error: %v", err)
@@ -8353,6 +8354,9 @@ func TestCompleteAttemptRequeuesImplementationAfterGitOpsRecoveryFailure(t *test
 	requeuedTask := fake.tasks[task.ID]
 	if requeuedTask.Status != projectworkplan.WorkTaskStatusReady || requeuedTask.ClaimedByRunID != "" {
 		t.Fatalf("expected task to be ready for implementation, got %+v", requeuedTask)
+	}
+	if !contains(requeuedTask.EvidenceRefs, "gitops-failure:gitops_verification_failed") {
+		t.Fatalf("expected requeued task to retain GitOps failure evidence, got %+v", requeuedTask.EvidenceRefs)
 	}
 	var replacement AutomationRun
 	for _, candidate := range store.runs {
@@ -8419,6 +8423,9 @@ func TestCompleteAttemptBlocksAfterDetailedGitOpsPostTaskRecoveryFailure(t *test
 	blockedTask := fake.tasks[task.ID]
 	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked || !strings.Contains(blockedTask.BlockedReason, "gitops_post_task_failed_commit_author_email_file") {
 		t.Fatalf("expected task to be blocked with detailed GitOps reason, got %+v", blockedTask)
+	}
+	if !contains(blockedTask.EvidenceRefs, "gitops-failure:gitops_post_task_failed_commit_author_email_file") {
+		t.Fatalf("expected blocked task to retain GitOps failure evidence, got %+v", blockedTask.EvidenceRefs)
 	}
 }
 
@@ -9396,6 +9403,11 @@ func (fake *fakeWorkTasks) UpdateWorkTaskStatus(_ context.Context, input project
 	if input.ResumeInstructions != "" {
 		task.ResumeInstructions = input.ResumeInstructions
 	}
+	for _, ref := range input.EvidenceRefs {
+		if !containsRef(task.EvidenceRefs, ref) {
+			task.EvidenceRefs = append(task.EvidenceRefs, ref)
+		}
+	}
 	if input.Status == projectworkplan.WorkTaskStatusBlocked {
 		task.BlockedReason = input.BlockedReason
 	}
@@ -9534,6 +9546,11 @@ func (fake *fakeWorkTasks) BlockWorkTask(_ context.Context, input projectworkpla
 	task.Status = projectworkplan.WorkTaskStatusBlocked
 	task.BlockedReason = input.BlockedReason
 	task.ResumeInstructions = input.ResumeInstructions
+	for _, ref := range input.EvidenceRefs {
+		if !containsRef(task.EvidenceRefs, ref) {
+			task.EvidenceRefs = append(task.EvidenceRefs, ref)
+		}
+	}
 	if input.TraceID != "" {
 		task.TraceID = input.TraceID
 	}
