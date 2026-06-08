@@ -1707,10 +1707,11 @@ func appendRefToken(ref string, token string) string {
 		return ref
 	}
 	suffix := "-" + token
-	maxBase := 200 - len(suffix)
+	const maxWorktreeRefLength = 512
+	maxBase := maxWorktreeRefLength - len(suffix)
 	if maxBase < 1 {
-		if len(token) > 200 {
-			return token[:200]
+		if len(token) > maxWorktreeRefLength {
+			return token[:maxWorktreeRefLength]
 		}
 		return token
 	}

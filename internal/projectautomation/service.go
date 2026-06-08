@@ -1796,6 +1796,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if strings.TrimSpace(run.SafeSummary) == RunSafeSummaryGitOpsPostTaskRecovery && isGitOpsRecoveryFailure(failureCategory) {
 			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory, evidenceRefs)
 		}
+		if isTerminalGitOpsPostTaskBlocker(failureCategory) {
+			return svc.blockTaskAfterTerminalAttempt(ctx, run, failureCategory)
+		}
 		if isRecoverableGitOpsPostTaskFailure(failureCategory) {
 			run.Status = RunStatusFailed
 			run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
@@ -2093,6 +2096,9 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
 	}
+	if isTerminalGitOpsPostTaskBlocker(category) {
+		return svc.blockTaskAfterGitOpsRecoveryBlocker(ctx, updater, run, task, category)
+	}
 	dirtyPaths := dirtyPathsFromEvidenceRefs(evidenceRefs)
 	if strings.TrimSpace(category) == "gitops_dirty_worktree_scope" && len(dirtyPaths) > 0 {
 		expandScopes, outsidePaths := svc.classifyDirtyScopePaths(run.ProjectID, task, dirtyPaths)
@@ -2132,7 +2138,7 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 	run.Status = RunStatusFailed
 	run.WorkTaskStatus = readyTask.Status
 	run.SafeSummary = gitOpsRecoveryRequeueSummary(category)
-	run.FailureCategory = "gitops_recovery_failed_requires_implementation"
+	run.FailureCategory = gitOpsRecoveryImplementationFailureCategory(category)
 	now := svc.now()
 	if run.FinishedAt.IsZero() {
 		run.FinishedAt = now
@@ -2150,6 +2156,47 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 		return updated, nil
 	}
 	return updated, nil
+}
+
+func (svc *Service) blockTaskAfterGitOpsRecoveryBlocker(ctx context.Context, updater workTaskStatusUpdater, run AutomationRun, task projectworkplan.WorkTask, category string) (AutomationRun, error) {
+	reason := gitOpsRecoveryBlockedReason(category)
+	blockedTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "gitops_recovery_blocked",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			BlockedReason:      reason,
+			ResumeInstructions: recoveryResumeInstructions(reason + " Fix GitOps configuration, credentials, branch policy, push, or PR setup before rerunning."),
+		},
+		Status: projectworkplan.WorkTaskStatusBlocked,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusBlocked
+	run.WorkTaskStatus = blockedTask.Status
+	run.FailureCategory = safeFailure(category)
+	run.SafeSummary = "gitops_recovery_blocked_after_" + safeFailure(category)
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	return svc.store.UpdateRun(ctx, run)
+}
+
+func gitOpsRecoveryImplementationFailureCategory(category string) string {
+	return "gitops_recovery_failed_requires_implementation"
+}
+
+func gitOpsRecoveryBlockedReason(category string) string {
+	category = safeFailure(category)
+	if category == "" {
+		return "GitOps recovery blocked by an unknown post-task failure."
+	}
+	return "GitOps recovery blocked after " + category + "."
 }
 
 func gitOpsRecoveryRequeueSummary(category string) string {
@@ -3640,12 +3687,10 @@ func shouldQueueReplacementRun(run AutomationRun) bool {
 }
 
 func isRecoverableRecoveryFailure(category string) bool {
-	switch strings.TrimSpace(category) {
-	case "gitops_recovery_failed_requires_implementation", "pre_execution_recovery_failed_requires_implementation":
-		return true
-	default:
-		return false
-	}
+	category = strings.TrimSpace(category)
+	return category == "gitops_recovery_failed_requires_implementation" ||
+		strings.HasPrefix(category, "gitops_recovery_failed_requires_implementation_after_") ||
+		category == "pre_execution_recovery_failed_requires_implementation"
 }
 
 func isRecoverableCodexExecutionFailure(category string) bool {
@@ -5037,12 +5082,27 @@ func implementationTaskRequiresGovernanceContract(task projectworkplan.WorkTask)
 }
 
 func isRecoverableGitOpsPostTaskFailure(category string) bool {
-	switch strings.TrimSpace(category) {
-	case "gitops_post_task_failed", "gitops_branch_policy_failed", "gitops_command_failed", "gitops_invalid_input", "gitops_verification_failed", "gitops_dirty_worktree_scope":
-		return true
-	default:
+	category = strings.TrimSpace(category)
+	return category == "gitops_dirty_worktree_scope" ||
+		category == "gitops_post_task_failed" ||
+		category == "gitops_verification_failed" ||
+		strings.HasPrefix(category, "gitops_verification_failed_") ||
+		category == "gitops_invalid_input_no_changed_files_matched"
+}
+
+func isTerminalGitOpsPostTaskBlocker(category string) bool {
+	category = strings.TrimSpace(category)
+	if category == "" {
 		return false
 	}
+	if category == "gitops_branch_policy_failed" ||
+		category == "gitops_command_failed" ||
+		strings.HasPrefix(category, "gitops_command_failed_") ||
+		category == "gitops_invalid_input" ||
+		strings.HasPrefix(category, "gitops_invalid_input_") {
+		return !isRecoverableGitOpsPostTaskFailure(category)
+	}
+	return false
 }
 
 func isRecoverablePreExecutionFailure(category string) bool {

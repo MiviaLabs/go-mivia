@@ -2340,6 +2340,54 @@ func TestRequeuePreExecutionRecoveryExpandsConfiguredSupportDirtyPathsWithoutLik
 	}
 }
 
+func TestCompleteAttemptBlocksTerminalGitOpsCommandFailureInsteadOfRequeueingImplementation(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:             "run-a",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         task.PlanID,
+		TaskID:         task.ID,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		AttemptCount:   1,
+		ClaimID:        "claim-a",
+		RunnerID:       "runner-a",
+		SafeSummary:    RunSafeSummaryGitOpsPostTaskRecovery,
+		WorkTaskStatus: task.Status,
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       automation.ProjectID,
+		RunID:           run.ID,
+		ClaimID:         run.ClaimID,
+		RunnerID:        run.RunnerID,
+		Status:          RunStatusFailed,
+		FailureCategory: "gitops_command_failed_gh_pr_create",
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if updated.Status != RunStatusBlocked || updated.FailureCategory != "gitops_command_failed_gh_pr_create" {
+		t.Fatalf("expected explicit GitOps blocker, got %+v", updated)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked || !strings.Contains(blockedTask.BlockedReason, "gitops_command_failed_gh_pr_create") {
+		t.Fatalf("expected task blocked with GitOps command reason, got %+v", blockedTask)
+	}
+}
+
 func TestRequeuePreExecutionRecoveryDoesNotExpandLocalTaskDirtyPaths(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "fix-a", []string{"apps/frontend-mobile/lib"})

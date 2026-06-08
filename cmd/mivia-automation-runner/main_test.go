@@ -1044,6 +1044,81 @@ func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
 	}
 }
 
+func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
+	runner := &gitOpsRecordingRunner{
+		results: []projectgitops.CommandResult{
+			{},
+			{Stdout: " M .agentic/automation-smoke.md\n"},
+			{Stdout: "chore-smoke-20260608-governed-smoke-gitops\n"},
+			{},
+			{},
+			{},
+			{Stdout: "abc123def456\n"},
+			{},
+			{},
+			{},
+		},
+		errs: []error{
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			errors.New("no pull request"),
+			errors.New("pr create failed"),
+		},
+	}
+	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		DraftPRAfterPush:     true,
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		SSHPrivateKeyPath:    "/tmp/id_ed25519",
+		SSHKnownHostsPath:    "/tmp/known_hosts",
+		GitHubTokenEnv:       "GH_TOKEN",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	t.Setenv("GH_TOKEN", "token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:                 "task-1",
+				TaskRef:            "smoke-draft-pr",
+				Title:              "Smoke Draft PR",
+				Status:             "needs_review",
+				FilesToEdit:        []string{".agentic/automation-smoke.md"},
+				ReviewResultRefs:   []string{"review_result_task_1_passed"},
+				VerifierResultRefs: []string{"bounded-smoke-marker-ready"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+
+	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:           "run-1",
+			ProjectID:    "mass-monorepo",
+			AutomationID: "automation-1",
+			AgentID:      "agent-1",
+			PlanID:       "plan-1",
+			TaskID:       "task-1",
+			SafeSummary:  projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+		},
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{".agentic/automation-smoke.md"}},
+	})
+	if status != projectautomation.RunStatusFailed || failure != "gitops_command_failed_gh_pr_create" {
+		t.Fatalf("expected precise PR create failure, got status=%q failure=%q", status, failure)
+	}
+}
+
 func TestDedicatedWorktreePathRequiresAbsoluteBase(t *testing.T) {
 	if _, err := dedicatedWorktreePath("relative/repo", "project-1", "worktree-1"); err == nil {
 		t.Fatal("expected relative base workdir to be rejected")
@@ -1066,6 +1141,18 @@ func TestDedicatedWorktreePathMatchesWorkspaceWorktreeNaming(t *testing.T) {
 	want := filepath.Join(baseWorkDir, ".mivia-worktrees", "Project_1", "Project_1-worktree-Docs_v1.2")
 	if resolved != want {
 		t.Fatalf("expected %q, got %q", want, resolved)
+	}
+}
+
+func TestAppendRefTokenAllowsLongWorkflowRefs(t *testing.T) {
+	ref := strings.Repeat("workflow-chain-stage-", 18)
+	token := "work_task_1234567890abcdef"
+	got := appendRefToken(ref, token)
+	if !strings.Contains(got, token) {
+		t.Fatalf("expected task token to be preserved, got %q", got)
+	}
+	if len(got) <= 300 {
+		t.Fatalf("expected long ref over 300 chars to be preserved, got len=%d ref=%q", len(got), got)
 	}
 }
 

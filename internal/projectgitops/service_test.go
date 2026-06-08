@@ -510,6 +510,30 @@ func TestFailureCategoryWithDetailPreservesVerificationCommandHash(t *testing.T)
 	}
 }
 
+func TestFailureCategoryWithDetailPreservesCommandStep(t *testing.T) {
+	svc := NewWithRunner(Options{}, &recordingRunner{
+		errs: []error{errors.New("gh failed")},
+	})
+	_, err := svc.run(context.Background(), Command{Path: "gh", Args: []string{"pr", "create", "--draft"}, Dir: "/tmp/worktree"})
+	if err == nil {
+		t.Fatal("expected command failure")
+	}
+	if got := FailureCategoryWithDetail(err); got != "gitops_command_failed_gh_pr_create" {
+		t.Fatalf("expected detailed command category, got %q", got)
+	}
+}
+
+func TestFailureCategoryWithDetailPreservesInvalidGitOpsConfig(t *testing.T) {
+	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, PushAfterTask: true}, &recordingRunner{})
+	_, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})
+	if err == nil {
+		t.Fatal("expected invalid push config")
+	}
+	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_ssh_config_required" {
+		t.Fatalf("expected detailed invalid input category, got %q", got)
+	}
+}
+
 func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},

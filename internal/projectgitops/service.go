@@ -361,18 +361,30 @@ func FailureCategory(err error) string {
 
 func FailureCategoryWithDetail(err error) string {
 	category := FailureCategory(err)
-	if category != "gitops_verification_failed" {
+	switch category {
+	case "gitops_verification_failed":
+		fields := strings.Fields(err.Error())
+		if len(fields) == 0 {
+			return category
+		}
+		detail := fields[len(fields)-1]
+		if matched, _ := regexp.MatchString(`^[a-f0-9]{12}$`, detail); matched {
+			return category + "_" + detail
+		}
+		return category
+	case "gitops_command_failed":
+		if detail := gitOpsFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
+		return category
+	case "gitops_invalid_input":
+		if detail := invalidInputFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
+		return category
+	default:
 		return category
 	}
-	fields := strings.Fields(err.Error())
-	if len(fields) == 0 {
-		return category
-	}
-	detail := fields[len(fields)-1]
-	if matched, _ := regexp.MatchString(`^[a-f0-9]{12}$`, detail); matched {
-		return category + "_" + detail
-	}
-	return category
 }
 
 func (svc *Service) runPreCommitVerification(ctx context.Context, workDir string) ([]string, []string, error) {
@@ -703,9 +715,89 @@ func safeGitDirectoryArg(dir string) string {
 func (svc *Service) run(ctx context.Context, command Command) (CommandResult, error) {
 	result, err := svc.runner.Run(ctx, command)
 	if err != nil {
-		return result, fmt.Errorf("%w: %s", ErrCommandFailed, command.Path)
+		return result, fmt.Errorf("%w: %s", ErrCommandFailed, commandFailureDetail(command))
 	}
 	return result, nil
+}
+
+func commandFailureDetail(command Command) string {
+	parts := []string{safeFailureToken(filepath.Base(command.Path))}
+	for index := 0; index < len(command.Args) && len(parts) < 3; index++ {
+		arg := strings.TrimSpace(command.Args[index])
+		if arg == "" {
+			continue
+		}
+		if arg == "-c" && index+1 < len(command.Args) && strings.HasPrefix(command.Args[index+1], "safe.directory=") {
+			index++
+			continue
+		}
+		token := safeFailureToken(arg)
+		if token == "" {
+			continue
+		}
+		parts = append(parts, token)
+	}
+	out := strings.Join(parts, "_")
+	if out == "" {
+		return "command"
+	}
+	if len(out) > 80 {
+		return strings.TrimRight(out[:80], "_")
+	}
+	return out
+}
+
+func gitOpsFailureDetail(message string) string {
+	fields := strings.Fields(strings.TrimSpace(message))
+	if len(fields) == 0 {
+		return ""
+	}
+	return safeFailureToken(fields[len(fields)-1])
+}
+
+func invalidInputFailureDetail(message string) string {
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, item := range []struct {
+		needle string
+		detail string
+	}{
+		{needle: "ssh key and known hosts are required", detail: "ssh_config_required"},
+		{needle: "github token reference required", detail: "github_token_required"},
+		{needle: "no safe task pathspecs", detail: "no_safe_task_pathspecs"},
+		{needle: "no changed files matched safe task pathspecs", detail: "no_changed_files_matched"},
+		{needle: "branch policy", detail: "branch_policy"},
+		{needle: "branch name is too long", detail: "branch_name_too_long"},
+		{needle: "task ref is too long", detail: "task_ref_too_long"},
+		{needle: "task title is too long", detail: "task_title_too_long"},
+		{needle: "invalid conventional commit pr title", detail: "pr_title_invalid"},
+		{needle: "invalid conventional commit subject", detail: "commit_subject_invalid"},
+		{needle: "workdir must be absolute", detail: "workdir_invalid"},
+		{needle: "unsafe verifier command", detail: "verifier_command_unsafe"},
+	} {
+		if strings.Contains(message, item.needle) {
+			return item.detail
+		}
+	}
+	return ""
+}
+
+func safeFailureToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		allowed := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if allowed {
+			builder.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			builder.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(builder.String(), "_")
 }
 
 func (svc *Service) authorEmail() (string, error) {
