@@ -66,8 +66,24 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 		return ""
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(text, "child_task_create_failed") {
+		for _, marker := range []string{
+			"invalid_project_work_task_input",
+			"invalid_project_workplan_input",
+			"invalid_project_automation_input",
+			"invalid_project_workflow_input",
+			"invalid_project_gitops_input",
+		} {
+			if strings.Contains(text, marker) {
+				return "child_task_create_failed_" + marker
+			}
+		}
+		if detail := governedCloseoutSanitizedFailureDetail(text, category, "child_task_create_failed"); detail != "" {
+			return detail
+		}
+		return "child_task_create_failed"
+	}
 	for _, marker := range []string{
-		"child_task_create_failed",
 		"wrapper_evidence_attach_failed",
 		"wrapper_status_update_failed",
 		"wrapper_verifier_attach_failed",
@@ -84,6 +100,10 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 			return marker
 		}
 	}
+	return governedCloseoutSanitizedFailureDetail(text, category, "")
+}
+
+func governedCloseoutSanitizedFailureDetail(text string, category string, prefix string) string {
 	var builder strings.Builder
 	lastUnderscore := false
 	for _, r := range text {
@@ -104,6 +124,14 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 	detail := strings.Trim(builder.String(), "_")
 	if detail == "" {
 		return ""
+	}
+	if prefix != "" {
+		detail = strings.TrimPrefix(detail, strings.Trim(prefix, "_")+"_")
+		detail = strings.TrimSuffix(detail, "_"+strings.Trim(prefix, "_"))
+		if detail == "" {
+			return ""
+		}
+		detail = strings.Trim(prefix, "_") + "_" + detail
 	}
 	max := 100 - len(category) - 1
 	if max < 20 {
