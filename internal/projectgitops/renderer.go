@@ -436,7 +436,7 @@ func testsValue(values []string) string {
 
 func valueOrUnavailable(value string) string {
 	if strings.TrimSpace(value) == "" {
-		return "not available"
+		return "unavailable"
 	}
 	return value
 }

@@ -903,6 +903,35 @@ func TestRenderDerivesTicketRefFromBranchForProjectPRTemplates(t *testing.T) {
 	}
 }
 
+func TestRenderUsesSafeUnavailableTicketPlaceholderForTicketlessSmokePR(t *testing.T) {
+	rendered, err := Render(PostTaskInput{
+		ProjectID:       "mass-monorepo",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "smoke-draft-pr",
+		TaskTitle:       "Smoke Draft PR",
+		BranchName:      "chore-input-smoke-20260608f-governed-smoke-gitops-compile-043cae090c73a404",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "smoke-gitops-worker",
+		ReviewRefs:      []string{"review_result_smoke_draft_pr_approved"},
+		VerifierRefs:    []string{"bounded-diff-only"},
+	}, Conventions{
+		CommitType:               "chore",
+		CommitSummaryTemplate:    "complete {{work_task_ref}}",
+		PullRequestTitleTemplate: "chore({{ticket_ref}}): complete {{work_task_ref}}",
+		WhatChangedTemplate:      "Jira: https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}\n\nSummary:\n- Completed {{work_task_title}}.",
+		HowVerifiedTemplate:      "Verifier refs: {{verifier_refs}}",
+		TestsTemplate:            "Testing:\n{{test_results}}",
+	})
+	if err != nil {
+		t.Fatalf("expected ticketless smoke PR metadata to render safely: %v", err)
+	}
+	if rendered.PullRequestTitle != "chore(unavailable): complete smoke-draft-pr" {
+		t.Fatalf("unexpected PR title: %q", rendered.PullRequestTitle)
+	}
+}
+
 func TestRenderRejectsUnknownConventionPlaceholder(t *testing.T) {
 	_, err := Render(PostTaskInput{
 		ProjectID:       "project-1",
