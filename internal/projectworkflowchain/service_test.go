@@ -56,6 +56,13 @@ func TestStartDryRunRejectsUnsafeInputAndDoesNotCreateRun(t *testing.T) {
 	if !result.DryRun || result.InputRef != "jira:MASS-1044" || len(result.StageRuns) != 3 {
 		t.Fatalf("unexpected dry-run result: %#v", result)
 	}
+	result, err = svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "jira:MASS-1044", DryRun: true})
+	if err != nil {
+		t.Fatalf("dry-run start with prefixed Jira input: %v", err)
+	}
+	if !result.DryRun || result.InputRef != "jira:MASS-1044" || len(result.StageRuns) != 3 {
+		t.Fatalf("unexpected prefixed dry-run result: %#v", result)
+	}
 	runs, err := store.ListChainRuns(ctx, ChainFilter{ProjectID: "project-1"})
 	if err != nil {
 		t.Fatalf("list runs: %v", err)

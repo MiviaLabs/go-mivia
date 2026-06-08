@@ -171,6 +171,13 @@ func normalizeInputRef(cfg Config, inputText string) (string, error) {
 	if containsSensitive(value) {
 		return "", fmt.Errorf("%w: input_text contains unsafe content", ErrInvalidInput)
 	}
+	inputKind := firstNonEmpty(cfg.InputKind, InputKindSafeRef)
+	if inputKind == InputKindJiraIssueKey && strings.HasPrefix(strings.ToLower(value), "jira:") {
+		value = strings.TrimSpace(value[len("jira:"):])
+		if value == "" {
+			return "", fmt.Errorf("%w: input_text must be a Jira issue key", ErrInvalidInput)
+		}
+	}
 	if pattern := strings.TrimSpace(cfg.InputPattern); pattern != "" {
 		compiled, err := regexp.Compile(pattern)
 		if err != nil {
@@ -180,7 +187,7 @@ func normalizeInputRef(cfg Config, inputText string) (string, error) {
 			return "", fmt.Errorf("%w: input_text does not match configured input_pattern", ErrInvalidInput)
 		}
 	}
-	switch firstNonEmpty(cfg.InputKind, InputKindSafeRef) {
+	switch inputKind {
 	case InputKindJiraIssueKey:
 		value = strings.ToUpper(value)
 		if !jiraKeyPattern.MatchString(value) {
