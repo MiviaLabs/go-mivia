@@ -5295,7 +5295,7 @@ func TestExternalRunNowQueuesExplicitGitOpsPostTaskRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunNow returned error: %v", err)
 	}
-	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_post_task_failed" || run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
+	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_post_task_failed_runner_post_task" || run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
 		t.Fatalf("expected gitops recovery candidate, got %+v", run)
 	}
 	updatedTask := fake.tasks["task-a"]

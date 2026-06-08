@@ -880,7 +880,7 @@ func (svc *Service) prepareExternalGitOpsPostTaskRecoveryRun(ctx context.Context
 	now := svc.now()
 	run.Status = RunStatusFailed
 	run.WorkTaskStatus = task.Status
-	run.FailureCategory = "gitops_post_task_failed"
+	run.FailureCategory = "gitops_post_task_failed_runner_post_task"
 	run.UpdatedAt = now
 	return svc.store.UpdateRun(ctx, run)
 }
@@ -3044,7 +3044,7 @@ func (svc *Service) markRunForGitOpsPostTaskRecovery(ctx context.Context, run Au
 	run.Status = RunStatusFailed
 	run.WorkTaskStatus = task.Status
 	run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
-	run.FailureCategory = "gitops_post_task_failed"
+	run.FailureCategory = "gitops_post_task_failed_runner_post_task"
 	if run.FinishedAt.IsZero() {
 		run.FinishedAt = now
 	}
