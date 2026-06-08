@@ -279,6 +279,13 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 	if err := json.Unmarshal([]byte(jsonText), &fields); err != nil {
 		return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
+	if rawSummary, ok := fields["summary"]; ok {
+		if _, hasOutcome := fields["outcome"]; !hasOutcome {
+			fields["outcome"] = rawSummary
+		}
+		delete(fields, "summary")
+		jsonText = ""
+	}
 	if normalizeGovernedCloseoutBoundedTextField(fields, "outcome", closeoutWorkTaskTextMax) {
 		jsonText = ""
 	}

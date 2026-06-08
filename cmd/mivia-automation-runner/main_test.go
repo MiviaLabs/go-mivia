@@ -2402,6 +2402,25 @@ func TestParseGovernedCloseoutTrimsServerInvalidOutcomeSummary(t *testing.T) {
 	}
 }
 
+func TestParseGovernedCloseoutNormalizesTopLevelSummaryAlias(t *testing.T) {
+	output, err := parseGovernedCloseoutOutput(`{
+		"closeout_action":"needs_review",
+		"summary":"review completed with no findings",
+		"safe_next_action":"release GitOps task",
+		"evidence_refs":["gitops-review-ref"],
+		"verifier_result_refs":["review-verifier-ref"],
+		"child_tasks":[],
+		"block_reason":"",
+		"failure_reason":""
+	}`)
+	if err != nil {
+		t.Fatalf("expected top-level summary alias to normalize, got %v", err)
+	}
+	if output.Outcome != "review completed with no findings" {
+		t.Fatalf("outcome = %q, want summary alias", output.Outcome)
+	}
+}
+
 func TestParseGovernedCloseoutRejectsChildTaskObjectStringFieldAsValidation(t *testing.T) {
 	_, err := parseGovernedCloseoutOutput(`{
 		"closeout_action":"needs_review",
