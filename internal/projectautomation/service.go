@@ -3947,8 +3947,8 @@ func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context
 	return svc.CreateAutomation(ctx, CreateAutomationInput{
 		ProjectID:       parent.ProjectID,
 		AutomationRef:   automationRef,
-		Title:           "Review remediation " + reviewTask.TaskRef,
-		Purpose:         "Independently review implementation output for task " + reviewTask.TaskRef + ".",
+		Title:           "Review remediation output",
+		Purpose:         "Independently review implementation output for the assigned task.",
 		Status:          AutomationStatusEnabled,
 		AgentID:         firstNonEmpty(reviewTask.OwnerAgent, "codex-reviewer"),
 		PlanID:          parent.PlanID,
@@ -5310,7 +5310,7 @@ func safeFileList(values []string, field string) ([]string, error) {
 		if trimmed == "" {
 			continue
 		}
-		if len(trimmed) > 300 || strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "\x00\r\n\\") {
+		if strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "\x00\r\n\\") {
 			return nil, fmt.Errorf("%w: %s contains unsafe path", ErrInvalidInput, field)
 		}
 		out = append(out, trimmed)
@@ -5413,7 +5413,7 @@ func taskPathMatchesScope(path string, scope string) bool {
 
 func isSafeTaskPath(path string) bool {
 	path = filepath.ToSlash(strings.TrimSpace(path))
-	return path != "" && len(path) <= 300 && !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "\\") && !strings.Contains(path, "..") && !strings.Contains(path, ":") && !strings.ContainsAny(path, "\x00\r\n\\")
+	return path != "" && !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "\\") && !strings.Contains(path, "..") && !strings.Contains(path, ":") && !strings.ContainsAny(path, "\x00\r\n\\")
 }
 
 func safeRequiredText(value, field string, max int) (string, error) {

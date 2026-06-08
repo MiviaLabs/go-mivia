@@ -2984,6 +2984,40 @@ func TestIsDuplicateWorkTaskRefErrorAcceptsLadybugMessage(t *testing.T) {
 	}
 }
 
+func TestSafeFileListAllowsLongRelativePathsAndRejectsUnsafePaths(t *testing.T) {
+	longPath := "apps/" + strings.Repeat("nested/", 55) + "feature/service_test.go"
+	if len(longPath) <= 300 {
+		t.Fatalf("test path must exceed former 300 char limit, got %d", len(longPath))
+	}
+	files, err := safeFileList([]string{longPath}, "files_to_read")
+	if err != nil {
+		t.Fatalf("safeFileList rejected long relative path: %v", err)
+	}
+	if len(files) != 1 || files[0] != longPath {
+		t.Fatalf("unexpected files: %#v", files)
+	}
+	for _, unsafe := range []string{"/abs/path.go", "../escape.go", "apps\\windows.go", "apps/bad\x00path.go"} {
+		if _, err := safeFileList([]string{unsafe}, "files_to_read"); err == nil {
+			t.Fatalf("expected unsafe path %q to be rejected", unsafe)
+		}
+	}
+}
+
+func TestIsSafeTaskPathAllowsLongRelativePathsAndRejectsUnsafePaths(t *testing.T) {
+	longPath := "packages/" + strings.Repeat("deep/", 60) + "workflow.ts"
+	if len(longPath) <= 300 {
+		t.Fatalf("test path must exceed former 300 char limit, got %d", len(longPath))
+	}
+	if !isSafeTaskPath(longPath) {
+		t.Fatalf("expected long relative task path to be safe")
+	}
+	for _, unsafe := range []string{"", "/abs/path.go", "../escape.go", "apps\\windows.go", "apps/bad:path.go", "apps/bad\x00path.go"} {
+		if isSafeTaskPath(unsafe) {
+			t.Fatalf("expected unsafe task path %q to be rejected", unsafe)
+		}
+	}
+}
+
 func TestQueueReadyDependentAutomationIgnoresOldFailuresAfterSystemFixRecoveryMarker(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
