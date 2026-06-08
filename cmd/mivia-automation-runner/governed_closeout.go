@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -26,7 +27,12 @@ const (
 	closeoutChildTaskDescriptionMax = 1000
 	closeoutWorkTaskTextMax         = 500
 	closeoutWorkTaskShortTextMax    = 200
-	closeoutWorkTaskPathMax         = 300
+)
+
+var (
+	closeoutEmailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+	closeoutPhonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
+	closeoutDrivePattern = regexp.MustCompile(`^[a-z]:`)
 )
 
 type governedCloseoutError struct {
@@ -294,12 +300,29 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 		return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
 	changed := jsonText == ""
+	textArrayFields := []string{
+		"evidence_needed",
+		"context_pack_refs",
+		"files_to_read",
+		"files_to_edit",
+		"likely_files_affected",
+		"dependency_task_ids",
+		"acceptance_criteria",
+		"stop_conditions",
+		"verifier_ladder",
+		"downstream_impact_refs",
+	}
 	for index, task := range tasks {
 		if normalizeGovernedCloseoutObjectTextField(task, "decomposition_quality") {
 			changed = true
 		}
 		if normalizeGovernedCloseoutObjectTextField(task, "regression_test_applicability") {
 			changed = true
+		}
+		for _, field := range textArrayFields {
+			if normalizeGovernedCloseoutObjectTextArrayField(task, field) {
+				changed = true
+			}
 		}
 		tasks[index] = task
 	}
@@ -316,6 +339,46 @@ func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {
 		return "", governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
 	return string(encoded), nil
+}
+
+func normalizeGovernedCloseoutObjectTextArrayField(task map[string]json.RawMessage, field string) bool {
+	rawValue, ok := task[field]
+	if !ok {
+		return false
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(rawValue, &values); err != nil {
+		return false
+	}
+	changed := false
+	normalized := make([]json.RawMessage, 0, len(values))
+	for _, rawItem := range values {
+		if rawJSONValueIsStringOrNull(rawItem) {
+			normalized = append(normalized, rawItem)
+			continue
+		}
+		value, err := closeoutTextFromObject(rawItem)
+		if err != nil {
+			normalized = append(normalized, rawItem)
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			normalized = append(normalized, rawItem)
+			continue
+		}
+		normalized = append(normalized, encoded)
+		changed = true
+	}
+	if !changed {
+		return false
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return false
+	}
+	task[field] = encoded
+	return true
 }
 
 func normalizeGovernedCloseoutBoundedTextField(fields map[string]json.RawMessage, field string, max int) bool {
@@ -361,7 +424,7 @@ func closeoutTextFromObject(raw json.RawMessage) (string, error) {
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return "", err
 	}
-	for _, key := range []string{"status", "quality", "value", "state", "decision", "applicability", "summary", "assessment", "result", "reason", "rationale", "confidence"} {
+	for _, key := range []string{"status", "quality", "value", "state", "decision", "applicability", "summary", "assessment", "result", "reason", "rationale", "confidence", "ref", "path", "file", "criterion", "condition", "command"} {
 		rawValue, ok := object[key]
 		if !ok {
 			continue
@@ -444,11 +507,48 @@ func validateGovernedCloseoutChildTaskFieldTypes(raw json.RawMessage) error {
 		"regression_test_applicability",
 		"output_contract",
 	}
+	textArrayFields := []string{
+		"evidence_needed",
+		"context_pack_refs",
+		"files_to_read",
+		"files_to_edit",
+		"likely_files_affected",
+		"dependency_task_ids",
+		"acceptance_criteria",
+		"stop_conditions",
+		"verifier_ladder",
+		"downstream_impact_refs",
+	}
 	for _, task := range tasks {
 		for _, field := range stringFields {
 			if rawField, ok := task[field]; ok && !rawJSONValueIsStringOrNull(rawField) {
 				return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("child_tasks.%s must be string", field)}
 			}
+		}
+		for _, field := range textArrayFields {
+			rawField, ok := task[field]
+			if !ok {
+				continue
+			}
+			if err := validateGovernedCloseoutTextArrayFieldTypes(rawField, field); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateGovernedCloseoutTextArrayFieldTypes(raw json.RawMessage, field string) error {
+	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
+		return nil
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("child_tasks.%s must be array of strings", field)}
+	}
+	for _, rawValue := range values {
+		if !rawJSONValueIsStringOrNull(rawValue) {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("child_tasks.%s must be array of strings", field)}
 		}
 	}
 	return nil
@@ -614,6 +714,12 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 		len(task.OutputContract) > closeoutWorkTaskTextMax {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task metadata exceeds Work Task REST limits")}
 	}
+	if len(task.Title) > 200 {
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task title exceeds Work Task REST limits")}
+	}
+	if strings.TrimSpace(task.OwnerAgent) != "" && !safeCloseoutRef(task.OwnerAgent) {
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("unsafe child task owner_agent")}
+	}
 	if !safeCloseoutRef(task.TaskRef) {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("unsafe child task_ref")}
 	}
@@ -646,9 +752,6 @@ func validateGovernedChildTask(task governedCloseoutWorkTask) error {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task requires files_to_read, files_to_edit, or explicit discovery scope")}
 	}
 	for _, value := range append(append(append([]string{}, task.FilesToRead...), task.FilesToEdit...), task.LikelyFilesAffected...) {
-		if len(strings.TrimSpace(value)) > closeoutWorkTaskPathMax {
-			return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("child task path exceeds Work Task REST limits")}
-		}
 		if !safeProjectPath(value) {
 			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("unsafe child task path %q", value)}
 		}
@@ -680,15 +783,75 @@ func validateGovernedChildTextList(values []string, name string, max int) error 
 
 func unsafeText(value string) bool {
 	value = strings.TrimSpace(value)
-	lower := strings.ToLower(value)
+	lower := redactCloseoutSafeProhibitionPhrases(strings.ToLower(value))
 	return strings.ContainsAny(value, "\x00\r\n") ||
+		closeoutEmailPattern.MatchString(value) ||
+		closeoutPhonePattern.MatchString(value) ||
 		strings.Contains(lower, "secret=") ||
 		strings.Contains(lower, "token=") ||
+		strings.Contains(lower, "credential=") ||
+		strings.Contains(lower, "api_key") ||
+		strings.Contains(lower, "openai_api_key") ||
+		strings.Contains(lower, "anthropic_api_key") ||
+		strings.Contains(lower, "provider_payload") ||
+		strings.Contains(lower, "provider payload") ||
+		strings.Contains(lower, "raw_prompt") ||
+		strings.Contains(lower, "raw_completion") ||
+		strings.Contains(lower, "raw_stderr") ||
+		strings.Contains(lower, "raw stderr") ||
 		strings.Contains(lower, "raw log") ||
 		strings.Contains(lower, "raw source") ||
+		strings.Contains(lower, "source dump") ||
+		strings.Contains(lower, "begin private key") ||
+		strings.Contains(lower, "ghp_") ||
+		strings.HasPrefix(lower, "sk-") ||
+		strings.Contains(lower, " sk-") ||
+		strings.Contains(lower, "=sk-") ||
 		strings.Contains(value, "://") ||
+		containsCloseoutRootMarker(value) ||
 		strings.HasPrefix(value, "/") ||
 		(len(value) >= 3 && value[1] == ':' && (value[2] == '\\' || value[2] == '/'))
+}
+
+func redactCloseoutSafeProhibitionPhrases(value string) string {
+	if strings.Contains(value, "no raw prompt") || strings.Contains(value, "never store") || strings.Contains(value, "must not store") || strings.Contains(value, "do not store") || strings.Contains(value, "must not expose") || strings.Contains(value, "do not expose") || strings.Contains(value, "must not include") || strings.Contains(value, "do not include") {
+		for _, marker := range []string{
+			"raw prompts",
+			"raw prompt",
+			"raw completions",
+			"raw completion",
+			"raw_prompt",
+			"raw_completion",
+			"raw source",
+			"source dumps",
+			"source dump",
+			"raw stderr",
+			"raw_stderr",
+			"provider payloads",
+			"provider payload",
+			"provider_payload",
+			"credentials",
+			"credential",
+			"secrets",
+			"secret",
+			"roots",
+			"root",
+			"paths",
+			"path",
+		} {
+			value = strings.ReplaceAll(value, marker, "")
+		}
+	}
+	return value
+}
+
+func containsCloseoutRootMarker(value string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(value, "\\", "/"))
+	return strings.Contains(normalized, "/home/") ||
+		strings.Contains(normalized, "/users/") ||
+		strings.Contains(normalized, "wsl.localhost/") ||
+		strings.Contains(normalized, "c:/") ||
+		closeoutDrivePattern.MatchString(normalized)
 }
 
 func safeCloseoutRef(ref string) bool {

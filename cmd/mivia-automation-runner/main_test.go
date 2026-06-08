@@ -2394,10 +2394,80 @@ func TestParseGovernedCloseoutRejectsChildTaskObjectStringFieldAsValidation(t *t
 	}
 }
 
+func TestParseGovernedCloseoutNormalizesChildTaskObjectArrayItems(t *testing.T) {
+	output, err := parseGovernedCloseoutOutput(`{
+		"closeout_action":"needs_review",
+		"outcome":"decomposed",
+		"safe_next_action":"review child tasks",
+		"evidence_refs":["task-decomposition-ref"],
+		"child_tasks":[{
+			"task_ref":"implement-mass-1044",
+			"title":"Implement MASS-1044",
+			"description":"Implement bounded change",
+			"evidence_needed":[{"ref":"source-evidence"}],
+			"files_to_read":[{"path":"apps/domain/file.ts"}],
+			"verification_requirement":"run focused verifier",
+			"expected_output":"implementation complete",
+			"failure_criteria":"block on missing evidence",
+			"resume_instructions":"resume from task refs",
+			"decomposition_quality":"ready",
+			"acceptance_criteria":[{"criterion":"source verified"}],
+			"stop_conditions":[{"condition":"stop on missing evidence"}],
+			"verifier_ladder":[{"command":"focused verifier"}],
+			"regression_test_applicability":"required",
+			"downstream_impact_refs":[{"ref":"downstream-impact-ref"}],
+			"output_contract":"bounded output"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("expected object array items to normalize, got %v", err)
+	}
+	task := output.ChildTasks[0]
+	if got := task.FilesToRead[0]; got != "apps/domain/file.ts" {
+		t.Fatalf("files_to_read[0] = %q, want apps/domain/file.ts", got)
+	}
+	if got := task.AcceptanceCriteria[0]; got != "source verified" {
+		t.Fatalf("acceptance_criteria[0] = %q, want source verified", got)
+	}
+}
+
 func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T) {
 	task := validGovernedCloseoutChildTaskForTest()
-	task.EvidenceNeeded = []string{strings.Repeat("a", 201)}
+	task.Title = strings.Repeat("a", 201)
 	err := validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err == nil || !strings.Contains(err.Error(), "child task title exceeds Work Task REST limits") {
+		t.Fatalf("expected runner validation to reject server-invalid title, got %v", err)
+	}
+
+	task = validGovernedCloseoutChildTaskForTest()
+	task.OwnerAgent = "backend engineer"
+	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err == nil || !strings.Contains(err.Error(), "unsafe child task owner_agent") {
+		t.Fatalf("expected runner validation to reject server-invalid owner_agent, got %v", err)
+	}
+
+	task = validGovernedCloseoutChildTaskForTest()
+	task.EvidenceNeeded = []string{"contact test@example.com"}
+	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err == nil || !strings.Contains(err.Error(), "unsafe child task evidence_needed") {
+		t.Fatalf("expected runner validation to reject server-unsafe evidence text, got %v", err)
+	}
+
+	task = validGovernedCloseoutChildTaskForTest()
+	task.EvidenceNeeded = []string{strings.Repeat("a", 201)}
+	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
 		CloseoutAction: "needs_review",
 		EvidenceRefs:   []string{"task-decomposition-ref"},
 		ChildTasks:     []governedCloseoutWorkTask{task},
@@ -2407,14 +2477,14 @@ func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T
 	}
 
 	task = validGovernedCloseoutChildTaskForTest()
-	task.FilesToRead = []string{strings.Repeat("a", 301)}
+	task.FilesToRead = []string{"../unsafe"}
 	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
 		CloseoutAction: "needs_review",
 		EvidenceRefs:   []string{"task-decomposition-ref"},
 		ChildTasks:     []governedCloseoutWorkTask{task},
 	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
-	if err == nil || !strings.Contains(err.Error(), "child task path exceeds Work Task REST limits") {
-		t.Fatalf("expected runner validation to reject server-invalid path, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "unsafe child task path") {
+		t.Fatalf("expected runner validation to reject server-unsafe path, got %v", err)
 	}
 }
 
