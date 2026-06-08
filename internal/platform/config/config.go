@@ -963,8 +963,8 @@ func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool)
 			return fmt.Errorf("%s_SSH_KNOWN_HOSTS_PATH is required when push after task is enabled", prefix)
 		}
 	}
-	if gitops.DraftPRAfterPush && strings.TrimSpace(gitops.GitHubTokenEnv) == "" && strings.TrimSpace(gitops.GitHubTokenFile) == "" {
-		return errors.New("draft PR creation requires a GitHub token env or file reference")
+	if gitops.DraftPRAfterPush && strings.TrimSpace(gitops.GitHubTokenEnv) == "" && strings.TrimSpace(gitops.GitHubTokenFile) == "" && strings.TrimSpace(gitops.GitHubCLIPath) == "" {
+		return errors.New("draft PR creation requires GitHub CLI auth or a GitHub token env/file reference")
 	}
 	if err := gitops.Conventions.Validate(); err != nil {
 		return err

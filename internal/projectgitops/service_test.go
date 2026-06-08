@@ -685,8 +685,9 @@ func TestFailureCategoryWithDetailReportsMissingCommitAuthorEmailFile(t *testing
 	}
 }
 
-func TestFailureCategoryWithDetailReportsMissingGitHubTokenBeforeDraftPR(t *testing.T) {
+func TestFailureCategoryWithDetailReportsMissingGitHubAuthBeforeDraftPR(t *testing.T) {
 	sshKey, knownHosts := testGitOpsCredentialFiles(t)
+	runner := &recordingRunner{errs: []error{errors.New("gh auth failed")}}
 	svc := NewWithRunner(Options{
 		Enabled:           true,
 		CommitAfterTask:   true,
@@ -695,14 +696,46 @@ func TestFailureCategoryWithDetailReportsMissingGitHubTokenBeforeDraftPR(t *test
 		SSHPrivateKeyPath: sshKey,
 		SSHKnownHostsPath: knownHosts,
 		GitHubTokenEnv:    "MISSING_GITHUB_TOKEN",
-	}, &recordingRunner{})
+		GitHubCLIPath:     "gh",
+	}, runner)
 
 	_, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})
 	if err == nil {
-		t.Fatal("expected missing github token error")
+		t.Fatal("expected missing github auth error")
 	}
-	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_github_token_unavailable" {
-		t.Fatalf("expected missing github token category, got %q", got)
+	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_github_auth_unavailable" {
+		t.Fatalf("expected missing github auth category, got %q", got)
+	}
+}
+
+func TestPostTaskAllowsMountedGitHubCLIAuthWhenTokenEnvMissing(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{},
+		{Stdout: ""},
+		{Stdout: "0\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		DraftPRAfterPush:  true,
+		SSHPrivateKeyPath: sshKey,
+		SSHKnownHostsPath: knownHosts,
+		GitHubTokenEnv:    "MISSING_GITHUB_TOKEN",
+		GitHubCLIPath:     "gh",
+	}, runner)
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})
+	if err != nil {
+		t.Fatalf("expected mounted gh auth fallback to pass: %v", err)
+	}
+	if !result.NoChanges {
+		t.Fatalf("expected clean worktree result, got %+v", result)
+	}
+	if len(runner.commands) == 0 || strings.Join(runner.commands[0].Args, " ") != "auth status" {
+		t.Fatalf("expected gh auth status preflight before git mutation, got %+v", runner.commands)
 	}
 }
 

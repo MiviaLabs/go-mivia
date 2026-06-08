@@ -2081,6 +2081,7 @@ func recoveryResumeInstructions(sentence string) string {
 }
 
 func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, run AutomationRun, category string, evidenceRefs []string) (AutomationRun, error) {
+	category = normalizeGitOpsRecoveryFailureCategory(category, evidenceRefs)
 	updater, ok := svc.workTasks.(workTaskStatusUpdater)
 	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
 		run.Status = RunStatusFailed
@@ -2157,6 +2158,24 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 		return updated, nil
 	}
 	return updated, nil
+}
+
+func normalizeGitOpsRecoveryFailureCategory(category string, evidenceRefs []string) string {
+	category = strings.TrimSpace(category)
+	for _, ref := range evidenceRefs {
+		ref = strings.TrimSpace(ref)
+		if !strings.HasPrefix(ref, "gitops-failure:") {
+			continue
+		}
+		candidate := strings.TrimSpace(strings.TrimPrefix(ref, "gitops-failure:"))
+		if candidate != "" {
+			return safeFailure(candidate)
+		}
+	}
+	if category == "gitops_post_task_failed" {
+		return "gitops_post_task_failed_unknown"
+	}
+	return category
 }
 
 func (svc *Service) blockTaskAfterGitOpsRecoveryBlocker(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask, category string) (AutomationRun, error) {

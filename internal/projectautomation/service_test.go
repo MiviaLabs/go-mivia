@@ -3920,10 +3920,10 @@ func TestGitOpsRecoveryRequeueBoundsStoredLongResumeInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if updatedRun.Status != RunStatusBlocked || updatedRun.FailureCategory != "gitops_post_task_failed" {
+	if updatedRun.Status != RunStatusBlocked || updatedRun.FailureCategory != "gitops_post_task_failed_unknown" {
 		t.Fatalf("expected blocked GitOps run, got %#v", updatedRun)
 	}
-	if !strings.Contains(updatedRun.SafeSummary, "gitops_post_task_failed") {
+	if !strings.Contains(updatedRun.SafeSummary, "gitops_post_task_failed_unknown") {
 		t.Fatalf("expected blocked safe summary to preserve original failure category, got %q", updatedRun.SafeSummary)
 	}
 }
@@ -8315,6 +8315,23 @@ func TestCompleteAttemptBlocksAfterDetailedGitOpsPostTaskRecoveryFailure(t *test
 	}
 }
 
+func TestNormalizeGitOpsRecoveryFailureCategoryNamesUnknownBareFailure(t *testing.T) {
+	got := normalizeGitOpsRecoveryFailureCategory("gitops_post_task_failed", nil)
+	if got != "gitops_post_task_failed_unknown" {
+		t.Fatalf("expected bare GitOps recovery failure to be explicit unknown, got %q", got)
+	}
+}
+
+func TestNormalizeGitOpsRecoveryFailureCategoryUsesRunnerEvidence(t *testing.T) {
+	got := normalizeGitOpsRecoveryFailureCategory("gitops_post_task_failed", []string{
+		"automation_run:run-a",
+		"gitops-failure:gitops_invalid_input_github_token_unavailable",
+	})
+	if got != "gitops_invalid_input_github_token_unavailable" {
+		t.Fatalf("expected runner GitOps failure evidence to define category, got %q", got)
+	}
+}
+
 func TestCompleteAttemptExpandsScopeForDirtyPathsUnderLikelyFiles(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"apps/domain/src/service.ts"})
@@ -8500,7 +8517,7 @@ func TestClaimNextRunRequeuesExhaustedGitOpsRecoveryAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if exhausted.Status != RunStatusBlocked || exhausted.FailureCategory != "gitops_post_task_failed" || !strings.Contains(exhausted.SafeSummary, "gitops_post_task_failed") {
+	if exhausted.Status != RunStatusBlocked || exhausted.FailureCategory != "gitops_post_task_failed_unknown" || !strings.Contains(exhausted.SafeSummary, "gitops_post_task_failed_unknown") {
 		t.Fatalf("expected exhausted run to block with GitOps failure, got %+v", exhausted)
 	}
 	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusBlocked {

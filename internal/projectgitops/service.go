@@ -131,6 +131,9 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if err := svc.validatePushConfig(); err != nil {
 		return PostTaskResult{}, err
 	}
+	if err := svc.validateDraftPRAuth(ctx, workDir); err != nil {
+		return PostTaskResult{}, err
+	}
 
 	if err := svc.ensureSafeDirectory(ctx, workDir); err != nil {
 		return PostTaskResult{}, err
@@ -532,11 +535,8 @@ func (svc *Service) validatePushConfig() error {
 	if svc.options.DraftPRAfterPush {
 		tokenEnv := strings.TrimSpace(svc.options.GitHubTokenEnv)
 		tokenFile := strings.TrimSpace(svc.options.GitHubTokenFile)
-		if tokenEnv == "" && tokenFile == "" {
-			return fmt.Errorf("%w: github token reference required for draft PR", ErrInvalidInput)
-		}
 		if tokenEnv != "" && strings.TrimSpace(os.Getenv(tokenEnv)) == "" {
-			return fmt.Errorf("%w: github token env is unavailable", ErrInvalidInput)
+			return nil
 		}
 		if tokenFile != "" {
 			if !filepath.IsAbs(tokenFile) || strings.ContainsAny(tokenFile, "\x00\r\n") {
@@ -546,6 +546,19 @@ func (svc *Service) validatePushConfig() error {
 				return fmt.Errorf("%w: github token file is unavailable", ErrInvalidInput)
 			}
 		}
+	}
+	return nil
+}
+
+func (svc *Service) validateDraftPRAuth(ctx context.Context, workDir string) error {
+	if !svc.options.PushAfterTask || !svc.options.DraftPRAfterPush {
+		return nil
+	}
+	if len(svc.githubEnv()) > 0 {
+		return nil
+	}
+	if _, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"auth", "status"}, Dir: workDir}); err != nil {
+		return fmt.Errorf("%w: github auth is unavailable", ErrInvalidInput)
 	}
 	return nil
 }
@@ -834,6 +847,7 @@ func invalidInputFailureDetail(message string) string {
 		{needle: "github token env is unavailable", detail: "github_token_unavailable"},
 		{needle: "github token file path must be absolute", detail: "github_token_file_invalid"},
 		{needle: "github token file is unavailable", detail: "github_token_unavailable"},
+		{needle: "github auth is unavailable", detail: "github_auth_unavailable"},
 		{needle: "no safe task pathspecs", detail: "no_safe_task_pathspecs"},
 		{needle: "no changed files matched safe task pathspecs", detail: "no_changed_files_matched"},
 		{needle: "branch policy", detail: "branch_policy"},
