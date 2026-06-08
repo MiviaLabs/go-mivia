@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,6 +26,20 @@ func (runner *recordingRunner) Run(_ context.Context, command Command) (CommandR
 		return runner.results[idx], nil
 	}
 	return CommandResult{}, nil
+}
+
+func testGitOpsCredentialFiles(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519")
+	knownHostsPath := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(keyPath, []byte("test-key"), 0o600); err != nil {
+		t.Fatalf("write test ssh key: %v", err)
+	}
+	if err := os.WriteFile(knownHostsPath, []byte("github.com ssh-ed25519 test\n"), 0o600); err != nil {
+		t.Fatalf("write test known hosts: %v", err)
+	}
+	return keyPath, knownHostsPath
 }
 
 func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
@@ -87,6 +103,7 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 }
 
 func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{
 		results: []CommandResult{
 			{},
@@ -117,8 +134,8 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 		DraftPRAfterPush:     true,
 		RemoteName:           "origin",
 		BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
-		SSHPrivateKeyPath:    "/tmp/id_ed25519",
-		SSHKnownHostsPath:    "/tmp/known_hosts",
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
 		GitHubTokenEnv:       "GITHUB_TOKEN",
 		GitHubCLIPath:        "gh",
 		CommitAuthorName:     "Mivia Automation",
@@ -164,6 +181,7 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 }
 
 func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{
 		results: []CommandResult{
 			{},
@@ -194,8 +212,8 @@ func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testi
 		DraftPRAfterPush:     true,
 		RemoteName:           "origin",
 		BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
-		SSHPrivateKeyPath:    "/tmp/id_ed25519",
-		SSHKnownHostsPath:    "/tmp/known_hosts",
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
 		GitHubTokenEnv:       "GITHUB_TOKEN",
 		GitHubCLIPath:        "gh",
 		CommitAuthorName:     "Mivia Automation",
@@ -442,6 +460,7 @@ func TestPostTaskPushRequiresSSHConfig(t *testing.T) {
 }
 
 func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M README.md\n"},
@@ -462,8 +481,8 @@ func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing
 		BranchNamePattern:    `^(feat|fix|docs)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
 		CommitAuthorName:     "Mivia Automation",
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
-		SSHPrivateKeyPath:    "/tmp/id_ed25519",
-		SSHKnownHostsPath:    "/tmp/known_hosts",
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
 		GitHubCLIPath:        "gh",
 	}, runner)
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
@@ -490,6 +509,7 @@ func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing
 }
 
 func TestPostTaskDerivesFakeMassBranchForTicketlessSmokeInputBranch(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: "?? .agentic/automation-smoke.md\n"},
@@ -509,8 +529,8 @@ func TestPostTaskDerivesFakeMassBranchForTicketlessSmokeInputBranch(t *testing.T
 		BranchNamePattern:    `^(feat|fix|docs|chore|refactor|hotfix|revert)-MASS-[0-9]+(-[a-z0-9-]+)*$|^chore-smoke-[A-Za-z0-9._+-]{1,80}(-[a-z0-9-]+)*$`,
 		CommitAuthorName:     "Mivia Automation",
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
-		SSHPrivateKeyPath:    "/tmp/id_ed25519",
-		SSHKnownHostsPath:    "/tmp/known_hosts",
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
 		GitHubCLIPath:        "gh",
 	}, runner)
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
@@ -584,6 +604,46 @@ func TestFailureCategoryWithDetailPreservesInvalidGitOpsConfig(t *testing.T) {
 	}
 	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_ssh_config_required" {
 		t.Fatalf("expected detailed invalid input category, got %q", got)
+	}
+}
+
+func TestFailureCategoryWithDetailReportsMissingSSHKeyBeforePush(t *testing.T) {
+	_, knownHosts := testGitOpsCredentialFiles(t)
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		SSHPrivateKeyPath: filepath.Join(t.TempDir(), "missing_id_ed25519"),
+		SSHKnownHostsPath: knownHosts,
+	}, &recordingRunner{})
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})
+	if err == nil {
+		t.Fatal("expected missing ssh key error")
+	}
+	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_ssh_key_unavailable" {
+		t.Fatalf("expected missing ssh key category, got %q", got)
+	}
+}
+
+func TestFailureCategoryWithDetailReportsMissingGitHubTokenBeforeDraftPR(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		DraftPRAfterPush:  true,
+		SSHPrivateKeyPath: sshKey,
+		SSHKnownHostsPath: knownHosts,
+		GitHubTokenEnv:    "MISSING_GITHUB_TOKEN",
+	}, &recordingRunner{})
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})
+	if err == nil {
+		t.Fatal("expected missing github token error")
+	}
+	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_github_token_unavailable" {
+		t.Fatalf("expected missing github token category, got %q", got)
 	}
 }
 
@@ -738,6 +798,7 @@ func TestDerivePolicyBranchPrefersConfiguredCommitType(t *testing.T) {
 }
 
 func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M README.md\n"},
@@ -757,8 +818,8 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 		BranchNamePattern:    `^(feat|fix|docs)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
 		CommitAuthorName:     "Mivia Automation",
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
-		SSHPrivateKeyPath:    "/tmp/id_ed25519",
-		SSHKnownHostsPath:    "/tmp/known_hosts",
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
 		GitHubCLIPath:        "gh",
 	}, runner)
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
@@ -1000,6 +1061,7 @@ func TestRenderRejectsUnknownConventionPlaceholder(t *testing.T) {
 }
 
 func TestPostTaskCreatesDraftPRWithRenderedMetadata(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{
 		results: []CommandResult{
 			{},
@@ -1031,8 +1093,8 @@ func TestPostTaskCreatesDraftPRWithRenderedMetadata(t *testing.T) {
 		PushAfterTask:     true,
 		DraftPRAfterPush:  true,
 		RemoteName:        "origin",
-		SSHPrivateKeyPath: "/run/secrets/mivia_git_key",
-		SSHKnownHostsPath: "/run/secrets/mivia_known_hosts",
+		SSHPrivateKeyPath: sshKey,
+		SSHKnownHostsPath: knownHosts,
 		GitHubTokenEnv:    "GITHUB_TOKEN",
 		GitHubCLIPath:     "gh",
 		Conventions:       Conventions{CommitType: "feat", CommitScope: "gitops", CommitSummaryTemplate: "finish {{work_task_id}}"},

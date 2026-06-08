@@ -21,7 +21,7 @@ workspace_mode = "edit"
 network_policy = "local_only"
 secret_policy = "deny"
 log_policy = "metadata_only"
-max_runtime = "3m"
+max_runtime = "10m"
 max_retries = 0
 
 [[steps]]

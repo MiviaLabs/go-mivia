@@ -1045,6 +1045,7 @@ func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
 }
 
 func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
+	sshKey, knownHosts := testRunnerGitOpsCredentialFiles(t)
 	runner := &gitOpsRecordingRunner{
 		results: []projectgitops.CommandResult{
 			{},
@@ -1077,8 +1078,8 @@ func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
 		PushAfterTask:        true,
 		DraftPRAfterPush:     true,
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
-		SSHPrivateKeyPath:    "/tmp/id_ed25519",
-		SSHKnownHostsPath:    "/tmp/known_hosts",
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
 		GitHubTokenEnv:       "GH_TOKEN",
 	}, runner)
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
@@ -1117,6 +1118,64 @@ func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
 	if status != projectautomation.RunStatusFailed || failure != "gitops_command_failed_gh_pr_create" {
 		t.Fatalf("expected precise PR create failure, got status=%q failure=%q", status, failure)
 	}
+}
+
+func TestRunGitOpsPostTaskRecoveryReportsMissingRunnerSSHMount(t *testing.T) {
+	_, knownHosts := testRunnerGitOpsCredentialFiles(t)
+	gitOps := projectgitops.NewWithRunner(projectgitops.Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		SSHPrivateKeyPath:    filepath.Join(t.TempDir(), "missing_id_ed25519"),
+		SSHKnownHostsPath:    knownHosts,
+	}, &gitOpsRecordingRunner{})
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:               "task-1",
+				TaskRef:          "smoke-draft-pr",
+				Title:            "Smoke Draft PR",
+				Status:           "needs_review",
+				FilesToEdit:      []string{".agentic/automation-smoke.md"},
+				ReviewResultRefs: []string{"review_result_task_1_passed"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+
+	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOps, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:          "run-1",
+			ProjectID:   "mass-monorepo",
+			PlanID:      "plan-1",
+			TaskID:      "task-1",
+			SafeSummary: projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+		},
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{".agentic/automation-smoke.md"}},
+	})
+	if status != projectautomation.RunStatusFailed || failure != "gitops_invalid_input_ssh_key_unavailable" {
+		t.Fatalf("expected precise missing ssh key failure, got status=%q failure=%q", status, failure)
+	}
+}
+
+func testRunnerGitOpsCredentialFiles(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519")
+	knownHostsPath := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(keyPath, []byte("test-key"), 0o600); err != nil {
+		t.Fatalf("write test ssh key: %v", err)
+	}
+	if err := os.WriteFile(knownHostsPath, []byte("github.com ssh-ed25519 test\n"), 0o600); err != nil {
+		t.Fatalf("write test known hosts: %v", err)
+	}
+	return keyPath, knownHostsPath
 }
 
 func TestDedicatedWorktreePathRequiresAbsoluteBase(t *testing.T) {
@@ -2462,7 +2521,7 @@ func TestBuildRunnerCodexCommandSupportsBypassMode(t *testing.T) {
 func TestValidateGovernedCloseoutRejectsServerInvalidBlockReason(t *testing.T) {
 	err := validateGovernedCloseoutOutput(governedCloseoutOutput{
 		CloseoutAction: "block",
-		BlockReason:   strings.Repeat("a", 501),
+		BlockReason:    strings.Repeat("a", 501),
 		SafeNextAction: "retry with bounded evidence",
 	}, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
 	if err == nil || !strings.Contains(err.Error(), "block_reason is too long") {

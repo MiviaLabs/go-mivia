@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
 	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
@@ -161,6 +162,14 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	}
 
 	smokeGitOps := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-smoke-gitops.toml"), "mass-monorepo")
+	smokeWorker := configAgentByID(t, smokeGitOps, "smoke-gitops-worker")
+	smokeRuntime, err := time.ParseDuration(smokeWorker.MaxRuntime)
+	if err != nil {
+		t.Fatalf("parse smoke GitOps worker max_runtime: %v", err)
+	}
+	if smokeRuntime < 10*time.Minute {
+		t.Fatalf("smoke GitOps worker max_runtime must cover observed Codex+GitOps latency, got %s", smokeWorker.MaxRuntime)
+	}
 	smokeResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: smokeGitOps.ProjectID, WorkflowID: smokeGitOps.ID, UserRequestRef: "input:smoke-20260608g", CreatedByRunID: "same-smoke-run"})
 	if err != nil {
 		t.Fatalf("compile MASS smoke GitOps workflow: %v", err)

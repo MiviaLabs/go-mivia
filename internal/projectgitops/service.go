@@ -520,11 +520,44 @@ func (svc *Service) validatePushConfig() error {
 		if !filepath.IsAbs(value) || strings.ContainsAny(value, "\x00\r\n") {
 			return fmt.Errorf("%w: %s path must be absolute and safe", ErrInvalidInput, name)
 		}
+		if err := requireReadableFile(value); err != nil {
+			return fmt.Errorf("%w: %s file is unavailable", ErrInvalidInput, name)
+		}
 	}
-	if svc.options.DraftPRAfterPush && strings.TrimSpace(svc.options.GitHubTokenEnv) == "" && strings.TrimSpace(svc.options.GitHubTokenFile) == "" {
-		return fmt.Errorf("%w: github token reference required for draft PR", ErrInvalidInput)
+	if svc.options.DraftPRAfterPush {
+		tokenEnv := strings.TrimSpace(svc.options.GitHubTokenEnv)
+		tokenFile := strings.TrimSpace(svc.options.GitHubTokenFile)
+		if tokenEnv == "" && tokenFile == "" {
+			return fmt.Errorf("%w: github token reference required for draft PR", ErrInvalidInput)
+		}
+		if tokenEnv != "" && strings.TrimSpace(os.Getenv(tokenEnv)) == "" {
+			return fmt.Errorf("%w: github token env is unavailable", ErrInvalidInput)
+		}
+		if tokenFile != "" {
+			if !filepath.IsAbs(tokenFile) || strings.ContainsAny(tokenFile, "\x00\r\n") {
+				return fmt.Errorf("%w: github token file path must be absolute and safe", ErrInvalidInput)
+			}
+			if err := requireReadableFile(tokenFile); err != nil {
+				return fmt.Errorf("%w: github token file is unavailable", ErrInvalidInput)
+			}
+		}
 	}
 	return nil
+}
+
+func requireReadableFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("path is a directory")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func (svc *Service) currentBranch(ctx context.Context, workDir string) (string, error) {
@@ -762,7 +795,12 @@ func invalidInputFailureDetail(message string) string {
 		detail string
 	}{
 		{needle: "ssh key and known hosts are required", detail: "ssh_config_required"},
+		{needle: "ssh key file is unavailable", detail: "ssh_key_unavailable"},
+		{needle: "ssh known hosts file is unavailable", detail: "ssh_known_hosts_unavailable"},
 		{needle: "github token reference required", detail: "github_token_required"},
+		{needle: "github token env is unavailable", detail: "github_token_unavailable"},
+		{needle: "github token file path must be absolute", detail: "github_token_file_invalid"},
+		{needle: "github token file is unavailable", detail: "github_token_unavailable"},
 		{needle: "no safe task pathspecs", detail: "no_safe_task_pathspecs"},
 		{needle: "no changed files matched safe task pathspecs", detail: "no_changed_files_matched"},
 		{needle: "branch policy", detail: "branch_policy"},
