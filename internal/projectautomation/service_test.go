@@ -7169,13 +7169,14 @@ func TestClaimNextRunClosesNoConfirmedBugPlannerWithoutSecondaryReview(t *testin
 	}
 }
 
-func TestClaimNextRunQueuesReviewForBoundedGitOpsTaskAfterDraftPREvidence(t *testing.T) {
+func TestClaimNextRunClosesBoundedGitOpsTaskAfterDraftPREvidence(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("smoke-task", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
 	task.Status = projectworkplan.WorkTaskStatusNeedsReview
 	task.OwnerAgent = "smoke-gitops-worker"
 	task.ClaimedByRunID = "run-smoke"
 	task.FilesToEdit = []string{".agentic/automation-smoke.md"}
+	task.GitOpsVerificationMode = "bounded_smoke"
 	task.EvidenceRefs = []string{
 		"automation_run:run-smoke",
 		"gitops-smoke-ref",
@@ -7211,27 +7212,23 @@ func TestClaimNextRunQueuesReviewForBoundedGitOpsTaskAfterDraftPREvidence(t *tes
 		t.Fatalf("CreateRun returned error: %v", err)
 	}
 
-	claimedReview, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI})
-	if err != nil {
-		t.Fatalf("ClaimNextRun returned error: %v", err)
-	}
-	if claimedReview.Run.ParentRunID != run.ID || claimedReview.Run.SafeSummary != RunSafeSummaryPostImplementationReviewQueued || !strings.HasPrefix(claimedReview.CodexInput.TaskRef, "review-") {
-		t.Fatalf("expected queued review after gitops evidence, got run=%#v input=%#v", claimedReview.Run, claimedReview.CodexInput)
+	if claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run after bounded smoke reconciliation, got err=%v claimed=%#v", err, claimed.Run)
 	}
 	completed, err := svc.GetRun(ctx, "project-1", run.ID)
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if completed.Status != RunStatusVerifying || completed.WorkTaskStatus != projectworkplan.WorkTaskStatusNeedsReview {
-		t.Fatalf("expected worker to remain verifying until review completes, got %#v", completed)
+	if completed.Status != RunStatusCompleted || completed.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected worker run completed after bounded smoke GitOps evidence, got %#v", completed)
 	}
 	worker := fake.tasks[task.ID]
-	if worker.Status != projectworkplan.WorkTaskStatusNeedsReview || !contains(worker.EvidenceRefs, "draft-pr:https://github.com/MiviaLabs/go-mivia/pull/1") {
-		t.Fatalf("expected worker to retain draft PR evidence while awaiting review, got %#v", worker)
+	if worker.Status != projectworkplan.WorkTaskStatusDone || !contains(worker.EvidenceRefs, "draft-pr:https://github.com/MiviaLabs/go-mivia/pull/1") || worker.ReviewExemptReason == "" {
+		t.Fatalf("expected worker done with draft PR evidence and bounded smoke review exemption, got %#v", worker)
 	}
 }
 
-func TestClaimNextRunQueuesReviewForBoundedGitOpsTaskMissingDraftPREvidence(t *testing.T) {
+func TestClaimNextRunMarksBoundedGitOpsTaskForRecoveryWhenMissingDraftPREvidence(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("smoke-task", "smoke-draft-pr", []string{".agentic/automation-smoke.md"})
 	task.Status = projectworkplan.WorkTaskStatusNeedsReview
@@ -7239,6 +7236,7 @@ func TestClaimNextRunQueuesReviewForBoundedGitOpsTaskMissingDraftPREvidence(t *t
 	task.ClaimedByRunID = "run-smoke"
 	task.FilesToEdit = []string{".agentic/automation-smoke.md"}
 	task.ReviewGate = "independent_review_required"
+	task.GitOpsVerificationMode = "bounded_smoke"
 	task.EvidenceRefs = []string{"automation_run:run-smoke", "gitops-smoke-ref"}
 	task.VerifierResultRefs = []string{"bounded-smoke-marker-present"}
 	task.Outcome = "Bounded smoke marker is present with exactly the requested single safe line."
@@ -7291,15 +7289,15 @@ func TestClaimNextRunQueuesReviewForBoundedGitOpsTaskMissingDraftPREvidence(t *t
 	if err != nil {
 		t.Fatalf("ClaimNextRun returned error: %v", err)
 	}
-	if claimed.Run.TaskID != reviewTask.ID || claimed.Run.ParentRunID != run.ID || claimed.Run.SafeSummary != RunSafeSummaryPostImplementationReviewQueued {
-		t.Fatalf("expected review run before gitops recovery, got %#v", claimed.Run)
+	if claimed.Run.ID != run.ID || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery || claimed.Run.TaskID != task.ID {
+		t.Fatalf("expected bounded smoke GitOps recovery run before review, got %#v", claimed.Run)
 	}
 	parent, err := svc.GetRun(ctx, "project-1", run.ID)
 	if err != nil {
 		t.Fatalf("GetRun returned error: %v", err)
 	}
-	if parent.Status != RunStatusVerifying || parent.SafeSummary == RunSafeSummaryGitOpsPostTaskRecovery {
-		t.Fatalf("parent run must remain verifying until review refs exist, got %#v", parent)
+	if parent.Status != RunStatusRunning || parent.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
+		t.Fatalf("parent run must be reclaimed for GitOps recovery before review when draft PR evidence is missing, got %#v", parent)
 	}
 }
 

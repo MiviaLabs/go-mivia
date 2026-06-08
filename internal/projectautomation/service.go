@@ -4017,6 +4017,9 @@ func taskNeedsPostImplementationReview(task projectworkplan.WorkTask) bool {
 	if isReviewTask(task) || isReadOnlyScannerTask(task) {
 		return false
 	}
+	if taskUsesBoundedSmokeGitOpsVerification(task) {
+		return false
+	}
 	if len(task.ReviewResultRefs) > 0 {
 		return false
 	}
@@ -5319,6 +5322,8 @@ func automationReviewExemptReason(task projectworkplan.WorkTask) string {
 	switch {
 	case isReviewTask(task):
 		return "independent review task; secondary review not required"
+	case taskUsesBoundedSmokeGitOpsVerification(task):
+		return "bounded smoke GitOps verification; review gate intentionally exempt"
 	case isReadOnlyScannerTask(task):
 		return "read-only automation task; downstream review remains dependency-gated"
 	case isNoConfirmedBugPlannerTask(task):
