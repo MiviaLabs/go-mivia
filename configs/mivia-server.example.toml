@@ -139,7 +139,7 @@ commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
 # ssh_private_key_path = "/run/secrets/mivia_git_ssh_key"
 # ssh_public_key_path = "/run/secrets/mivia_git_ssh_key.pub"
 # ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
-# github_token_env = "GITHUB_TOKEN"
+# github_token_env = "GH_TOKEN"
 github_cli_path = "gh"
 
 [git_operations.dirty_scope_recovery]

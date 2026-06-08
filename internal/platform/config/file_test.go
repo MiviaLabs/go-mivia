@@ -222,7 +222,7 @@ commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
 ssh_private_key_path = "/run/secrets/mivia_git_key"
 ssh_public_key_path = "/run/secrets/mivia_git_key.pub"
 ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
-github_token_env = "GITHUB_TOKEN"
+github_token_env = "GH_TOKEN"
 github_cli_path = "gh"
 
 [git_operations.dirty_scope_recovery]
@@ -295,7 +295,7 @@ commit_author_name = "Mivia Automation"
 commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
 ssh_private_key_path = "/run/secrets/mivia_git_key"
 ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
-github_token_env = "GITHUB_TOKEN"
+github_token_env = "GH_TOKEN"
 github_cli_path = "gh"
 
 [[projects]]
@@ -337,7 +337,7 @@ tests_template = "{{test_results}}"
 		t.Fatalf("expected project git operations override, got %+v", merged.Projects)
 	}
 	projectGitOps := merged.Projects[0].GitOperations
-	if !projectGitOps.PushAfterTask || projectGitOps.SSHPrivateKeyPath == "" || projectGitOps.GitHubTokenEnv != "GITHUB_TOKEN" {
+	if !projectGitOps.PushAfterTask || projectGitOps.SSHPrivateKeyPath == "" || projectGitOps.GitHubTokenEnv != "GH_TOKEN" {
 		t.Fatalf("expected project override to inherit global push settings, got %+v", projectGitOps)
 	}
 	if projectGitOps.BranchPrefix != "" || projectGitOps.BranchNamePattern == "" {
@@ -586,7 +586,7 @@ func TestGitOperationsValidateRejectsUnsafeCombinations(t *testing.T) {
 			cfg.GitOperations.SSHPrivateKeyPath = "secrets/mivia_git_key"
 		},
 		"two_token_refs": func(cfg *Config) {
-			cfg.GitOperations.GitHubTokenEnv = "GITHUB_TOKEN"
+			cfg.GitOperations.GitHubTokenEnv = "GH_TOKEN"
 			cfg.GitOperations.GitHubTokenFile = "/run/secrets/github_token"
 		},
 		"bad_convention_type": func(cfg *Config) {

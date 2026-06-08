@@ -544,7 +544,7 @@ func (svc *Service) validatePushConfig() error {
 		tokenEnv := strings.TrimSpace(svc.options.GitHubTokenEnv)
 		tokenFile := strings.TrimSpace(svc.options.GitHubTokenFile)
 		if tokenEnv != "" && strings.TrimSpace(os.Getenv(tokenEnv)) == "" {
-			return nil
+			return fmt.Errorf("%w: github token env is unavailable", ErrInvalidInput)
 		}
 		if tokenFile != "" {
 			if !filepath.IsAbs(tokenFile) || strings.ContainsAny(tokenFile, "\x00\r\n") {

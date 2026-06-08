@@ -136,7 +136,7 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 		BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
 		SSHPrivateKeyPath:    sshKey,
 		SSHKnownHostsPath:    knownHosts,
-		GitHubTokenEnv:       "GITHUB_TOKEN",
+		GitHubTokenEnv:       "GH_TOKEN",
 		GitHubCLIPath:        "gh",
 		CommitAuthorName:     "Mivia Automation",
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
@@ -144,7 +144,7 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 			AlwaysBeforePR: []string{"pnpm -s nx affected -t test --base=origin/main --head=HEAD"},
 		},
 	}, runner)
-	t.Setenv("GITHUB_TOKEN", "token")
+	t.Setenv("GH_TOKEN", "token")
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
@@ -214,12 +214,12 @@ func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testi
 		BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
 		SSHPrivateKeyPath:    sshKey,
 		SSHKnownHostsPath:    knownHosts,
-		GitHubTokenEnv:       "GITHUB_TOKEN",
+		GitHubTokenEnv:       "GH_TOKEN",
 		GitHubCLIPath:        "gh",
 		CommitAuthorName:     "Mivia Automation",
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
 	}, runner)
-	t.Setenv("GITHUB_TOKEN", "token")
+	t.Setenv("GH_TOKEN", "token")
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
@@ -706,9 +706,8 @@ func TestFailureCategoryWithDetailReportsMissingCommitAuthorEmailFile(t *testing
 	}
 }
 
-func TestFailureCategoryWithDetailReportsMissingGitHubAuthBeforeDraftPR(t *testing.T) {
+func TestFailureCategoryWithDetailReportsMissingConfiguredGitHubTokenBeforeDraftPR(t *testing.T) {
 	sshKey, knownHosts := testGitOpsCredentialFiles(t)
-	runner := &recordingRunner{errs: []error{errors.New("gh auth failed")}}
 	svc := NewWithRunner(Options{
 		Enabled:           true,
 		CommitAfterTask:   true,
@@ -716,20 +715,20 @@ func TestFailureCategoryWithDetailReportsMissingGitHubAuthBeforeDraftPR(t *testi
 		DraftPRAfterPush:  true,
 		SSHPrivateKeyPath: sshKey,
 		SSHKnownHostsPath: knownHosts,
-		GitHubTokenEnv:    "MISSING_GITHUB_TOKEN",
+		GitHubTokenEnv:    "MISSING_GH_TOKEN",
 		GitHubCLIPath:     "gh",
-	}, runner)
+	}, &recordingRunner{})
 
 	_, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})
 	if err == nil {
-		t.Fatal("expected missing github auth error")
+		t.Fatal("expected missing github token error")
 	}
-	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_github_auth_unavailable" {
-		t.Fatalf("expected missing github auth category, got %q", got)
+	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_github_token_unavailable" {
+		t.Fatalf("expected missing github token category, got %q", got)
 	}
 }
 
-func TestPostTaskAllowsMountedGitHubCLIAuthWhenTokenEnvMissing(t *testing.T) {
+func TestPostTaskAllowsMountedGitHubCLIAuthWhenTokenEnvUnconfigured(t *testing.T) {
 	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{results: []CommandResult{
 		{},
@@ -744,7 +743,6 @@ func TestPostTaskAllowsMountedGitHubCLIAuthWhenTokenEnvMissing(t *testing.T) {
 		DraftPRAfterPush:  true,
 		SSHPrivateKeyPath: sshKey,
 		SSHKnownHostsPath: knownHosts,
-		GitHubTokenEnv:    "MISSING_GITHUB_TOKEN",
 		GitHubCLIPath:     "gh",
 	}, runner)
 
@@ -1240,7 +1238,7 @@ func TestPostTaskCreatesDraftPRWithRenderedMetadata(t *testing.T) {
 			errors.New("no pull request"),
 		},
 	}
-	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GH_TOKEN", "test-token")
 	svc := NewWithRunner(Options{
 		Enabled:           true,
 		CommitAfterTask:   true,
@@ -1249,7 +1247,7 @@ func TestPostTaskCreatesDraftPRWithRenderedMetadata(t *testing.T) {
 		RemoteName:        "origin",
 		SSHPrivateKeyPath: sshKey,
 		SSHKnownHostsPath: knownHosts,
-		GitHubTokenEnv:    "GITHUB_TOKEN",
+		GitHubTokenEnv:    "GH_TOKEN",
 		GitHubCLIPath:     "gh",
 		Conventions:       Conventions{CommitType: "feat", CommitScope: "gitops", CommitSummaryTemplate: "finish {{work_task_id}}"},
 	}, runner)
