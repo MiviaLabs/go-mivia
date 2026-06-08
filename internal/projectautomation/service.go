@@ -1052,10 +1052,7 @@ func claimNextStepError(step string, err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, ErrInvalidInput) || errors.Is(err, projectworkplan.ErrInvalidInput) {
-		return fmt.Errorf("%w: claim_next_%s_failed:%s", ErrInvalidInput, step, safeFailure(err.Error()))
-	}
-	return err
+	return fmt.Errorf("%w: claim_next_%s_failed:%s", ErrInvalidInput, step, safeFailure(err.Error()))
 }
 
 func (svc *Service) claimFirstQueuedRun(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, string, error) {
