@@ -4698,6 +4698,9 @@ func TestGitOpsVerificationFailureIsRecoverable(t *testing.T) {
 	if !isRecoverableGitOpsPostTaskFailure("gitops_verification_failed") {
 		t.Fatal("expected gitops verification failures to be recoverable after config or verifier fixes")
 	}
+	if !isRecoverableGitOpsPostTaskFailure("gitops_command_failed_git_config_global") {
+		t.Fatal("expected transient Git config setup failures to be recoverable")
+	}
 }
 
 func TestGitOpsVerificationFailureQueuesBoundedRepairRun(t *testing.T) {

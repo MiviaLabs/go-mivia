@@ -6251,6 +6251,7 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 		strings.HasPrefix(category, "gitops_post_task_failed_") ||
 		category == "gitops_invalid_input_ssh_key_unavailable" ||
 		category == "gitops_invalid_input_github_token_unavailable" ||
+		category == "gitops_command_failed_git_config_global" ||
 		category == "gitops_command_failed_git_c_credential_helper" ||
 		category == "gitops_command_failed_git_push_origin" ||
 		strings.HasPrefix(category, "gitops_command_failed_git_push_origin_") ||
