@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -340,6 +341,110 @@ func TestGitPushDoesNotTreatRelativeOrSSHRemoteAsSafeDirectory(t *testing.T) {
 				t.Fatalf("expected no remote safe.directory for %s remote, got %q", tc.name, got)
 			}
 		})
+	}
+}
+
+func TestPostTaskLiveLocalRemotePushAndDraftPRHandoff(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o700); err != nil {
+		t.Fatalf("create temp git home: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	t.Setenv("GH_TOKEN", "test-token")
+
+	remoteDir := filepath.Join(root, "remote.git")
+	workDir := filepath.Join(root, "work")
+	runGitCommand(t, root, "init", "--bare", remoteDir)
+	runGitCommand(t, root, "init", "-b", "main", workDir)
+	runGitCommand(t, workDir, "config", "user.name", "Test User")
+	runGitCommand(t, workDir, "config", "user.email", "test@example.test")
+	mustWriteGitOpsFixture(t, workDir, "README.md", "seed\n")
+	runGitCommand(t, workDir, "add", "README.md")
+	runGitCommand(t, workDir, "commit", "-m", "chore: seed")
+	seedMain := strings.TrimSpace(runGitCommand(t, workDir, "rev-parse", "HEAD"))
+	runGitCommand(t, workDir, "remote", "add", "local-smoke", remoteDir)
+	runGitCommand(t, workDir, "push", "local-smoke", "main")
+	mustWriteGitOpsFixture(t, workDir, ".agentic/automation-smoke.md", "smoke input ref: input:live-generic-pr\n")
+
+	ghLog := filepath.Join(root, "gh.log")
+	fakeGH := writeFakeGH(t, root, ghLog)
+	svc := New(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		DraftPRAfterPush:     true,
+		RemoteName:           "local-smoke",
+		BranchNamePattern:    "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$",
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		GitHubTokenEnv:       "GH_TOKEN",
+		GitHubCLIPath:        fakeGH,
+		Conventions: Conventions{
+			CommitType:            "chore",
+			CommitScope:           "smoke",
+			CommitSummaryTemplate: "complete {{work_task_ref}}",
+		},
+	})
+
+	result, err := svc.PostTask(ctx, PostTaskInput{
+		WorkDir:          workDir,
+		ProjectID:        "generic-monorepo",
+		PlanID:           "work_plan_live",
+		TaskID:           "work_task_live",
+		TaskRef:          "smoke-draft-pr",
+		TaskTitle:        "Smoke Draft PR",
+		BranchName:       "feature/live-generic-pr",
+		AutomationID:     "automation_live",
+		AutomationRunID:  "automation_run_live",
+		OperatorID:       "smoke-gitops-worker",
+		AllowedPathspecs: []string{".agentic/automation-smoke.md"},
+		ReviewRefs:       []string{"bounded-smoke-review-exempt"},
+		VerifierRefs:     []string{"bounded-smoke-verifier"},
+		TestResults:      []string{"bounded smoke output: passed"},
+	})
+	if err != nil {
+		t.Fatalf("expected live local GitOps push and draft PR handoff to succeed: %v", err)
+	}
+	if result.CommitRef == "" || result.PushRef == "" || result.PullRequestRef == "" {
+		t.Fatalf("expected commit, push, and PR refs, got %#v", result)
+	}
+	for _, want := range []string{"git-commit-created", "git-push-completed", "draft-pr-ready"} {
+		if !containsString(result.EvidenceRefs, want) {
+			t.Fatalf("expected evidence ref %q, got %#v", want, result.EvidenceRefs)
+		}
+	}
+	if got := strings.TrimSpace(runGitCommand(t, root, "--git-dir", remoteDir, "rev-parse", "main")); got != seedMain {
+		t.Fatalf("remote main must remain unchanged, got %s want %s", got, seedMain)
+	}
+	branchCommit := strings.TrimSpace(runGitCommand(t, root, "--git-dir", remoteDir, "rev-parse", "feature/live-generic-pr"))
+	if branchCommit == "" || branchCommit == seedMain {
+		t.Fatalf("expected pushed feature branch to advance from seed, got %q seed %q", branchCommit, seedMain)
+	}
+	if got := strings.TrimSpace(runGitCommand(t, root, "--git-dir", remoteDir, "show", "feature/live-generic-pr:.agentic/automation-smoke.md")); got != "smoke input ref: input:live-generic-pr" {
+		t.Fatalf("pushed smoke marker mismatch: %q", got)
+	}
+	logData, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatalf("read fake gh log: %v", err)
+	}
+	logText := string(logData)
+	for _, want := range []string{
+		"pr view --json number --jq .number",
+		"pr create --draft",
+		"--title",
+		"chore(smoke): complete smoke-draft-pr",
+		"Project ID: generic-monorepo",
+		"Automation Run ID: automation_run_live",
+		"bounded-smoke-verifier",
+		"bounded smoke output: passed",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("fake gh log missing %q:\n%s", want, logText)
+		}
 	}
 }
 
@@ -1571,6 +1676,45 @@ func hasEnvPrefix(values []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+func runGitCommand(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+	return string(out)
+}
+
+func writeFakeGH(t *testing.T, dir string, logPath string) string {
+	t.Helper()
+	path := filepath.Join(dir, "fake-gh")
+	script := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "` + logPath + `"
+if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
+  exit 0
+fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  exit 1
+fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
+  echo "https://github.example/pull/123"
+  exit 0
+fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "edit" ]; then
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	return path
 }
 
 func containsString(values []string, expected string) bool {
