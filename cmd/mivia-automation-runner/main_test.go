@@ -2787,7 +2787,7 @@ func TestParseGovernedCloseoutNormalizesUnsafeOutputContractLabels(t *testing.T)
 	payload := strings.Replace(
 		governedCloseoutFixtureJSON(),
 		`"output_contract":"code change with verifier evidence"`,
-		`"output_contract":"provider_payload with raw source and raw stderr refs"`,
+		`"output_contract":"Provider_Payload with RAW SOURCE and raw stderr refs"`,
 		1,
 	)
 	output, err := parseGovernedCloseoutOutput(payload)
@@ -2795,8 +2795,9 @@ func TestParseGovernedCloseoutNormalizesUnsafeOutputContractLabels(t *testing.T)
 		t.Fatalf("unsafe output_contract labels should normalize before validation: %v", err)
 	}
 	got := output.ChildTasks[0].OutputContract
+	lower := strings.ToLower(got)
 	for _, forbidden := range []string{"provider_payload", "raw source", "raw stderr"} {
-		if strings.Contains(got, forbidden) {
+		if strings.Contains(lower, forbidden) {
 			t.Fatalf("normalized output_contract still contains forbidden label %q: %q", forbidden, got)
 		}
 	}

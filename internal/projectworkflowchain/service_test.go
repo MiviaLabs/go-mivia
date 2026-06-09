@@ -326,14 +326,15 @@ func TestAdvancingStageStripsWrapperDependenciesFromCarriedImplementationTasks(t
 		Status:                  projectworkplan.WorkTaskStatusPlanned,
 		OwnerAgent:              "planning-worker",
 		FilesToEdit:             []string{"internal/output.go"},
-		DependencyTaskIDs:       []string{"select-ready-tasks"},
+		DependencyTaskIDs:       []string{"work_task_selector_wrapper", "review-select-ready-tasks", "select-ready-tasks"},
 		VerificationRequirement: "focused verifier",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 		ReviewResultRefs:        []string{"review:implementation-independent-review"},
 	}
 	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
 		"plan-decomposition": {
-			{ID: "select-ready-tasks", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusReady, DecompositionQuality: projectworkplan.DecompositionReady},
+			{ID: "work_task_selector_wrapper", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusReady, DecompositionQuality: projectworkplan.DecompositionReady},
+			{ID: "review-select-ready-tasks", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "review-select-ready-tasks", Status: projectworkplan.WorkTaskStatusReady, DecompositionQuality: projectworkplan.DecompositionReady},
 			generated,
 		},
 		"plan-implementation": {
@@ -361,6 +362,9 @@ func TestAdvancingStageStripsWrapperDependenciesFromCarriedImplementationTasks(t
 	}
 	if containsString(carried.DependencyTaskIDs, "select-ready-tasks") {
 		t.Fatalf("carried implementation task must not depend on source-stage wrapper refs: %#v", carried.DependencyTaskIDs)
+	}
+	if containsString(carried.DependencyTaskIDs, "work_task_selector_wrapper") || containsString(carried.DependencyTaskIDs, "review-select-ready-tasks") {
+		t.Fatalf("carried implementation task must not depend on source-stage wrapper ids: %#v", carried.DependencyTaskIDs)
 	}
 	if len(automations.created) != 1 || automations.created[0].PlanID != "plan-implementation" || automations.created[0].AgentID != "implementation-worker" {
 		t.Fatalf("expected implementation-worker automation for carried task, got %#v", automations.created)
