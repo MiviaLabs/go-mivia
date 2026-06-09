@@ -1085,6 +1085,7 @@ func (client *runnerClient) applyGovernedCloseoutFromOutput(ctx context.Context,
 	if err != nil {
 		return err
 	}
+	sanitizeGovernedCloseoutRefs(&output, "automation_run:"+strings.TrimSpace(claimed.Run.ID))
 	if err := validateGovernedCloseoutOutput(output, wrapper); err != nil {
 		return err
 	}
@@ -1099,6 +1100,34 @@ func (client *runnerClient) applyGovernedCloseoutFromOutput(ctx context.Context,
 		return governedCloseoutError{category: governedCloseoutReadbackFailed, err: errors.New("wrapper remained open after closeout apply")}
 	}
 	return nil
+}
+
+func sanitizeGovernedCloseoutRefs(output *governedCloseoutOutput, fallbackEvidenceRef string) {
+	if output == nil {
+		return
+	}
+	output.EvidenceRefs = filterSafeCloseoutRefs(output.EvidenceRefs)
+	output.VerifierRefs = filterSafeCloseoutRefs(output.VerifierRefs)
+	if strings.TrimSpace(output.CloseoutAction) == "needs_review" && len(output.EvidenceRefs) == 0 && safeCloseoutRef(fallbackEvidenceRef) {
+		output.EvidenceRefs = []string{strings.TrimSpace(fallbackEvidenceRef)}
+	}
+}
+
+func filterSafeCloseoutRefs(refs []string) []string {
+	filtered := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if !safeCloseoutRef(ref) {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		filtered = append(filtered, ref)
+	}
+	return filtered
 }
 
 func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID string, claimed projectautomation.ClaimedRun, wrapper runnerWorkTaskMetadata, output governedCloseoutOutput) error {

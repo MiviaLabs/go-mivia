@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -2708,6 +2709,56 @@ func TestParseGovernedCloseoutAcceptsWrappedSingleJSONObject(t *testing.T) {
 				t.Fatalf("unexpected parsed closeout: %+v", output)
 			}
 		})
+	}
+}
+
+func TestSanitizeGovernedCloseoutRefsKeepsPipelineMovingWithSafeFallback(t *testing.T) {
+	output := governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		Outcome:        "ready for review",
+		SafeNextAction: "continue governed decomposition",
+		EvidenceRefs: []string{
+			"/home/mac/rimthan/mass-monorepo/apps/domain/src/module.ts",
+			"automation_run:automation_run_21b6e67b5e104c6a",
+			"automation_run:automation_run_21b6e67b5e104c6a",
+		},
+		VerifierRefs: []string{
+			"review_result_work_task_approved",
+			"raw_stderr",
+		},
+	}
+
+	sanitizeGovernedCloseoutRefs(&output, "automation_run:automation_run_21b6e67b5e104c6a")
+
+	if got, want := output.EvidenceRefs, []string{"automation_run:automation_run_21b6e67b5e104c6a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected unsafe evidence refs to be dropped and deduped, got %#v", got)
+	}
+	if got, want := output.VerifierRefs, []string{"review_result_work_task_approved"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected unsafe verifier refs to be dropped, got %#v", got)
+	}
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "mark-ready-after-review"}); err != nil {
+		t.Fatalf("sanitized closeout should validate: %v", err)
+	}
+}
+
+func TestSanitizeGovernedCloseoutRefsAddsAutomationRunFallbackWhenWorkerOnlyReturnsUnsafeRefs(t *testing.T) {
+	output := governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		Outcome:        "ready for review",
+		SafeNextAction: "continue governed decomposition",
+		EvidenceRefs: []string{
+			"/home/mac/rimthan/mass-monorepo/apps/domain/src/module.ts",
+			"raw_stderr",
+		},
+	}
+
+	sanitizeGovernedCloseoutRefs(&output, "automation_run:automation_run_21b6e67b5e104c6a")
+
+	if got, want := output.EvidenceRefs, []string{"automation_run:automation_run_21b6e67b5e104c6a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected fallback automation run evidence ref, got %#v", got)
+	}
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "mark-ready-after-review"}); err != nil {
+		t.Fatalf("fallback closeout should validate: %v", err)
 	}
 }
 
