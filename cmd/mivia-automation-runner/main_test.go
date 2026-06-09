@@ -19,6 +19,8 @@ import (
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	automationhttpapi "github.com/MiviaLabs/go-mivia/internal/projectautomation/httpapi"
+	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan/httpapi"
@@ -1838,6 +1840,124 @@ func TestRunOnceSendsRichGenericCodexPromptAndDurableCompletion(t *testing.T) {
 	}
 }
 
+func TestRunOnceAgainstRealHTTPServicesClosesGenericMetadataTaskDurably(t *testing.T) {
+	setReadableCodexHome(t)
+	ctx := context.Background()
+	workDir := initRunnerGitRepo(t)
+	promptPath := filepath.Join(t.TempDir(), "codex-prompt.txt")
+	codexPath := fakeCodexRecordingPromptAndLastMessage(t, promptPath, "generic metadata handoff completed")
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  projectautomation.RunnerExecutionExternal,
+		MaxParallelTasks: 1,
+		PermissionResolver: realHTTPTestPermissionResolver{
+			allowedRunnerKinds: []string{projectautomation.RunnerKindCodexCLI},
+		},
+	})
+	plan, err := workPlans.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
+		ProjectID:          "project-1",
+		PlanRef:            "plan/generic-http-pipeline",
+		Title:              "Generic HTTP Pipeline",
+		GoalSummary:        "Prove runner handoffs through real HTTP services.",
+		OwnerAgent:         "orchestrator",
+		CreatedByRunID:     "orchestrator-run-1",
+		TraceID:            "trace-generic-http",
+		IsolationMode:      projectworkplan.WorkPlanIsolationShared,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkPlan returned error: %v", err)
+	}
+	task, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  plan.ID,
+		TaskRef:                 "context-summary",
+		Title:                   "Summarize Generic Context",
+		Description:             "Summarize generic context and leave durable refs.",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              "implementation-worker",
+		EvidenceNeeded:          []string{"evidence:generic-http-source"},
+		ContextPackRefs:         []string{"context:generic-http"},
+		LikelyFilesAffected:     []string{"internal/generic/context.go"},
+		VerificationRequirement: "orchestrator verifies durable HTTP runner handoff",
+		ExpectedOutput:          "metadata-only generic closeout through real HTTP routes",
+		FailureCriteria:         "fail if claim, task closeout, attempt report, or durable GET loses refs",
+		AcceptanceCriteria:      []string{"real HTTP runner claim carries generic Codex input"},
+		StopConditions:          []string{"missing durable claim or completion ref"},
+		VerifierLadder:          []string{"focused real HTTP runner integration"},
+		RegressionApplicability: "required",
+		DownstreamImpactRefs:    []string{"downstream.generic-http"},
+		OutputContract:          "task done, run completed, prompt includes generic handoff data",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkTask returned error: %v", err)
+	}
+	automation, err := automations.CreateAutomation(ctx, projectautomation.CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "automation/generic-http-pipeline",
+		Title:           "Generic HTTP pipeline automation",
+		Purpose:         "Run generic metadata task through real HTTP runner routes.",
+		Status:          projectautomation.AutomationStatusEnabled,
+		AgentID:         "implementation-worker",
+		PlanID:          plan.ID,
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     projectautomation.TriggerKindManual,
+		PermissionRef:   "permission_snapshot:generic-http",
+		SourceKind:      projectautomation.AutomationSourceWorkflow,
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	queued, err := automations.SubmitRun(ctx, projectautomation.SubmitRunInput{
+		ProjectID:    "project-1",
+		AutomationID: automation.ID,
+		TaskID:       task.ID,
+		RunnerKind:   projectautomation.RunnerKindCodexCLI,
+	})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutes(mux, workPlans)
+	automationhttpapi.RegisterRoutes(mux, automations)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	status, claimedAny, attempted := claimRunExecuteAndReport(ctx, &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-real-http"}, config.Config{}, "project-1", "implementation-worker", codexLaunchOptions{Path: codexPath, Launcher: "direct", WorkDir: workDir, Sandbox: "workspace-write"})
+	if status != 0 || !claimedAny || !attempted {
+		t.Fatalf("expected real HTTP runner success, status=%d claimed=%v attempted=%v", status, claimedAny, attempted)
+	}
+	durableRun, err := automations.GetRun(ctx, "project-1", queued.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if durableRun.Status != projectautomation.RunStatusCompleted || durableRun.ClaimID == "" || durableRun.RunnerID != "runner-real-http" || durableRun.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("durable run lost completed status/claim/runner/task handoff: %#v", durableRun)
+	}
+	durableTask, err := workPlans.GetWorkTask(ctx, "project-1", task.ID)
+	if err != nil {
+		t.Fatalf("GetWorkTask returned error: %v", err)
+	}
+	if durableTask.Status != projectworkplan.WorkTaskStatusDone || durableTask.ClaimedByRunID != queued.ID || durableTask.Outcome == "" || durableTask.ReviewExemptReason == "" {
+		t.Fatalf("durable task lost runner closeout metadata: %#v", durableTask)
+	}
+	if len(durableTask.EvidenceRefs) == 0 || len(durableTask.VerifierResultRefs) == 0 {
+		t.Fatalf("durable task must preserve closeout evidence and verifier refs: %#v", durableTask)
+	}
+	promptData, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read Codex prompt: %v", err)
+	}
+	prompt := string(promptData)
+	for _, want := range []string{"context-summary", "evidence:generic-http-source", "context:generic-http", "internal/generic/context.go", "real HTTP runner claim carries generic Codex input", "downstream.generic-http", server.URL} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("real HTTP Codex prompt lost %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestRunOnceReportsGenericCodexFailureAndContinuesToNextClaim(t *testing.T) {
 	setReadableCodexHome(t)
 	workDir := initRunnerGitRepo(t)
@@ -3283,6 +3403,18 @@ func fakeCodexRecordingPromptAndExit(t *testing.T, promptPath string, execStatus
 		t.Fatalf("write fake codex: %v", err)
 	}
 	return binary
+}
+
+type realHTTPTestPermissionResolver struct {
+	allowedRunnerKinds []string
+}
+
+func (resolver realHTTPTestPermissionResolver) CheckAutomationPermission(_ context.Context, input projectautomation.PermissionCheckInput) (projectautomation.PermissionSnapshotMetadata, error) {
+	return projectautomation.PermissionSnapshotMetadata{
+		PermissionRef:      input.PermissionRef,
+		AgentID:            input.AgentID,
+		AllowedRunnerKinds: append([]string(nil), resolver.allowedRunnerKinds...),
+	}, nil
 }
 
 func fakeCodexRecordingArgs(t *testing.T, argsPath string, execStatus int) string {
