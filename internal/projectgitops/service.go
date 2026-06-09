@@ -99,7 +99,7 @@ func (svc *Service) PreTaskWithinScope(ctx context.Context, workDir string, allo
 		return nil
 	}
 	allowed := sanitizePathspecs(append(allowedPathspecs, svc.generatedArtifactPathspecs()...))
-	outside := changedPathspecsOutsideAllowed(status, allowed)
+	outside := changedPathspecsOutsideAllowedForWorkDir(workDir, status, allowed)
 	if len(allowed) == 0 || len(outside) > 0 {
 		return dirtyWorktreeScopeError(outside)
 	}
@@ -170,10 +170,10 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if len(allowedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
 	}
-	if outside := changedPathspecsOutsideAllowed(status.Stdout, allowedPathspecs); len(outside) > 0 {
+	if outside := changedPathspecsOutsideAllowedForWorkDir(workDir, status.Stdout, allowedPathspecs); len(outside) > 0 {
 		return PostTaskResult{}, dirtyWorktreeScopeError(outside)
 	}
-	changedPathspecs := changedPathspecsWithinAllowed(status.Stdout, allowedPathspecs)
+	changedPathspecs := changedPathspecsWithinAllowedForWorkDir(workDir, status.Stdout, allowedPathspecs)
 	if len(changedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no changed files matched safe task pathspecs", ErrInvalidInput)
 	}
@@ -1020,7 +1020,14 @@ func sanitizePathspecs(values []string) []string {
 }
 
 func changedPathspecsWithinAllowed(status string, allowed []string) []string {
-	changed := changedPathsFromStatus(status)
+	return changedPathspecsWithinAllowedFromPaths(changedPathsFromStatus(status), allowed)
+}
+
+func changedPathspecsWithinAllowedForWorkDir(workDir string, status string, allowed []string) []string {
+	return changedPathspecsWithinAllowedFromPaths(expandChangedPathsForWorkDir(workDir, changedPathsFromStatus(status)), allowed)
+}
+
+func changedPathspecsWithinAllowedFromPaths(changed []string, allowed []string) []string {
 	out := make([]string, 0, len(changed))
 	seen := make(map[string]struct{}, len(changed))
 	for _, path := range changed {
@@ -1041,8 +1048,16 @@ func changedPathspecsWithinAllowed(status string, allowed []string) []string {
 }
 
 func changedPathspecsOutsideAllowed(status string, allowed []string) []string {
+	return changedPathspecsOutsideAllowedFromPaths(changedPathsFromStatus(status), allowed)
+}
+
+func changedPathspecsOutsideAllowedForWorkDir(workDir string, status string, allowed []string) []string {
+	return changedPathspecsOutsideAllowedFromPaths(expandChangedPathsForWorkDir(workDir, changedPathsFromStatus(status)), allowed)
+}
+
+func changedPathspecsOutsideAllowedFromPaths(changed []string, allowed []string) []string {
 	out := make([]string, 0)
-	for _, path := range changedPathsFromStatus(status) {
+	for _, path := range changed {
 		if !isSafeRelativePathspec(path) {
 			out = append(out, "unsafe-pathspec")
 			continue
@@ -1062,6 +1077,77 @@ func changedPathspecsOutsideAllowed(status string, allowed []string) []string {
 		}
 	}
 	return out
+}
+
+func expandChangedPathsForWorkDir(workDir string, paths []string) []string {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" || !filepath.IsAbs(workDir) {
+		return append([]string(nil), paths...)
+	}
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		trimmed := strings.TrimSpace(path)
+		if !isSafeRelativePathspec(trimmed) {
+			out = appendUniquePathspec(out, seen, trimmed)
+			continue
+		}
+		if strings.HasSuffix(trimmed, "/") {
+			expanded := untrackedDirectoryFiles(workDir, strings.TrimSuffix(trimmed, "/"))
+			if len(expanded) == 0 {
+				out = appendUniquePathspec(out, seen, trimmed)
+				continue
+			}
+			for _, expandedPath := range expanded {
+				out = appendUniquePathspec(out, seen, expandedPath)
+			}
+			continue
+		}
+		out = appendUniquePathspec(out, seen, trimmed)
+	}
+	return out
+}
+
+func untrackedDirectoryFiles(workDir string, relativeDir string) []string {
+	if !isSafeRelativePathspec(relativeDir) {
+		return nil
+	}
+	root := filepath.Join(workDir, filepath.FromSlash(relativeDir))
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	out := make([]string, 0)
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(workDir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if isSafeRelativePathspec(rel) {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+func appendUniquePathspec(out []string, seen map[string]struct{}, path string) []string {
+	if _, ok := seen[path]; ok {
+		return out
+	}
+	seen[path] = struct{}{}
+	return append(out, path)
 }
 
 func changedPathsFromStatus(status string) []string {

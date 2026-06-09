@@ -42,6 +42,17 @@ func testGitOpsCredentialFiles(t *testing.T) (string, string) {
 	return keyPath, knownHostsPath
 }
 
+func mustWriteGitOpsFixture(t *testing.T, root string, relativePath string, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(relativePath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create fixture parent: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+}
+
 func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
@@ -699,6 +710,100 @@ func TestFailureCategoryWithDetailDoesNotEmbedDirtyScopePath(t *testing.T) {
 	err := DirtyWorktreeScopeError{Paths: []string{longPath}}
 	if got := FailureCategoryWithDetail(err); got != "gitops_dirty_worktree_scope" {
 		t.Fatalf("dirty-scope category must not embed changed path, got %q", got)
+	}
+}
+
+func TestPreTaskWithinScopeExpandsUntrackedDirectoryToAllowedFile(t *testing.T) {
+	workDir := t.TempDir()
+	mustWriteGitOpsFixture(t, workDir, ".agentic/automation-smoke.md", "smoke input ref: live-smoke-b\n")
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: "?? .agentic/\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:                true,
+		CommitAfterTask:        true,
+		RequireCleanBeforeTask: true,
+	}, runner)
+
+	if err := svc.PreTaskWithinScope(context.Background(), workDir, []string{".agentic/automation-smoke.md"}); err != nil {
+		t.Fatalf("expected untracked directory containing only allowed file to pass scope check: %v", err)
+	}
+}
+
+func TestPreTaskWithinScopeRejectsUntrackedDirectoryFileOutsideAllowedScope(t *testing.T) {
+	workDir := t.TempDir()
+	mustWriteGitOpsFixture(t, workDir, ".agentic/automation-smoke.md", "smoke input ref: live-smoke-b\n")
+	mustWriteGitOpsFixture(t, workDir, ".agentic/other.md", "outside\n")
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: "?? .agentic/\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:                true,
+		CommitAfterTask:        true,
+		RequireCleanBeforeTask: true,
+	}, runner)
+
+	err := svc.PreTaskWithinScope(context.Background(), workDir, []string{".agentic/automation-smoke.md"})
+	if !errors.Is(err, ErrDirtyWorktreeScope) {
+		t.Fatalf("expected dirty scope error, got %v", err)
+	}
+	if got := strings.Join(DirtyWorktreeScopePaths(err), ","); got != ".agentic/other.md" {
+		t.Fatalf("expected exact rejected file path, got %q", got)
+	}
+}
+
+func TestPostTaskExpandsUntrackedDirectoryBeforeGitAdd(t *testing.T) {
+	workDir := t.TempDir()
+	mustWriteGitOpsFixture(t, workDir, ".agentic/automation-smoke.md", "smoke input ref: live-smoke-b\n")
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: "?? .agentic/\n"},
+		{Stdout: "mivia/generic-gitops-conventions\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	if _, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          workDir,
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{".agentic/automation-smoke.md"},
+	}); err != nil {
+		t.Fatalf("expected post task to expand untracked directory and commit allowed file: %v", err)
+	}
+	var addArgs []string
+	for _, command := range runner.commands {
+		if command.Path != "git" {
+			continue
+		}
+		for idx, arg := range command.Args {
+			if arg == "add" {
+				addArgs = command.Args[idx:]
+				break
+			}
+		}
+		if len(addArgs) > 0 {
+			break
+		}
+	}
+	if strings.Join(addArgs, ",") != "add,--,.agentic/automation-smoke.md" {
+		t.Fatalf("expected git add to use expanded allowed file, got %+v", addArgs)
 	}
 }
 
