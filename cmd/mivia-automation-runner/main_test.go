@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +24,9 @@ import (
 	automationhttpapi "github.com/MiviaLabs/go-mivia/internal/projectautomation/httpapi"
 	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
+	workflowhttpapi "github.com/MiviaLabs/go-mivia/internal/projectworkflow/httpapi"
+	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan/httpapi"
 	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
@@ -1781,7 +1786,7 @@ func TestRunOnceSendsRichGenericCodexPromptAndDurableCompletion(t *testing.T) {
 				Title:              "Implement Generic Change",
 				Status:             "verifying",
 				EvidenceRefs:       []string{"evidence:source-anchor", "evidence:dependency-map"},
-				ReviewResultRefs:  []string{"review:generic-implementation"},
+				ReviewResultRefs:   []string{"review:generic-implementation"},
 				VerifierResultRefs: []string{"verifier:generic-regression"},
 			})
 		case "/api/v1/projects/project-1/automation-runs/run-generic-1/attempt-result":
@@ -1857,14 +1862,14 @@ func TestRunOnceAgainstRealHTTPServicesClosesGenericMetadataTaskDurably(t *testi
 		},
 	})
 	plan, err := workPlans.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
-		ProjectID:          "project-1",
-		PlanRef:            "plan/generic-http-pipeline",
-		Title:              "Generic HTTP Pipeline",
-		GoalSummary:        "Prove runner handoffs through real HTTP services.",
-		OwnerAgent:         "orchestrator",
-		CreatedByRunID:     "orchestrator-run-1",
-		TraceID:            "trace-generic-http",
-		IsolationMode:      projectworkplan.WorkPlanIsolationShared,
+		ProjectID:      "project-1",
+		PlanRef:        "plan/generic-http-pipeline",
+		Title:          "Generic HTTP Pipeline",
+		GoalSummary:    "Prove runner handoffs through real HTTP services.",
+		OwnerAgent:     "orchestrator",
+		CreatedByRunID: "orchestrator-run-1",
+		TraceID:        "trace-generic-http",
+		IsolationMode:  projectworkplan.WorkPlanIsolationShared,
 	})
 	if err != nil {
 		t.Fatalf("CreateWorkPlan returned error: %v", err)
@@ -1954,6 +1959,141 @@ func TestRunOnceAgainstRealHTTPServicesClosesGenericMetadataTaskDurably(t *testi
 	for _, want := range []string{"context-summary", "evidence:generic-http-source", "context:generic-http", "internal/generic/context.go", "real HTTP runner claim carries generic Codex input", "downstream.generic-http", server.URL} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("real HTTP Codex prompt lost %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestGenericWorkflowCompileActivateAndRunThroughRealHTTPHandoffs(t *testing.T) {
+	setReadableCodexHome(t)
+	ctx := context.Background()
+	workDir := initRunnerGitRepo(t)
+	promptPath := filepath.Join(t.TempDir(), "workflow-codex-prompt.txt")
+	codexPath := fakeCodexRecordingPromptAndLastMessage(t, promptPath, "generic workflow handoff completed")
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  projectautomation.RunnerExecutionExternal,
+		MaxParallelTasks: 2,
+		PermissionResolver: realHTTPTestPermissionResolver{
+			allowedRunnerKinds: []string{projectautomation.RunnerKindCodexCLI},
+		},
+		WorkPlanStatusTrigger: projectautomation.WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	workflows := projectworkflow.New(workflowstore.NewMemoryStore())
+	workflows.SetCompilerDependencies(workPlans, automations)
+	mux := http.NewServeMux()
+	httpapi.RegisterRoutes(mux, workPlans)
+	automationhttpapi.RegisterRoutes(mux, automations)
+	workflowhttpapi.RegisterRoutes(mux, workflows)
+	var createdWorktreeRef string
+	var createdBranchRef string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/projects/project-1/workspace/git/worktrees" {
+			var input struct {
+				WorktreeRef string `json:"worktree_ref"`
+				BranchRef   string `json:"branch_ref"`
+				BaseRef     string `json:"base_ref"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode workflow worktree create input: %v", err)
+			}
+			createdWorktreeRef = input.WorktreeRef
+			createdBranchRef = input.BranchRef
+			if strings.TrimSpace(input.WorktreeRef) == "" || strings.TrimSpace(input.BranchRef) == "" {
+				t.Fatalf("workflow worktree create lost refs: %+v", input)
+			}
+			target, err := dedicatedWorktreePath(workDir, "project-1", input.WorktreeRef)
+			if err != nil {
+				t.Fatalf("dedicated workflow worktree path: %v", err)
+			}
+			runGit(t, workDir, "worktree", "add", "-B", input.BranchRef, target, firstNonEmpty(input.BaseRef, "main"))
+			writeJSON(t, w, map[string]any{"applied": true})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "configs", "workflows", "governed-decomposition-planning.toml"))
+	if err != nil {
+		t.Fatalf("read generic workflow config: %v", err)
+	}
+	imported := postJSONDecode[projectworkflow.ImportWorkflowTOMLResult](t, server.Client(), server.URL+"/api/v1/projects/project-1/workflows/import-toml", map[string]any{
+		"toml":              string(data),
+		"created_by_run_id": "import-run-1",
+		"trace_id":          "trace-generic-workflow",
+	})
+	if len(imported.Workflows) != 1 || imported.Workflows[0].WorkflowRef != "governed-decomposition-planning" {
+		t.Fatalf("unexpected imported workflows: %#v", imported.Workflows)
+	}
+	workflow := imported.Workflows[0]
+	compiled := postJSONDecode[projectworkflow.WorkflowCompileResult](t, server.Client(), server.URL+"/api/v1/projects/project-1/workflows/"+workflow.ID+"/compile", map[string]any{
+		"user_request_ref":  "ticket:GENERIC-2044",
+		"created_by_run_id": "compile-run-1",
+		"trace_id":          "trace-generic-workflow",
+	})
+	if compiled.WorkPlanID == "" || len(compiled.WorkTaskIDs) == 0 || len(compiled.AutomationIDs) == 0 {
+		t.Fatalf("compiled workflow returned incomplete refs: %#v", compiled)
+	}
+	plan := postJSONDecode[projectworkplan.WorkPlan](t, server.Client(), server.URL+"/api/v1/projects/project-1/work-plans/"+compiled.WorkPlanID+"/status", map[string]any{
+		"status":           projectworkplan.WorkPlanStatusActive,
+		"run_id":           "activate-run-1",
+		"trace_id":         "trace-generic-workflow",
+		"safe_next_action": "queue ready generic workflow tasks",
+	})
+	if plan.Status != projectworkplan.WorkPlanStatusActive {
+		t.Fatalf("expected active plan, got %#v", plan)
+	}
+	if err := automations.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID: "project-1",
+		PlanID:    compiled.WorkPlanID,
+		NewStatus: projectworkplan.WorkPlanStatusActive,
+	}); err != nil {
+		t.Fatalf("HandleWorkPlanStatusChanged returned error: %v", err)
+	}
+	runs, err := automations.ListRuns(ctx, projectautomation.RunFilter{ProjectID: "project-1", PlanID: compiled.WorkPlanID, Status: projectautomation.RunStatusQueued})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].TaskID == "" || runs[0].OrchestratorRunID == "" {
+		t.Fatalf("expected one queued workflow automation run with refs, got %#v", runs)
+	}
+	status, claimedAny, attempted := claimRunExecuteAndReport(ctx, &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-workflow-http"}, config.Config{}, "project-1", "planning-worker", codexLaunchOptions{Path: codexPath, Launcher: "direct", WorkDir: workDir, Sandbox: "workspace-write"})
+	durableRun, err := automations.GetRun(ctx, "project-1", runs[0].ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if status != 0 || !claimedAny || !attempted {
+		t.Fatalf("expected compiled workflow run success, status=%d claimed=%v attempted=%v durable=%#v", status, claimedAny, attempted, durableRun)
+	}
+	if durableRun.Status != projectautomation.RunStatusCompleted || durableRun.ClaimID == "" || durableRun.RunnerID != "runner-workflow-http" || durableRun.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("workflow runner durable run lost status/refs: %#v", durableRun)
+	}
+	if createdWorktreeRef == "" || createdBranchRef == "" {
+		t.Fatal("workflow runner did not request a dedicated worktree")
+	}
+	if !strings.HasPrefix(createdWorktreeRef, "workflow/") || !strings.Contains(createdBranchRef, "governed-decomposition-planning") {
+		t.Fatalf("workflow worktree refs must stay generic: worktree=%q branch=%q", createdWorktreeRef, createdBranchRef)
+	}
+	durableTask, err := workPlans.GetWorkTask(ctx, "project-1", runs[0].TaskID)
+	if err != nil {
+		t.Fatalf("GetWorkTask returned error: %v", err)
+	}
+	if durableTask.TaskRef != "discover-planning-context" || durableTask.Status != projectworkplan.WorkTaskStatusDone || durableTask.ClaimedByRunID != durableRun.ID {
+		t.Fatalf("compiled workflow task did not close out through runner: %#v", durableTask)
+	}
+	promptData, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read workflow Codex prompt: %v", err)
+	}
+	prompt := string(promptData)
+	for _, want := range []string{"ticket:GENERIC-2044", "discover-planning-context", ".ai/INDEX.md", "planning-readiness-review", "trace-generic-workflow", server.URL} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("compiled workflow Codex prompt lost %q:\n%s", want, prompt)
 		}
 	}
 }
@@ -4092,4 +4232,31 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Fatalf("encode response: %v", err)
 	}
+}
+
+func postJSONDecode[T any](t *testing.T, client *http.Client, url string, input any) T {
+	t.Helper()
+	var payload bytes.Buffer
+	if err := json.NewEncoder(&payload).Encode(input); err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, &payload)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("post %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("post %s returned %s: %s", url, resp.Status, strings.TrimSpace(string(body)))
+	}
+	var out T
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response from %s: %v", url, err)
+	}
+	return out
 }
