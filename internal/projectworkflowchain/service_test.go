@@ -491,6 +491,118 @@ func TestJiraTicketChainPreservesEveryAutomationHandoffThroughDraftPR(t *testing
 	}
 }
 
+func TestGenericSafeRefChainPreservesCodexHandoffDataThroughDraftPR(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{genericSafeRefTestConfig()})
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{
+		CommitRef:      "commit/generic-1044",
+		PushRef:        "push/generic-1044",
+		PullRequestRef: "pr/generic-1044",
+		EvidenceRefs:   []string{"gitops-evidence:generic-1044"},
+	}}
+	svc.SetGitOpsFinalizer(finalizer)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{
+		ProjectID:      "project-1",
+		ChainRef:       "generic-chain",
+		InputText:      "ticket/GENERIC-1044",
+		CreatedByRunID: "codex-orchestrator-run-1",
+		TraceID:        "trace-generic-1044",
+	})
+	if err != nil {
+		t.Fatalf("start generic chain: %v", err)
+	}
+	assertChainStageHandoff(t, result.StageRuns[0], "decomposition", "workflow-decomposition", "plan-decomposition", "task-decomposition", "automation-decomposition", StageStatusQueued)
+	if result.InputRef != "input:ticket/GENERIC-1044" || result.NextAction != "decomposition automation will run when planned tasks transition to ready" {
+		t.Fatalf("start result lost generic input or next action: %#v", result)
+	}
+	if len(workflows.compileInputs) != 1 {
+		t.Fatalf("expected first stage compile, got %#v", workflows.compileInputs)
+	}
+	assertGenericCodexCompileHandoff(t, workflows.compileInputs[0], "decomposition")
+	if got, want := strings.Join(workPlans.events[:2], ","), "release:task-decomposition,activate:plan-decomposition"; got != want {
+		t.Fatalf("decomposition activation handoff order mismatch: got %s want %s", got, want)
+	}
+
+	for _, planID := range []string{"plan-decomposition", "plan-implementation", "plan-post-validation"} {
+		if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get completed run: %v", err)
+	}
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/generic-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+		t.Fatalf("completed chain lost final status/action/PR handoff: %#v", run)
+	}
+	if run.CreatedByRunID != "codex-orchestrator-run-1" || run.TraceID != "trace-generic-1044" || run.InputRef != "input:ticket/GENERIC-1044" {
+		t.Fatalf("completed chain lost root refs: %#v", run)
+	}
+	if len(run.WorkPlanIDs) != 3 || len(run.AutomationIDs) != 3 || len(run.StageRuns) != 3 {
+		t.Fatalf("completed chain lost plan or automation refs: %#v", run)
+	}
+	assertChainStageHandoff(t, run.StageRuns[0], "decomposition", "workflow-decomposition", "plan-decomposition", "task-decomposition", "automation-decomposition", StageStatusCompleted)
+	assertChainStageHandoff(t, run.StageRuns[1], "implementation", "workflow-implementation", "plan-implementation", "task-implementation", "automation-implementation", StageStatusCompleted)
+	assertChainStageHandoff(t, run.StageRuns[2], "post-validation", "workflow-validation", "plan-post-validation", "task-post-validation", "automation-post-validation", StageStatusCompleted)
+	if got, want := strings.Join(workPlans.events, ","), "release:task-decomposition,activate:plan-decomposition,release:task-implementation,activate:plan-implementation,release:task-post-validation,activate:plan-post-validation"; got != want {
+		t.Fatalf("stage activation handoff order mismatch:\n got: %s\nwant: %s", got, want)
+	}
+	if len(workflows.compileInputs) != 3 {
+		t.Fatalf("expected all three stages compiled, got %#v", workflows.compileInputs)
+	}
+	for _, tc := range []struct {
+		index int
+		stage string
+	}{
+		{index: 0, stage: "decomposition"},
+		{index: 1, stage: "implementation"},
+		{index: 2, stage: "post-validation"},
+	} {
+		assertGenericCodexCompileHandoff(t, workflows.compileInputs[tc.index], tc.stage)
+	}
+	if len(finalizer.inputs) != 1 {
+		t.Fatalf("expected exactly one GitOps finalization, got %#v", finalizer.inputs)
+	}
+	gitopsInput := finalizer.inputs[0]
+	if gitopsInput.ProjectID != "project-1" || gitopsInput.ChainRef != "generic-chain" || gitopsInput.ChainRunID != result.ChainRunID {
+		t.Fatalf("GitOps input lost project/chain refs: %#v", gitopsInput)
+	}
+	if gitopsInput.InputRef != "input:ticket/GENERIC-1044" || gitopsInput.CreatedByRunID != "codex-orchestrator-run-1" || gitopsInput.TraceID != "trace-generic-1044" {
+		t.Fatalf("GitOps input lost generic/run/trace refs: %#v", gitopsInput)
+	}
+	if len(gitopsInput.StageRuns) != 3 || len(gitopsInput.AutomationIDs) != 3 || gitopsInput.WorkPlan.ID != "plan-implementation" {
+		t.Fatalf("GitOps input lost stage/automation/implementation plan refs: %#v", gitopsInput)
+	}
+	for _, ref := range []string{"review:task-decomposition", "review:task-implementation", "review:task-post-validation"} {
+		if !containsString(gitopsInput.ReviewRefs, ref) {
+			t.Fatalf("GitOps input lost review ref %q: %#v", ref, gitopsInput.ReviewRefs)
+		}
+	}
+	for _, ref := range []string{"verifier:task-decomposition", "verifier:task-implementation", "verifier:task-post-validation"} {
+		if !containsString(gitopsInput.VerifierRefs, ref) {
+			t.Fatalf("GitOps input lost verifier ref %q: %#v", ref, gitopsInput.VerifierRefs)
+		}
+	}
+	if !containsString(gitopsInput.TestResults, "task-post-validation verified by verifier:task-post-validation") {
+		t.Fatalf("GitOps input lost validation test result: %#v", gitopsInput.TestResults)
+	}
+	if !containsString(gitopsInput.AllowedPathspecs, "internal/projectworkflowchain/service.go") || containsString(gitopsInput.AllowedPathspecs, "cmd/mivia-server") {
+		t.Fatalf("GitOps input must use explicit implementation edit scope only: %#v", gitopsInput.AllowedPathspecs)
+	}
+
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("idempotent post-validation event: %v", err)
+	}
+	if len(finalizer.inputs) != 1 {
+		t.Fatalf("expected no duplicate GitOps finalization, got %d", len(finalizer.inputs))
+	}
+}
+
 func TestHandleWorkPlanStatusChangedDoesNotActivateNextStageBeforeChainUpdatePersists(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
@@ -840,6 +952,15 @@ func localIngestedTestConfig() Config {
 	return cfg
 }
 
+func genericSafeRefTestConfig() Config {
+	cfg := testConfig()
+	cfg.ChainRef = "generic-chain"
+	cfg.InputKind = InputKindSafeRef
+	cfg.InputPattern = "^ticket/GENERIC-[0-9]+$"
+	cfg.ContextProvider = ContextProviderIndexedRepo
+	return cfg
+}
+
 func enabledWorkflows() []projectworkflow.WorkflowDefinition {
 	return []projectworkflow.WorkflowDefinition{
 		{ID: "workflow-decomposition", ProjectID: "project-1", WorkflowRef: "governed-decomposition-planning", Status: projectworkflow.WorkflowStatusEnabled},
@@ -954,6 +1075,19 @@ func assertChainStageHandoff(t *testing.T, stage StageRun, stageRef string, work
 	}
 	if status == StageStatusCompleted && stage.CompletedAt.IsZero() {
 		t.Fatalf("stage %s completed without completed_at: %#v", stageRef, stage)
+	}
+}
+
+func assertGenericCodexCompileHandoff(t *testing.T, input projectworkflow.WorkflowCompileInput, stage string) {
+	t.Helper()
+	if input.UserRequestRef != "input:ticket/GENERIC-1044" || input.CreatedByRunID != "codex-orchestrator-run-1" || input.TraceID != "trace-generic-1044" {
+		t.Fatalf("compile input for %s lost generic/run/trace refs: %#v", stage, input)
+	}
+	if !containsString(input.ContextPackRefs, "repo:ticket/GENERIC-1044") {
+		t.Fatalf("compile input for %s lost context refs: %#v", stage, input.ContextPackRefs)
+	}
+	if !strings.Contains(input.TitleOverride, "input:ticket/GENERIC-1044") || !strings.Contains(input.TitleOverride, stage) {
+		t.Fatalf("compile input for %s lost usable title data: %q", stage, input.TitleOverride)
 	}
 }
 
