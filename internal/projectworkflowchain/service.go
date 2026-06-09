@@ -31,6 +31,7 @@ type WorkflowAPI interface {
 type WorkPlanAPI interface {
 	GetWorkPlan(context.Context, string, string) (projectworkplan.WorkPlan, error)
 	GetWorkTask(context.Context, string, string) (projectworkplan.WorkTask, error)
+	ListWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error)
 	ListOpenWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error)
 	CreateWorkTask(context.Context, projectworkplan.CreateWorkTaskInput) (projectworkplan.WorkTask, error)
 	UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
@@ -396,6 +397,9 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 			_, _ = svc.store.UpdateChainRun(ctx, run)
 			return err
 		}
+		if refreshed, err := svc.store.GetChainRun(ctx, run.ProjectID, run.ID); err == nil {
+			run = refreshed
+		}
 	} else if allStagesCompleted(run) {
 		if cfg.GitOpsMode == GitOpsModeDraftPRAfterValidation {
 			run.Status = ChainStatusPostValidationPassed
@@ -736,7 +740,7 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 	if previous.WorkPlanID == "" {
 		return nil
 	}
-	sourceTasks, err := svc.workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: previous.WorkPlanID})
+	sourceTasks, err := svc.workPlans.ListWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: previous.WorkPlanID})
 	if err != nil {
 		return err
 	}
@@ -753,7 +757,11 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 		compiledTaskIDs[taskID] = struct{}{}
 	}
 	sourceRefs := map[string]struct{}{}
+	hasDecompositionWorkflowTask := false
 	for _, task := range sourceTasks {
+		if strings.TrimSpace(task.TaskRef) == "decompose-work-plan" {
+			hasDecompositionWorkflowTask = true
+		}
 		if strings.TrimSpace(task.ID) != "" {
 			sourceRefs[task.ID] = struct{}{}
 		}
@@ -764,12 +772,18 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 			continue
 		}
 	}
+	carriedCount := 0
 	for _, task := range sourceTasks {
 		if !chainStageOutputTask(task, compiledTaskIDs) {
 			continue
 		}
+		carriedCount++
 		if existing, exists := existingTasksByRef[task.TaskRef]; exists {
-			if err := svc.ensureCarriedImplementationAutomation(ctx, projectID, compiled.WorkPlanID, run, existing); err != nil {
+			automationID, err := svc.ensureCarriedImplementationAutomation(ctx, projectID, compiled.WorkPlanID, run, existing)
+			if err != nil {
+				return err
+			}
+			if err := svc.persistCarriedStageRefs(ctx, run, compiled.WorkPlanID, existing.ID, automationID); err != nil {
 				return err
 			}
 			continue
@@ -783,28 +797,44 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 		if err != nil {
 			return err
 		}
-		if err := svc.ensureCarriedImplementationAutomation(ctx, projectID, compiled.WorkPlanID, run, created); err != nil {
+		automationID, err := svc.ensureCarriedImplementationAutomation(ctx, projectID, compiled.WorkPlanID, run, created)
+		if err != nil {
+			return err
+		}
+		if err := svc.persistCarriedStageRefs(ctx, run, compiled.WorkPlanID, created.ID, automationID); err != nil {
 			return err
 		}
 		existingTasksByRef[created.TaskRef] = created
 	}
+	if carriedCount == 0 && hasDecompositionWorkflowTask && targetPlanHasSelector(targetTasks) {
+		return fmt.Errorf("%w: missing_carried_implementation_tasks", ErrInvalidInput)
+	}
 	return nil
 }
 
-func (svc *Service) ensureCarriedImplementationAutomation(ctx context.Context, projectID string, planID string, run ChainRun, task projectworkplan.WorkTask) error {
+func targetPlanHasSelector(tasks []projectworkplan.WorkTask) bool {
+	for _, task := range tasks {
+		if strings.TrimSpace(task.TaskRef) == "select-ready-tasks" {
+			return true
+		}
+	}
+	return false
+}
+
+func (svc *Service) ensureCarriedImplementationAutomation(ctx context.Context, projectID string, planID string, run ChainRun, task projectworkplan.WorkTask) (string, error) {
 	if svc == nil || svc.automations == nil || strings.TrimSpace(task.TaskRef) == "" {
-		return nil
+		return "", nil
 	}
 	automations, err := svc.automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: projectID, Status: projectautomation.AutomationStatusEnabled, AgentID: "implementation-worker"})
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, automation := range automations {
 		if automation.PlanID == planID && containsRefString(automation.AllowedTaskRefs, task.TaskRef) {
-			return nil
+			return automation.ID, nil
 		}
 	}
-	_, err = svc.automations.CreateAutomation(ctx, projectautomation.CreateAutomationInput{
+	automation, err := svc.automations.CreateAutomation(ctx, projectautomation.CreateAutomationInput{
 		ProjectID:       projectID,
 		AutomationRef:   carriedImplementationAutomationRef(run, task),
 		Title:           "Run Carried Implementation Task",
@@ -820,6 +850,48 @@ func (svc *Service) ensureCarriedImplementationAutomation(ctx context.Context, p
 		CreatedByRunID:  firstNonEmpty(run.CreatedByRunID, run.ID),
 		TraceID:         run.TraceID,
 	})
+	if err != nil {
+		return "", err
+	}
+	return automation.ID, nil
+}
+
+func (svc *Service) persistCarriedStageRefs(ctx context.Context, run ChainRun, planID string, taskID string, automationID string) error {
+	if svc == nil || svc.store == nil || strings.TrimSpace(run.ID) == "" || strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	current, err := svc.store.GetChainRun(ctx, run.ProjectID, run.ID)
+	if err != nil {
+		return err
+	}
+	run = current
+	changed := false
+	for i := range run.StageRuns {
+		if run.StageRuns[i].WorkPlanID != planID {
+			continue
+		}
+		beforeTasks := len(run.StageRuns[i].WorkTaskIDs)
+		run.StageRuns[i].WorkTaskIDs = appendUnique(run.StageRuns[i].WorkTaskIDs, taskID)
+		if len(run.StageRuns[i].WorkTaskIDs) != beforeTasks {
+			changed = true
+		}
+		if strings.TrimSpace(automationID) != "" {
+			beforeAutomations := len(run.StageRuns[i].AutomationIDs)
+			run.StageRuns[i].AutomationIDs = appendUnique(run.StageRuns[i].AutomationIDs, automationID)
+			if len(run.StageRuns[i].AutomationIDs) != beforeAutomations {
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	run.WorkPlanIDs = appendUnique(run.WorkPlanIDs, planID)
+	if strings.TrimSpace(automationID) != "" {
+		run.AutomationIDs = appendUnique(run.AutomationIDs, automationID)
+	}
+	run.UpdatedAt = svc.now()
+	_, err = svc.store.UpdateChainRun(ctx, run)
 	return err
 }
 

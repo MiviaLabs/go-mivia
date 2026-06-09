@@ -336,6 +336,111 @@ func TestAdvancingStageCarriesGeneratedImplementationTasksToNextPlan(t *testing.
 	if err != nil || run.StageRuns[1].Status != StageStatusQueued {
 		t.Fatalf("expected queued implementation stage, run=%#v err=%v", run, err)
 	}
+	if !containsString(run.StageRuns[1].WorkTaskIDs, "created-"+generated.TaskRef) || !containsString(run.StageRuns[1].AutomationIDs, createdAutomation.ID) {
+		t.Fatalf("implementation stage lost carried task or automation refs: %#v", run.StageRuns[1])
+	}
+}
+
+func TestAdvancingStageCarriesGeneratedTasksFromCompletedPriorPlan(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	generated := projectworkplan.WorkTask{
+		ID:                   "generated-task-1",
+		ProjectID:            "project-1",
+		PlanID:               "plan-decomposition",
+		TaskRef:              "mass-1044-expired-booking-query",
+		Title:                "Add Expired Booking Selection Query",
+		Status:               projectworkplan.WorkTaskStatusPlanned,
+		OwnerAgent:           "developer",
+		FilesToEdit:          []string{"apps/domain-booking/src/infrastructure/database/repositories/booking.repository.ts"},
+		ReviewResultRefs:     []string{"review:planning-readiness-approved"},
+		VerifierResultRefs:   []string{"verifier:planning-readiness"},
+		DecompositionQuality: projectworkplan.DecompositionReady,
+	}
+	workPlans := &fakeWorkPlans{
+		allTasksByPlan: map[string][]projectworkplan.WorkTask{
+			"plan-decomposition": {
+				{ID: "task-decomposition", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "decompose-work-plan", Status: projectworkplan.WorkTaskStatusDone, DecompositionQuality: projectworkplan.DecompositionReady},
+				generated,
+			},
+		},
+		openTasksByPlan: map[string][]projectworkplan.WorkTask{
+			"plan-decomposition": {},
+			"plan-implementation": {
+				{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
+			},
+		},
+	}
+	automations := &fakeAutomationAPI{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.SetAutomationAPI(automations)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	if len(workPlans.createdTasks) != 1 {
+		t.Fatalf("expected generated implementation task to be carried from completed prior plan, got %#v", workPlans.createdTasks)
+	}
+	carried := workPlans.createdTasks[0]
+	if carried.PlanID != "plan-implementation" || carried.TaskRef != generated.TaskRef || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
+		t.Fatalf("unexpected carried implementation task: %#v", carried)
+	}
+	if len(automations.created) != 1 || automations.created[0].PlanID != "plan-implementation" || !containsString(automations.created[0].AllowedTaskRefs, generated.TaskRef) {
+		t.Fatalf("expected carried implementation worker automation, got %#v", automations.created)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get chain: %v", err)
+	}
+	if run.Status != ChainStatusQueued || chainStageRunByRef(t, run, "implementation").Status != StageStatusQueued {
+		t.Fatalf("expected implementation stage queued after carrying generated task, got %#v", run)
+	}
+}
+
+func TestAdvancingStageBlocksWhenDecompositionProducedNoImplementationChildren(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{
+		allTasksByPlan: map[string][]projectworkplan.WorkTask{
+			"plan-decomposition": {
+				{ID: "task-decomposition", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "decompose-work-plan", Status: projectworkplan.WorkTaskStatusDone, DecompositionQuality: projectworkplan.DecompositionReady},
+				{ID: "review-decompose-work-plan", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "review-decompose-work-plan-planning-readiness-review", Status: projectworkplan.WorkTaskStatusDone, DecompositionQuality: projectworkplan.DecompositionReady},
+			},
+		},
+		openTasksByPlan: map[string][]projectworkplan.WorkTask{
+			"plan-decomposition": {},
+			"plan-implementation": {
+				{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
+			},
+		},
+	}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	err = svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone})
+	if err == nil || !strings.Contains(err.Error(), "missing_carried_implementation_tasks") {
+		t.Fatalf("expected explicit missing child handoff error, got %v", err)
+	}
+	run, getErr := svc.Get(ctx, "project-1", result.ChainRunID)
+	if getErr != nil {
+		t.Fatalf("get chain: %v", getErr)
+	}
+	implementation := chainStageRunByRef(t, run, "implementation")
+	if run.Status != ChainStatusBlocked || implementation.Status != StageStatusBlocked || implementation.BlockedReason != "activate_next_stage_failed" {
+		t.Fatalf("expected chain blocked before implementation selector can run, got %#v", run)
+	}
 }
 
 func TestAdvancingStageStripsWrapperDependenciesFromCarriedImplementationTasks(t *testing.T) {
@@ -937,7 +1042,8 @@ func TestGenericSafeRefChainPreservesCodexHandoffDataThroughDraftPR(t *testing.T
 
 func TestGenericSafeRefChainWithRealWorkflowCompilerPreservesGeneratedTaskOutputsThroughGitOps(t *testing.T) {
 	ctx := context.Background()
-	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	workPlanStore := workplanstore.NewMemoryStore()
+	workPlans := projectworkplan.New(workPlanStore)
 	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
 		Enabled:          true,
 		RunnerEnabled:    true,
@@ -1005,6 +1111,31 @@ func TestGenericSafeRefChainWithRealWorkflowCompilerPreservesGeneratedTaskOutput
 			t.Fatalf("stage %s missing generated handoff refs: %#v", stage, stageRun)
 		}
 		assertQueuedAutomationRunsForGeneratedStage(t, ctx, automations, "project-1", stageRun)
+		if stage == "decomposition" {
+			if _, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+				ProjectID:               "project-1",
+				PlanID:                  stageRun.WorkPlanID,
+				TaskRef:                 "generic-2044-implementation-slice",
+				Title:                   "Implement GENERIC-2044 Slice",
+				Status:                  projectworkplan.WorkTaskStatusPlanned,
+				OwnerAgent:              "developer",
+				FilesToEdit:             []string{"internal/projectworkflowchain/service.go"},
+				VerificationRequirement: "focused workflow-chain tests",
+				ReviewResultRefs:        []string{"review:planning-readiness-approved"},
+				VerifierResultRefs:      []string{"verifier:planning-readiness"},
+				DecompositionQuality:    projectworkplan.DecompositionReady,
+				AcceptanceCriteria:      []string{"Implementation slice is executable from task metadata."},
+				StopConditions:          []string{"Stop if workflow-chain scope changes."},
+				VerifierLadder:          []string{"focused workflow-chain tests"},
+				RegressionApplicability: "required for workflow-chain behavior",
+				DownstreamImpactRefs:    []string{"workflow-chain-impact-ref"},
+				OutputContract:          "bounded diff refs and verifier refs",
+			}); err != nil {
+				t.Fatalf("create generated implementation child: %v", err)
+			}
+			completeGeneratedStagePlanWithOpenChildren(t, ctx, workPlans, workPlanStore, svc, "project-1", stageRun.WorkPlanID, stage)
+			continue
+		}
 		completeGeneratedStagePlan(t, ctx, workPlans, "project-1", stageRun.WorkPlanID, stage)
 	}
 
@@ -1054,6 +1185,168 @@ func TestGenericSafeRefChainWithRealWorkflowCompilerPreservesGeneratedTaskOutput
 	}
 	if !containsString(gitopsInput.TestResults, "select-ready-tasks verified by verifier:generated-implementation") {
 		t.Fatalf("GitOps input missing generated implementation test result: %#v", gitopsInput.TestResults)
+	}
+}
+
+func TestRealChainCarriesConcreteChildTaskFromCompletedDecompositionPlan(t *testing.T) {
+	ctx := context.Background()
+	workPlanStore := workplanstore.NewMemoryStore()
+	workPlans := projectworkplan.New(workPlanStore)
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
+		Enabled:         true,
+		RunnerEnabled:   true,
+		RunnerExecution: projectautomation.RunnerExecutionExternal,
+		PermissionResolver: realChainPermissionResolver{
+			allowedRunnerKinds: []string{projectautomation.RunnerKindCodexCLI},
+		},
+		WorkPlanStatusTrigger: projectautomation.WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	workflows := projectworkflow.New(workflowstore.NewMemoryStore())
+	workflows.SetCompilerDependencies(workPlans, automations)
+	for _, path := range []string{
+		"configs/workflows/governed-decomposition-planning.toml",
+		"configs/workflows/governed-workplan-implementation.toml",
+		"configs/workflows/governed-post-implementation-validation.toml",
+	} {
+		data, err := os.ReadFile(filepath.Join("..", "..", path))
+		if err != nil {
+			t.Fatalf("read workflow %s: %v", path, err)
+		}
+		if _, err := workflows.ImportWorkflowTOML(ctx, projectworkflow.ImportWorkflowTOMLInput{
+			ProjectID:      "project-1",
+			Data:           data,
+			CreatedByRunID: "import-real-chain",
+			TraceID:        "trace-real-chain",
+		}); err != nil {
+			t.Fatalf("import workflow %s: %v", path, err)
+		}
+	}
+	store := newTestChainStore()
+	svc := New(store, workflows, workPlans, []Config{genericSafeRefTestConfig()})
+	svc.SetAutomationAPI(automations)
+	workPlans.SetStatusChangeHandler(realChainStatusFanout{handlers: []projectworkplan.WorkPlanStatusChangeHandler{automations, svc}})
+
+	result, err := svc.Start(ctx, StartInput{
+		ProjectID:      "project-1",
+		ChainRef:       "generic-chain",
+		InputText:      "ticket/GENERIC-2044",
+		CreatedByRunID: "codex-orchestrator-run-2044",
+		TraceID:        "trace-real-child-handoff",
+	})
+	if err != nil {
+		t.Fatalf("start real chain: %v", err)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get chain: %v", err)
+	}
+	decomposition := chainStageRunByRef(t, run, "decomposition")
+	child, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  decomposition.WorkPlanID,
+		TaskRef:                 "mass-1044-expired-booking-query",
+		Title:                   "Add Expired Booking Selection Query",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		OwnerAgent:              "developer",
+		FilesToEdit:             []string{"apps/domain-booking/src/infrastructure/database/repositories/booking.repository.ts"},
+		VerificationRequirement: "focused booking repository tests",
+		ReviewResultRefs:        []string{"review:planning-readiness-approved"},
+		VerifierResultRefs:      []string{"verifier:planning-readiness"},
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+		AcceptanceCriteria:      []string{"Expired eligible bookings are selected for cleanup."},
+		StopConditions:          []string{"Stop if booking repository scope is unclear."},
+		VerifierLadder:          []string{"focused booking repository tests"},
+		RegressionApplicability: "required for booking expiry behavior",
+		DownstreamImpactRefs:    []string{"booking-expiry-impact-ref"},
+		OutputContract:          "bounded diff refs and verifier refs",
+	})
+	if err != nil {
+		t.Fatalf("create concrete child task: %v", err)
+	}
+	compiledTaskIDs := map[string]struct{}{}
+	for _, taskID := range decomposition.WorkTaskIDs {
+		compiledTaskIDs[taskID] = struct{}{}
+	}
+	tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: decomposition.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list decomposition tasks: %v", err)
+	}
+	for _, task := range tasks {
+		if _, compiled := compiledTaskIDs[task.ID]; !compiled {
+			continue
+		}
+		task.Status = projectworkplan.WorkTaskStatusDone
+		task.Outcome = "decomposition wrapper accepted"
+		task.ReviewResultRefs = appendUnique(task.ReviewResultRefs, "review:decomposition-wrapper")
+		task.VerifierResultRefs = appendUnique(task.VerifierResultRefs, "verifier:decomposition-wrapper")
+		if _, err := workPlans.UpdateWorkTask(ctx, task); err != nil {
+			t.Fatalf("complete decomposition wrapper task %s: %v", task.ID, err)
+		}
+	}
+	plan, err := workPlanStore.GetWorkPlan(ctx, "project-1", decomposition.WorkPlanID)
+	if err != nil {
+		t.Fatalf("get decomposition plan: %v", err)
+	}
+	plan.Status = projectworkplan.WorkPlanStatusDone
+	plan.Outcome = "decomposition produced concrete implementation child task"
+	plan.ResumeSummary = "advance to implementation with child task handoff"
+	if _, err := workPlanStore.UpdateWorkPlan(ctx, plan); err != nil {
+		t.Fatalf("persist completed decomposition plan: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID: "project-1",
+		PlanID:    decomposition.WorkPlanID,
+		OldStatus: projectworkplan.WorkPlanStatusActive,
+		NewStatus: projectworkplan.WorkPlanStatusDone,
+		ChangedAt: plan.UpdatedAt,
+	}); err != nil {
+		t.Fatalf("advance chain after completed decomposition plan: %v", err)
+	}
+
+	run, err = svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get advanced chain: %v", err)
+	}
+	implementation := chainStageRunByRef(t, run, "implementation")
+	if implementation.Status != StageStatusQueued || implementation.WorkPlanID == "" {
+		tasks, _ := workPlans.ListWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: implementation.WorkPlanID})
+		runs, _ := automations.ListRuns(ctx, projectautomation.RunFilter{ProjectID: "project-1", PlanID: implementation.WorkPlanID})
+		t.Fatalf("implementation stage not queued after decomposition child handoff: %#v tasks=%#v runs=%#v", implementation, tasks, runs)
+	}
+	implementationTasks, err := workPlans.ListWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: implementation.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list implementation tasks: %v", err)
+	}
+	var carried projectworkplan.WorkTask
+	for _, task := range implementationTasks {
+		if task.TaskRef == child.TaskRef {
+			carried = task
+			break
+		}
+	}
+	if carried.ID == "" || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
+		t.Fatalf("concrete child task was not carried ready into implementation plan, child=%#v tasks=%#v", child, implementationTasks)
+	}
+	implementation = chainStageRunByRef(t, run, "implementation")
+	if !containsString(implementation.WorkTaskIDs, carried.ID) {
+		t.Fatalf("implementation stage lost carried task id %q: %#v", carried.ID, implementation)
+	}
+	runs, err := automations.ListRuns(ctx, projectautomation.RunFilter{ProjectID: "project-1", PlanID: implementation.WorkPlanID, Status: projectautomation.RunStatusQueued})
+	if err != nil {
+		t.Fatalf("list queued implementation runs: %v", err)
+	}
+	foundWorkerRun := false
+	for _, automationRun := range runs {
+		if automationRun.TaskID == carried.ID && automationRun.WorkTaskStatus == projectworkplan.WorkTaskStatusReady {
+			foundWorkerRun = true
+			break
+		}
+	}
+	if !foundWorkerRun {
+		t.Fatalf("implementation worker run was not queued for carried concrete task %#v; runs=%#v", carried, runs)
 	}
 }
 
@@ -1624,6 +1917,60 @@ func completeGeneratedStagePlan(t *testing.T, ctx context.Context, svc *projectw
 	}
 }
 
+func completeGeneratedStagePlanWithOpenChildren(t *testing.T, ctx context.Context, svc *projectworkplan.Service, store *workplanstore.MemoryStore, chain *Service, projectID string, planID string, stageRef string) {
+	t.Helper()
+	tasks, err := svc.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		t.Fatalf("list stage tasks for %s: %v", stageRef, err)
+	}
+	for _, task := range tasks {
+		if !workflowChainWrapperTaskRef(task.TaskRef) && !strings.HasPrefix(task.TaskRef, "review-") {
+			continue
+		}
+		task.Status = projectworkplan.WorkTaskStatusDone
+		task.Outcome = "generated " + stageRef + " wrapper output accepted"
+		task.EvidenceRefs = appendUnique(task.EvidenceRefs, "evidence:generated-"+stageRef)
+		task.ReviewResultRefs = appendUnique(task.ReviewResultRefs, "review:generated-"+stageRef)
+		task.VerifierResultRefs = appendUnique(task.VerifierResultRefs, "verifier:generated-"+stageRef)
+		task.ClaimRefs = appendUnique(task.ClaimRefs, "claim:generated-"+stageRef)
+		if _, err := svc.UpdateWorkTask(ctx, task); err != nil {
+			t.Fatalf("complete generated wrapper task %s/%s: %v", stageRef, task.TaskRef, err)
+		}
+	}
+	plan, err := store.GetWorkPlan(ctx, projectID, planID)
+	if err != nil {
+		t.Fatalf("get stage plan %s: %v", stageRef, err)
+	}
+	oldStatus := plan.Status
+	plan.Status = projectworkplan.WorkPlanStatusDone
+	plan.Outcome = "generated " + stageRef + " stage output accepted"
+	plan.ResumeSummary = "advance generic chain after generated stage completion"
+	updated, err := store.UpdateWorkPlan(ctx, plan)
+	if err != nil {
+		t.Fatalf("mark stage plan %s done in store: %v", stageRef, err)
+	}
+	if err := chain.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID:  projectID,
+		PlanID:     planID,
+		PlanRef:    updated.PlanRef,
+		OldStatus:  oldStatus,
+		NewStatus:  updated.Status,
+		OwnerAgent: updated.OwnerAgent,
+		ChangedAt:  updated.UpdatedAt,
+	}); err != nil {
+		t.Fatalf("advance chain after generated stage %s: %v", stageRef, err)
+	}
+}
+
+func workflowChainWrapperTaskRef(ref string) bool {
+	switch strings.TrimSpace(ref) {
+	case "discover-planning-context", "decompose-work-plan", "mark-ready-after-review", "select-ready-tasks", "run-implementation-batch", "review-implementation-batch", "orchestrator-verification", "pr-gitops-readiness", "post-implementation-validation":
+		return true
+	default:
+		return false
+	}
+}
+
 func localJiraContext(issueKey string, includeScope bool) projectintegrations.RichContentReadResult {
 	chunks := []projectintegrations.RichContentChunkView{{
 		ItemKey:   issueKey,
@@ -1720,6 +2067,7 @@ type fakeWorkPlans struct {
 	activations       []string
 	released          []string
 	events            []string
+	allTasksByPlan    map[string][]projectworkplan.WorkTask
 	openTasksByPlan   map[string][]projectworkplan.WorkTask
 	tasksByID         map[string]projectworkplan.WorkTask
 	createdTasks      []projectworkplan.CreateWorkTaskInput
@@ -1788,6 +2136,15 @@ func (fake *fakeWorkPlans) GetWorkTask(_ context.Context, projectID string, task
 			return task, nil
 		}
 	}
+	if fake.allTasksByPlan != nil {
+		for _, tasks := range fake.allTasksByPlan {
+			for _, task := range tasks {
+				if task.ID == taskID {
+					return task, nil
+				}
+			}
+		}
+	}
 	if fake.openTasksByPlan != nil {
 		for _, tasks := range fake.openTasksByPlan {
 			for _, task := range tasks {
@@ -1813,6 +2170,13 @@ func (fake *fakeWorkPlans) GetWorkTask(_ context.Context, projectID string, task
 		task.LikelyFilesAffected = []string{"cmd/mivia-server"}
 	}
 	return task, nil
+}
+
+func (fake *fakeWorkPlans) ListWorkTasks(_ context.Context, filter projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error) {
+	if fake.allTasksByPlan != nil {
+		return append([]projectworkplan.WorkTask(nil), fake.allTasksByPlan[filter.PlanID]...), nil
+	}
+	return fake.ListOpenWorkTasks(context.Background(), filter)
 }
 
 func (fake *fakeWorkPlans) ListOpenWorkTasks(_ context.Context, filter projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error) {
@@ -1879,6 +2243,9 @@ func (fake *fakeWorkPlans) CreateWorkTask(_ context.Context, input projectworkpl
 	}
 	if fake.openTasksByPlan != nil {
 		fake.openTasksByPlan[input.PlanID] = append(fake.openTasksByPlan[input.PlanID], task)
+	}
+	if fake.allTasksByPlan != nil {
+		fake.allTasksByPlan[input.PlanID] = append(fake.allTasksByPlan[input.PlanID], task)
 	}
 	return task, nil
 }

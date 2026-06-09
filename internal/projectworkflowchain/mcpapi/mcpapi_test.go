@@ -172,7 +172,8 @@ func TestCallToolStartReturnsSafeRefsOnly(t *testing.T) {
 
 func TestCallToolGenericChainUsesRealCompilerAndPreservesGeneratedHandoffs(t *testing.T) {
 	ctx := context.Background()
-	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	workPlanStore := workplanstore.NewMemoryStore()
+	workPlans := projectworkplan.New(workPlanStore)
 	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
 		Enabled:          true,
 		RunnerEnabled:    true,
@@ -209,6 +210,7 @@ func TestCallToolGenericChainUsesRealCompilerAndPreservesGeneratedHandoffs(t *te
 		EvidenceRefs:   []string{"gitops-evidence:generic-mcp-2044"},
 	}}
 	chainSvc.SetGitOpsFinalizer(finalizer)
+	chainSvc.SetAutomationAPI(automations)
 	workPlans.SetStatusChangeHandler(mcpStatusFanout{handlers: []projectworkplan.WorkPlanStatusChangeHandler{automations, chainSvc}})
 
 	started, err := CallTool(ctx, chainSvc, "projects.workflow_chains.start", mustArgs(t, map[string]any{
@@ -235,6 +237,31 @@ func TestCallToolGenericChainUsesRealCompilerAndPreservesGeneratedHandoffs(t *te
 		}
 		stage := mcpStageRunByRef(t, run, stageRef)
 		mcpAssertQueuedRuns(t, ctx, automations, "project-1", stage)
+		if stageRef == "decomposition" {
+			if _, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+				ProjectID:               "project-1",
+				PlanID:                  stage.WorkPlanID,
+				TaskRef:                 "generic-2044-mcp-implementation-slice",
+				Title:                   "Implement GENERIC-2044 MCP Slice",
+				Status:                  projectworkplan.WorkTaskStatusPlanned,
+				OwnerAgent:              "developer",
+				FilesToEdit:             []string{"internal/projectworkflowchain/service.go"},
+				VerificationRequirement: "focused workflow-chain MCP tests",
+				ReviewResultRefs:        []string{"review:mcp-planning-readiness-approved"},
+				VerifierResultRefs:      []string{"verifier:mcp-planning-readiness"},
+				DecompositionQuality:    projectworkplan.DecompositionReady,
+				AcceptanceCriteria:      []string{"MCP implementation slice is executable from task metadata."},
+				StopConditions:          []string{"Stop if MCP workflow-chain scope changes."},
+				VerifierLadder:          []string{"focused workflow-chain MCP tests"},
+				RegressionApplicability: "required for MCP workflow-chain behavior",
+				DownstreamImpactRefs:    []string{"workflow-chain-mcp-impact-ref"},
+				OutputContract:          "bounded diff refs and verifier refs",
+			}); err != nil {
+				t.Fatalf("create MCP implementation child: %v", err)
+			}
+			mcpCompleteGeneratedPlanWithOpenChildren(t, ctx, workPlans, workPlanStore, chainSvc, "project-1", stage.WorkPlanID, stageRef)
+			continue
+		}
 		mcpCompleteGeneratedPlan(t, ctx, workPlans, "project-1", stage.WorkPlanID, stageRef)
 	}
 	got, err := CallTool(ctx, chainSvc, "projects.workflow_chains.get", mustArgs(t, map[string]any{
@@ -441,6 +468,59 @@ func mcpCompleteGeneratedPlan(t *testing.T, ctx context.Context, svc *projectwor
 		TraceID:        "trace-generic-mcp-2044",
 	}); err != nil {
 		t.Fatalf("mark generated plan %s done: %v", stageRef, err)
+	}
+}
+
+func mcpCompleteGeneratedPlanWithOpenChildren(t *testing.T, ctx context.Context, svc *projectworkplan.Service, store *workplanstore.MemoryStore, chain *projectworkflowchain.Service, projectID string, planID string, stageRef string) {
+	t.Helper()
+	tasks, err := svc.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		t.Fatalf("list tasks for %s: %v", stageRef, err)
+	}
+	for _, task := range tasks {
+		if !mcpWorkflowWrapperTaskRef(task.TaskRef) && !strings.HasPrefix(task.TaskRef, "review-") {
+			continue
+		}
+		task.Status = projectworkplan.WorkTaskStatusDone
+		task.Outcome = "MCP generated " + stageRef + " wrapper output accepted"
+		task.EvidenceRefs = appendUniqueString(task.EvidenceRefs, "evidence:mcp-generated-"+stageRef)
+		task.ReviewResultRefs = appendUniqueString(task.ReviewResultRefs, "review:mcp-generated-"+stageRef)
+		task.VerifierResultRefs = appendUniqueString(task.VerifierResultRefs, "verifier:mcp-generated-"+stageRef)
+		if _, err := svc.UpdateWorkTask(ctx, task); err != nil {
+			t.Fatalf("update generated wrapper task %s/%s: %v", stageRef, task.TaskRef, err)
+		}
+	}
+	plan, err := store.GetWorkPlan(ctx, projectID, planID)
+	if err != nil {
+		t.Fatalf("get generated plan %s: %v", stageRef, err)
+	}
+	oldStatus := plan.Status
+	plan.Status = projectworkplan.WorkPlanStatusDone
+	plan.Outcome = "MCP generated " + stageRef + " stage completed"
+	plan.ResumeSummary = "advance MCP generic chain"
+	updated, err := store.UpdateWorkPlan(ctx, plan)
+	if err != nil {
+		t.Fatalf("mark generated plan %s done in store: %v", stageRef, err)
+	}
+	if err := chain.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID:  projectID,
+		PlanID:     planID,
+		PlanRef:    updated.PlanRef,
+		OldStatus:  oldStatus,
+		NewStatus:  updated.Status,
+		OwnerAgent: updated.OwnerAgent,
+		ChangedAt:  updated.UpdatedAt,
+	}); err != nil {
+		t.Fatalf("advance MCP chain after %s: %v", stageRef, err)
+	}
+}
+
+func mcpWorkflowWrapperTaskRef(ref string) bool {
+	switch strings.TrimSpace(ref) {
+	case "discover-planning-context", "decompose-work-plan", "mark-ready-after-review", "select-ready-tasks", "run-implementation-batch", "review-implementation-batch", "orchestrator-verification", "pr-gitops-readiness", "post-implementation-validation":
+		return true
+	default:
+		return false
 	}
 }
 
