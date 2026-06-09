@@ -95,6 +95,18 @@ func TestWorkflowChainConfigsInheritGlobalGitOpsWhenProjectOverridesBranchPolicy
 	}
 }
 
+func TestWorkflowCompileBranchTemplateUsesGenericTicketScopedPattern(t *testing.T) {
+	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{BranchNamePattern: "^(feat|fix)-PROJ-[0-9]+(-[a-z0-9-]+)*$"}); got != "chore-{{ticket_ref}}-{{workflow_ref}}" {
+		t.Fatalf("ticket-scoped branch patterns must use generic ticket/workflow template, got %q", got)
+	}
+	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{BranchNamePattern: "^automation/[a-z0-9-]+$"}); got != "{{token}}" {
+		t.Fatalf("non-ticket branch patterns must use opaque token template, got %q", got)
+	}
+	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{}); got != "" {
+		t.Fatalf("missing branch pattern must not force a compile branch template, got %q", got)
+	}
+}
+
 func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *testing.T) {
 	repo := initServerGitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "apps", "domain", "src", "module.ts"), []byte("export const value = 2;\n"), 0o600); err != nil {

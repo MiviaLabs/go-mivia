@@ -523,14 +523,19 @@ func workflowCompileOptions(cfg config.Config) map[string]projectworkflow.Compil
 	return options
 }
 
-func workflowCompileBranchTemplate(projectID string, gitops config.GitOperations) string {
+func workflowCompileBranchTemplate(_ string, gitops config.GitOperations) string {
 	if strings.TrimSpace(gitops.BranchNamePattern) == "" {
 		return ""
 	}
-	if strings.Contains(gitops.BranchNamePattern, "MASS-") || projectID == "mass-monorepo" {
+	if branchPatternLooksTicketScoped(gitops.BranchNamePattern) {
 		return "chore-{{ticket_ref}}-{{workflow_ref}}"
 	}
 	return "{{token}}"
+}
+
+func branchPatternLooksTicketScoped(pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	return strings.Contains(pattern, "[0-9]") || strings.Contains(pattern, `\d`)
 }
 
 type serverWorkflowChainGitOpsFinalizer struct {
