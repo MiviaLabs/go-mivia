@@ -1540,6 +1540,54 @@ func TestHandleWorkPlanStatusChangedStopsChainWhenStagePlanCancelledOrSuperseded
 	}
 }
 
+func TestHandleWorkPlanStatusChangedBlocksNextStageWhenCompletedPlanContainsFailedOrCancelledTasks(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name       string
+		taskStatus string
+	}{
+		{name: "failed", taskStatus: projectworkplan.WorkTaskStatusFailed},
+		{name: "cancelled", taskStatus: projectworkplan.WorkTaskStatusCancelled},
+		{name: "superseded", taskStatus: projectworkplan.WorkTaskStatusSuperseded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestChainStore()
+			workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+			workPlans := &fakeWorkPlans{
+				allTasksByPlan: map[string][]projectworkplan.WorkTask{
+					"plan-decomposition": {
+						{ID: "task-decomposition", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "task-decomposition", Status: projectworkplan.WorkTaskStatusDone},
+						{ID: "task-unsuccessful", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "task-unsuccessful", Status: tc.taskStatus},
+					},
+				},
+			}
+			svc := New(store, workflows, workPlans, []Config{testConfig()})
+			svc.newID = deterministicIDs("workflow_chain_run_1")
+
+			result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
+			if err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone}); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected unsuccessful task to block stage advancement, got %v", err)
+			}
+			run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+			if err != nil {
+				t.Fatalf("get run: %v", err)
+			}
+			if run.Status != ChainStatusBlocked || run.StageRuns[0].Status != StageStatusBlocked || !strings.Contains(run.StageRuns[0].BlockedReason, tc.taskStatus) {
+				t.Fatalf("expected blocked decomposition stage for %s task, got %#v", tc.taskStatus, run)
+			}
+			if run.StageRuns[1].Status != StageStatusPlanned || run.StageRuns[1].WorkPlanID != "" {
+				t.Fatalf("next stage must not be compiled after unsuccessful terminal task, got %#v", run.StageRuns[1])
+			}
+			if len(workflows.compileInputs) != 1 {
+				t.Fatalf("expected only initial decomposition compile, got %d", len(workflows.compileInputs))
+			}
+		})
+	}
+}
+
 func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizationFails(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
@@ -1567,6 +1615,74 @@ func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizationFails(t *testin
 	}
 	if run.Status != ChainStatusBlocked || !run.GitOpsReady || !strings.HasPrefix(run.StageRuns[2].BlockedReason, "gitops_finalize_failed") {
 		t.Fatalf("expected blocked chain after GitOps failure, got %#v", run)
+	}
+}
+
+func TestHandleWorkPlanStatusChangedBlocksGitOpsWhenPostValidationLacksReviewOrVerifierRefs(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		task projectworkplan.WorkTask
+	}{
+		{
+			name: "missing-review",
+			task: projectworkplan.WorkTask{
+				ID:                 "task-post-validation",
+				ProjectID:          "project-1",
+				PlanID:             "plan-post-validation",
+				TaskRef:            "task-post-validation",
+				Status:             projectworkplan.WorkTaskStatusDone,
+				VerifierResultRefs: []string{"verifier:task-post-validation"},
+			},
+		},
+		{
+			name: "missing-verifier",
+			task: projectworkplan.WorkTask{
+				ID:               "task-post-validation",
+				ProjectID:        "project-1",
+				PlanID:           "plan-post-validation",
+				TaskRef:          "task-post-validation",
+				Status:           projectworkplan.WorkTaskStatusDone,
+				ReviewResultRefs: []string{"review:task-post-validation"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestChainStore()
+			workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+			workPlans := &fakeWorkPlans{
+				tasksByID: map[string]projectworkplan.WorkTask{
+					"task-post-validation": tc.task,
+				},
+			}
+			finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}}
+			svc := New(store, workflows, workPlans, []Config{testConfig()})
+			svc.SetGitOpsFinalizer(finalizer)
+			svc.newID = deterministicIDs("workflow_chain_run_1")
+
+			result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
+			if err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			for _, planID := range []string{"plan-decomposition", "plan-implementation"} {
+				if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+					t.Fatalf("advance after %s done: %v", planID, err)
+				}
+			}
+			if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected missing post-validation refs to block GitOps, got %v", err)
+			}
+			run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+			if err != nil {
+				t.Fatalf("get run: %v", err)
+			}
+			if run.Status != ChainStatusBlocked || !run.GitOpsReady || !strings.HasPrefix(run.StageRuns[2].BlockedReason, "gitops_finalize_failed_invalid_project_workflow_chain_input") {
+				t.Fatalf("expected GitOps-ready blocked chain for missing post-validation refs, got %#v", run)
+			}
+			if len(finalizer.inputs) != 0 {
+				t.Fatalf("GitOps finalizer must not run without post-validation refs, got %#v", finalizer.inputs)
+			}
+		})
 	}
 }
 
@@ -2119,6 +2235,9 @@ func TestGitOpsFinalizeMetadataUsesExplicitEditScopeOnly(t *testing.T) {
 		StageRuns: []StageRun{{
 			StageRef:    "implementation",
 			WorkTaskIDs: []string{"task-implementation"},
+		}, {
+			StageRef:    "post-validation",
+			WorkTaskIDs: []string{"task-post-validation"},
 		}},
 	}
 

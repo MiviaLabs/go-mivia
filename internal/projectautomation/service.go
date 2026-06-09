@@ -4433,7 +4433,7 @@ func isRecoverableCodexExecutionFailure(category string) bool {
 
 func isNonRetryableCodexExecutionFailure(category string) bool {
 	switch strings.TrimSpace(category) {
-	case "codex_output_schema_invalid", "codex_usage_limit_reached":
+	case "codex_auth_unavailable", "codex_config_unreadable", "codex_output_schema_invalid", "codex_usage_limit_reached":
 		return true
 	default:
 		return false
@@ -4491,6 +4491,10 @@ func codexExecutionFailureResumeInstructions(category string) string {
 
 func nonRetryableCodexBlockedReason(category string) string {
 	switch strings.TrimSpace(category) {
+	case "codex_auth_unavailable":
+		return "Codex authentication is unavailable; automation cannot continue until runner credentials are restored."
+	case "codex_config_unreadable":
+		return "Codex config is unreadable; automation cannot continue until runner config permissions are corrected."
 	case "codex_output_schema_invalid":
 		return "Codex output schema is invalid for the configured runner; automation cannot continue until the schema or runner invocation is corrected."
 	case "codex_usage_limit_reached":
@@ -4502,6 +4506,10 @@ func nonRetryableCodexBlockedReason(category string) string {
 
 func nonRetryableCodexResumeInstructions(category string) string {
 	switch strings.TrimSpace(category) {
+	case "codex_auth_unavailable":
+		return "Restore Codex runner authentication, then explicitly requeue this Work Task; do not retry automatically while auth is unavailable."
+	case "codex_config_unreadable":
+		return "Correct Codex runner config permissions, then explicitly requeue this Work Task; do not retry automatically while config is unreadable."
 	case "codex_output_schema_invalid":
 		return "Correct the runner output-schema configuration, then explicitly requeue this Work Task; do not retry automatically while the schema is invalid."
 	case "codex_usage_limit_reached":

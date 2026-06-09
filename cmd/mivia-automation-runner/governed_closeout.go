@@ -299,10 +299,11 @@ func parseGovernedCloseoutOutput(message string) (governedCloseoutOutput, error)
 	if message == "" {
 		return governedCloseoutOutput{}, governedCloseoutError{category: governedCloseoutOutputMissing, err: errors.New("empty codex final message")}
 	}
-	jsonText, err := extractSingleJSONObject(message)
-	if err != nil {
-		return governedCloseoutOutput{}, governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
+	if !strings.HasPrefix(message, "{") {
+		return governedCloseoutOutput{}, governedCloseoutError{category: governedCloseoutInvalidJSON, err: errors.New("governed closeout must be a single json object")}
 	}
+	jsonText := message
+	var err error
 	jsonText, err = normalizeGovernedCloseoutJSON(jsonText)
 	if err != nil {
 		return governedCloseoutOutput{}, err
@@ -321,7 +322,45 @@ func parseGovernedCloseoutOutput(message string) (governedCloseoutOutput, error)
 	} else if !errors.Is(err, io.EOF) {
 		return governedCloseoutOutput{}, governedCloseoutError{category: governedCloseoutInvalidJSON, err: err}
 	}
+	normalizeGovernedCloseoutOutputText(&output)
 	return output, nil
+}
+
+func normalizeGovernedCloseoutOutputText(output *governedCloseoutOutput) {
+	if output == nil {
+		return
+	}
+	output.Outcome = normalizeGovernedCloseoutFreeText(output.Outcome)
+	output.SafeNextAction = normalizeGovernedCloseoutFreeText(output.SafeNextAction)
+	output.BlockReason = normalizeGovernedCloseoutFreeText(output.BlockReason)
+	output.FailureReason = normalizeGovernedCloseoutFreeText(output.FailureReason)
+	for i := range output.ChildTasks {
+		task := &output.ChildTasks[i]
+		task.Title = normalizeGovernedCloseoutFreeText(task.Title)
+		task.Description = normalizeGovernedCloseoutFreeText(task.Description)
+		task.VerificationRequirement = normalizeGovernedCloseoutFreeText(task.VerificationRequirement)
+		task.ExpectedOutput = normalizeGovernedCloseoutFreeText(task.ExpectedOutput)
+		task.FailureCriteria = normalizeGovernedCloseoutFreeText(task.FailureCriteria)
+		task.ReviewGate = normalizeGovernedCloseoutFreeText(task.ReviewGate)
+		task.ResumeInstructions = normalizeGovernedCloseoutFreeText(task.ResumeInstructions)
+		task.RegressionApplicability = normalizeGovernedCloseoutFreeText(task.RegressionApplicability)
+		task.OutputContract = normalizeGovernedCloseoutFreeText(task.OutputContract)
+		task.AcceptanceCriteria = normalizeGovernedCloseoutFreeTextList(task.AcceptanceCriteria)
+		task.StopConditions = normalizeGovernedCloseoutFreeTextList(task.StopConditions)
+		task.VerifierLadder = normalizeGovernedCloseoutFreeTextList(task.VerifierLadder)
+	}
+}
+
+func normalizeGovernedCloseoutFreeText(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func normalizeGovernedCloseoutFreeTextList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, normalizeGovernedCloseoutFreeText(value))
+	}
+	return out
 }
 
 func normalizeGovernedCloseoutJSON(jsonText string) (string, error) {

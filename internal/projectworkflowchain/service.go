@@ -337,6 +337,9 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 	if change.NewStatus != projectworkplan.WorkPlanStatusDone {
 		return nil
 	}
+	if err := svc.ensureStagePlanCompletedSuccessfully(ctx, run, change); err != nil {
+		return err
+	}
 	if run.Status == ChainStatusBlocked && run.GitOpsReady && allStagesCompleted(run) {
 		return svc.retryBlockedGitOps(ctx, run)
 	}
@@ -548,6 +551,42 @@ func (svc *Service) finalizeGitOps(ctx context.Context, run *ChainRun) error {
 	return nil
 }
 
+func (svc *Service) ensureStagePlanCompletedSuccessfully(ctx context.Context, run ChainRun, change projectworkplan.WorkPlanStatusChange) error {
+	if svc == nil || svc.workPlans == nil {
+		return nil
+	}
+	var stageIndex = -1
+	for i := range run.StageRuns {
+		if run.StageRuns[i].WorkPlanID == change.PlanID {
+			stageIndex = i
+			break
+		}
+	}
+	if stageIndex < 0 {
+		return nil
+	}
+	tasks, err := svc.workPlans.ListWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: change.ProjectID, PlanID: change.PlanID})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		switch task.Status {
+		case projectworkplan.WorkTaskStatusDone:
+			continue
+		case projectworkplan.WorkTaskStatusFailed, projectworkplan.WorkTaskStatusCancelled, projectworkplan.WorkTaskStatusSuperseded:
+			reason := "stage_plan_done_with_unsuccessful_task_" + safeAutomationToken(task.Status)
+			run.Status = ChainStatusBlocked
+			run.NextAction = "chain blocked because completed stage plan contains unsuccessful task"
+			run.StageRuns[stageIndex].Status = StageStatusBlocked
+			run.StageRuns[stageIndex].BlockedReason = reason
+			run.UpdatedAt = svc.now()
+			_, _ = svc.store.UpdateChainRun(ctx, run)
+			return fmt.Errorf("%w: %s", ErrInvalidInput, reason)
+		}
+	}
+	return nil
+}
+
 func gitOpsBlockedReason(err error) string {
 	if err == nil {
 		return "gitops_finalize_failed"
@@ -592,6 +631,8 @@ func (svc *Service) gitOpsFinalizeMetadata(ctx context.Context, run ChainRun) (g
 		return gitOpsFinalizeMetadata{}, fmt.Errorf("%w: work plan service is required for GitOps finalization metadata", ErrInvalidInput)
 	}
 	var metadata gitOpsFinalizeMetadata
+	var postValidationReviewRefs []string
+	var postValidationVerifierRefs []string
 	for _, stage := range run.StageRuns {
 		for _, taskID := range stage.WorkTaskIDs {
 			task, err := svc.workPlans.GetWorkTask(ctx, run.ProjectID, taskID)
@@ -603,6 +644,10 @@ func (svc *Service) gitOpsFinalizeMetadata(ctx context.Context, run ChainRun) (g
 			}
 			metadata.ReviewRefs = appendUniqueMany(metadata.ReviewRefs, task.ReviewResultRefs)
 			metadata.VerifierRefs = appendUniqueMany(metadata.VerifierRefs, task.VerifierResultRefs)
+			if stage.StageRef == "post-validation" {
+				postValidationReviewRefs = appendUniqueMany(postValidationReviewRefs, task.ReviewResultRefs)
+				postValidationVerifierRefs = appendUniqueMany(postValidationVerifierRefs, task.VerifierResultRefs)
+			}
 			for _, ref := range task.VerifierResultRefs {
 				metadata.TestResults = appendUnique(metadata.TestResults, task.TaskRef+" verified by "+ref)
 			}
@@ -616,6 +661,12 @@ func (svc *Service) gitOpsFinalizeMetadata(ctx context.Context, run ChainRun) (g
 	}
 	if len(metadata.VerifierRefs) == 0 {
 		return gitOpsFinalizeMetadata{}, fmt.Errorf("%w: workflow chain GitOps finalization requires verifier result refs", ErrInvalidInput)
+	}
+	if len(postValidationReviewRefs) == 0 {
+		return gitOpsFinalizeMetadata{}, fmt.Errorf("%w: workflow chain GitOps finalization requires post-validation review result refs", ErrInvalidInput)
+	}
+	if len(postValidationVerifierRefs) == 0 {
+		return gitOpsFinalizeMetadata{}, fmt.Errorf("%w: workflow chain GitOps finalization requires post-validation verifier result refs", ErrInvalidInput)
 	}
 	return metadata, nil
 }

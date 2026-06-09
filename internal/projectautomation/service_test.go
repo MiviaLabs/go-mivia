@@ -2256,6 +2256,77 @@ func TestCompleteAttemptBlocksCodexOutputSchemaInvalidWithoutReplacement(t *test
 	}
 }
 
+func TestCompleteAttemptBlocksCodexAuthUnavailableWithoutReplacement(t *testing.T) {
+	assertCompleteAttemptBlocksNonRetryableCodexFailureWithoutReplacement(t, "run-auth", "codex_auth_unavailable", "auth")
+}
+
+func TestCompleteAttemptBlocksCodexConfigUnreadableWithoutReplacement(t *testing.T) {
+	assertCompleteAttemptBlocksNonRetryableCodexFailureWithoutReplacement(t, "run-config", "codex_config_unreadable", "config")
+}
+
+func assertCompleteAttemptBlocksNonRetryableCodexFailureWithoutReplacement(t *testing.T, runID string, category string, blockedReasonContains string) {
+	t.Helper()
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-a", "decompose-work-plan", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusInProgress
+	task.ClaimedByRunID = runID
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{"task-a": task},
+	}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(300, 0).UTC() }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	claimID := "claim-" + strings.TrimPrefix(runID, "run-")
+	runnerID := "runner-" + strings.TrimPrefix(runID, "run-")
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: runID, ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+		PlanID: "plan-1", TaskID: "task-a", Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress,
+		ClaimID:        claimID,
+		RunnerID:       runnerID,
+		AttemptCount:   1,
+		CreatedAt:      time.Unix(200, 0).UTC(), UpdatedAt: time.Unix(200, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       "project-1",
+		RunID:           runID,
+		Status:          RunStatusFailed,
+		FailureCategory: category,
+		ClaimID:         claimID,
+		RunnerID:        runnerID,
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if updated.Status != RunStatusFailed || updated.FailureCategory != category {
+		t.Fatalf("expected terminal %s failure, got %#v", category, updated)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("%s must block task without replacement, got %#v", category, blockedTask)
+	}
+	if !strings.Contains(strings.ToLower(blockedTask.BlockedReason), blockedReasonContains) {
+		t.Fatalf("expected %s blocked reason to mention %q, got %q", category, blockedReasonContains, blockedTask.BlockedReason)
+	}
+	if fake.plans[task.PlanID].Status != projectworkplan.WorkPlanStatusBlocked {
+		t.Fatalf("expected parent plan blocked, got %#v", fake.plans[task.PlanID])
+	}
+	runs, err := store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected no replacement run for %s, got %#v", category, runs)
+	}
+}
+
 func TestCompleteAttemptBlocksWorkTaskAndPlanForBlockedAttempt(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()

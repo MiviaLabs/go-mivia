@@ -2516,6 +2516,53 @@ func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
 	}
 }
 
+func TestRunOnceReportsRecoverableGovernedCloseoutFailureForMalformedJSON(t *testing.T) {
+	setReadableCodexHome(t)
+	base := `{"closeout_action":"needs_review","outcome":"ok","safe_next_action":"next","evidence_refs":["automation_run:run-1"],"verifier_result_refs":["verifier:run-1"],"child_tasks":[],"block_reason":"","failure_reason":""}`
+	codexPath := fakeCodexWritingLastMessage(t, "Closeout:\n"+base)
+	var completed atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", TaskID: "task-1", ClaimID: "claim-1", RunnerID: "runner-1"},
+				CodexInput: testCodexInput("run-1"),
+				TimeoutMS:  1000,
+			})
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", Status: "in_progress", FilesToEdit: []string{"internal/service.go"}})
+		case "/api/v1/projects/project-1/work-tasks/task-1/verifier-results",
+			"/api/v1/projects/project-1/work-tasks/task-1/status",
+			"/api/v1/projects/project-1/work-tasks/task-1/complete":
+			t.Fatalf("malformed closeout must not mutate Work Task lifecycle through %s", r.URL.Path)
+		case "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			var input projectautomation.CompleteAttemptInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode attempt: %v", err)
+			}
+			if input.Status != projectautomation.RunStatusFailed || !governedCloseoutCategoryHasPrefix(input.FailureCategory, governedCloseoutInvalidJSON) {
+				t.Fatalf("expected invalid-json closeout failure, got %+v", input)
+			}
+			if input.ClaimID != "claim-1" || strings.TrimSpace(input.RunnerID) == "" {
+				t.Fatalf("attempt-result lost claim/runner refs: %+v", input)
+			}
+			completed.Add(1)
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", Status: projectautomation.RunStatusFailed})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", codexPath})
+	if status == 0 {
+		t.Fatal("expected exit failure when governed closeout is malformed")
+	}
+	if completed.Load() != 1 {
+		t.Fatalf("expected one malformed-closeout attempt report, got %d", completed.Load())
+	}
+}
+
 func TestRunOnceFailsGovernanceStepsWithoutExplicitCloseout(t *testing.T) {
 	for _, taskRef := range []string{
 		"decompose-work-plan",
@@ -2694,21 +2741,25 @@ func TestParseGovernedCloseoutRejectsMissingAndUnsafeOutput(t *testing.T) {
 	}
 }
 
-func TestParseGovernedCloseoutAcceptsWrappedSingleJSONObject(t *testing.T) {
+func TestParseGovernedCloseoutRejectsWrappedOrProseOutput(t *testing.T) {
 	base := `{"closeout_action":"block","outcome":"ok with braces {inside} string","safe_next_action":"retry","evidence_refs":[],"verifier_result_refs":[],"child_tasks":[],"block_reason":"missing evidence","failure_reason":""}`
 	for name, payload := range map[string]string{
 		"single_fence_with_intro":  "Closeout:\n```json\n" + base + "\n```",
 		"single_object_with_intro": "Closeout:\n" + base,
+		"single_fenced_object":     "```json\n" + base + "\n```",
 	} {
 		t.Run(name, func(t *testing.T) {
-			output, err := parseGovernedCloseoutOutput(payload)
-			if err != nil {
-				t.Fatalf("parse wrapped closeout: %v", err)
-			}
-			if output.CloseoutAction != "block" || output.BlockReason != "missing evidence" {
-				t.Fatalf("unexpected parsed closeout: %+v", output)
+			if _, err := parseGovernedCloseoutOutput(payload); !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutInvalidJSON) {
+				t.Fatalf("expected wrapped closeout to be invalid JSON, got %v", err)
 			}
 		})
+	}
+	output, err := parseGovernedCloseoutOutput(base)
+	if err != nil {
+		t.Fatalf("parse raw closeout object: %v", err)
+	}
+	if output.CloseoutAction != "block" || output.BlockReason != "missing evidence" {
+		t.Fatalf("unexpected parsed closeout: %+v", output)
 	}
 }
 
@@ -2793,6 +2844,25 @@ func TestParseGovernedCloseoutAllowsExtraChildTaskGovernanceFields(t *testing.T)
 	}
 	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
 		t.Fatalf("runner validation should accept otherwise valid child task: %v", err)
+	}
+}
+
+func TestParseGovernedCloseoutNormalizesMultilineChildResumeInstructions(t *testing.T) {
+	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].ResumeInstructions = "resume from listed task refs\nthen inspect verifier refs\tbefore marking ready"
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal closeout: %v", err)
+	}
+	parsed, err := parseGovernedCloseoutOutput(string(data))
+	if err != nil {
+		t.Fatalf("parse multiline resume instructions: %v", err)
+	}
+	if got, want := parsed.ChildTasks[0].ResumeInstructions, "resume from listed task refs then inspect verifier refs before marking ready"; got != want {
+		t.Fatalf("expected normalized resume instructions %q, got %q", want, got)
+	}
+	if err := validateGovernedCloseoutOutput(parsed, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("normalized child resume instructions should validate: %v", err)
 	}
 }
 
