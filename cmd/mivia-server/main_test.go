@@ -12,6 +12,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflowchain"
 )
 
 func TestEffectiveInitialScanOnStartSkipsWhenRestartRecoveryQueued(t *testing.T) {
@@ -53,6 +54,38 @@ func TestDirtyScopeRecoveryResolverUsesProjectGitOpsPolicy(t *testing.T) {
 	}
 	if got := strings.Join(resolver("missing"), ","); got != "" {
 		t.Fatalf("expected no project policy for missing project, got %q", got)
+	}
+}
+
+func TestWorkflowChainConfigsInheritGlobalGitOpsWhenProjectOverridesBranchPolicy(t *testing.T) {
+	chains := workflowChainConfigs(config.Config{
+		GitOperations: config.GitOperations{Enabled: true},
+		Projects: []config.Project{
+			{
+				ID: "mass-monorepo",
+				GitOperations: &config.GitOperations{
+					BranchPrefix:      "",
+					BranchNamePattern: "^(feat|fix|docs|chore)-MASS-[0-9]+$",
+				},
+				WorkflowChains: []config.WorkflowChain{
+					{
+						ChainRef:      "mass-governed-ticket-delivery",
+						Enabled:       true,
+						InputKind:     "jira_issue_key",
+						InputPattern:  "^MASS-[0-9]+$",
+						ContextMode:   "local_ingested",
+						GitOpsMode:    projectworkflowchain.GitOpsModeDraftPRAfterValidation,
+						Stages:        []config.WorkflowChainStage{{StageRef: "decomposition", WorkflowRef: "governed-decomposition-planning"}},
+					},
+				},
+			},
+		},
+	})
+	if len(chains) != 1 {
+		t.Fatalf("expected one workflow chain config, got %#v", chains)
+	}
+	if !chains[0].GitOpsEnabled {
+		t.Fatalf("workflow chain must inherit globally enabled GitOps when project override only sets branch policy: %#v", chains[0])
 	}
 }
 

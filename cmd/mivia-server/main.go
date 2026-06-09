@@ -474,9 +474,9 @@ func (fanout workPlanStatusFanout) HandleWorkPlanStatusChanged(ctx context.Conte
 func workflowChainConfigs(cfg config.Config) []projectworkflowchain.Config {
 	out := make([]projectworkflowchain.Config, 0)
 	for _, project := range cfg.Projects {
-		gitOpsEnabled := cfg.GitOperations.Enabled
+		gitops := cfg.GitOperations
 		if project.GitOperations != nil {
-			gitOpsEnabled = project.GitOperations.Enabled
+			gitops = mergeServerGitOps(gitops, *project.GitOperations)
 		}
 		for _, chain := range project.WorkflowChains {
 			converted := projectworkflowchain.Config{
@@ -489,7 +489,7 @@ func workflowChainConfigs(cfg config.Config) []projectworkflowchain.Config {
 				ContextMode:          chain.ContextMode,
 				DefaultTitleTemplate: chain.DefaultTitleTemplate,
 				GitOpsMode:           chain.GitOpsMode,
-				GitOpsEnabled:        gitOpsEnabled,
+				GitOpsEnabled:        gitops.Enabled,
 				Stages:               make([]projectworkflowchain.StageConfig, 0, len(chain.Stages)),
 			}
 			for _, stage := range chain.Stages {
