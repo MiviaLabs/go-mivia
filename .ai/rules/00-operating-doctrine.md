@@ -71,9 +71,21 @@ Verification:
 
 - Run the narrowest meaningful check first.
 - Broaden verification when the change touches shared behavior or operational controls.
+- For bug fixes and automation pipeline changes, add regression coverage for the exact failed contract before declaring the fix complete. Coverage must be broad enough to prove the behavior through the real state transition or integration boundary; shallow prompt/string/unit assertions are allowed only as supporting checks, never as the only proof.
+- For workflow, automation, GitOps, verifier, branch, PR, or closeout changes, cover the full contract boundary in tests: invalid input blocked, valid input advances, dependencies preserved, retries/recovery bounded, terminal failure reported with a safe category/ref, and downstream stage receives the exact artifact shape it expects.
+- When a downstream stage depends on an upstream artifact, test the handoff shape explicitly and in detail. Examples: Work Task dependency IDs, carried context refs, branch ticket refs, branch type, PR title/body values, verifier refs, review refs, generated-artifact refs, and recovery point refs.
+- Edge cases are mandatory review input, not optional cleanup. For each changed pipeline contract, enumerate and cover or explicitly rule out: empty/missing metadata, malformed refs, duplicate refs, stale claims, already-completed tasks, failed dependencies, skipped review, self-review, dirty worktree, no diff, verifier timeout/failure, generated-artifact drift, retry exhaustion, concurrent runners, out-of-order completion, and downstream recovery after partial success.
 - For automation/GitOps work, repository-specific lint, typecheck, test, and generated-artifact gates belong in config `[verification]` or `[projects.verification]`. Prompt instructions may remind agents, but the runner must enforce configured verification before commit, push, or draft PR.
 - Generated artifacts that must be committed after a verifier runs must be declared in `generated_artifacts.paths`; do not rely on broad staging or ad hoc agent judgment.
 - If a tool is unavailable, report the exact missing tool and residual risk.
+
+Review:
+
+- Reviews must verify behavior against source, tests, config, logs, and runtime metadata. Do not approve based only on prompt wording or claimed intent.
+- For automation pipeline changes, reviewers must trace at least one successful path and one failure path through every affected stage boundary before approval.
+- A review finding is actionable only when it names the violated contract, the reachable code path, the missing or weak test, and the failure impact.
+- If coverage is insufficient for a high-risk path, the review must block or require additional tests. Do not convert missing tests into residual-risk prose when the path can be tested.
+- Reviewers must reject changes that do not account for relevant edge cases. If an edge case is impossible by construction, the review must name the enforcing code or invariant.
 
 Final handoff:
 

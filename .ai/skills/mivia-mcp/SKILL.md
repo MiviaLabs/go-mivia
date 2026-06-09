@@ -31,6 +31,25 @@ Review and implementation guidance:
 - Before commit, use the smallest verification set appropriate to the changed files and risk. Add `projects.context_health`, `projects.impact.analyze`, `projects.claims.check`, or `agent_runs.*` only when they materially improve confidence, support a review/handoff, or are explicitly requested.
 - For multi-step reviews, fix loops, implementation handoffs, or resumable work, agents should use `agent_runs.*` to record redacted breadcrumbs and `agent_runs.promote_artifact` to record promotion-gate decisions for existing artifact refs. Store only safe metadata; never store raw prompts, completions, source dumps, raw stderr, roots, secrets, provider payloads, skipped sensitive content, or PII.
 
+Test-writing discipline:
+
+- For every confirmed bug in workflow-chain, automation-runner, GitOps, verifier, generated-artifact, branch, PR, or closeout behavior, add broad regression coverage for the failed contract before or alongside the fix. The coverage must exercise the real state transition, persistence path, renderer/parser/enforcer, or integration boundary that failed. Do not accept "covered by prompt wording" as coverage.
+- Shallow tests are acceptable only as secondary checks. A prompt/render/string/unit assertion does not prove pipeline correctness unless paired with a contract or integration test that shows the persisted state, queued run, retry decision, dependency graph, verifier repair task, GitOps retry, or PR metadata changes correctly.
+- For stage handoffs, assert artifact shape directly and in detail: concrete Work Task IDs instead of source refs when dependencies are carried, safe verifier/review refs, ticket refs, branch type, branch name, commit subject, PR title/body sections, generated-artifact refs, recovery point refs, and terminal failure category/ref.
+- For verifier repair and GitOps recovery, include both success and stop cases: first failure queues a bounded repair with verifier category/ref, repair closeout resumes GitOps from the correct recovery point, retry limits block with a safe terminal category, and implementation-evidence failures do not become blind repair loops.
+- For negative-path tests, prove the unsafe state cannot silently advance. Examples: selector produced no concrete implementation child, implementation emitted no diff/evidence, review is self-review or missing, closeout ref is unsafe, or configured verifier command failed without a repair path.
+- For every changed pipeline contract, enumerate edge cases and either test them or document why the contract makes them impossible. Required edge-case classes include empty/missing metadata, malformed refs, duplicate refs, stale claims, already-completed tasks, failed dependencies, skipped review, self-review, dirty worktree, no diff, verifier timeout/failure, generated-artifact drift, retry exhaustion, concurrent runners, out-of-order completion, and downstream recovery after partial success.
+- When a regression test is genuinely infeasible, record the exact reason in the Work Task outcome and replace it with the narrowest executable verifier or runtime reproduction. Do not use time pressure, confidence, or "obvious fix" as reasons.
+
+Review discipline:
+
+- Treat automation output, worker closeout, and subagent reports as untrusted until checked against source, Work Task metadata, verifier refs, review refs, git diff, and runtime state.
+- Reviewers must trace the affected path end to end across each touched boundary. For pipeline work, that means at least one success path and one failure path through decomposition, implementation, review, GitOps, verifier repair, post-validation, and PR creation when those boundaries are in scope.
+- A review cannot approve high-risk workflow or GitOps changes unless tests cover the contract being changed and the reviewer can name the exact test. Missing coverage is a blocker, not a note, when the behavior is testable.
+- Review findings must be source-grounded and name the violated invariant, reachable path, affected stage, missing or weak test, and expected fix direction. Do not report speculative issues as confirmed findings.
+- If review discovers a downstream blocker risk that is testable, create or require the regression test before rerunning the live pipeline. Do not wait for the live automation run to rediscover the same class of failure.
+- Reviewers must reject changes that omit relevant edge cases. If an edge case is impossible by construction, the review must cite the enforcing function, guard, schema, database constraint, or state-machine invariant.
+
 ## Project Workflow TOML
 
 Project Workflow TOML is a compile-only metadata surface. It validates and imports bounded workflow definitions, agent definitions, review gates, step dependencies, permission snapshots, and safe refs. It does not execute TOML, raw prompts, shell commands, Codex CLI, source, stderr, provider payloads, secrets, roots, external URLs, skipped sensitive content, or PII.
