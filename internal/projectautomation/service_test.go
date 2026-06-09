@@ -10323,6 +10323,23 @@ func TestCompleteAttemptRequeuesVerifierRepairAfterGitOpsVerificationFailure(t *
 	automation := createAutomaticTriggerAutomation(t, ctx, svc)
 	now := time.Now().UTC()
 	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "old-terminal-run",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  projectworkplan.WorkTaskStatusFailed,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		FailureCategory: "codex_auth_unavailable",
+		SafeSummary:     "terminal_non_replacement_history",
+		CreatedAt:       now.Add(-time.Hour),
+		UpdatedAt:       now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateRun(old terminal) returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
 		ID:              "run-a",
 		ProjectID:       automation.ProjectID,
 		AutomationID:    automation.ID,

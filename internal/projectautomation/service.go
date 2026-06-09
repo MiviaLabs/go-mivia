@@ -4268,11 +4268,21 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task, latestTerminalReplacementFailureCategory(existing, task))
 		return err
 	}
+	hasReplacementTrigger := false
+	for _, run := range existing {
+		if run.TaskID == task.ID && svc.shouldQueueReplacementRunForTask(ctx, automation, run, task) {
+			hasReplacementTrigger = true
+			break
+		}
+	}
 	for _, run := range existing {
 		if run.TaskID != task.ID {
 			continue
 		}
 		if svc.shouldQueueReplacementRunForTask(ctx, automation, run, task) {
+			continue
+		}
+		if hasReplacementTrigger && isTerminalRunStatus(run.Status) {
 			continue
 		}
 		return nil
