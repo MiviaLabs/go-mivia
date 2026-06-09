@@ -298,6 +298,81 @@ func TestServiceCreateWorkTaskValidation(t *testing.T) {
 	}
 }
 
+func TestServiceCreateWorkTaskDependencyReadinessDefaults(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-dependency-defaults")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	root, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-root"))
+	if err != nil {
+		t.Fatalf("create root task: %v", err)
+	}
+	if root.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected dependency-free ready-quality task to default ready, got %+v", root)
+	}
+
+	dependentInput := readyTaskInput(plan.ID, "task-dependent")
+	dependentInput.DependencyTaskIDs = []string{root.ID}
+	dependent, err := svc.CreateWorkTask(ctx, dependentInput)
+	if err != nil {
+		t.Fatalf("create dependent task: %v", err)
+	}
+	if dependent.Status != projectworkplan.WorkTaskStatusPlanned {
+		t.Fatalf("expected dependency-bearing ready-quality task to default planned, got %+v", dependent)
+	}
+
+	explicitReady := readyTaskInput(plan.ID, "task-explicit-ready")
+	explicitReady.DependencyTaskIDs = []string{root.ID}
+	explicitReady.Status = projectworkplan.WorkTaskStatusReady
+	if _, err := svc.CreateWorkTask(ctx, explicitReady); err == nil || !strings.Contains(err.Error(), "completed dependencies") {
+		t.Fatalf("expected explicit ready with incomplete dependencies to fail, got %v", err)
+	}
+}
+
+func TestServiceCreateWorkTaskAllowsExplicitReadyWhenDependenciesDone(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-explicit-ready-after-done")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	root, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "task-root-done"))
+	if err != nil {
+		t.Fatalf("create root task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: root.ID, RunID: "run-root"}); err != nil {
+		t.Fatalf("claim root: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: root.ID, RunID: "run-root"}); err != nil {
+		t.Fatalf("start root: %v", err)
+	}
+	if _, err := svc.AttachVerifierResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: root.ID, Ref: "verifier-root", AttachedByRunID: "run-root"}); err != nil {
+		t.Fatalf("attach verifier: %v", err)
+	}
+	if _, err := svc.AttachReviewResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: root.ID, Ref: "review-root", AttachedByRunID: "run-review"}); err != nil {
+		t.Fatalf("attach review: %v", err)
+	}
+	if _, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: root.ID}); err != nil {
+		t.Fatalf("complete root: %v", err)
+	}
+
+	dependentInput := readyTaskInput(plan.ID, "task-explicit-ready-after-done")
+	dependentInput.DependencyTaskIDs = []string{root.ID}
+	dependentInput.Status = projectworkplan.WorkTaskStatusReady
+	dependent, err := svc.CreateWorkTask(ctx, dependentInput)
+	if err != nil {
+		t.Fatalf("create explicit ready after dependency done: %v", err)
+	}
+	if dependent.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected explicit ready task after completed dependency, got %+v", dependent)
+	}
+}
+
 func TestServiceCreateWorkTaskAllowsLongSafeResumeInstructions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -985,13 +1060,24 @@ func TestServiceGetNextWorkTask(t *testing.T) {
 	owned := readyTaskInput(plan.ID, "task-owned")
 	owned.OwnerAgent = "worker-1"
 	owned.DependencyTaskIDs = []string{dep.ID}
-	if _, err := svc.CreateWorkTask(ctx, owned); err != nil {
+	ownedTask, err := svc.CreateWorkTask(ctx, owned)
+	if err != nil {
 		t.Fatalf("create owned task: %v", err)
+	}
+	if ownedTask.Status != projectworkplan.WorkTaskStatusPlanned {
+		t.Fatalf("expected dependency-bearing task to start planned, got %+v", ownedTask)
+	}
+	if _, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: ownedTask.ID}); err != nil {
+		t.Fatalf("release owned task after dependency done: %v", err)
 	}
 	blocked := readyTaskInput(plan.ID, "task-incomplete")
 	blocked.DependencyTaskIDs = []string{"missing-dep"}
-	if _, err := svc.CreateWorkTask(ctx, blocked); err != nil {
+	blockedTask, err := svc.CreateWorkTask(ctx, blocked)
+	if err != nil {
 		t.Fatalf("create incomplete task: %v", err)
+	}
+	if _, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: blockedTask.ID}); err == nil || !strings.Contains(err.Error(), "completed dependencies") {
+		t.Fatalf("expected release with missing dependency to fail, got %v", err)
 	}
 
 	next, err := svc.GetNextWorkTask(ctx, projectworkplan.GetNextWorkTaskInput{ProjectID: "project-1", OwnerAgent: "worker-1"})

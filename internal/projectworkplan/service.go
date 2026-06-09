@@ -297,7 +297,7 @@ func (svc *Service) CreateWorkTask(ctx context.Context, input CreateWorkTaskInpu
 	if err != nil {
 		return WorkTask{}, err
 	}
-	task, err := svc.buildTask(projectID, planID, taskRef, title, description, owner, runID, traceID, input)
+	task, err := svc.buildTask(ctx, projectID, planID, taskRef, title, description, owner, runID, traceID, input)
 	if err != nil {
 		return WorkTask{}, err
 	}
@@ -315,7 +315,7 @@ func (svc *Service) UpdateWorkTask(ctx context.Context, task WorkTask) (WorkTask
 	return svc.store.UpdateWorkTask(ctx, task)
 }
 
-func (svc *Service) buildTask(projectID, planID, taskRef, title, description, owner, runID, traceID string, input CreateWorkTaskInput) (WorkTask, error) {
+func (svc *Service) buildTask(ctx context.Context, projectID, planID, taskRef, title, description, owner, runID, traceID string, input CreateWorkTaskInput) (WorkTask, error) {
 	evidence, err := safeTextList(input.EvidenceNeeded, "evidence_needed", 200)
 	if err != nil {
 		return WorkTask{}, err
@@ -401,7 +401,7 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	}
 	now := svc.now()
 	status := WorkTaskStatusPlanned
-	if quality == DecompositionReady {
+	if quality == DecompositionReady && len(deps) == 0 {
 		status = WorkTaskStatusReady
 	}
 	if input.Status != "" {
@@ -412,8 +412,36 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 		if isTerminalTaskStatus(status) {
 			return WorkTask{}, fmt.Errorf("%w: create task status cannot be terminal", ErrInvalidInput)
 		}
+		if status == WorkTaskStatusReady && len(deps) > 0 {
+			ready, err := svc.dependenciesDone(ctx, projectID, planID, deps)
+			if err != nil {
+				return WorkTask{}, err
+			}
+			if !ready {
+				return WorkTask{}, fmt.Errorf("%w: create task status ready requires completed dependencies", ErrInvalidInput)
+			}
+		}
 	}
 	return WorkTask{ID: svc.newID("work_task"), ProjectID: projectID, PlanID: planID, TaskRef: taskRef, Title: title, Description: description, Status: status, OwnerAgent: owner, TraceID: traceID, EvidenceNeeded: evidence, ContextPackRefs: contextRefs, FilesToRead: filesToRead, FilesToEdit: filesToEdit, LikelyFilesAffected: files, DependencyTaskIDs: deps, VerificationRequirement: verify, GitOpsVerificationMode: gitOpsVerificationMode, ExpectedOutput: expected, FailureCriteria: failure, ReviewGate: reviewGate, ResumeInstructions: resume, KnowledgeCandidateRefs: knowledgeRefs, AgentRunIDs: optionalRefSlice(runID), DecompositionQuality: quality, AcceptanceCriteria: acceptanceCriteria, StopConditions: stopConditions, VerifierLadder: verifierLadder, RegressionApplicability: regressionApplicability, DownstreamImpactRefs: downstreamImpactRefs, OutputContract: outputContract, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (svc *Service) dependenciesDone(ctx context.Context, projectID, planID string, deps []string) (bool, error) {
+	tasks, err := svc.store.ListWorkTasks(ctx, WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return false, err
+	}
+	done := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		if task.Status == WorkTaskStatusDone {
+			done[task.ID] = true
+		}
+	}
+	for _, dep := range deps {
+		if !done[dep] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (svc *Service) GetWorkTask(ctx context.Context, projectID, taskID string) (WorkTask, error) {
@@ -710,6 +738,15 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 	}
 	if next == WorkTaskStatusReady && task.DecompositionQuality != DecompositionReady {
 		return WorkTask{}, fmt.Errorf("%w: task decomposition is not ready", ErrInvalidInput)
+	}
+	if next == WorkTaskStatusReady && len(task.DependencyTaskIDs) > 0 {
+		ready, err := svc.dependenciesDone(ctx, task.ProjectID, task.PlanID, task.DependencyTaskIDs)
+		if err != nil {
+			return WorkTask{}, err
+		}
+		if !ready {
+			return WorkTask{}, fmt.Errorf("%w: release requires completed dependencies", ErrInvalidInput)
+		}
 	}
 	if input.OwnerAgent != "" {
 		task.OwnerAgent, err = safeOptionalRef(input.OwnerAgent, "owner_agent")
