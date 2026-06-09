@@ -87,6 +87,7 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected post task commit to succeed: %v", err)
 	}
+	assertNoHookBypass(t, runner.commands)
 	if result.CommitRef != "git-commit-abc123def456" {
 		t.Fatalf("unexpected commit ref: %+v", result)
 	}
@@ -96,7 +97,7 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	if got := strings.Join(runner.commands[0].Args, " "); got != "-c safe.directory=/tmp/worktree rev-parse --show-toplevel" {
 		t.Fatalf("expected trust probe command, got %q", got)
 	}
-	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit --no-verify -m") {
+	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit -m") {
 		t.Fatalf("expected commit command, got %q", got)
 	}
 	messageArg := ""
@@ -153,13 +154,14 @@ func TestPostTaskPushesWithoutExplicitSSHCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected push to use repository remote credentials without explicit SSH config: %v", err)
 	}
+	assertNoHookBypass(t, runner.commands)
 	if result.CommitRef != "git-commit-abc123def456" || result.PushRef == "" || !containsString(result.EvidenceRefs, "git-push-completed") {
 		t.Fatalf("expected commit and push refs, got %#v", result)
 	}
 	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree config --global --add safe.directory /remote.git" {
 		t.Fatalf("expected local remote safe.directory config, got %q", got)
 	}
-	if got := strings.Join(runner.commands[9].Args, " "); got != "-c safe.directory=/tmp/worktree -c safe.directory=/remote.git push --no-verify local-smoke HEAD:governed-smoke-gitops-live-smoke-run" {
+	if got := strings.Join(runner.commands[9].Args, " "); got != "-c safe.directory=/tmp/worktree -c safe.directory=/remote.git push local-smoke HEAD:governed-smoke-gitops-live-smoke-run" {
 		t.Fatalf("expected push to configured remote branch without SSH env, got %q", got)
 	}
 	if len(runner.commands[9].Env) != 0 {
@@ -238,7 +240,7 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 	joined := commandArgs(runner.commands)
 	if !strings.Contains(joined, "rev-list --count origin/main..HEAD") ||
 		!strings.Contains(joined, "sh -lc pnpm -s nx affected -t test --base=origin/main --head=HEAD") ||
-		!strings.Contains(joined, "push --no-verify origin HEAD:chore-GENERIC-1044-governed-workplan-implementation") ||
+		!strings.Contains(joined, "push origin HEAD:chore-GENERIC-1044-governed-workplan-implementation") ||
 		!strings.Contains(joined, "pr create --draft") {
 		t.Fatalf("expected rev-list, verifier, push, and draft PR commands, got %q", joined)
 	}
@@ -317,7 +319,7 @@ func TestGitPushTrustsAbsoluteLocalRemotePath(t *testing.T) {
 	if got := strings.Join(runner.commands[1].Args, " "); got != "-c safe.directory=/tmp/worktree config --global --add safe.directory /remote.git" {
 		t.Fatalf("expected local remote safe.directory config, got %q", got)
 	}
-	if got := strings.Join(runner.commands[2].Args, " "); got != "-c safe.directory=/tmp/worktree -c safe.directory=/remote.git push --no-verify local-smoke HEAD:feature/any-valid-branch" {
+	if got := strings.Join(runner.commands[2].Args, " "); got != "-c safe.directory=/tmp/worktree -c safe.directory=/remote.git push local-smoke HEAD:feature/any-valid-branch" {
 		t.Fatalf("expected push to trust worktree and local remote, got %q", got)
 	}
 }
@@ -337,7 +339,7 @@ func TestGitPushDoesNotTreatRelativeOrSSHRemoteAsSafeDirectory(t *testing.T) {
 			if _, err := svc.gitPush(context.Background(), "/tmp/worktree", "feature/any-valid-branch"); err != nil {
 				t.Fatalf("expected push to succeed: %v", err)
 			}
-			if got := strings.Join(runner.commands[1].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:feature/any-valid-branch" {
+			if got := strings.Join(runner.commands[1].Args, " "); got != "-c safe.directory=/tmp/worktree push origin HEAD:feature/any-valid-branch" {
 				t.Fatalf("expected no remote safe.directory for %s remote, got %q", tc.name, got)
 			}
 		})
@@ -527,6 +529,17 @@ func commandArgs(commands []Command) string {
 		out = append(out, command.Path+" "+strings.Join(command.Args, " "))
 	}
 	return strings.Join(out, "\n")
+}
+
+func assertNoHookBypass(t *testing.T, commands []Command) {
+	t.Helper()
+	for _, command := range commands {
+		for _, arg := range command.Args {
+			if arg == "--no-verify" || arg == "-n" || arg == "--no-gpg-sign" {
+				t.Fatalf("gitops command must not bypass git hooks/signing: %+v", command)
+			}
+		}
+	}
 }
 
 func TestPostTaskStagesOnlyChangedFilesInsideAllowedScopes(t *testing.T) {
@@ -778,7 +791,7 @@ func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing
 	if got := strings.Join(runner.commands[3].Args, " "); got != "-c safe.directory=/tmp/worktree checkout -B fix-GENERIC-0000-automation-run-1" {
 		t.Fatalf("expected derived branch checkout, got %q", got)
 	}
-	if got := strings.Join(runner.commands[9].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:fix-GENERIC-0000-automation-run-1" {
+	if got := strings.Join(runner.commands[9].Args, " "); got != "-c safe.directory=/tmp/worktree push origin HEAD:fix-GENERIC-0000-automation-run-1" {
 		t.Fatalf("expected push to derived branch, got %q", got)
 	}
 }
@@ -1200,7 +1213,7 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 	if got := strings.Join(runner.commands[10].Env, "\n"); !strings.Contains(got, "XDG_CONFIG_HOME=") || !strings.Contains(got, "BFF_ADMIN_URL=http://localhost:3000") || !strings.Contains(got, "SESSION_PASSWORD=test-secret") {
 		t.Fatalf("expected sorted verifier env, got %q", got)
 	}
-	if got := strings.Join(runner.commands[11].Args, " "); !strings.Contains(got, "commit --amend --no-verify") {
+	if got := strings.Join(runner.commands[11].Args, " "); !strings.Contains(got, "commit --amend") {
 		t.Fatalf("expected commit amended with post-commit verification results, got %q", got)
 	}
 }
@@ -1249,7 +1262,8 @@ func TestPostTaskFailsBeforePushWhenPostCommitVerificationFails(t *testing.T) {
 	if len(runner.commands) != 8 {
 		t.Fatalf("expected no push or PR commands after failed verifier, got %d", len(runner.commands))
 	}
-	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit --no-verify") {
+	assertNoHookBypass(t, runner.commands)
+	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit -m") {
 		t.Fatalf("expected local commit before CI-equivalent verification, got %q", got)
 	}
 	if got := strings.Join(runner.commands[7].Args, " "); got != "-lc pnpm -s nx affected -t lint --base=origin/main --head=HEAD" {
@@ -1325,7 +1339,7 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 	if result.PushRef == "" {
 		t.Fatalf("expected push ref, got %+v", result)
 	}
-	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:docs-GENERIC-123-docs" {
+	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree push origin HEAD:docs-GENERIC-123-docs" {
 		t.Fatalf("expected push to matching branch, got %q", got)
 	}
 }

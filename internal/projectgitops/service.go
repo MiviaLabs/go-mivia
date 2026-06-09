@@ -209,7 +209,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if email != "" {
 		env = append(env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
 	}
-	if _, err := svc.git(ctx, workDir, env, "commit", "--no-verify", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
+	if _, err := svc.git(ctx, workDir, env, "commit", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
 		return PostTaskResult{}, gitOpsStageFailure("git_commit", err)
 	}
 	postCommitVerificationRefs, postCommitVerificationTests, err := svc.runPostCommitVerification(ctx, workDir)
@@ -222,7 +222,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		if err != nil {
 			return PostTaskResult{}, gitOpsStageFailure("render_after_postcommit_verification", err)
 		}
-		if _, err := svc.git(ctx, workDir, env, "commit", "--amend", "--no-verify", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
+		if _, err := svc.git(ctx, workDir, env, "commit", "--amend", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
 			return PostTaskResult{}, gitOpsStageFailure("git_commit_amend", err)
 		}
 	}
@@ -752,7 +752,7 @@ func (svc *Service) git(ctx context.Context, dir string, env []string, args ...s
 }
 
 func (svc *Service) gitPush(ctx context.Context, workDir string, branch string) (CommandResult, error) {
-	args := []string{"push", "--no-verify", svc.options.RemoteName, "HEAD:" + branch}
+	args := []string{"push", svc.options.RemoteName, "HEAD:" + branch}
 	env := svc.gitSSHEnv()
 	if githubEnv := svc.githubEnv(); len(githubEnv) > 0 {
 		args = append([]string{"-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"}, args...)

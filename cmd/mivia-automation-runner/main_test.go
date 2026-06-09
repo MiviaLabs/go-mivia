@@ -1331,7 +1331,7 @@ func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
 	if strings.Join(evidenceRefs, ",") != "git-commit-created,git-commit-abc123def456" {
 		t.Fatalf("unexpected evidence refs: %+v", evidenceRefs)
 	}
-	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit --no-verify -m") {
+	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit -m") {
 		t.Fatalf("expected commit command, got %q", got)
 	}
 }
