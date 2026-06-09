@@ -313,6 +313,107 @@ func TestAdvancingStageCarriesGeneratedImplementationTasksToNextPlan(t *testing.
 	}
 }
 
+func TestAdvancingStageStripsWrapperDependenciesFromCarriedImplementationTasks(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	generated := projectworkplan.WorkTask{
+		ID:                      "generated-task-1",
+		ProjectID:               "project-1",
+		PlanID:                  "plan-decomposition",
+		TaskRef:                 "implement-mass-1044-slice",
+		Title:                   "Implement MASS-1044 Slice",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		OwnerAgent:              "planning-worker",
+		FilesToEdit:             []string{"internal/output.go"},
+		DependencyTaskIDs:       []string{"select-ready-tasks"},
+		VerificationRequirement: "focused verifier",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+		ReviewResultRefs:        []string{"review:implementation-independent-review"},
+	}
+	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
+		"plan-decomposition": {
+			{ID: "select-ready-tasks", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusReady, DecompositionQuality: projectworkplan.DecompositionReady},
+			generated,
+		},
+		"plan-implementation": {
+			{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
+		},
+	}}
+	automations := &fakeAutomationAPI{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.SetAutomationAPI(automations)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if len(workPlans.createdTasks) != 1 {
+		t.Fatalf("expected one carried implementation task, got %#v", workPlans.createdTasks)
+	}
+	carried := workPlans.createdTasks[0]
+	if carried.TaskRef != generated.TaskRef || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
+		t.Fatalf("carried task must be ready for implementation worker, got %#v", carried)
+	}
+	if containsString(carried.DependencyTaskIDs, "select-ready-tasks") {
+		t.Fatalf("carried implementation task must not depend on source-stage wrapper refs: %#v", carried.DependencyTaskIDs)
+	}
+	if len(automations.created) != 1 || automations.created[0].PlanID != "plan-implementation" || automations.created[0].AgentID != "implementation-worker" {
+		t.Fatalf("expected implementation-worker automation for carried task, got %#v", automations.created)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil || run.StageRuns[1].Status != StageStatusQueued {
+		t.Fatalf("expected queued implementation stage, run=%#v err=%v", run, err)
+	}
+}
+
+func TestAdvancingStagePreservesExternalDependenciesOnCarriedImplementationTasks(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	generated := projectworkplan.WorkTask{
+		ID:                      "generated-task-1",
+		ProjectID:               "project-1",
+		PlanID:                  "plan-decomposition",
+		TaskRef:                 "implement-external-dependent-slice",
+		Title:                   "Implement External Dependent Slice",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		FilesToEdit:             []string{"internal/output.go"},
+		DependencyTaskIDs:       []string{"upstream-external-task"},
+		VerificationRequirement: "focused verifier",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	}
+	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
+		"plan-decomposition": {
+			{ID: "select-ready-tasks", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusReady, DecompositionQuality: projectworkplan.DecompositionReady},
+			generated,
+		},
+		"plan-implementation": {
+			{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
+		},
+	}}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if len(workPlans.createdTasks) != 1 {
+		t.Fatalf("expected one carried implementation task, got %#v", workPlans.createdTasks)
+	}
+	carried := workPlans.createdTasks[0]
+	if carried.Status != projectworkplan.WorkTaskStatusPlanned || !containsString(carried.DependencyTaskIDs, "upstream-external-task") {
+		t.Fatalf("external dependencies must be preserved and keep task planned, got %#v", carried)
+	}
+}
+
 func TestAdvancingStageBackfillsAutomationForExistingCarriedImplementationTask(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()

@@ -752,12 +752,17 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 	for _, taskID := range previous.WorkTaskIDs {
 		compiledTaskIDs[taskID] = struct{}{}
 	}
-	carriedRefs := map[string]struct{}{}
+	sourceRefs := map[string]struct{}{}
 	for _, task := range sourceTasks {
+		if strings.TrimSpace(task.ID) != "" {
+			sourceRefs[task.ID] = struct{}{}
+		}
+		if strings.TrimSpace(task.TaskRef) != "" {
+			sourceRefs[task.TaskRef] = struct{}{}
+		}
 		if !chainStageOutputTask(task, compiledTaskIDs) {
 			continue
 		}
-		carriedRefs[task.TaskRef] = struct{}{}
 	}
 	for _, task := range sourceTasks {
 		if !chainStageOutputTask(task, compiledTaskIDs) {
@@ -769,11 +774,12 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 			}
 			continue
 		}
+		dependencyIDs := carriedTaskDependencyIDs(task, sourceRefs)
 		status := projectworkplan.WorkTaskStatusPlanned
-		if carriedTaskDependenciesReady(task, carriedRefs) {
+		if len(dependencyIDs) == 0 {
 			status = projectworkplan.WorkTaskStatusReady
 		}
-		created, err := svc.workPlans.CreateWorkTask(ctx, carriedTaskCreateInput(projectID, compiled.WorkPlanID, run, task, status))
+		created, err := svc.workPlans.CreateWorkTask(ctx, carriedTaskCreateInput(projectID, compiled.WorkPlanID, run, task, status, dependencyIDs))
 		if err != nil {
 			return err
 		}
@@ -868,16 +874,7 @@ func chainStageOutputTask(task projectworkplan.WorkTask, compiledTaskIDs map[str
 	return task.DecompositionQuality == projectworkplan.DecompositionReady && len(task.FilesToEdit) > 0
 }
 
-func carriedTaskDependenciesReady(task projectworkplan.WorkTask, carriedRefs map[string]struct{}) bool {
-	for _, dep := range task.DependencyTaskIDs {
-		if _, carried := carriedRefs[dep]; carried {
-			return false
-		}
-	}
-	return true
-}
-
-func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task projectworkplan.WorkTask, status string) projectworkplan.CreateWorkTaskInput {
+func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task projectworkplan.WorkTask, status string, dependencyIDs []string) projectworkplan.CreateWorkTaskInput {
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               projectID,
 		PlanID:                  planID,
@@ -893,7 +890,7 @@ func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task 
 		FilesToRead:             append([]string(nil), task.FilesToRead...),
 		FilesToEdit:             append([]string(nil), task.FilesToEdit...),
 		LikelyFilesAffected:     append([]string(nil), task.LikelyFilesAffected...),
-		DependencyTaskIDs:       append([]string(nil), task.DependencyTaskIDs...),
+		DependencyTaskIDs:       append([]string(nil), dependencyIDs...),
 		VerificationRequirement: task.VerificationRequirement,
 		GitOpsVerificationMode:  task.GitOpsVerificationMode,
 		ExpectedOutput:          task.ExpectedOutput,
@@ -915,6 +912,20 @@ func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task 
 		DownstreamImpactRefs:    append([]string(nil), task.DownstreamImpactRefs...),
 		OutputContract:          task.OutputContract,
 	}
+}
+
+func carriedTaskDependencyIDs(task projectworkplan.WorkTask, sourceRefs map[string]struct{}) []string {
+	if len(task.DependencyTaskIDs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(task.DependencyTaskIDs))
+	for _, dep := range task.DependencyTaskIDs {
+		if _, sourceRef := sourceRefs[dep]; sourceRef {
+			continue
+		}
+		out = append(out, dep)
+	}
+	return out
 }
 
 func (svc *Service) releaseCompiledTasks(ctx context.Context, projectID string, compiled projectworkflow.WorkflowCompileResult, run ChainRun) error {
