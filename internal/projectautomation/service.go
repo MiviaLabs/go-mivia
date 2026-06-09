@@ -26,9 +26,10 @@ const automationReplacementRetryLimitCategory = "automation_replacement_retry_li
 const defaultExternalRunLeaseTTL = 90 * time.Second
 
 var (
-	refPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
-	emailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
-	phonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
+	refPattern                    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
+	emailPattern                  = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+	phonePattern                  = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
+	dynamicFailureCategoryPattern = regexp.MustCompile(`(?i)(^|[_:.-])(work_task|automation_run|review_result)_[a-z0-9][a-z0-9._:-]*`)
 )
 
 type Store interface {
@@ -1941,6 +1942,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	}
 	failureCategory, err := safeText(input.FailureCategory, "failure_category", 200)
 	if err != nil {
+		return AutomationRun{}, err
+	}
+	if err := safeFailureCategory(failureCategory); err != nil {
 		return AutomationRun{}, err
 	}
 	verifierRefs, err := safeRefList(input.VerifierResultRefs, "verifier_result_refs")
@@ -6613,6 +6617,34 @@ func safeText(value, field string, max int) (string, error) {
 		return "", fmt.Errorf("%w: %s contains pii-like content", ErrInvalidInput, field)
 	}
 	return value, nil
+}
+
+func safeFailureCategory(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	lower := strings.ToLower(value)
+	if dynamicFailureCategoryPattern.MatchString(lower) {
+		return fmt.Errorf("%w: failure_category contains unsafe dynamic content", ErrInvalidInput)
+	}
+	for _, marker := range []string{
+		"/",
+		"\\",
+		".go",
+		".ts",
+		".tsx",
+		".js",
+		".jsx",
+		"provider payload",
+		"raw stderr",
+		"raw source",
+		"raw log",
+	} {
+		if strings.Contains(lower, marker) {
+			return fmt.Errorf("%w: failure_category contains unsafe dynamic content", ErrInvalidInput)
+		}
+	}
+	return nil
 }
 
 func safeBranchToken(value string) string {

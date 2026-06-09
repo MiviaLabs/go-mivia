@@ -2495,7 +2495,7 @@ func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				t.Fatalf("decode attempt: %v", err)
 			}
-			if input.Status != projectautomation.RunStatusFailed || input.FailureCategory != "governed_closeout_output_missing_empty_codex_final_message" {
+			if input.Status != projectautomation.RunStatusFailed || input.FailureCategory != "governed_closeout_output_missing" {
 				t.Fatalf("expected closeout failure, got %+v", input)
 			}
 			completed.Add(1)
@@ -2903,6 +2903,80 @@ func TestValidateGovernedCloseoutAllowsSafeProhibitionPhrases(t *testing.T) {
 	output.ChildTasks[0].FailureCriteria = "block when the output would include raw source"
 	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
 		t.Fatalf("safe prohibition phrasing should not be treated as unsafe content: %v", err)
+	}
+}
+
+func TestGovernedCloseoutFailureCategoryUsesStaticSafeBuckets(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "live unsafe review result ref",
+			err: governedCloseoutError{
+				category: governedCloseoutValidationFailed,
+				err:      errors.New("unsafe ref review_result_work_task_a547810860aad17c_approved"),
+			},
+			want: governedCloseoutValidationFailed + "_unsafe_ref",
+		},
+		{
+			name: "unsafe child task output contract",
+			err: governedCloseoutError{
+				category: governedCloseoutValidationFailed,
+				err:      errors.New("unsafe child task output_contract provider_payload"),
+			},
+			want: governedCloseoutValidationFailed + "_unsafe_child_task_output_contract",
+		},
+		{
+			name: "unsafe path does not leak root",
+			err: governedCloseoutError{
+				category: governedCloseoutValidationFailed,
+				err:      errors.New("unsafe child task path /home/mac/rimthan/mass-monorepo/apps/domain/src/module.ts"),
+			},
+			want: governedCloseoutValidationFailed + "_unsafe_child_task_path",
+		},
+		{
+			name: "child task create server error stays static",
+			err: governedCloseoutError{
+				category: governedCloseoutApplyFailed,
+				err:      errors.New(`child_task_create_failed: server returned 400 Bad Request: {"error":{"code":"invalid_input","message":"invalid project work task input: failure_category contains pii-like content for dev@example.com"}}`),
+			},
+			want: governedCloseoutApplyFailed + "_child_task_create_failed_invalid_project_work_task_input",
+		},
+		{
+			name: "unknown validation detail is not embedded",
+			err: governedCloseoutError{
+				category: governedCloseoutValidationFailed,
+				err:      errors.New("raw stderr token=value provider_payload /home/mac/private user@example.com"),
+			},
+			want: governedCloseoutValidationFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := governedCloseoutFailureCategory(tt.err)
+			if got != tt.want {
+				t.Fatalf("expected static category %q, got %q", tt.want, got)
+			}
+			for _, forbidden := range []string{
+				"review_result",
+				"a547810860aad17c",
+				"approved",
+				"/home/mac",
+				"rimthan",
+				"module",
+				"provider_payload",
+				"raw_stderr",
+				"token",
+				"example.com",
+			} {
+				if strings.Contains(got, forbidden) {
+					t.Fatalf("failure category leaked dynamic/unsafe detail %q in %q", forbidden, got)
+				}
+			}
+		})
 	}
 }
 

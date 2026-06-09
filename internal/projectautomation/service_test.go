@@ -1770,6 +1770,72 @@ func TestCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t *testing.
 	}
 }
 
+func TestCompleteAttemptRejectsUnsafeFailureCategoryContent(t *testing.T) {
+	ctx := context.Background()
+	unsafeCategories := []string{
+		"governed_closeout_validation_failed_unsafe_ref_review_result_work_task_a547810860aad17c_approved",
+		"work_task_1234567890abcdef",
+		"review_result_task_1_passed",
+		"cmd/mivia-automation-runner/main.go",
+		"/home/mac/repo/file.go",
+		"user@example.com",
+		"provider_payload",
+		"provider payload",
+		"raw_stderr",
+		"raw stderr",
+		"raw source",
+		`provider_payload_{"token":"value"}`,
+	}
+
+	for _, category := range unsafeCategories {
+		t.Run(category, func(t *testing.T) {
+			store := newTestStore()
+			task := readyTask("task-a", "decompose-a", []string{"internal/foo.go"})
+			task.Status = projectworkplan.WorkTaskStatusInProgress
+			task.ClaimedByRunID = "run-a"
+			fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+			svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+			automation := createAutomaticTriggerAutomation(t, ctx, svc)
+			if _, err := store.CreateRun(ctx, AutomationRun{
+				ID: "run-a", ProjectID: "project-1", AutomationID: automation.ID, AgentID: automation.AgentID,
+				PlanID: "plan-1", TaskID: "task-a", Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+				WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress,
+				ClaimID:        "claim-a",
+				RunnerID:       "runner-a",
+				AttemptCount:   1,
+				CreatedAt:      time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(100, 0).UTC(),
+			}); err != nil {
+				t.Fatalf("CreateRun returned error: %v", err)
+			}
+
+			if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+				ProjectID:       "project-1",
+				RunID:           "run-a",
+				Status:          RunStatusFailed,
+				FailureCategory: category,
+				ClaimID:         "claim-a",
+				RunnerID:        "runner-a",
+			}); err == nil || !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected ErrInvalidInput for unsafe failure_category %q, got %v", category, err)
+			}
+
+			durable, err := store.GetRun(ctx, "project-1", "run-a")
+			if err != nil {
+				t.Fatalf("GetRun returned error: %v", err)
+			}
+			if durable.Status != RunStatusRunning || durable.FailureCategory != "" {
+				t.Fatalf("unsafe failure category must not update run, got %#v", durable)
+			}
+			store.mu.Lock()
+			attempts := len(store.attempts)
+			store.mu.Unlock()
+			if attempts != 0 {
+				t.Fatalf("unsafe failure category must not create attempts, got %d", attempts)
+			}
+		})
+	}
+}
+
 func TestCompleteAttemptBlocksFailedGovernedCloseoutAfterReplacementRetryLimit(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()

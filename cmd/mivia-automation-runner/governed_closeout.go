@@ -53,7 +53,7 @@ func (err governedCloseoutError) Unwrap() error { return err.err }
 func governedCloseoutFailureCategory(err error) string {
 	var closeoutErr governedCloseoutError
 	if errors.As(err, &closeoutErr) && closeoutErr.category != "" {
-		if detail := governedCloseoutSafeFailureDetail(closeoutErr.category, closeoutErr.err); detail != "" {
+		if detail := governedCloseoutStaticFailureDetail(closeoutErr.category, closeoutErr.err); detail != "" {
 			return closeoutErr.category + "_" + detail
 		}
 		return closeoutErr.category
@@ -61,16 +61,13 @@ func governedCloseoutFailureCategory(err error) string {
 	return governedCloseoutApplyFailed
 }
 
-func governedCloseoutSafeFailureDetail(category string, err error) string {
+func governedCloseoutStaticFailureDetail(category string, err error) string {
 	if err == nil {
 		return ""
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	normalizedText := governedCloseoutNormalizeFailureMarkerText(text)
 	if strings.Contains(text, "child_task_create_failed") {
-		if detail := governedCloseoutServerErrorDetail(text, "child_task_create_failed"); detail != "" {
-			return detail
-		}
 		for _, marker := range []string{
 			"invalid_project_work_task_input",
 			"invalid_project_workplan_input",
@@ -82,10 +79,45 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 				return "child_task_create_failed_" + marker
 			}
 		}
-		if detail := governedCloseoutSanitizedFailureDetail(text, category, "child_task_create_failed"); detail != "" {
-			return detail
-		}
 		return "child_task_create_failed"
+	}
+	for _, marker := range []string{
+		"unsafe_child_task_output_contract",
+		"unsafe_child_task_review_gate",
+		"unsafe_child_task_resume_instructions",
+		"unsafe_child_task_failure_criteria",
+		"unsafe_child_task_expected_output",
+		"unsafe_child_task_verification_requirement",
+		"unsafe_child_task_description",
+		"unsafe_child_task_title",
+		"unsafe_child_task_ref",
+		"unsafe_child_task_path",
+		"unsafe_ref",
+		"unsafe_path",
+		"child_task_evidence_needed_contains_empty_value",
+		"child_task_context_pack_refs_contains_empty_value",
+		"child_task_files_to_read_contains_empty_value",
+		"child_task_files_to_edit_contains_empty_value",
+		"child_task_likely_files_affected_contains_empty_value",
+		"child_task_acceptance_criteria_contains_empty_value",
+		"child_task_stop_conditions_contains_empty_value",
+		"child_task_verifier_ladder_contains_empty_value",
+		"child_task_downstream_impact_refs_contains_empty_value",
+		"child_task_missing_governance_metadata",
+		"child_task_status",
+		"block_reason_is_too_long",
+		"child_tasks_verification_requirement_must_be_string",
+		"child_tasks_expected_output_must_be_string",
+		"child_tasks_failure_criteria_must_be_string",
+		"child_tasks_resume_instructions_must_be_string",
+		"child_tasks_review_gate_must_be_string",
+		"child_tasks_output_contract_must_be_string",
+		"governance_metadata",
+		"rest_limits",
+	} {
+		if strings.Contains(normalizedText, marker) {
+			return marker
+		}
 	}
 	for _, marker := range []string{
 		"wrapper_evidence_attach_failed",
@@ -104,43 +136,7 @@ func governedCloseoutSafeFailureDetail(category string, err error) string {
 			return marker
 		}
 	}
-	return governedCloseoutSanitizedFailureDetail(text, category, "")
-}
-
-func governedCloseoutServerErrorDetail(text string, prefix string) string {
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return ""
-	}
-	var body struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal([]byte(text[start:end+1]), &body); err != nil {
-		return ""
-	}
-	code := firstNonEmpty(body.Error.Code, body.Code)
-	message := firstNonEmpty(body.Error.Message, body.Message)
-	codeDetail := governedCloseoutNormalizeFailureMarkerText(code)
-	if codeDetail == "" {
-		return ""
-	}
-	if prefix != "" {
-		codeDetail = strings.Trim(prefix, "_") + "_" + codeDetail
-	}
-	messageDetail := governedCloseoutNormalizeFailureMarkerText(message)
-	if messageDetail != "" {
-		codeDetail += "_" + messageDetail
-	}
-	if len(codeDetail) > 100 {
-		codeDetail = strings.TrimRight(codeDetail[:100], "_")
-	}
-	return codeDetail
+	return ""
 }
 
 func governedCloseoutNormalizeFailureMarkerText(text string) string {
@@ -162,46 +158,6 @@ func governedCloseoutNormalizeFailureMarkerText(text string) string {
 		}
 	}
 	return strings.Trim(builder.String(), "_")
-}
-
-func governedCloseoutSanitizedFailureDetail(text string, category string, prefix string) string {
-	var builder strings.Builder
-	lastUnderscore := false
-	for _, r := range text {
-		switch {
-		case r >= 'a' && r <= 'z':
-			builder.WriteRune(r)
-			lastUnderscore = false
-		case r >= '0' && r <= '9':
-			builder.WriteRune(r)
-			lastUnderscore = false
-		default:
-			if !lastUnderscore && builder.Len() > 0 {
-				builder.WriteByte('_')
-				lastUnderscore = true
-			}
-		}
-	}
-	detail := strings.Trim(builder.String(), "_")
-	if detail == "" {
-		return ""
-	}
-	if prefix != "" {
-		detail = strings.TrimPrefix(detail, strings.Trim(prefix, "_")+"_")
-		detail = strings.TrimSuffix(detail, "_"+strings.Trim(prefix, "_"))
-		if detail == "" {
-			return ""
-		}
-		detail = strings.Trim(prefix, "_") + "_" + detail
-	}
-	max := 100 - len(category) - 1
-	if max < 20 {
-		max = 20
-	}
-	if len(detail) > max {
-		detail = strings.TrimRight(detail[:max], "_")
-	}
-	return detail
 }
 
 type governedCloseoutOutput struct {
