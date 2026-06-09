@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug/schema"
@@ -19,6 +20,26 @@ func TestLadybugStorePersistsChainRunsAcrossStoreInstances(t *testing.T) {
 	first := NewLadybugStore(graph)
 	run := testRun("run-1", projectworkflowchain.ChainStatusQueued)
 	run.GitOpsReady = true
+	run.PullRequestRef = "pr/MASS-1044"
+	run.NextAction = "workflow chain completed with draft PR GitOps output"
+	run.AutomationIDs = []string{"automation-decomposition", "automation-implementation", "automation-validation"}
+	run.StageRuns[0].Status = projectworkflowchain.StageStatusCompleted
+	run.StageRuns[0].AutomationIDs = []string{"automation-decomposition"}
+	run.StageRuns[0].WorkflowID = "workflow-decomposition"
+	run.StageRuns[0].CompletedAt = time.Unix(101, 0).UTC()
+	run.StageRuns = append(run.StageRuns, projectworkflowchain.StageRun{
+		StageRef:      "post-validation",
+		WorkflowRef:   "governed-post-implementation-validation",
+		WorkflowID:    "workflow-validation",
+		Status:        projectworkflowchain.StageStatusBlocked,
+		WorkPlanID:    "plan-post-validation",
+		WorkTaskIDs:   []string{"task-post-validation"},
+		AutomationIDs: []string{"automation-validation"},
+		StartedAt:     time.Unix(102, 0).UTC(),
+		CompletedAt:   time.Unix(103, 0).UTC(),
+		BlockedReason: "gitops_finalize_failed_gitops_runtime_failed",
+	})
+	run.WorkPlanIDs = append(run.WorkPlanIDs, "plan-post-validation")
 
 	if _, err := first.CreateChainRun(ctx, run); err != nil {
 		t.Fatalf("create run: %v", err)
@@ -30,6 +51,12 @@ func TestLadybugStorePersistsChainRunsAcrossStoreInstances(t *testing.T) {
 	}
 	if found.ID != "run-1" || !found.GitOpsReady || found.StageRuns[0].WorkTaskIDs[0] != "task-decomposition" {
 		t.Fatalf("unexpected persisted run: %#v", found)
+	}
+	if found.PullRequestRef != run.PullRequestRef || found.NextAction != run.NextAction || len(found.AutomationIDs) != 3 {
+		t.Fatalf("persisted chain lost GitOps handoff refs/actions: %#v", found)
+	}
+	if len(found.StageRuns) != 2 || found.StageRuns[1].BlockedReason != "gitops_finalize_failed_gitops_runtime_failed" || found.StageRuns[1].CompletedAt.IsZero() || len(found.StageRuns[1].AutomationIDs) != 1 {
+		t.Fatalf("persisted chain lost stage handoff metadata: %#v", found.StageRuns)
 	}
 }
 

@@ -245,6 +245,22 @@ func TestLadybugStorePersistentReopenPlanTaskGraph(t *testing.T) {
 	if _, err := store.CreateAttachment(ctx, model.Attachment{ID: "attachment-claim", ProjectID: task.ProjectID, PlanID: task.PlanID, TaskID: task.ID, Kind: "claim_ref", Ref: "claim/ref/a", AttachedByRunID: "agent_run_a"}); err != nil {
 		t.Fatalf("attach claim: %v", err)
 	}
+	if _, err := store.CreateAttachment(ctx, model.Attachment{ID: "attachment-evidence-reopen", ProjectID: task.ProjectID, PlanID: task.PlanID, TaskID: task.ID, Kind: "evidence_ref", Ref: "evidence/ref/reopen", AttachedByRunID: "agent_run_a"}); err != nil {
+		t.Fatalf("attach evidence: %v", err)
+	}
+	if _, err := store.CreateAttachment(ctx, model.Attachment{ID: "attachment-review-reopen", ProjectID: task.ProjectID, PlanID: task.PlanID, TaskID: task.ID, Kind: "review_result_ref", Ref: "review/ref/reopen", AttachedByRunID: "agent_run_reviewer"}); err != nil {
+		t.Fatalf("attach review: %v", err)
+	}
+	if _, err := store.CreateAttachment(ctx, model.Attachment{ID: "attachment-verifier-reopen", ProjectID: task.ProjectID, PlanID: task.PlanID, TaskID: task.ID, Kind: "verifier_result_ref", Ref: "verifier/ref/reopen", AttachedByRunID: "agent_run_verifier"}); err != nil {
+		t.Fatalf("attach verifier: %v", err)
+	}
+	task.Status = model.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "agent_run_a"
+	task.ExpectedOutput = "persisted expected output for GitOps handoff"
+	task.FailureCriteria = "persisted failure criteria for GitOps handoff"
+	if _, err := store.UpdateWorkTask(ctx, task); err != nil {
+		t.Fatalf("update task status: %v", err)
+	}
 	if err := graph.Close(); err != nil {
 		t.Fatalf("close graph: %v", err)
 	}
@@ -268,6 +284,12 @@ func TestLadybugStorePersistentReopenPlanTaskGraph(t *testing.T) {
 	}
 	if gotPlan.Outcome != "persisted plan outcome" {
 		t.Fatalf("expected reopened plan outcome, got %#v", gotPlan)
+	}
+	if gotTask.Status != model.WorkTaskStatusVerifying || gotTask.ClaimedByRunID != "agent_run_a" || gotTask.ExpectedOutput != task.ExpectedOutput || gotTask.FailureCriteria != task.FailureCriteria {
+		t.Fatalf("reopened task lost status or handoff fields: %#v", gotTask)
+	}
+	if !containsString(gotTask.EvidenceRefs, "evidence/ref/reopen") || !containsString(gotTask.ReviewResultRefs, "review/ref/reopen") || !containsString(gotTask.VerifierResultRefs, "verifier/ref/reopen") {
+		t.Fatalf("reopened task lost evidence/review/verifier refs: %#v", gotTask)
 	}
 }
 
@@ -362,6 +384,15 @@ func assertRelationshipStored(t *testing.T, ctx context.Context, graph ladybug.G
 func containsAttachment(attachments []model.Attachment, kind string, ref string, attachedByRunID string) bool {
 	for _, attachment := range attachments {
 		if attachment.Kind == kind && attachment.Ref == ref && attachment.AttachedByRunID == attachedByRunID {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
 			return true
 		}
 	}

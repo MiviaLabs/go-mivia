@@ -142,6 +142,9 @@ func (store *LadybugStore) GetWorkTask(ctx context.Context, projectID string, ta
 	if task.ProjectID != projectID {
 		return model.WorkTask{}, ErrNotFound
 	}
+	if err := store.hydrateTaskAttachmentRefs(ctx, &task); err != nil {
+		return model.WorkTask{}, err
+	}
 	return cloneWorkTask(task), nil
 }
 
@@ -167,6 +170,9 @@ func (store *LadybugStore) ListWorkTasks(ctx context.Context, filter model.WorkT
 	for _, node := range nodes {
 		task := nodeToWorkTask(node)
 		if task.ProjectID == filter.ProjectID {
+			if err := store.hydrateTaskAttachmentRefs(ctx, &task); err != nil {
+				return nil, err
+			}
 			tasks = append(tasks, cloneWorkTask(task))
 		}
 	}
@@ -205,16 +211,9 @@ func (store *LadybugStore) ListAttachments(ctx context.Context, projectID string
 	if _, err := store.GetWorkTask(ctx, projectID, taskID); err != nil {
 		return nil, err
 	}
-	labels := []string{labelWorkTaskEvidenceAttachment, labelWorkTaskContextPackAttachment, labelWorkTaskClaimAttachment, labelWorkTaskVerifierResultAttachment, labelWorkTaskReviewResultAttachment, labelWorkTaskKnowledgeAttachment}
-	out := []model.Attachment{}
-	for _, label := range labels {
-		nodes, err := store.graph.ListNodes(ctx, label, map[string]string{"project_id": projectID, "task_id": taskID})
-		if err != nil {
-			return nil, err
-		}
-		for _, node := range nodes {
-			out = append(out, nodeToAttachment(node))
-		}
+	out, err := store.listAttachmentNodes(ctx, projectID, taskID)
+	if err != nil {
+		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
@@ -281,6 +280,45 @@ func (store *LadybugStore) attach(ctx context.Context, label string, relationshi
 		}
 		return store.putTask(ctx, graph, task)
 	})
+}
+
+func (store *LadybugStore) hydrateTaskAttachmentRefs(ctx context.Context, task *model.WorkTask) error {
+	attachments, err := store.listAttachmentNodes(ctx, task.ProjectID, task.ID)
+	if err != nil {
+		return err
+	}
+	for _, attachment := range attachments {
+		switch attachment.Kind {
+		case "evidence_ref":
+			task.EvidenceRefs = appendUnique(task.EvidenceRefs, attachment.Ref)
+		case "context_pack_ref":
+			task.ContextPackRefs = appendUnique(task.ContextPackRefs, attachment.Ref)
+		case "claim_ref":
+			task.ClaimRefs = appendUnique(task.ClaimRefs, attachment.Ref)
+		case "verifier_result_ref":
+			task.VerifierResultRefs = appendUnique(task.VerifierResultRefs, attachment.Ref)
+		case "review_result_ref":
+			task.ReviewResultRefs = appendUnique(task.ReviewResultRefs, attachment.Ref)
+		case "knowledge_candidate_ref":
+			task.KnowledgeCandidateRefs = appendUnique(task.KnowledgeCandidateRefs, attachment.Ref)
+		}
+	}
+	return nil
+}
+
+func (store *LadybugStore) listAttachmentNodes(ctx context.Context, projectID string, taskID string) ([]model.Attachment, error) {
+	labels := []string{labelWorkTaskEvidenceAttachment, labelWorkTaskContextPackAttachment, labelWorkTaskClaimAttachment, labelWorkTaskVerifierResultAttachment, labelWorkTaskReviewResultAttachment, labelWorkTaskKnowledgeAttachment}
+	out := []model.Attachment{}
+	for _, label := range labels {
+		nodes, err := store.graph.ListNodes(ctx, label, map[string]string{"project_id": projectID, "task_id": taskID})
+		if err != nil {
+			return nil, err
+		}
+		for _, node := range nodes {
+			out = append(out, nodeToAttachment(node))
+		}
+	}
+	return out, nil
 }
 
 func attachmentMapping(kind string, ref string) (string, string, string, func(*model.WorkTask)) {

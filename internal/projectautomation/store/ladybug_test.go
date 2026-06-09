@@ -47,10 +47,20 @@ func TestLadybugStorePersistentReopenAutomationRunGraph(t *testing.T) {
 		AgentID:           automation.AgentID,
 		PlanID:            automation.PlanID,
 		TaskID:            "task-1",
-		Status:            projectautomation.RunStatusQueued,
+		WorkTaskStatus:    "verifying",
+		Status:            projectautomation.RunStatusFailed,
 		RunnerKind:        projectautomation.RunnerKindCodexCLI,
 		OrchestratorRunID: "trigger-1",
 		WorkerRunIDs:      []string{"worker-1"},
+		ClaimID:           "claim-1",
+		RunnerID:          "runner-1",
+		FailureCategory:   "gitops_post_task_failed_runner_post_task",
+		SafeSummary:       projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+		ClaimedAt:         now.Add(time.Second),
+		LastHeartbeatAt:   now.Add(2 * time.Second),
+		LeaseExpiresAt:    now.Add(92 * time.Second),
+		StartedAt:         now.Add(time.Second),
+		FinishedAt:        now.Add(3 * time.Second),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -103,6 +113,12 @@ func TestLadybugStorePersistentReopenAutomationRunGraph(t *testing.T) {
 	}
 	if gotRun.AutomationID != automation.ID || gotRun.OrchestratorRunID != run.OrchestratorRunID || len(gotRun.WorkerRunIDs) != 1 {
 		t.Fatalf("unexpected reopened run: %#v", gotRun)
+	}
+	if gotRun.Status != run.Status || gotRun.WorkTaskStatus != run.WorkTaskStatus || gotRun.SafeSummary != run.SafeSummary || gotRun.FailureCategory != run.FailureCategory {
+		t.Fatalf("reopened run lost status fields: %#v", gotRun)
+	}
+	if gotRun.ClaimID != run.ClaimID || gotRun.RunnerID != run.RunnerID || gotRun.ClaimedAt.IsZero() || gotRun.LastHeartbeatAt.IsZero() || gotRun.LeaseExpiresAt.IsZero() || gotRun.StartedAt.IsZero() || gotRun.FinishedAt.IsZero() {
+		t.Fatalf("reopened run lost external runner lifecycle fields: %#v", gotRun)
 	}
 	runs, err := reopenedStore.ListRuns(ctx, projectautomation.RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: automation.PlanID})
 	if err != nil {
