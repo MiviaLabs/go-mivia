@@ -2866,6 +2866,52 @@ func TestParseGovernedCloseoutNormalizesMultilineChildResumeInstructions(t *test
 	}
 }
 
+func TestParseGovernedCloseoutNormalizesHumanReadableChildTaskRef(t *testing.T) {
+	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].TaskRef = "MASS-1044 Booking Expiry Service"
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal closeout: %v", err)
+	}
+	parsed, err := parseGovernedCloseoutOutput(string(data))
+	if err != nil {
+		t.Fatalf("parse human-readable child task_ref: %v", err)
+	}
+	if got, want := parsed.ChildTasks[0].TaskRef, "MASS-1044-Booking-Expiry-Service"; got != want {
+		t.Fatalf("expected normalized child task_ref %q, got %q", want, got)
+	}
+	if err := validateGovernedCloseoutOutput(parsed, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("normalized child task_ref should validate: %v", err)
+	}
+}
+
+func TestParseGovernedCloseoutKeepsUnsafeChildTaskRefRejected(t *testing.T) {
+	for name, ref := range map[string]string{
+		"absolute path": "/home/mac/mass-1044",
+		"parent path":   "../mass-1044",
+		"secret":        "mass-1044 token=value",
+		"empty":         "   ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+			output.ChildTasks[0].TaskRef = ref
+			data, err := json.Marshal(output)
+			if err != nil {
+				t.Fatalf("marshal closeout: %v", err)
+			}
+			parsed, err := parseGovernedCloseoutOutput(string(data))
+			if err != nil {
+				t.Fatalf("parse closeout: %v", err)
+			}
+			err = validateGovernedCloseoutOutput(parsed, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+			if got := governedCloseoutFailureCategory(err); !governedCloseoutCategoryHasPrefix(got, governedCloseoutValidationFailed) ||
+				(!strings.Contains(err.Error(), "task_ref") && !strings.Contains(err.Error(), "task_ref required")) {
+				t.Fatalf("expected unsafe child task_ref validation failure, got %v (%q)", err, got)
+			}
+		})
+	}
+}
+
 func TestParseGovernedCloseoutNormalizesObjectOutputContract(t *testing.T) {
 	payload := strings.Replace(
 		governedCloseoutFixtureJSON(),

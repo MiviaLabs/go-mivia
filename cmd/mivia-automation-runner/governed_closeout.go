@@ -336,6 +336,7 @@ func normalizeGovernedCloseoutOutputText(output *governedCloseoutOutput) {
 	output.FailureReason = normalizeGovernedCloseoutFreeText(output.FailureReason)
 	for i := range output.ChildTasks {
 		task := &output.ChildTasks[i]
+		task.TaskRef = normalizeGovernedCloseoutChildTaskRef(task.TaskRef)
 		task.Title = normalizeGovernedCloseoutFreeText(task.Title)
 		task.Description = normalizeGovernedCloseoutFreeText(task.Description)
 		task.VerificationRequirement = normalizeGovernedCloseoutFreeText(task.VerificationRequirement)
@@ -353,6 +354,46 @@ func normalizeGovernedCloseoutOutputText(output *governedCloseoutOutput) {
 
 func normalizeGovernedCloseoutFreeText(value string) string {
 	return strings.Join(strings.Fields(value), " ")
+}
+
+func normalizeGovernedCloseoutChildTaskRef(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" ||
+		unsafeText(value) ||
+		strings.Contains(value, "\\") ||
+		strings.Contains(value, "..") ||
+		strings.HasPrefix(value, "/") ||
+		filepath.IsAbs(value) {
+		return value
+	}
+	if safeCloseoutRef(value) {
+		return value
+	}
+	var builder strings.Builder
+	lastWasSeparator := false
+	for _, r := range value {
+		allowed := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '.' || r == '_' || r == ':' || r == '/' || r == '@' || r == '+' || r == '-'
+		if allowed {
+			builder.WriteRune(r)
+			lastWasSeparator = false
+			continue
+		}
+		if !lastWasSeparator {
+			builder.WriteByte('-')
+			lastWasSeparator = true
+		}
+	}
+	normalized := strings.Trim(builder.String(), "-._:/@+")
+	if len(normalized) > 200 {
+		normalized = strings.Trim(normalized[:200], "-._:/@+")
+	}
+	if safeCloseoutRef(normalized) {
+		return normalized
+	}
+	return value
 }
 
 func normalizeGovernedCloseoutFreeTextList(values []string) []string {
