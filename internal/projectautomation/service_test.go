@@ -468,6 +468,7 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 			"must produce concrete child Work Task metadata",
 			"final child_tasks JSON array",
 			"implementation-ready",
+			"decomposition_quality must be exactly one of draft, ready, too_broad, missing_evidence, missing_context, missing_verification, or missing_resume",
 			"do not call MCP or REST",
 			"final response must be a single JSON object",
 			"closeout_action",

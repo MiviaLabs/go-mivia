@@ -259,7 +259,7 @@ func createGovernedCloseoutSchemaFile() (string, func(), error) {
 		"failure_criteria":              map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
 		"review_gate":                   map[string]any{"type": "string", "maxLength": closeoutWorkTaskTextMax},
 		"resume_instructions":           map[string]any{"type": "string"},
-		"decomposition_quality":         map[string]any{"type": "string", "maxLength": 80},
+		"decomposition_quality":         map[string]any{"type": "string", "enum": []string{"draft", "ready", "too_broad", "missing_evidence", "missing_context", "missing_verification", "missing_resume"}},
 		"acceptance_criteria":           closeoutTextArraySchema(),
 		"stop_conditions":               closeoutTextArraySchema(),
 		"verifier_ladder":               closeoutTextArraySchema(),

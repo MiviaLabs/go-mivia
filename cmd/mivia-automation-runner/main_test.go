@@ -2775,6 +2775,13 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 		`"needs_review"`,
 		`"block"`,
 		`"fail"`,
+		`"draft"`,
+		`"ready"`,
+		`"too_broad"`,
+		`"missing_evidence"`,
+		`"missing_context"`,
+		`"missing_verification"`,
+		`"missing_resume"`,
 	} {
 		if !strings.Contains(schemaText, want) {
 			t.Fatalf("schema missing accepted value %s: %s", want, schemaText)
@@ -2817,6 +2824,13 @@ func TestGovernedCloseoutSchemaMatchesAcceptedFixtureConstants(t *testing.T) {
 	itemProperties, ok := items["properties"].(map[string]any)
 	if !ok || itemProperties["acceptance_criteria"] == nil || itemProperties["stop_conditions"] == nil {
 		t.Fatalf("child_tasks schema missing governance metadata fields: %#v", itemProperties)
+	}
+	decompositionQuality, ok := itemProperties["decomposition_quality"].(map[string]any)
+	if !ok {
+		t.Fatalf("child_tasks schema missing decomposition_quality metadata: %#v", itemProperties)
+	}
+	if enum, ok := decompositionQuality["enum"].([]any); !ok || containsAnySchemaString(enum, []string{"complete", "complete governed metadata"}) {
+		t.Fatalf("decomposition_quality schema must expose only runner-accepted enum values: %#v", decompositionQuality)
 	}
 	required, ok := items["required"].([]any)
 	if !ok {
