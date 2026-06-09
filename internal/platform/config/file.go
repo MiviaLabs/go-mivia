@@ -177,13 +177,20 @@ type fileDirtyScopeRecovery struct {
 }
 
 type fileGitOpsConventionsConfig struct {
-	CommitType               *string `toml:"commit_type"`
-	CommitScope              *string `toml:"commit_scope"`
-	CommitSummaryTemplate    *string `toml:"commit_summary_template"`
-	PullRequestTitleTemplate *string `toml:"pull_request_title_template"`
-	WhatChangedTemplate      *string `toml:"what_changed_template"`
-	HowVerifiedTemplate      *string `toml:"how_verified_template"`
-	TestsTemplate            *string `toml:"tests_template"`
+	CommitType               *string  `toml:"commit_type"`
+	CommitScope              *string  `toml:"commit_scope"`
+	BranchTemplate           *string  `toml:"branch_template"`
+	RequireTicketRef         *bool    `toml:"require_ticket_ref"`
+	TicketRefPattern         *string  `toml:"ticket_ref_pattern"`
+	TicketURLTemplate        *string  `toml:"ticket_url_template"`
+	AllowedTypes             []string `toml:"allowed_types"`
+	DefaultChangeType        *string  `toml:"default_change_type"`
+	CommitSummaryTemplate    *string  `toml:"commit_summary_template"`
+	PullRequestTitleTemplate *string  `toml:"pull_request_title_template"`
+	PullRequestBodyTemplate  *string  `toml:"pull_request_body_template"`
+	WhatChangedTemplate      *string  `toml:"what_changed_template"`
+	HowVerifiedTemplate      *string  `toml:"how_verified_template"`
+	TestsTemplate            *string  `toml:"tests_template"`
 }
 
 type fileVerificationConfig struct {
@@ -913,11 +920,32 @@ func applyFileGitOps(base *GitOperations, cfg *fileGitOpsConfig) {
 		if cfg.Conventions.CommitScope != nil {
 			base.Conventions.CommitScope = strings.TrimSpace(*cfg.Conventions.CommitScope)
 		}
+		if cfg.Conventions.BranchTemplate != nil {
+			base.Conventions.BranchTemplate = strings.TrimSpace(*cfg.Conventions.BranchTemplate)
+		}
+		if cfg.Conventions.RequireTicketRef != nil {
+			base.Conventions.RequireTicketRef = *cfg.Conventions.RequireTicketRef
+		}
+		if cfg.Conventions.TicketRefPattern != nil {
+			base.Conventions.TicketRefPattern = strings.TrimSpace(*cfg.Conventions.TicketRefPattern)
+		}
+		if cfg.Conventions.TicketURLTemplate != nil {
+			base.Conventions.TicketURLTemplate = strings.TrimSpace(*cfg.Conventions.TicketURLTemplate)
+		}
+		if cfg.Conventions.AllowedTypes != nil {
+			base.Conventions.AllowedTypes = trimStringSlice(cfg.Conventions.AllowedTypes)
+		}
+		if cfg.Conventions.DefaultChangeType != nil {
+			base.Conventions.DefaultChangeType = strings.TrimSpace(*cfg.Conventions.DefaultChangeType)
+		}
 		if cfg.Conventions.CommitSummaryTemplate != nil {
 			base.Conventions.CommitSummaryTemplate = strings.TrimSpace(*cfg.Conventions.CommitSummaryTemplate)
 		}
 		if cfg.Conventions.PullRequestTitleTemplate != nil {
 			base.Conventions.PullRequestTitleTemplate = strings.TrimSpace(*cfg.Conventions.PullRequestTitleTemplate)
+		}
+		if cfg.Conventions.PullRequestBodyTemplate != nil {
+			base.Conventions.PullRequestBodyTemplate = strings.TrimSpace(*cfg.Conventions.PullRequestBodyTemplate)
 		}
 		if cfg.Conventions.WhatChangedTemplate != nil {
 			base.Conventions.WhatChangedTemplate = strings.TrimSpace(*cfg.Conventions.WhatChangedTemplate)

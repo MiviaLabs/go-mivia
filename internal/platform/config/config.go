@@ -152,8 +152,15 @@ type DirtyScopeRecovery struct {
 type GitOpsConventions struct {
 	CommitType               string
 	CommitScope              string
+	BranchTemplate           string
+	RequireTicketRef         bool
+	TicketRefPattern         string
+	TicketURLTemplate        string
+	AllowedTypes             []string
+	DefaultChangeType        string
 	CommitSummaryTemplate    string
 	PullRequestTitleTemplate string
+	PullRequestBodyTemplate  string
 	WhatChangedTemplate      string
 	HowVerifiedTemplate      string
 	TestsTemplate            string
@@ -440,8 +447,15 @@ func defaultGitOperations() GitOperations {
 func defaultGitOpsConventions() GitOpsConventions {
 	return GitOpsConventions{
 		CommitType:               "chore",
+		BranchTemplate:           "",
+		RequireTicketRef:         false,
+		TicketRefPattern:         "",
+		TicketURLTemplate:        "",
+		AllowedTypes:             []string{"feat", "fix", "docs", "chore", "refactor", "test", "perf", "build", "ci", "revert"},
+		DefaultChangeType:        "chore",
 		CommitSummaryTemplate:    "complete {{work_task_id}}",
 		PullRequestTitleTemplate: "{{commit_subject}}",
+		PullRequestBodyTemplate:  "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}",
 		WhatChangedTemplate:      "Completed automation work task {{work_task_id}} for project {{project_id}}.",
 		HowVerifiedTemplate:      "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}",
 		TestsTemplate:            "{{test_results}}",
@@ -622,8 +636,19 @@ func applyEnvOverrides(cfg *Config) error {
 	cfg.GitOperations.GitHubCLIPath = getenv("MIVIA_GIT_OPS_GITHUB_CLI_PATH", cfg.GitOperations.GitHubCLIPath)
 	cfg.GitOperations.Conventions.CommitType = getenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE", cfg.GitOperations.Conventions.CommitType)
 	cfg.GitOperations.Conventions.CommitScope = getenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SCOPE", cfg.GitOperations.Conventions.CommitScope)
+	cfg.GitOperations.Conventions.BranchTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_BRANCH_TEMPLATE", cfg.GitOperations.Conventions.BranchTemplate)
+	if rawTypes := os.Getenv("MIVIA_GIT_OPS_CONVENTIONS_ALLOWED_TYPES"); strings.TrimSpace(rawTypes) != "" {
+		cfg.GitOperations.Conventions.AllowedTypes = splitCSV(rawTypes)
+	}
+	if cfg.GitOperations.Conventions.RequireTicketRef, err = getenvBool("MIVIA_GIT_OPS_CONVENTIONS_REQUIRE_TICKET_REF", cfg.GitOperations.Conventions.RequireTicketRef); err != nil {
+		return err
+	}
+	cfg.GitOperations.Conventions.TicketRefPattern = getenv("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN", cfg.GitOperations.Conventions.TicketRefPattern)
+	cfg.GitOperations.Conventions.TicketURLTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_TICKET_URL_TEMPLATE", cfg.GitOperations.Conventions.TicketURLTemplate)
+	cfg.GitOperations.Conventions.DefaultChangeType = getenv("MIVIA_GIT_OPS_CONVENTIONS_DEFAULT_CHANGE_TYPE", cfg.GitOperations.Conventions.DefaultChangeType)
 	cfg.GitOperations.Conventions.CommitSummaryTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE", cfg.GitOperations.Conventions.CommitSummaryTemplate)
 	cfg.GitOperations.Conventions.PullRequestTitleTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_TITLE_TEMPLATE", cfg.GitOperations.Conventions.PullRequestTitleTemplate)
+	cfg.GitOperations.Conventions.PullRequestBodyTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_BODY_TEMPLATE", cfg.GitOperations.Conventions.PullRequestBodyTemplate)
 	cfg.GitOperations.Conventions.WhatChangedTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_WHAT_CHANGED_TEMPLATE", cfg.GitOperations.Conventions.WhatChangedTemplate)
 	cfg.GitOperations.Conventions.HowVerifiedTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_HOW_VERIFIED_TEMPLATE", cfg.GitOperations.Conventions.HowVerifiedTemplate)
 	cfg.GitOperations.Conventions.TestsTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_TESTS_TEMPLATE", cfg.GitOperations.Conventions.TestsTemplate)
@@ -1007,15 +1032,63 @@ func (recovery DirtyScopeRecovery) Validate(prefix string) error {
 }
 
 func (conventions GitOpsConventions) Validate() error {
-	if !regexpMustMatch(`^[a-z][a-z0-9-]*$`, conventions.CommitType) {
+	if !isSafeGitOpsChangeType(conventions.CommitType) {
 		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE must be a safe Conventional Commit type")
 	}
 	if strings.TrimSpace(conventions.CommitScope) != "" && !regexpMustMatch(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`, conventions.CommitScope) {
 		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SCOPE must be a safe Conventional Commit scope")
 	}
+	if strings.TrimSpace(conventions.BranchTemplate) != "" {
+		if strings.ContainsAny(conventions.BranchTemplate, "\r\n\x00") {
+			return errors.New("MIVIA_GIT_OPS_CONVENTIONS_BRANCH_TEMPLATE must be single-line")
+		}
+		if err := validateGitOpsTemplate("MIVIA_GIT_OPS_CONVENTIONS_BRANCH_TEMPLATE", conventions.BranchTemplate); err != nil {
+			return err
+		}
+	}
+	if conventions.RequireTicketRef && strings.TrimSpace(conventions.TicketRefPattern) == "" {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN must not be empty when ticket refs are required")
+	}
+	if strings.TrimSpace(conventions.TicketRefPattern) != "" {
+		if len(strings.TrimSpace(conventions.TicketRefPattern)) > 256 || strings.ContainsAny(conventions.TicketRefPattern, "\r\n\x00") {
+			return errors.New("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN must be a safe single-line RE2 pattern")
+		}
+		if _, err := regexp.Compile(strings.TrimSpace(conventions.TicketRefPattern)); err != nil {
+			return fmt.Errorf("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN must compile as a RE2 pattern: %w", err)
+		}
+	}
+	if strings.TrimSpace(conventions.TicketURLTemplate) != "" {
+		if strings.ContainsAny(conventions.TicketURLTemplate, "\x00") {
+			return errors.New("MIVIA_GIT_OPS_CONVENTIONS_TICKET_URL_TEMPLATE must not contain unsafe control characters")
+		}
+		if err := validateGitOpsTicketURLTemplate(conventions.TicketURLTemplate); err != nil {
+			return err
+		}
+	}
+	if len(conventions.AllowedTypes) == 0 {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_ALLOWED_TYPES must not be empty")
+	}
+	allowedTypes := make(map[string]bool, len(conventions.AllowedTypes))
+	for _, value := range conventions.AllowedTypes {
+		changeType := strings.TrimSpace(value)
+		if !isSafeGitOpsChangeType(changeType) {
+			return errors.New("MIVIA_GIT_OPS_CONVENTIONS_ALLOWED_TYPES must contain only safe Conventional Commit types")
+		}
+		allowedTypes[changeType] = true
+	}
+	if !isSafeGitOpsChangeType(conventions.DefaultChangeType) {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_DEFAULT_CHANGE_TYPE must be a safe Conventional Commit type")
+	}
+	if !allowedTypes[strings.TrimSpace(conventions.DefaultChangeType)] {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_DEFAULT_CHANGE_TYPE must be included in allowed_types")
+	}
+	if !allowedTypes[strings.TrimSpace(conventions.CommitType)] {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE must be included in allowed_types")
+	}
 	for name, value := range map[string]string{
 		"MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE":     conventions.CommitSummaryTemplate,
 		"MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_TITLE_TEMPLATE": conventions.PullRequestTitleTemplate,
+		"MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_BODY_TEMPLATE":  conventions.PullRequestBodyTemplate,
 		"MIVIA_GIT_OPS_CONVENTIONS_WHAT_CHANGED_TEMPLATE":       conventions.WhatChangedTemplate,
 		"MIVIA_GIT_OPS_CONVENTIONS_HOW_VERIFIED_TEMPLATE":       conventions.HowVerifiedTemplate,
 		"MIVIA_GIT_OPS_CONVENTIONS_TESTS_TEMPLATE":              conventions.TestsTemplate,
@@ -1041,8 +1114,26 @@ func (conventions GitOpsConventions) Validate() error {
 	return nil
 }
 
+func isSafeGitOpsChangeType(value string) bool {
+	return regexpMustMatch(`^[a-z][a-z0-9-]*$`, value)
+}
+
 func validateGitOpsTemplate(name, value string) error {
-	allowed := map[string]bool{
+	return validateGitOpsTemplateWithAllowedPlaceholders(name, value, gitOpsTemplateAllowedPlaceholders())
+}
+
+func validateGitOpsTicketURLTemplate(value string) error {
+	allowed := gitOpsTemplateAllowedPlaceholders()
+	delete(allowed, "ticket_url")
+	delete(allowed, "commit_subject")
+	delete(allowed, "what_changed")
+	delete(allowed, "how_verified")
+	delete(allowed, "tests")
+	return validateGitOpsTemplateWithAllowedPlaceholders("MIVIA_GIT_OPS_CONVENTIONS_TICKET_URL_TEMPLATE", value, allowed)
+}
+
+func gitOpsTemplateAllowedPlaceholders() map[string]bool {
+	return map[string]bool{
 		"project_id":        true,
 		"work_plan_id":      true,
 		"work_task_id":      true,
@@ -1050,6 +1141,8 @@ func validateGitOpsTemplate(name, value string) error {
 		"work_task_title":   true,
 		"branch_name":       true,
 		"ticket_ref":        true,
+		"ticket_url":        true,
+		"slug":              true,
 		"automation_id":     true,
 		"automation_run_id": true,
 		"operator_id":       true,
@@ -1057,7 +1150,14 @@ func validateGitOpsTemplate(name, value string) error {
 		"verifier_refs":     true,
 		"test_results":      true,
 		"commit_subject":    true,
+		"change_type":       true,
+		"what_changed":      true,
+		"how_verified":      true,
+		"tests":             true,
 	}
+}
+
+func validateGitOpsTemplateWithAllowedPlaceholders(name, value string, allowed map[string]bool) error {
 	for offset := 0; ; {
 		start := strings.Index(value[offset:], "{{")
 		if start < 0 {

@@ -30,8 +30,15 @@ type Options struct {
 type Conventions struct {
 	CommitType               string
 	CommitScope              string
+	AllowedChangeTypes       []string
+	DefaultChangeType        string
+	RequireTicket            bool
+	BranchNameTemplate       string
+	TicketRefPattern         string
+	TicketURLTemplate        string
 	CommitSummaryTemplate    string
 	PullRequestTitleTemplate string
+	PullRequestBodyTemplate  string
 	WhatChangedTemplate      string
 	HowVerifiedTemplate      string
 	TestsTemplate            string
@@ -74,6 +81,8 @@ type PostTaskInput struct {
 	TaskID           string
 	TaskRef          string
 	TaskTitle        string
+	TicketRef        string
+	ChangeType       string
 	BranchName       string
 	BaseRef          string
 	AutomationID     string

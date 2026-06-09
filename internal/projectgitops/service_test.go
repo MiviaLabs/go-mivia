@@ -1966,6 +1966,217 @@ func TestDerivePolicyBranchPrefersConfiguredCommitType(t *testing.T) {
 	}
 }
 
+func TestDerivePolicyBranchRendersRequiredTicketTemplate(t *testing.T) {
+	svc := NewWithRunner(Options{
+		BranchNamePattern: `^(feat|fix)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
+		Conventions: Conventions{
+			CommitType:         "fix",
+			RequireTicket:      true,
+			BranchNameTemplate: "{{change_type}}-{{ticket_ref}}-{{slug}}",
+		},
+	}, &recordingRunner{})
+
+	got := svc.derivePolicyBranch(PostTaskInput{
+		TaskRef:   "mass-1044",
+		TaskTitle: "Configurable ticket aware GitOps",
+	})
+	if got != "fix-MASS-1044-configurable-ticket-aware-gitops" {
+		t.Fatalf("expected lowercase ticket ref normalized in templated branch, got %q", got)
+	}
+	if strings.Contains(got, "GENERIC-0000") {
+		t.Fatalf("required-ticket MASS branch must not use fake GENERIC fallback, got %q", got)
+	}
+}
+
+func TestDerivePolicyBranchRequiresTicketForMassConfig(t *testing.T) {
+	svc := NewWithRunner(Options{
+		BranchNamePattern: `^(feat|fix)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
+		Conventions: Conventions{
+			CommitType:         "fix",
+			RequireTicket:      true,
+			BranchNameTemplate: "{{change_type}}-{{ticket_ref}}-{{slug}}",
+		},
+	}, &recordingRunner{})
+
+	got := svc.derivePolicyBranch(PostTaskInput{
+		TaskRef:         "ticketless-task",
+		TaskTitle:       "Ticketless task",
+		AutomationRunID: "automation_run_1",
+	})
+	if got != "" {
+		t.Fatalf("expected required-ticket branch derivation to block missing ticket, got %q", got)
+	}
+}
+
+func TestRenderRejectsDisallowedChangeType(t *testing.T) {
+	_, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "MASS-1044",
+		TaskTitle:       "Configurable ticket aware GitOps",
+		BranchName:      "feat-MASS-1044-configurable-ticket-aware-gitops",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+	}, Conventions{
+		CommitType:               "chore",
+		AllowedChangeTypes:       []string{"feat", "fix"},
+		CommitSummaryTemplate:    "complete {{ticket_ref}}",
+		PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): complete {{work_task_title}}",
+		WhatChangedTemplate:      "Changed {{ticket_ref}}",
+		HowVerifiedTemplate:      "Verified {{ticket_ref}}",
+		TestsTemplate:            "go test ./internal/projectgitops",
+	})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "commit_type must be one of allowed change types") {
+		t.Fatalf("expected disallowed change type error, got %v", err)
+	}
+}
+
+func TestRenderUsesDefaultChangeTypeForTemplates(t *testing.T) {
+	rendered, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "MASS-1044",
+		TaskTitle:       "Configurable ticket aware GitOps",
+		BranchName:      "feat-MASS-1044-configurable-ticket-aware-gitops",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+	}, Conventions{
+		CommitType:               "chore",
+		DefaultChangeType:        "feat",
+		AllowedChangeTypes:       []string{"feat", "chore"},
+		CommitSummaryTemplate:    "complete {{ticket_ref}}",
+		PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): complete {{work_task_title}}",
+		WhatChangedTemplate:      "Type: {{change_type}}",
+		HowVerifiedTemplate:      "Verified {{ticket_ref}}",
+		TestsTemplate:            "go test ./internal/projectgitops",
+	})
+	if err != nil {
+		t.Fatalf("expected render to succeed: %v", err)
+	}
+	if rendered.PullRequestTitle != "feat(MASS-1044): complete Configurable ticket aware GitOps" {
+		t.Fatalf("expected default change type in PR title, got %q", rendered.PullRequestTitle)
+	}
+	if !strings.Contains(rendered.PullRequestBody, "Type: feat") {
+		t.Fatalf("expected default change type in PR body, got:\n%s", rendered.PullRequestBody)
+	}
+}
+
+func TestRenderRequiresTicketForTicketAwareTemplates(t *testing.T) {
+	_, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "ticketless-task",
+		TaskTitle:       "Ticketless task",
+		BranchName:      "feat-ticketless-task",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+	}, Conventions{
+		CommitType:               "feat",
+		RequireTicket:            true,
+		CommitSummaryTemplate:    "complete {{work_task_ref}}",
+		PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): complete {{work_task_title}}",
+		WhatChangedTemplate:      "Changed {{ticket_ref}}",
+		HowVerifiedTemplate:      "Verified {{ticket_ref}}",
+		TestsTemplate:            "go test ./internal/projectgitops",
+	})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "ticket_ref is required") {
+		t.Fatalf("expected required ticket error, got %v", err)
+	}
+}
+
+func TestRenderRejectsTicketOutsideConfiguredPattern(t *testing.T) {
+	_, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "ABC-123",
+		TaskTitle:       "Wrong tracker key",
+		BranchName:      "fix-ABC-123-wrong-key",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+	}, Conventions{
+		CommitType:               "fix",
+		RequireTicket:            true,
+		TicketRefPattern:         `^MASS-[0-9]+$`,
+		CommitSummaryTemplate:    "complete {{work_task_ref}}",
+		PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): complete {{work_task_title}}",
+		WhatChangedTemplate:      "Changed {{ticket_ref}}",
+		HowVerifiedTemplate:      "Verified {{ticket_ref}}",
+		TestsTemplate:            "go test ./internal/projectgitops",
+	})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "ticket_ref must match ticket_ref_pattern") {
+		t.Fatalf("expected ticket pattern error, got %v", err)
+	}
+}
+
+func TestRenderRejectsLatePlaceholderInTicketURLTemplate(t *testing.T) {
+	_, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "MASS-1044",
+		TaskTitle:       "Configurable ticket aware GitOps",
+		BranchName:      "feat-MASS-1044-configurable-ticket-aware-gitops",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+	}, Conventions{
+		CommitType:               "feat",
+		TicketURLTemplate:        "https://tracker.example.test/{{what_changed}}/{{ticket_ref}}",
+		CommitSummaryTemplate:    "complete {{ticket_ref}}",
+		PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): complete {{work_task_title}}",
+		WhatChangedTemplate:      "Changed {{ticket_ref}}",
+		HowVerifiedTemplate:      "Verified {{ticket_ref}}",
+		TestsTemplate:            "go test ./internal/projectgitops",
+	})
+	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), `ticket_url_template uses unknown placeholder "what_changed"`) {
+		t.Fatalf("expected ticket URL placeholder error, got %v", err)
+	}
+}
+
+func TestRenderTicketAwarePRTemplates(t *testing.T) {
+	rendered, err := Render(PostTaskInput{
+		ProjectID:       "project-1",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "mass-1044",
+		TaskTitle:       "Configurable ticket aware GitOps",
+		BranchName:      "feat-MASS-1044-configurable-ticket-aware-gitops",
+		AutomationID:    "automation_1",
+		AutomationRunID: "automation_run_1",
+		OperatorID:      "operator_1",
+		TestResults:     []string{"go test ./internal/projectgitops -count=1: passed"},
+	}, Conventions{
+		CommitType:               "feat",
+		RequireTicket:            true,
+		AllowedChangeTypes:       []string{"feat", "fix"},
+		TicketURLTemplate:        "https://tracker.example.test/{{project_id}}/browse/{{ticket_ref}}",
+		CommitSummaryTemplate:    "complete {{ticket_ref}}",
+		PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): complete {{work_task_title}}",
+		PullRequestBodyTemplate:  "Ticket: {{ticket_ref}}\nType: {{change_type}}\nURL: {{ticket_url}}\nSummary:\n{{what_changed}}\nHow verified:\n{{how_verified}}\nTests:\n{{tests}}",
+		WhatChangedTemplate:      "Changed {{ticket_ref}}",
+		HowVerifiedTemplate:      "Review refs: {{review_refs}}",
+		TestsTemplate:            "{{test_results}}",
+	})
+	if err != nil {
+		t.Fatalf("expected ticket-aware render to succeed: %v", err)
+	}
+	if rendered.PullRequestTitle != "feat(MASS-1044): complete Configurable ticket aware GitOps" {
+		t.Fatalf("unexpected PR title %q", rendered.PullRequestTitle)
+	}
+	wantBody := "Ticket: MASS-1044\nType: feat\nURL: https://tracker.example.test/project-1/browse/MASS-1044\nSummary:\nChanged MASS-1044\nHow verified:\nReview refs: not available\nTests:\ngo test ./internal/projectgitops -count=1: passed"
+	if rendered.PullRequestBody != wantBody {
+		t.Fatalf("unexpected PR body:\n%s", rendered.PullRequestBody)
+	}
+}
+
 func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{results: []CommandResult{

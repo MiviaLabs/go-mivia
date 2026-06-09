@@ -1209,6 +1209,61 @@ func TestGitOpsPostTaskPathspecsUseTaskScopeForAgentChanges(t *testing.T) {
 	}
 }
 
+func TestGitOpsPostTaskInputCarriesNormalizedTicketRef(t *testing.T) {
+	claimed := projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:           "automation_run_1",
+			ProjectID:    "mass-monorepo",
+			PlanID:       "work_plan_1",
+			TaskID:       "work_task_1",
+			AutomationID: "automation_1",
+			AgentID:      "implementation-worker",
+		},
+		CodexInput: projectautomation.CodexTaskInput{
+			TaskRef: "fallback-task",
+			Title:   "Fallback title",
+		},
+	}
+	input := gitOpsPostTaskInput("mass-monorepo", "/tmp/worktree", "fallback-agent", claimed, runnerWorkTaskMetadata{
+		TaskRef:         "mass-1044-expiry-background-trigger",
+		Title:           "Wire bounded expiry cleanup background trigger",
+		ContextPackRefs: []string{"jira-context-MASS-1044-scope"},
+		FilesToEdit:     []string{"apps/domain-booking/src/booking/booking.module.ts"},
+	})
+	if input.TicketRef != "MASS-1044" {
+		t.Fatalf("expected normalized MASS ticket ref, got %+v", input)
+	}
+	if input.TaskRef != "mass-1044-expiry-background-trigger" {
+		t.Fatalf("expected task ref preserved for slug rendering, got %+v", input)
+	}
+}
+
+func TestGitOpsOptionsFromConfigCarriesTicketAwareConventions(t *testing.T) {
+	options := gitOpsOptionsFromConfig(config.GitOperations{
+		Conventions: config.GitOpsConventions{
+			CommitType:               "chore",
+			DefaultChangeType:        "feat",
+			AllowedTypes:             []string{"feat", "chore"},
+			RequireTicketRef:         true,
+			BranchTemplate:           "{{change_type}}-{{ticket_ref}}-{{slug}}",
+			TicketRefPattern:         "^MASS-[0-9]+$",
+			TicketURLTemplate:        "https://tracker.example.test/browse/{{ticket_ref}}",
+			CommitSummaryTemplate:    "complete {{work_task_ref}}",
+			PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): complete {{work_task_ref}}",
+			PullRequestBodyTemplate:  "Ticket: {{ticket_url}}",
+		},
+	})
+	if !options.Conventions.RequireTicket || options.Conventions.BranchNameTemplate != "{{change_type}}-{{ticket_ref}}-{{slug}}" {
+		t.Fatalf("expected branch/ticket conventions to map, got %+v", options.Conventions)
+	}
+	if options.Conventions.DefaultChangeType != "feat" || strings.Join(options.Conventions.AllowedChangeTypes, ",") != "feat,chore" {
+		t.Fatalf("expected type conventions to map, got %+v", options.Conventions)
+	}
+	if options.Conventions.TicketRefPattern != "^MASS-[0-9]+$" || options.Conventions.TicketURLTemplate != "https://tracker.example.test/browse/{{ticket_ref}}" {
+		t.Fatalf("expected ticket URL conventions to map, got %+v", options.Conventions)
+	}
+}
+
 func TestPreTaskWithinScopeReportsDirtyPathEvidence(t *testing.T) {
 	runner := &gitOpsRecordingRunner{results: []projectgitops.CommandResult{
 		{},

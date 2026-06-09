@@ -250,8 +250,15 @@ allowed_support_pathspecs = [".codex", ".claude", ".github", ".ai/skills", ".ai/
 [git_operations.conventions]
 commit_type = "feat"
 commit_scope = "gitops"
+branch_template = "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"
+require_ticket_ref = true
+ticket_ref_pattern = "^ABC-[0-9]+$"
+ticket_url_template = "https://tracker.example.test/browse/{{ticket_ref}}"
+allowed_types = ["feat", "fix", "docs"]
+default_change_type = "feat"
 commit_summary_template = "finish {{work_task_ref}}"
 pull_request_title_template = "feat({{ticket_ref}}): finish {{work_task_ref}}"
+pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 what_changed_template = "Completed {{work_task_title}} for {{project_id}} on {{branch_name}}."
 how_verified_template = "Review refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 tests_template = "{{test_results}}"
@@ -277,6 +284,15 @@ tests_template = "{{test_results}}"
 	}
 	if merged.GitOperations.Conventions.CommitType != "feat" || merged.GitOperations.Conventions.CommitScope != "gitops" || !strings.Contains(merged.GitOperations.Conventions.WhatChangedTemplate, "{{work_task_title}}") {
 		t.Fatalf("unexpected git operations conventions: %+v", merged.GitOperations.Conventions)
+	}
+	if !merged.GitOperations.Conventions.RequireTicketRef || merged.GitOperations.Conventions.TicketRefPattern != "^ABC-[0-9]+$" || merged.GitOperations.Conventions.TicketURLTemplate != "https://tracker.example.test/browse/{{ticket_ref}}" {
+		t.Fatalf("unexpected ticket-aware git operations conventions: %+v", merged.GitOperations.Conventions)
+	}
+	if merged.GitOperations.Conventions.BranchTemplate != "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}" || strings.Join(merged.GitOperations.Conventions.AllowedTypes, ",") != "feat,fix,docs" || merged.GitOperations.Conventions.DefaultChangeType != "feat" {
+		t.Fatalf("unexpected branch/type git operations conventions: %+v", merged.GitOperations.Conventions)
+	}
+	if !strings.Contains(merged.GitOperations.Conventions.PullRequestBodyTemplate, "{{tests}}") {
+		t.Fatalf("unexpected pull request body template: %+v", merged.GitOperations.Conventions)
 	}
 	if strings.Join(merged.GitOperations.DirtyScopeRecovery.AllowedSupportPathspecs, ",") != ".codex,.claude,.github,.ai/skills,.ai/rules" {
 		t.Fatalf("unexpected dirty scope recovery config: %+v", merged.GitOperations.DirtyScopeRecovery)
@@ -334,8 +350,11 @@ allowed_support_pathspecs = [".codex", ".github"]
 
 [projects.git_operations.conventions]
 commit_type = "docs"
+allowed_types = ["docs", "chore"]
+default_change_type = "docs"
 commit_summary_template = "complete {{work_task_ref}}"
 pull_request_title_template = "{{commit_subject}}"
+pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 what_changed_template = "Summary: {{work_task_title}}"
 how_verified_template = "Automation Run ID: {{automation_run_id}}"
 tests_template = "{{test_results}}"
@@ -371,6 +390,62 @@ tests_template = "{{test_results}}"
 	}
 	if strings.Join(projectGitOps.DirtyScopeRecovery.AllowedSupportPathspecs, ",") != ".codex,.github" {
 		t.Fatalf("expected project dirty scope support path override, got %+v", projectGitOps.DirtyScopeRecovery)
+	}
+}
+
+func TestLoadFileConfig_AcceptsMassTicketAwareGitOpsConventions(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "mass-monorepo"
+root_path = "/repo/mass"
+enabled = true
+digest_mode = "content_graph"
+workspace_mode = "edit"
+
+[projects.git_operations]
+branch_prefix = ""
+branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-MASS-[0-9]+(-[a-z0-9-]+)*$"
+
+[projects.git_operations.conventions]
+commit_type = "chore"
+commit_scope = ""
+branch_template = "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"
+require_ticket_ref = true
+ticket_ref_pattern = "^MASS-[0-9]+$"
+ticket_url_template = "https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}"
+allowed_types = ["feat", "fix", "docs", "chore", "refactor", "hotfix", "revert"]
+default_change_type = "chore"
+commit_summary_template = "complete {{work_task_ref}}"
+pull_request_title_template = "{{change_type}}({{ticket_ref}}): complete {{work_task_ref}}"
+pull_request_body_template = "## What changed\nJira: https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}\n\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
+what_changed_template = "Type of Change:\n- {{change_type}}\n\nWork Item:\n- {{work_task_ref}}"
+how_verified_template = "Review refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
+tests_template = "{{test_results}}"
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected MASS GitOps conventions to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected MASS GitOps conventions to apply: %v", err)
+	}
+	merged.resolveAutoSettings(1)
+	if err := merged.Validate(); err != nil {
+		t.Fatalf("expected MASS GitOps conventions to validate: %v", err)
+	}
+	conventions := merged.Projects[0].GitOperations.Conventions
+	if conventions.BranchTemplate != "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}" || !conventions.RequireTicketRef || conventions.TicketRefPattern != "^MASS-[0-9]+$" || conventions.TicketURLTemplate != "https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}" {
+		t.Fatalf("unexpected MASS ticket conventions: %+v", conventions)
+	}
+	if strings.Join(conventions.AllowedTypes, ",") != "feat,fix,docs,chore,refactor,hotfix,revert" || conventions.DefaultChangeType != "chore" || conventions.CommitType != "chore" {
+		t.Fatalf("unexpected MASS change type conventions: %+v", conventions)
+	}
+	if !strings.Contains(conventions.PullRequestBodyTemplate, "## What changed") || !strings.Contains(conventions.PullRequestBodyTemplate, "{{tests}}") {
+		t.Fatalf("expected full MASS PR body template, got %q", conventions.PullRequestBodyTemplate)
 	}
 }
 
@@ -624,6 +699,26 @@ func TestGitOperationsValidateRejectsUnsafeCombinations(t *testing.T) {
 		},
 		"bad_convention_type": func(cfg *Config) {
 			cfg.GitOperations.Conventions.CommitType = "Feature"
+		},
+		"commit_type_not_allowed": func(cfg *Config) {
+			cfg.GitOperations.Conventions.CommitType = "feat"
+			cfg.GitOperations.Conventions.AllowedTypes = []string{"fix"}
+			cfg.GitOperations.Conventions.DefaultChangeType = "fix"
+		},
+		"default_type_not_allowed": func(cfg *Config) {
+			cfg.GitOperations.Conventions.AllowedTypes = []string{"fix"}
+			cfg.GitOperations.Conventions.DefaultChangeType = "feat"
+			cfg.GitOperations.Conventions.CommitType = "fix"
+		},
+		"required_ticket_without_pattern": func(cfg *Config) {
+			cfg.GitOperations.Conventions.RequireTicketRef = true
+			cfg.GitOperations.Conventions.TicketRefPattern = ""
+		},
+		"bad_ticket_pattern": func(cfg *Config) {
+			cfg.GitOperations.Conventions.TicketRefPattern = "["
+		},
+		"bad_ticket_url_late_placeholder": func(cfg *Config) {
+			cfg.GitOperations.Conventions.TicketURLTemplate = "https://tracker.example.test/{{what_changed}}/{{ticket_ref}}"
 		},
 		"bad_convention_placeholder": func(cfg *Config) {
 			cfg.GitOperations.Conventions.CommitSummaryTemplate = "complete {{repository_name}}"

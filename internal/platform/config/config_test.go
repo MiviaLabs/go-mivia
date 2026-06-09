@@ -44,6 +44,28 @@ func TestConfigValidate_DefaultGitOperationsAllowsEmptyBranchPrefix(t *testing.T
 	}
 }
 
+func TestConfigValidate_DefaultGitOpsTicketConventions(t *testing.T) {
+	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected default GitOps conventions to validate: %v", err)
+	}
+	conventions := cfg.GitOperations.Conventions
+	if conventions.BranchTemplate != "" {
+		t.Fatalf("unexpected branch template: %+v", conventions)
+	}
+	if conventions.RequireTicketRef {
+		t.Fatalf("ticket refs should not be required by default: %+v", conventions)
+	}
+	if conventions.DefaultChangeType != "chore" || conventions.CommitType != "chore" {
+		t.Fatalf("expected chore default/explicit change type, got %+v", conventions)
+	}
+	if !strings.Contains(strings.Join(conventions.AllowedTypes, ","), "feat") || !strings.Contains(conventions.PullRequestBodyTemplate, "## What changed") {
+		t.Fatalf("unexpected default ticket-aware conventions: %+v", conventions)
+	}
+}
+
 func TestConfigValidate_GitOperationsPushDoesNotRequireSSHCredentials(t *testing.T) {
 	cfg := defaultConfig("test.toml")
 	cfg.resolveAutoSettings(runtime.NumCPU())
@@ -311,6 +333,40 @@ sensitive_marker_policy = "skip_file"
 	}
 	if cfg.Projects[0].MaxChunkBytes != 4096 {
 		t.Fatalf("expected project max chunk bytes, got %d", cfg.Projects[0].MaxChunkBytes)
+	}
+}
+
+func TestLoad_GitOpsConventionEnvOverrides(t *testing.T) {
+	chdir(t, t.TempDir())
+	clearConfigEnv(t)
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_BRANCH_TEMPLATE", "{{change_type}}-{{ticket_ref}}")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_REQUIRE_TICKET_REF", "true")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN", "^MASS-[0-9]+$")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_TICKET_URL_TEMPLATE", "https://tracker.example.test/browse/{{ticket_ref}}")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_ALLOWED_TYPES", "feat,fix,chore")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_DEFAULT_CHANGE_TYPE", "feat")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE", "fix")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_BODY_TEMPLATE", "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected env GitOps conventions to load: %v", err)
+	}
+	conventions := cfg.GitOperations.Conventions
+	if conventions.BranchTemplate != "{{change_type}}-{{ticket_ref}}" || !conventions.RequireTicketRef {
+		t.Fatalf("unexpected branch/ticket env conventions: %+v", conventions)
+	}
+	if conventions.TicketRefPattern != "^MASS-[0-9]+$" || strings.Join(conventions.AllowedTypes, ",") != "feat,fix,chore" {
+		t.Fatalf("unexpected ticket/type env conventions: %+v", conventions)
+	}
+	if conventions.TicketURLTemplate != "https://tracker.example.test/browse/{{ticket_ref}}" {
+		t.Fatalf("unexpected ticket URL env convention: %+v", conventions)
+	}
+	if conventions.DefaultChangeType != "feat" || conventions.CommitType != "fix" {
+		t.Fatalf("unexpected default/explicit change types: %+v", conventions)
+	}
+	if !strings.Contains(conventions.PullRequestBodyTemplate, "{{how_verified}}") {
+		t.Fatalf("expected full PR body env template, got %q", conventions.PullRequestBodyTemplate)
 	}
 }
 
@@ -603,8 +659,15 @@ func clearConfigEnv(t *testing.T) {
 		"MIVIA_GIT_OPS_GITHUB_CLI_PATH",
 		"MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE",
 		"MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SCOPE",
+		"MIVIA_GIT_OPS_CONVENTIONS_BRANCH_TEMPLATE",
+		"MIVIA_GIT_OPS_CONVENTIONS_REQUIRE_TICKET_REF",
+		"MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN",
+		"MIVIA_GIT_OPS_CONVENTIONS_TICKET_URL_TEMPLATE",
+		"MIVIA_GIT_OPS_CONVENTIONS_ALLOWED_TYPES",
+		"MIVIA_GIT_OPS_CONVENTIONS_DEFAULT_CHANGE_TYPE",
 		"MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE",
 		"MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_TITLE_TEMPLATE",
+		"MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_BODY_TEMPLATE",
 		"MIVIA_GIT_OPS_CONVENTIONS_WHAT_CHANGED_TEMPLATE",
 		"MIVIA_GIT_OPS_CONVENTIONS_HOW_VERIFIED_TEMPLATE",
 		"MIVIA_GIT_OPS_CONVENTIONS_TESTS_TEMPLATE",

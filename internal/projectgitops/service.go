@@ -795,6 +795,18 @@ func (svc *Service) normalizeBranchForPolicy(ctx context.Context, workDir string
 }
 
 func (svc *Service) derivePolicyBranch(input PostTaskInput) string {
+	conventions := normalizeConventions(svc.options.Conventions)
+	values := templateValues(input, conventions)
+	if conventions.RequireTicket && values["ticket_ref"] == "unavailable" {
+		return ""
+	}
+	if strings.TrimSpace(conventions.BranchNameTemplate) != "" {
+		branch, err := renderSingleLineTemplate("branch_name_template", conventions.BranchNameTemplate, values)
+		if err != nil {
+			return ""
+		}
+		return branch
+	}
 	projectKey := branchPatternProjectKey(svc.options.BranchNamePattern)
 	if projectKey == "" {
 		projectKey = ticketProjectKey(input.TaskRef, input.TaskTitle, input.BranchName)
@@ -802,11 +814,9 @@ func (svc *Service) derivePolicyBranch(input PostTaskInput) string {
 	if projectKey == "" {
 		return ""
 	}
-	kind := branchKind(svc.options.BranchNamePattern, svc.options.Conventions.CommitType)
-	slug := safeBranchToken(firstNonEmpty(input.TaskRef, input.TaskTitle, input.AutomationRunID))
-	if slug == "" {
-		slug = "automation-task"
-	}
+	kind := branchKind(svc.options.BranchNamePattern, conventions.CommitType)
+	ticketRef := extractTicketRef(input.BranchName, input.TaskRef, input.TaskTitle)
+	slug := branchSlug(ticketRef, input.TaskRef, input.TaskTitle, input.AutomationRunID)
 	return kind + "-" + projectKey + "-0000-" + slug
 }
 
@@ -839,9 +849,9 @@ func branchPatternProjectKey(pattern string) string {
 
 func ticketProjectKey(values ...string) string {
 	for _, value := range values {
-		match := regexp.MustCompile(`\b([A-Z][A-Z0-9]+)-[0-9]+\b`).FindStringSubmatch(strings.TrimSpace(value))
+		match := regexp.MustCompile(`\b([A-Za-z][A-Za-z0-9]+)-[0-9]+\b`).FindStringSubmatch(strings.TrimSpace(value))
 		if len(match) == 2 {
-			return match[1]
+			return strings.ToUpper(match[1])
 		}
 	}
 	return ""

@@ -28,7 +28,13 @@ var allowedTemplatePlaceholders = map[string]bool{
 	"work_task_ref":     true,
 	"work_task_title":   true,
 	"branch_name":       true,
+	"change_type":       true,
 	"ticket_ref":        true,
+	"ticket_url":        true,
+	"slug":              true,
+	"what_changed":      true,
+	"how_verified":      true,
+	"tests":             true,
 	"automation_id":     true,
 	"automation_run_id": true,
 	"operator_id":       true,
@@ -58,7 +64,13 @@ func Render(input PostTaskInput, conventions Conventions) (RenderedOutput, error
 		return RenderedOutput{}, err
 	}
 
-	values := templateValues(input)
+	values := templateValues(input, conventions)
+	if conventions.RequireTicket && values["ticket_ref"] == "unavailable" {
+		return RenderedOutput{}, fmt.Errorf("%w: git convention ticket_ref is required", ErrInvalidInput)
+	}
+	if err := validateTicketRefForConventions(values["ticket_ref"], conventions); err != nil {
+		return RenderedOutput{}, err
+	}
 	summary, err := renderSingleLineTemplate("commit_summary_template", conventions.CommitSummaryTemplate, values)
 	if err != nil {
 		return RenderedOutput{}, err
@@ -92,12 +104,22 @@ func Render(input PostTaskInput, conventions Conventions) (RenderedOutput, error
 	if err != nil {
 		return RenderedOutput{}, err
 	}
+	values["what_changed"] = whatChanged
+	values["how_verified"] = howVerified
+	values["tests"] = tests
+	prBody := pullRequestBody(whatChanged, howVerified, tests)
+	if strings.TrimSpace(conventions.PullRequestBodyTemplate) != "" {
+		prBody, err = renderBodyTemplate("pull_request_body_template", conventions.PullRequestBodyTemplate, values)
+		if err != nil {
+			return RenderedOutput{}, err
+		}
+	}
 
 	return RenderedOutput{
 		CommitSubject:    subject,
 		CommitBody:       commitBody(input, values, whatChanged, howVerified, tests),
 		PullRequestTitle: prTitle,
-		PullRequestBody:  pullRequestBody(whatChanged, howVerified, tests),
+		PullRequestBody:  prBody,
 	}, nil
 }
 
@@ -109,6 +131,15 @@ func normalizeConventions(conventions Conventions) Conventions {
 		conventions.CommitType = strings.TrimSpace(conventions.CommitType)
 	}
 	conventions.CommitScope = strings.TrimSpace(conventions.CommitScope)
+	conventions.BranchNameTemplate = strings.TrimSpace(conventions.BranchNameTemplate)
+	conventions.TicketRefPattern = strings.TrimSpace(conventions.TicketRefPattern)
+	conventions.TicketURLTemplate = strings.TrimSpace(conventions.TicketURLTemplate)
+	if strings.TrimSpace(conventions.DefaultChangeType) == "" {
+		conventions.DefaultChangeType = conventions.CommitType
+	} else {
+		conventions.DefaultChangeType = strings.TrimSpace(conventions.DefaultChangeType)
+	}
+	conventions.AllowedChangeTypes = trimStringList(conventions.AllowedChangeTypes)
 	if strings.TrimSpace(conventions.CommitSummaryTemplate) == "" {
 		conventions.CommitSummaryTemplate = defaults.CommitSummaryTemplate
 	} else {
@@ -135,16 +166,41 @@ func validateConventions(conventions Conventions) error {
 	if !regexp.MustCompile(`^[a-z][a-z0-9-]*$`).MatchString(conventions.CommitType) {
 		return fmt.Errorf("%w: git convention commit_type must be a safe Conventional Commit type", ErrInvalidInput)
 	}
+	if len(conventions.AllowedChangeTypes) > 0 {
+		allowed := false
+		for _, value := range conventions.AllowedChangeTypes {
+			value = strings.TrimSpace(value)
+			if !regexp.MustCompile(`^[a-z][a-z0-9-]*$`).MatchString(value) {
+				return fmt.Errorf("%w: git convention allowed_change_types must contain safe Conventional Commit types", ErrInvalidInput)
+			}
+			if value == conventions.CommitType {
+				allowed = true
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("%w: git convention commit_type must be one of allowed change types", ErrInvalidInput)
+		}
+	}
 	if conventions.CommitScope != "" && !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`).MatchString(conventions.CommitScope) {
 		return fmt.Errorf("%w: git convention commit_scope must be a safe Conventional Commit scope", ErrInvalidInput)
+	}
+	if conventions.DefaultChangeType != "" && !regexp.MustCompile(`^[a-z][a-z0-9-]*$`).MatchString(conventions.DefaultChangeType) {
+		return fmt.Errorf("%w: git convention default_change_type must be a safe Conventional Commit type", ErrInvalidInput)
+	}
+	if conventions.TicketRefPattern != "" {
+		if _, err := regexp.Compile(conventions.TicketRefPattern); err != nil {
+			return fmt.Errorf("%w: git convention ticket_ref_pattern must compile", ErrInvalidInput)
+		}
 	}
 	for _, item := range []struct {
 		name         string
 		value        string
 		allowNewline bool
 	}{
+		{name: "branch_name_template", value: conventions.BranchNameTemplate},
 		{name: "commit_summary_template", value: conventions.CommitSummaryTemplate},
 		{name: "pull_request_title_template", value: conventions.PullRequestTitleTemplate},
+		{name: "pull_request_body_template", value: conventions.PullRequestBodyTemplate, allowNewline: true},
 		{name: "what_changed_template", value: conventions.WhatChangedTemplate, allowNewline: true},
 		{name: "how_verified_template", value: conventions.HowVerifiedTemplate, allowNewline: true},
 		{name: "tests_template", value: conventions.TestsTemplate, allowNewline: true},
@@ -153,10 +209,41 @@ func validateConventions(conventions Conventions) error {
 			return err
 		}
 	}
+	if err := validateTicketURLTemplate(conventions.TicketURLTemplate); err != nil {
+		return err
+	}
 	return nil
 }
 
+func validateTicketURLTemplate(value string) error {
+	if strings.Contains(value, "\x00") || strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("%w: git convention ticket_url_template must not contain unsafe control characters", ErrInvalidInput)
+	}
+	allowed := map[string]bool{
+		"project_id":        true,
+		"work_plan_id":      true,
+		"work_task_id":      true,
+		"work_task_ref":     true,
+		"work_task_title":   true,
+		"branch_name":       true,
+		"change_type":       true,
+		"ticket_ref":        true,
+		"slug":              true,
+		"automation_id":     true,
+		"automation_run_id": true,
+		"operator_id":       true,
+		"review_refs":       true,
+		"verifier_refs":     true,
+		"test_results":      true,
+	}
+	return validateTemplateWithAllowedPlaceholders("ticket_url_template", value, false, allowed)
+}
+
 func validateTemplate(name, value string, allowNewline bool) error {
+	return validateTemplateWithAllowedPlaceholders(name, value, allowNewline, allowedTemplatePlaceholders)
+}
+
+func validateTemplateWithAllowedPlaceholders(name, value string, allowNewline bool, allowed map[string]bool) error {
 	if strings.Contains(value, "\x00") || (!allowNewline && strings.ContainsAny(value, "\r\n")) {
 		return fmt.Errorf("%w: git convention %s must not contain unsafe control characters", ErrInvalidInput, name)
 	}
@@ -172,7 +259,7 @@ func validateTemplate(name, value string, allowNewline bool) error {
 		}
 		end += start + 2
 		placeholder := strings.TrimSpace(value[start+2 : end])
-		if !allowedTemplatePlaceholders[placeholder] {
+		if !allowed[placeholder] {
 			return fmt.Errorf("%w: git convention %s uses unknown placeholder %q", ErrInvalidInput, name, placeholder)
 		}
 		offset = end + 2
@@ -196,6 +283,8 @@ func validateRenderInput(input PostTaskInput) error {
 	for name, value := range map[string]string{
 		"task ref":    input.TaskRef,
 		"task title":  input.TaskTitle,
+		"ticket ref":  input.TicketRef,
+		"change type": input.ChangeType,
 		"branch name": input.BranchName,
 	} {
 		if strings.TrimSpace(value) == "" {
@@ -225,23 +314,29 @@ func validateRenderInput(input PostTaskInput) error {
 	return nil
 }
 
-func templateValues(input PostTaskInput) map[string]string {
+func templateValues(input PostTaskInput, conventions Conventions) map[string]string {
 	reviewRefs, _ := safeMetadataRefs("review refs", input.ReviewRefs)
 	verifierRefs, _ := safeMetadataRefs("verifier refs", input.VerifierRefs)
 	testResults, _ := safeMetadataLines("test results", input.TestResults, gitOpsTestResultLineMax)
 	taskRef, _ := safeMetadataLine("task ref", input.TaskRef, gitOpsMetadataLineMax)
 	taskTitle, _ := safeMetadataLine("task title", input.TaskTitle, gitOpsMetadataLineMax)
+	explicitTicketRef, _ := safeMetadataLine("ticket ref", input.TicketRef, gitOpsMetadataLineMax)
 	branchName, _ := safeMetadataLine("branch name", input.BranchName, gitOpsMetadataLineMax)
-	ticketRef := extractTicketRef(branchName, taskRef, taskTitle)
+	ticketRef := firstNonEmpty(normalizeTicketRef(explicitTicketRef), extractTicketRef(branchName, taskRef, taskTitle))
+	changeType := firstNonEmpty(strings.TrimSpace(input.ChangeType), conventions.DefaultChangeType, conventions.CommitType)
+	slug := branchSlug(ticketRef, taskRef, taskTitle, input.AutomationRunID)
 
-	return map[string]string{
+	values := map[string]string{
 		"project_id":        strings.TrimSpace(input.ProjectID),
 		"work_plan_id":      strings.TrimSpace(input.PlanID),
 		"work_task_id":      strings.TrimSpace(input.TaskID),
 		"work_task_ref":     valueOrUnavailable(taskRef),
 		"work_task_title":   valueOrUnavailable(taskTitle),
 		"branch_name":       valueOrUnavailable(branchName),
+		"change_type":       valueOrUnavailable(changeType),
 		"ticket_ref":        valueOrUnavailable(ticketRef),
+		"ticket_url":        "unavailable",
+		"slug":              valueOrUnavailable(slug),
 		"automation_id":     strings.TrimSpace(input.AutomationID),
 		"automation_run_id": strings.TrimSpace(input.AutomationRunID),
 		"operator_id":       strings.TrimSpace(input.OperatorID),
@@ -249,9 +344,11 @@ func templateValues(input PostTaskInput) map[string]string {
 		"verifier_refs":     refsValue(verifierRefs),
 		"test_results":      testsValue(testResults),
 	}
+	values["ticket_url"] = valueOrUnavailable(renderTicketURL(conventions.TicketURLTemplate, values))
+	return values
 }
 
-var ticketRefPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
+var ticketRefPattern = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]+-[0-9]+\b`)
 
 const (
 	gitOpsMetadataLineMax   = 2048
@@ -261,10 +358,75 @@ const (
 func extractTicketRef(values ...string) string {
 	for _, value := range values {
 		if match := ticketRefPattern.FindString(strings.TrimSpace(value)); match != "" {
-			return match
+			return normalizeTicketRef(match)
 		}
 	}
 	return ""
+}
+
+func validateTicketRefForConventions(ticketRef string, conventions Conventions) error {
+	if strings.TrimSpace(conventions.TicketRefPattern) == "" || ticketRef == "unavailable" {
+		return nil
+	}
+	compiled, err := regexp.Compile(conventions.TicketRefPattern)
+	if err != nil {
+		return fmt.Errorf("%w: git convention ticket_ref_pattern must compile", ErrInvalidInput)
+	}
+	if !compiled.MatchString(ticketRef) {
+		return fmt.Errorf("%w: git convention ticket_ref must match ticket_ref_pattern", ErrInvalidInput)
+	}
+	return nil
+}
+
+func normalizeTicketRef(value string) string {
+	if match := ticketRefPattern.FindString(strings.TrimSpace(value)); match != "" {
+		return strings.ToUpper(match)
+	}
+	return ""
+}
+
+func branchSlug(ticketRef string, values ...string) string {
+	normalizedTicket := strings.ToLower(strings.TrimSpace(ticketRef))
+	for _, value := range values {
+		candidate := strings.TrimSpace(value)
+		if candidate == "" {
+			continue
+		}
+		lower := strings.ToLower(candidate)
+		if normalizedTicket != "" {
+			lower = strings.TrimPrefix(lower, normalizedTicket)
+			lower = strings.TrimLeft(lower, "-_:/ ")
+			candidate = strings.TrimSpace(lower)
+		}
+		if slug := safeBranchToken(candidate); slug != "" {
+			return slug
+		}
+	}
+	return "automation-task"
+}
+
+func trimStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func renderTicketURL(template string, values map[string]string) string {
+	if strings.TrimSpace(template) == "" || values["ticket_ref"] == "unavailable" {
+		return ""
+	}
+	return strings.TrimSpace(expandTemplate(template, values))
 }
 
 func renderSingleLineTemplate(name, template string, values map[string]string) (string, error) {

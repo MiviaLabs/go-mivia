@@ -154,15 +154,23 @@ allowed_support_pathspecs = []
 [git_operations.conventions]
 # All templates use fixed safe placeholders only. Available placeholders:
 # project_id, work_plan_id, work_task_id, work_task_ref, work_task_title,
-# branch_name, ticket_ref, automation_id, automation_run_id, operator_id,
+# branch_name, ticket_ref, ticket_url, slug, change_type, what_changed,
+# how_verified, tests, automation_id, automation_run_id, operator_id,
 # review_refs, verifier_refs, test_results, and commit_subject. ticket_ref is
 # derived from branch/task metadata such as ABC-123. Commit subjects and PR
-# titles must render as Conventional Commits. PR bodies always use the required
-# sections: What changed, How verified, Tests.
+# titles must render as Conventional Commits. PR bodies use the default sections
+# unless pull_request_body_template is configured.
 commit_type = "chore"
 commit_scope = ""
+branch_template = ""
+require_ticket_ref = false
+ticket_ref_pattern = ""
+ticket_url_template = ""
+allowed_types = ["feat", "fix", "docs", "chore", "refactor", "test", "perf", "build", "ci", "revert"]
+default_change_type = "chore"
 commit_summary_template = "complete {{work_task_id}}"
 pull_request_title_template = "{{commit_subject}}"
+pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 what_changed_template = "Completed automation work task {{work_task_id}} for project {{project_id}}."
 how_verified_template = "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 tests_template = "{{test_results}}"
@@ -217,8 +225,15 @@ always_before_pr = []
 # [projects.git_operations.conventions]
 # commit_type = "chore"
 # commit_scope = ""
+# branch_template = "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"
+# require_ticket_ref = true
+# ticket_ref_pattern = "^GENERIC-[0-9]+$"
+# ticket_url_template = "https://example.atlassian.net/browse/{{ticket_ref}}"
+# allowed_types = ["feat", "fix", "docs", "chore", "refactor", "hotfix", "revert"]
+# default_change_type = "chore"
 # commit_summary_template = "complete {{work_task_ref}}"
-# pull_request_title_template = "chore({{ticket_ref}}): complete {{work_task_ref}}"
+# pull_request_title_template = "{{change_type}}({{ticket_ref}}): complete {{work_task_ref}}"
+# pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 # what_changed_template = "Jira: https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}\n\nSummary:\n- Completed {{work_task_title}}.\n\nWork Item:\n- {{work_task_ref}}\n\nType of Change:\n- Automation task"
 # how_verified_template = "Agent workflow:\n- plan-task: yes (https://rimthan-lab.atlassian.net/browse/{{ticket_ref}})\n- pr-audit: N/A\n\nProject ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}\n\nHAI Handoff Package:\n- Automation metadata is attached through Mivia Work Plan and Work Task refs.\n\nCI/CD Reference:\n- Draft PR created by Mivia GitOps automation."
 # tests_template = "Testing:\n{{test_results}}\n\nCompliance Checklist:\n- [ ] Human reviewer confirms repository-specific acceptance criteria.\n- [ ] CI passes before merge."
@@ -300,8 +315,14 @@ sensitive_marker_policy = "skip_file"
 # [projects.git_operations.conventions]
 # commit_type = "docs"
 # commit_scope = ""
+# branch_template = "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"
+# require_ticket_ref = true
+# ticket_ref_pattern = "^ABC-[0-9]+$"
+# allowed_types = ["feat", "fix", "docs"]
+# default_change_type = "docs"
 # commit_summary_template = "complete {{work_task_ref}}"
 # pull_request_title_template = "docs({{ticket_ref}}): complete {{work_task_ref}}"
+# pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 # what_changed_template = "Jira: https://example.atlassian.net/browse/{{ticket_ref}}\n\nCompleted {{work_task_title}} for {{project_id}}."
 # how_verified_template = "Agent workflow:\n- plan-task: yes (https://example.atlassian.net/browse/{{ticket_ref}})\n- pr-audit: N/A\n\nProject ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 # tests_template = "{{test_results}}"

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -894,11 +895,32 @@ func mergeGitOpsConventions(base config.GitOpsConventions, override config.GitOp
 	if strings.TrimSpace(override.CommitScope) != "" {
 		merged.CommitScope = override.CommitScope
 	}
+	if strings.TrimSpace(override.BranchTemplate) != "" {
+		merged.BranchTemplate = override.BranchTemplate
+	}
+	if override.RequireTicketRef {
+		merged.RequireTicketRef = true
+	}
+	if strings.TrimSpace(override.TicketRefPattern) != "" {
+		merged.TicketRefPattern = override.TicketRefPattern
+	}
+	if strings.TrimSpace(override.TicketURLTemplate) != "" {
+		merged.TicketURLTemplate = override.TicketURLTemplate
+	}
+	if len(override.AllowedTypes) > 0 {
+		merged.AllowedTypes = append([]string(nil), override.AllowedTypes...)
+	}
+	if strings.TrimSpace(override.DefaultChangeType) != "" {
+		merged.DefaultChangeType = override.DefaultChangeType
+	}
 	if strings.TrimSpace(override.CommitSummaryTemplate) != "" {
 		merged.CommitSummaryTemplate = override.CommitSummaryTemplate
 	}
 	if strings.TrimSpace(override.PullRequestTitleTemplate) != "" {
 		merged.PullRequestTitleTemplate = override.PullRequestTitleTemplate
+	}
+	if strings.TrimSpace(override.PullRequestBodyTemplate) != "" {
+		merged.PullRequestBodyTemplate = override.PullRequestBodyTemplate
 	}
 	if strings.TrimSpace(override.WhatChangedTemplate) != "" {
 		merged.WhatChangedTemplate = override.WhatChangedTemplate
@@ -937,8 +959,15 @@ func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
 		Conventions: projectgitops.Conventions{
 			CommitType:               cfg.Conventions.CommitType,
 			CommitScope:              cfg.Conventions.CommitScope,
+			AllowedChangeTypes:       append([]string(nil), cfg.Conventions.AllowedTypes...),
+			DefaultChangeType:        cfg.Conventions.DefaultChangeType,
+			RequireTicket:            cfg.Conventions.RequireTicketRef,
+			BranchNameTemplate:       cfg.Conventions.BranchTemplate,
+			TicketRefPattern:         cfg.Conventions.TicketRefPattern,
+			TicketURLTemplate:        cfg.Conventions.TicketURLTemplate,
 			CommitSummaryTemplate:    cfg.Conventions.CommitSummaryTemplate,
 			PullRequestTitleTemplate: cfg.Conventions.PullRequestTitleTemplate,
+			PullRequestBodyTemplate:  cfg.Conventions.PullRequestBodyTemplate,
 			WhatChangedTemplate:      cfg.Conventions.WhatChangedTemplate,
 			HowVerifiedTemplate:      cfg.Conventions.HowVerifiedTemplate,
 			TestsTemplate:            cfg.Conventions.TestsTemplate,
@@ -1052,6 +1081,7 @@ func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID st
 		TaskID:           firstNonEmpty(claimed.Run.TaskID, claimed.CodexInput.TaskID),
 		TaskRef:          taskRef,
 		TaskTitle:        taskTitle,
+		TicketRef:        runnerGitOpsTicketRef(claimed, taskMetadata),
 		AutomationID:     claimed.Run.AutomationID,
 		AutomationRunID:  firstNonEmpty(claimed.Run.ID, claimed.CodexInput.AutomationRunID),
 		OperatorID:       firstNonEmpty(claimed.Run.AgentID, fallbackOperatorID),
@@ -1060,6 +1090,45 @@ func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID st
 		VerifierRefs:     verifierRefs,
 		TestResults:      testResults,
 	}
+}
+
+func runnerGitOpsTicketRef(claimed projectautomation.ClaimedRun, task runnerWorkTaskMetadata) string {
+	for _, value := range []string{
+		task.TaskRef,
+		task.Title,
+		claimed.CodexInput.TaskRef,
+		claimed.CodexInput.Title,
+		claimed.Run.PlanID,
+		claimed.Run.TaskID,
+		claimed.Run.AutomationID,
+	} {
+		if ticket := normalizeRunnerTicketRef(value); ticket != "" {
+			return ticket
+		}
+	}
+	for _, refs := range [][]string{
+		task.ContextPackRefs,
+		task.EvidenceNeeded,
+		task.EvidenceRefs,
+		task.VerifierResultRefs,
+		task.ReviewResultRefs,
+	} {
+		for _, ref := range refs {
+			if ticket := normalizeRunnerTicketRef(ref); ticket != "" {
+				return ticket
+			}
+		}
+	}
+	return ""
+}
+
+var runnerTicketRefPattern = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]+-[0-9]+\b`)
+
+func normalizeRunnerTicketRef(value string) string {
+	if match := runnerTicketRefPattern.FindString(strings.TrimSpace(value)); match != "" {
+		return strings.ToUpper(match)
+	}
+	return ""
 }
 
 func taskHasGovernedCloseout(task runnerWorkTaskMetadata) bool {
