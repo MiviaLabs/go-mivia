@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflowchain"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
 
 func TestEffectiveInitialScanOnStartSkipsWhenRestartRecoveryQueued(t *testing.T) {
@@ -69,13 +71,13 @@ func TestWorkflowChainConfigsInheritGlobalGitOpsWhenProjectOverridesBranchPolicy
 				},
 				WorkflowChains: []config.WorkflowChain{
 					{
-						ChainRef:      "mass-governed-ticket-delivery",
-						Enabled:       true,
-						InputKind:     "jira_issue_key",
-						InputPattern:  "^MASS-[0-9]+$",
-						ContextMode:   "local_ingested",
-						GitOpsMode:    projectworkflowchain.GitOpsModeDraftPRAfterValidation,
-						Stages:        []config.WorkflowChainStage{{StageRef: "decomposition", WorkflowRef: "governed-decomposition-planning"}},
+						ChainRef:     "mass-governed-ticket-delivery",
+						Enabled:      true,
+						InputKind:    "jira_issue_key",
+						InputPattern: "^MASS-[0-9]+$",
+						ContextMode:  "local_ingested",
+						GitOpsMode:   projectworkflowchain.GitOpsModeDraftPRAfterValidation,
+						Stages:       []config.WorkflowChainStage{{StageRef: "decomposition", WorkflowRef: "governed-decomposition-planning"}},
 					},
 				},
 			},
@@ -86,6 +88,71 @@ func TestWorkflowChainConfigsInheritGlobalGitOpsWhenProjectOverridesBranchPolicy
 	}
 	if !chains[0].GitOpsEnabled {
 		t.Fatalf("workflow chain must inherit globally enabled GitOps when project override only sets branch policy: %#v", chains[0])
+	}
+}
+
+func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *testing.T) {
+	repo := initServerGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "apps", "domain", "src", "module.ts"), []byte("export const value = 2;\n"), 0o600); err != nil {
+		t.Fatalf("write changed file: %v", err)
+	}
+	t.Setenv("MIVIA_TEST_GIT_EMAIL", "mivia@example.test")
+	registry, err := projectregistry.NewRegistry([]config.Project{{
+		ID:             "mass-monorepo",
+		DisplayName:    "MASS",
+		RootPath:       repo,
+		Enabled:        true,
+		GraphNamespace: "mass-monorepo",
+		DigestMode:     projectregistry.DigestModeMetadataOnly,
+		UpdatePolicy:   projectregistry.UpdatePolicyManual,
+	}}, projectregistry.Options{
+		ContentGraphApprovalAccepted: true,
+		LadybugPath:                  t.TempDir(),
+		SQLitePath:                   ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	finalizer := serverWorkflowChainGitOpsFinalizer{
+		cfg: config.Config{
+			GitOperations: config.GitOperations{
+				Enabled:              true,
+				CommitAfterTask:      true,
+				BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+				CommitAuthorEmailEnv: "MIVIA_TEST_GIT_EMAIL",
+			},
+		},
+		registry: registry,
+	}
+
+	result, err := finalizer.FinalizeWorkflowChain(t.Context(), projectworkflowchain.GitOpsFinalizeInput{
+		ProjectID:        "mass-monorepo",
+		ChainRunID:       "workflow_chain_run_mass_1044",
+		InputRef:         "jira:MASS-1044",
+		WorkPlan:         projectworkplan.WorkPlan{ID: "plan-post-validation", ProjectID: "mass-monorepo", GitBranchRef: "chore-MASS-1044-governed-post-implementation-validation-compile-1", GitBaseRef: "main"},
+		StageRuns:        []projectworkflowchain.StageRun{{StageRef: "post-validation", WorkTaskIDs: []string{"task-final-pr-readiness"}}},
+		AllowedPathspecs: []string{"apps/domain/src/module.ts"},
+		ReviewRefs:       []string{"review_result:post_validation_approved"},
+		VerifierRefs:     []string{"verifier:focused_tests_passed"},
+		TestResults:      []string{"go test ./apps/domain -run TestMass1044 -count=1"},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeWorkflowChain returned error: %v", err)
+	}
+	if result.CommitRef == "" || !containsServerString(result.EvidenceRefs, "git-commit-created") {
+		t.Fatalf("expected local commit result, got %#v", result)
+	}
+	message := runServerGitOutput(t, repo, "log", "-1", "--format=%B")
+	for _, want := range []string{
+		"Work Task ID: task-final-pr-readiness",
+		"Automation Run ID: workflow_chain_run_mass_1044",
+		"Review refs: review_result:post_validation_approved",
+		"Verifier refs: verifier:focused_tests_passed",
+		"go test ./apps/domain -run TestMass1044 -count=1",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("final GitOps commit lost handoff field %q:\n%s", want, message)
+		}
 	}
 }
 
@@ -341,4 +408,46 @@ func writeConfigFixture(t *testing.T, body string) string {
 		t.Fatalf("write config fixture: %v", err)
 	}
 	return path
+}
+
+func initServerGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runServerGit(t, dir, "init", "-b", "main")
+	runServerGit(t, dir, "config", "user.name", "Mivia Test")
+	runServerGit(t, dir, "config", "user.email", "mivia@example.test")
+	if err := os.MkdirAll(filepath.Join(dir, "apps", "domain", "src"), 0o755); err != nil {
+		t.Fatalf("mkdir fixture tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "apps", "domain", "src", "module.ts"), []byte("export const value = 1;\n"), 0o600); err != nil {
+		t.Fatalf("write fixture file: %v", err)
+	}
+	runServerGit(t, dir, "add", ".")
+	runServerGit(t, dir, "commit", "-m", "initial")
+	return dir
+}
+
+func runServerGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	_ = runServerGitOutput(t, dir, args...)
+}
+
+func runServerGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
+	return string(output)
+}
+
+func containsServerString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
