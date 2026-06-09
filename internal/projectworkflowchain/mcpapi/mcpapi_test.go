@@ -64,6 +64,9 @@ func TestCallToolAcceptsUnderscoreAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start alias: %v", err)
 	}
+	if result["isError"] != false {
+		t.Fatalf("expected non-error tool result marker, got %#v", result["isError"])
+	}
 	structured := result["structuredContent"].(projectworkflowchain.StartResult)
 	if structured.InputRef != "jira:MASS-1044" {
 		t.Fatalf("unexpected structured result: %#v", structured)
@@ -93,6 +96,9 @@ func TestCallToolStartReturnsSafeRefsOnly(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatalf("start: %v", err)
+	}
+	if result["isError"] != false {
+		t.Fatalf("expected non-error tool result marker, got %#v", result["isError"])
 	}
 	body := result["content"].([]map[string]string)[0]["text"]
 	if strings.Contains(body, `"input_text"`) || strings.Contains(body, "raw prompt") {

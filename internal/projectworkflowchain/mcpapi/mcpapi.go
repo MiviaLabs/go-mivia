@@ -152,6 +152,7 @@ func toolResult(value any) map[string]any {
 	return map[string]any{
 		"content":           []map[string]string{{"type": "text", "text": string(encoded)}},
 		"structuredContent": value,
+		"isError":           false,
 	}
 }
 
