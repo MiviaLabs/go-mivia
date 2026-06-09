@@ -762,7 +762,7 @@ func compileIsolationRefs(workflow WorkflowDefinition, planRef string, userReque
 	// Workflow metadata does not carry a verified repository default branch.
 	// Leave git_base_ref unset so workspace creation falls back to HEAD.
 	branchToken := token
-	if summary := renderCompileBranchSummary(options.BranchSummaryTemplate, userRequestRef, workflow.WorkflowRef, token); summary != "" {
+	if summary := renderCompileBranchSummary(options.BranchSummaryTemplate, userRequestRef, workflow.WorkflowRef, token, options); summary != "" {
 		branchToken = compileUniqueBranchSummary(summary, token)
 	}
 	branchPrefix := options.BranchPrefix
@@ -774,7 +774,7 @@ func compileIsolationRefs(workflow WorkflowDefinition, planRef string, userReque
 	}
 }
 
-func renderCompileBranchSummary(template string, userRequestRef string, workflowRef string, token string) string {
+func renderCompileBranchSummary(template string, userRequestRef string, workflowRef string, token string, options CompileOptions) string {
 	template = strings.TrimSpace(template)
 	if template == "" {
 		return ""
@@ -784,7 +784,16 @@ func renderCompileBranchSummary(template string, userRequestRef string, workflow
 	out = strings.ReplaceAll(out, "{{user_request_ref}}", userRequestRef)
 	out = strings.ReplaceAll(out, "{{workflow_ref}}", workflowRef)
 	out = strings.ReplaceAll(out, "{{token}}", token)
+	out = strings.ReplaceAll(out, "{{change_type}}", compileChangeType(options.DefaultChangeType))
 	return safeCompileBranchName(out)
+}
+
+func compileChangeType(value string) string {
+	value = safeCompileBranchName(strings.TrimSpace(value))
+	if value == "" {
+		return "chore"
+	}
+	return value
 }
 
 func compileTicketRef(userRequestRef string) string {

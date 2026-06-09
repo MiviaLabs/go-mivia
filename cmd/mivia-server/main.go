@@ -519,19 +519,33 @@ func workflowCompileOptions(cfg config.Config) map[string]projectworkflow.Compil
 		options[project.ID] = projectworkflow.CompileOptions{
 			BranchPrefix:          gitops.BranchPrefix,
 			BranchSummaryTemplate: workflowCompileBranchTemplate(project.ID, gitops),
+			DefaultChangeType:     gitops.Conventions.DefaultChangeType,
 		}
 	}
 	return options
 }
 
 func workflowCompileBranchTemplate(_ string, gitops config.GitOperations) string {
+	if template := workflowCompileBranchTemplateFromConventions(gitops.Conventions.BranchTemplate); template != "" {
+		return template
+	}
 	if strings.TrimSpace(gitops.BranchNamePattern) == "" {
 		return ""
 	}
 	if branchPatternLooksTicketScoped(gitops.BranchNamePattern) {
-		return "chore-{{ticket_ref}}-{{workflow_ref}}"
+		return "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}"
 	}
 	return "{{token}}"
+}
+
+func workflowCompileBranchTemplateFromConventions(template string) string {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return ""
+	}
+	template = strings.ReplaceAll(template, "{{work_task_ref}}", "{{workflow_ref}}")
+	template = strings.ReplaceAll(template, "{{work_task_title}}", "{{workflow_ref}}")
+	return template
 }
 
 func branchPatternLooksTicketScoped(pattern string) bool {

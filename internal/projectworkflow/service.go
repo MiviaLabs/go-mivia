@@ -51,6 +51,7 @@ type Service struct {
 type CompileOptions struct {
 	BranchPrefix          string
 	BranchSummaryTemplate string
+	DefaultChangeType     string
 }
 
 type CreateWorkflowInput struct {

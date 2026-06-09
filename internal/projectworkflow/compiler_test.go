@@ -194,6 +194,36 @@ func TestCompileWorkflowUsesProjectBranchPolicyOptions(t *testing.T) {
 	}
 }
 
+func TestCompileWorkflowUsesConfiguredChangeTypeInBranchPolicy(t *testing.T) {
+	ctx := context.Background()
+	svc, workflowStore, workPlans, _ := newCompileFixture()
+	workflowStore.seedWorkflow(baseCompileWorkflow())
+	svc.SetCompileOptionsByProject(map[string]CompileOptions{
+		"project-1": {
+			BranchPrefix:          "",
+			BranchSummaryTemplate: "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}",
+			DefaultChangeType:     "feat",
+		},
+	})
+
+	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "jira:MASS-1044", CreatedByRunID: "run-1"}); err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("list plans: %v", err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("expected one plan, got %d", len(plans))
+	}
+	if got, wantPrefix := plans[0].GitBranchRef, "feat-MASS-1044-workflow-ref-compile-"; !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("GitBranchRef = %q, want prefix %q", got, wantPrefix)
+	}
+	if strings.HasPrefix(plans[0].GitBranchRef, "chore-") {
+		t.Fatalf("configured change type must prevent hardcoded chore branch, got %q", plans[0].GitBranchRef)
+	}
+}
+
 func TestCompileWorkflowUsesGenericTicketForTicketlessSmokeBranch(t *testing.T) {
 	ctx := context.Background()
 	svc, workflowStore, workPlans, _ := newCompileFixture()

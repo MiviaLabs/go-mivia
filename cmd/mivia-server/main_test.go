@@ -96,8 +96,11 @@ func TestWorkflowChainConfigsInheritGlobalGitOpsWhenProjectOverridesBranchPolicy
 }
 
 func TestWorkflowCompileBranchTemplateUsesGenericTicketScopedPattern(t *testing.T) {
-	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{BranchNamePattern: "^(feat|fix)-PROJ-[0-9]+(-[a-z0-9-]+)*$"}); got != "chore-{{ticket_ref}}-{{workflow_ref}}" {
+	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{BranchNamePattern: "^(feat|fix)-PROJ-[0-9]+(-[a-z0-9-]+)*$"}); got != "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}" {
 		t.Fatalf("ticket-scoped branch patterns must use generic ticket/workflow template, got %q", got)
+	}
+	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{Conventions: config.GitOpsConventions{BranchTemplate: "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"}}); got != "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}" {
+		t.Fatalf("project branch conventions must drive workflow compile template, got %q", got)
 	}
 	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{BranchNamePattern: "^automation/[a-z0-9-]+$"}); got != "{{token}}" {
 		t.Fatalf("non-ticket branch patterns must use opaque token template, got %q", got)
