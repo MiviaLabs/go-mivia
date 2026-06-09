@@ -100,6 +100,22 @@ expected_output = "bounded planning context summary and evidence refs"
 failure_criteria = "block if context freshness, scope, or MCP availability cannot be established"
 review_gate = "planning-readiness-review required before context task is done"
 resume_instructions = "resume by reading attached context refs and current Work Plan metadata"
+acceptance_criteria = [
+  "Context refs include repo instructions, project health, bounded context pack refs, and MCP surface gaps.",
+  "Context output is metadata-only and sufficient for isolated decomposition work."
+]
+stop_conditions = [
+  "Stop if repo instructions, context health, or bounded context refs cannot be established.",
+  "Stop if decomposition would depend on hidden chat context or unverified source state."
+]
+verifier_ladder = [
+  "orchestrator checks repo instruction refs",
+  "orchestrator checks context health refs",
+  "orchestrator checks bounded context pack and MCP surface refs"
+]
+regression_test_applicability = "not_applicable for metadata-only context discovery"
+downstream_impact_refs = ["context-pack-ref", "mcp-surface-gap-ref"]
+output_contract = "bounded planning context packet with repo instruction refs, context health refs, and MCP surface gap refs"
 
 [[steps]]
 id = "decompose-work-plan"
@@ -156,6 +172,22 @@ expected_output = "ready task refs or blocked task refs with resume instructions
 failure_criteria = "block if any task lacks independent review or required metadata"
 review_gate = "planning-readiness-review required before status changes"
 resume_instructions = "resume by listing task statuses and checking attached review refs"
+acceptance_criteria = [
+  "Only independently reviewed decomposition-complete tasks are moved to ready.",
+  "Incomplete tasks remain planned or blocked with concrete resume instructions."
+]
+stop_conditions = [
+  "Stop if any task lacks review refs, verifier requirements, dependencies, or resume instructions.",
+  "Stop if child implementation tasks are missing or still depend on hidden context."
+]
+verifier_ladder = [
+  "orchestrator lists planned child tasks",
+  "orchestrator checks review refs and verifier requirements",
+  "orchestrator moves only complete reviewed tasks to ready"
+]
+regression_test_applicability = "not_applicable for metadata-only readiness transition"
+downstream_impact_refs = ["ready-task-list-ref", "review-result-ref"]
+output_contract = "ready task refs or blocked task refs with exact missing metadata and resume instructions"
 
 [[steps]]
 id = "queue-planning-automation"
@@ -173,6 +205,22 @@ expected_output = "automation batch queued for ready planning tasks"
 failure_criteria = "block if ready tasks overlap unsafely or lack permission snapshots"
 review_gate = "planning-readiness-review required before automation queueing"
 resume_instructions = "resume from automation run refs and task statuses"
+acceptance_criteria = [
+  "Automation refs are queued only for reviewed ready planning tasks.",
+  "Permission snapshot refs and task status refs are attached for every queued automation."
+]
+stop_conditions = [
+  "Stop if any task lacks ready status, permission snapshots, or safe non-overlapping scope.",
+  "Stop if automation queueing would run unreviewed or incomplete planning tasks."
+]
+verifier_ladder = [
+  "orchestrator checks ready task refs",
+  "orchestrator checks permission snapshot refs",
+  "orchestrator checks queued automation refs and task statuses"
+]
+regression_test_applicability = "not_applicable for metadata-only automation queueing"
+downstream_impact_refs = ["automation-ref", "permission-snapshot-ref", "ready-task-list-ref"]
+output_contract = "automation batch refs for reviewed ready planning tasks with permission snapshot refs"
 max_parallel_tasks = 2
 
 [[review_gates]]

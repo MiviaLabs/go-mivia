@@ -789,13 +789,18 @@ func renderCompileBranchSummary(template string, userRequestRef string, workflow
 
 func compileTicketRef(userRequestRef string) string {
 	userRequestRef = strings.TrimSpace(userRequestRef)
-	if strings.HasPrefix(userRequestRef, "jira:") {
-		ticket := strings.TrimSpace(strings.TrimPrefix(userRequestRef, "jira:"))
-		if ticket != "" {
-			return ticket
+	if before, after, ok := strings.Cut(userRequestRef, ":"); ok && strings.TrimSpace(before) != "" {
+		userRequestRef = strings.TrimSpace(after)
+	}
+	for _, field := range strings.FieldsFunc(userRequestRef, func(r rune) bool {
+		return r == '/' || r == '\\' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	}) {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			return field
 		}
 	}
-	return "MASS-0000"
+	return "GENERIC-0000"
 }
 
 func compileUniqueBranchSummary(summary string, token string) string {

@@ -194,28 +194,28 @@ func TestCompileWorkflowUsesProjectBranchPolicyOptions(t *testing.T) {
 	}
 }
 
-func TestCompileWorkflowUsesFakeMassTicketForTicketlessSmokeBranch(t *testing.T) {
+func TestCompileWorkflowUsesGenericTicketForTicketlessSmokeBranch(t *testing.T) {
 	ctx := context.Background()
 	svc, workflowStore, workPlans, _ := newCompileFixture()
 	workflow := baseCompileWorkflow()
-	workflow.ProjectID = "mass-monorepo"
+	workflow.ProjectID = "project-1"
 	workflowStore.seedWorkflow(workflow)
 	svc.SetCompileOptionsByProject(map[string]CompileOptions{
-		"mass-monorepo": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
+		"project-1": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
 	})
 
-	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "mass-monorepo", WorkflowID: "workflow-1", UserRequestRef: "input:smoke-20260608g", CreatedByRunID: "codex-manual-smoke"}); err != nil {
+	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "input:smoke-20260608g", CreatedByRunID: "codex-manual-smoke"}); err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}
-	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "mass-monorepo"})
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
 	if err != nil {
 		t.Fatalf("list plans: %v", err)
 	}
 	if len(plans) != 1 {
 		t.Fatalf("expected one plan, got %d", len(plans))
 	}
-	if got, wantPrefix := plans[0].GitBranchRef, "chore-MASS-0000-workflow-ref-compile-"; !strings.HasPrefix(got, wantPrefix) {
-		t.Fatalf("ticketless smoke branch must use fake MASS-0000 policy token, got %q want prefix %q", got, wantPrefix)
+	if got, wantPrefix := plans[0].GitBranchRef, "chore-smoke-20260608g-workflow-ref-compile-"; !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("ticketless smoke branch must use generic input token, got %q want prefix %q", got, wantPrefix)
 	}
 	if strings.Contains(plans[0].GitBranchRef, "input-smoke") {
 		t.Fatalf("ticketless smoke branch must not leak input ref into ticket slot, got %q", plans[0].GitBranchRef)

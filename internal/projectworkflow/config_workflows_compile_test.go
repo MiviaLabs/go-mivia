@@ -187,8 +187,8 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	if err != nil {
 		t.Fatalf("get MASS smoke GitOps plan: %v", err)
 	}
-	if !strings.HasPrefix(smokePlan.GitBranchRef, "chore-MASS-0000-governed-smoke-gitops-compile-") || strings.Contains(smokePlan.GitBranchRef, "input-smoke") {
-		t.Fatalf("MASS smoke GitOps branch must satisfy ticket branch policy with fake MASS-0000, got %q", smokePlan.GitBranchRef)
+	if !strings.HasPrefix(smokePlan.GitBranchRef, "chore-smoke-20260608g-governed-smoke-gitops-compile-") || strings.Contains(smokePlan.GitBranchRef, "input-smoke") {
+		t.Fatalf("smoke GitOps branch must satisfy ticket branch policy without leaking input prefix, got %q", smokePlan.GitBranchRef)
 	}
 	smokeTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "mass-monorepo", PlanID: smokeResult.WorkPlanID})
 	if err != nil {
@@ -524,6 +524,133 @@ func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) 
 	}
 }
 
+func TestGenericTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) {
+	ctx := context.Background()
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
+	workflowStore := workflowstore.NewMemoryStore()
+	svc := projectworkflow.New(workflowStore)
+	svc.SetCompilerDependencies(workPlans, automations)
+	svc.SetCompileOptionsByProject(map[string]projectworkflow.CompileOptions{
+		"mivialabs-agents-monorepo": {BranchPrefix: "generic/", BranchSummaryTemplate: "ticket-{{ticket_ref}}-{{workflow_ref}}"},
+	})
+
+	stages := []struct {
+		name          string
+		path          string
+		workflowRef   string
+		reviewGate    string
+		expectedTasks []string
+		rootTask      string
+		prReadyTask   string
+	}{
+		{
+			name:        "decomposition",
+			path:        filepath.Join("..", "..", "configs", "workflows", "governed-decomposition-planning.toml"),
+			workflowRef: "governed-decomposition-planning",
+			reviewGate:  "planning-readiness-review",
+			rootTask:    "discover-planning-context",
+			expectedTasks: []string{
+				"discover-planning-context",
+				"decompose-work-plan",
+				"mark-ready-after-review",
+			},
+		},
+		{
+			name:        "implementation",
+			path:        filepath.Join("..", "..", "configs", "workflows", "governed-workplan-implementation.toml"),
+			workflowRef: "governed-workplan-implementation",
+			reviewGate:  "implementation-independent-review",
+			rootTask:    "select-ready-tasks",
+			prReadyTask: "pr-gitops-readiness",
+			expectedTasks: []string{
+				"select-ready-tasks",
+				"run-implementation-batch",
+				"review-implementation-batch",
+				"orchestrator-verification",
+				"pr-gitops-readiness",
+			},
+		},
+		{
+			name:        "post-validation",
+			path:        filepath.Join("..", "..", "configs", "workflows", "governed-post-implementation-validation.toml"),
+			workflowRef: "governed-post-implementation-validation",
+			reviewGate:  "post-implementation-validation-review",
+			rootTask:    "collect-final-scope",
+			prReadyTask: "final-pr-readiness",
+			expectedTasks: []string{
+				"collect-final-scope",
+				"validate-regression-and-downstream",
+				"run-final-verification",
+				"final-pr-readiness",
+			},
+		},
+	}
+
+	for _, stage := range stages {
+		t.Run(stage.name, func(t *testing.T) {
+			workflow := importConfigWorkflow(t, ctx, svc, stage.path, "mivialabs-agents-monorepo")
+			if workflow.WorkflowRef != stage.workflowRef {
+				t.Fatalf("expected workflow %q, got %q", stage.workflowRef, workflow.WorkflowRef)
+			}
+			result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{
+				ProjectID:      workflow.ProjectID,
+				WorkflowID:     workflow.ID,
+				UserRequestRef: "ticket:GENERIC-1044",
+				CreatedByRunID: "generic-pipeline-" + stage.name,
+				TraceID:        "trace-generic-" + stage.name,
+			})
+			if err != nil {
+				t.Fatalf("compile %s workflow: %v", stage.name, err)
+			}
+			assertGenericPermissionSnapshotsCompile(t, ctx, workflowStore, workflow)
+			plan, err := workPlans.GetWorkPlan(ctx, workflow.ProjectID, result.WorkPlanID)
+			if err != nil {
+				t.Fatalf("get %s plan: %v", stage.name, err)
+			}
+			if plan.UserRequestRef != "ticket:GENERIC-1044" || plan.CreatedByRunID != "generic-pipeline-"+stage.name || plan.TraceID != "trace-generic-"+stage.name {
+				t.Fatalf("%s plan lost input/run/trace refs: %#v", stage.name, plan)
+			}
+			if !strings.Contains(plan.PlanRef, stage.workflowRef) || !strings.HasPrefix(plan.GitBranchRef, "generic/ticket-GENERIC-1044-"+stage.workflowRef+"-compile-") {
+				t.Fatalf("%s plan lost workflow or branch handoff policy: %#v", stage.name, plan)
+			}
+			tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: workflow.ProjectID, PlanID: plan.ID})
+			if err != nil {
+				t.Fatalf("list %s tasks: %v", stage.name, err)
+			}
+			compiledByRef := map[string]projectworkplan.WorkTask{}
+			for _, task := range tasks {
+				compiledByRef[task.TaskRef] = task
+			}
+			for index, taskRef := range stage.expectedTasks {
+				task, ok := compiledByRef[taskRef]
+				if !ok {
+					t.Fatalf("%s missing compiled task %q in %#v", stage.name, taskRef, tasks)
+				}
+				assertGenericPipelineCompiledTaskHandoff(t, stage.name, task, stage.reviewGate, index == 0)
+				if index == 0 && task.TaskRef != stage.rootTask {
+					t.Fatalf("%s root task mismatch: want %q got %#v", stage.name, stage.rootTask, task)
+				}
+				if index == 0 && task.Status != projectworkplan.WorkTaskStatusReady {
+					t.Fatalf("%s root task must compile ready, got %#v", stage.name, task)
+				}
+				if index > 0 && (task.Status != projectworkplan.WorkTaskStatusPlanned || len(task.DependencyTaskIDs) == 0) {
+					t.Fatalf("%s dependent task %q must compile planned with dependencies, got %#v", stage.name, taskRef, task)
+				}
+				if stage.prReadyTask != "" && taskRef == stage.prReadyTask {
+					assertCompiledGenericGitOpsReadinessTask(t, task, stage.reviewGate)
+				}
+			}
+			compiledAutomations, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: workflow.ProjectID})
+			if err != nil {
+				t.Fatalf("list %s automations: %v", stage.name, err)
+			}
+			planAutomations := configAutomationsForPlan(compiledAutomations, plan.ID)
+			assertGenericPipelineAutomationsForTasks(t, stage.name, planAutomations, compiledByRef, stage.expectedTasks, stage.reviewGate)
+		})
+	}
+}
+
 func TestConfigWorkflowReviewGateCoverage(t *testing.T) {
 	paths, err := configWorkflowPaths()
 	if err != nil {
@@ -575,9 +702,6 @@ func TestConfigWorkflowTaskProducingStepsHaveGateOrReviewerRole(t *testing.T) {
 	}
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			if !strings.Contains(filepath.ToSlash(path), "/mass/") {
-				t.Skip("MASS workflow gate coverage invariant")
-			}
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatalf("read workflow definition: %v", err)
@@ -619,7 +743,7 @@ func TestConfigWorkflowTaskProducingStepsHaveGateOrReviewerRole(t *testing.T) {
 	}
 }
 
-func TestMassConfigWorkflowRequiredReviewGatesCompileReviewAutomations(t *testing.T) {
+func TestConfigWorkflowRequiredReviewGatesCompileReviewAutomations(t *testing.T) {
 	ctx := context.Background()
 	paths, err := configWorkflowPaths()
 	if err != nil {
@@ -627,16 +751,13 @@ func TestMassConfigWorkflowRequiredReviewGatesCompileReviewAutomations(t *testin
 	}
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			if !strings.Contains(filepath.ToSlash(path), "/mass/") {
-				t.Skip("MASS workflow review automation invariant")
-			}
 			workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
 			automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
 			workflowStore := workflowstore.NewMemoryStore()
 			svc := projectworkflow.New(workflowStore)
 			svc.SetCompilerDependencies(workPlans, automations)
-			workflow := importConfigWorkflow(t, ctx, svc, path, "mass-monorepo")
-			result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: workflow.ProjectID, WorkflowID: workflow.ID, UserRequestRef: "input:smoke-review-automation", CreatedByRunID: "review-automation-test-run"})
+			workflow := importConfigWorkflow(t, ctx, svc, path, "mivialabs-agents-monorepo")
+			result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: workflow.ProjectID, WorkflowID: workflow.ID, UserRequestRef: "input:generic-review-automation", CreatedByRunID: "review-automation-test-run"})
 			if err != nil {
 				t.Fatalf("compile workflow: %v", err)
 			}
@@ -793,6 +914,97 @@ func assertCompiledMassGitOpsReadinessTask(t *testing.T, task projectworkplan.Wo
 	}
 	if !strings.Contains(task.FailureCriteria, "unsafe metadata") || !strings.Contains(task.VerificationRequirement, "GitOps") {
 		t.Fatalf("compiled GitOps readiness task must preserve GitOps/redaction failure contract, got %#v", task)
+	}
+}
+
+func assertGenericPermissionSnapshotsCompile(t *testing.T, ctx context.Context, store projectworkflow.Store, workflow projectworkflow.WorkflowDefinition) {
+	t.Helper()
+	snapshots, err := store.ListPermissionSnapshots(ctx, projectworkflow.PermissionSnapshotFilter{ProjectID: workflow.ProjectID, WorkflowID: workflow.ID})
+	if err != nil {
+		t.Fatalf("list permission snapshots for %s: %v", workflow.WorkflowRef, err)
+	}
+	if len(snapshots) != len(workflow.Agents) {
+		t.Fatalf("expected one permission snapshot per %s agent, snapshots=%#v agents=%#v", workflow.WorkflowRef, snapshots, workflow.Agents)
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.ID == "" || snapshot.ContentHash == "" || len(snapshot.AllowedTools) == 0 || snapshot.WorkspaceMode == "" || snapshot.NetworkPolicy == "" || snapshot.SecretPolicy == "" {
+			t.Fatalf("snapshot %s/%s missing reusable permission handoff fields: %#v", workflow.WorkflowRef, snapshot.AgentID, snapshot)
+		}
+	}
+}
+
+func assertCompiledGenericGitOpsReadinessTask(t *testing.T, task projectworkplan.WorkTask, reviewGateID string) {
+	t.Helper()
+	if task.Status != projectworkplan.WorkTaskStatusPlanned {
+		t.Fatalf("GitOps readiness task must compile planned until dependencies/review complete, got %#v", task)
+	}
+	if !strings.Contains(task.ReviewGate, reviewGateID) {
+		t.Fatalf("GitOps readiness task missing review gate %q, got %#v", reviewGateID, task)
+	}
+	for _, ref := range []string{"git-status-ref", "branch-policy-ref", "review-result-ref", "verifier-result-ref", "regression-test-ref", "generated-artifact-check-ref", "pr-description-ref", "metadata-redaction-ref"} {
+		if !containsConfigString(task.EvidenceNeeded, ref) {
+			t.Fatalf("compiled GitOps readiness task missing evidence %q, got %#v", ref, task.EvidenceNeeded)
+		}
+	}
+	if !strings.Contains(task.FailureCriteria, "unsafe metadata") || !strings.Contains(task.VerificationRequirement, "GitOps") {
+		t.Fatalf("compiled GitOps readiness task must preserve GitOps/redaction failure contract, got %#v", task)
+	}
+}
+
+func assertGenericPipelineCompiledTaskHandoff(t *testing.T, stageName string, task projectworkplan.WorkTask, reviewGateID string, isRoot bool) {
+	t.Helper()
+	if task.ID == "" || task.ProjectID == "" || task.PlanID == "" || task.TaskRef == "" {
+		t.Fatalf("%s task missing stable refs: %#v", stageName, task)
+	}
+	if task.OwnerAgent == "" || task.Description == "" || task.ExpectedOutput == "" || task.FailureCriteria == "" || task.ResumeInstructions == "" {
+		t.Fatalf("%s task %s missing executable handoff text fields: %#v", stageName, task.TaskRef, task)
+	}
+	reviewerOwned := strings.Contains(task.OwnerAgent, "reviewer")
+	if !reviewerOwned && (task.ReviewGate == "" || !strings.Contains(task.ReviewGate, reviewGateID)) {
+		t.Fatalf("%s task %s missing review gate %q: %#v", stageName, task.TaskRef, reviewGateID, task)
+	}
+	if len(task.EvidenceNeeded) == 0 || (len(task.LikelyFilesAffected) == 0 && len(task.FilesToRead) == 0 && len(task.FilesToEdit) == 0) || task.VerificationRequirement == "" {
+		t.Fatalf("%s task %s missing evidence/scope/verifier handoff fields: %#v", stageName, task.TaskRef, task)
+	}
+	if len(task.AcceptanceCriteria) == 0 || len(task.StopConditions) == 0 || len(task.VerifierLadder) == 0 || task.RegressionApplicability == "" || len(task.DownstreamImpactRefs) == 0 || task.OutputContract == "" {
+		t.Fatalf("%s task %s missing first-class governance fields: %#v", stageName, task.TaskRef, task)
+	}
+	if isRoot && len(task.DependencyTaskIDs) != 0 {
+		t.Fatalf("%s root task %s must not depend on later work, got %#v", stageName, task.TaskRef, task.DependencyTaskIDs)
+	}
+}
+
+func assertGenericPipelineAutomationsForTasks(t *testing.T, stageName string, automations []projectautomation.Automation, tasksByRef map[string]projectworkplan.WorkTask, taskRefs []string, reviewGateID string) {
+	t.Helper()
+	for _, taskRef := range taskRefs {
+		task, ok := tasksByRef[taskRef]
+		if !ok {
+			t.Fatalf("%s missing compiled task for automation assertion %q", stageName, taskRef)
+		}
+		worker := configAutomationByAllowedRef(t, automations, taskRef)
+		if worker.Status != projectautomation.AutomationStatusEnabled || worker.TriggerKind != projectautomation.TriggerKindAutomatic || worker.SourceKind != projectautomation.AutomationSourceWorkflow {
+			t.Fatalf("%s worker automation for %s lost status/trigger/source handoff: %#v", stageName, taskRef, worker)
+		}
+		if worker.PermissionRef == "" || !strings.HasPrefix(worker.PermissionRef, projectautomation.PermissionSnapshotRefPrefix) {
+			t.Fatalf("%s worker automation for %s missing permission snapshot ref: %#v", stageName, taskRef, worker)
+		}
+		if worker.CreatedByRunID == "" || worker.TraceID == "" {
+			t.Fatalf("%s worker automation for %s missing creator/trace handoff: %#v", stageName, taskRef, worker)
+		}
+		if strings.Contains(task.OwnerAgent, "reviewer") {
+			continue
+		}
+		reviewRef := "review-" + taskRef + "-" + reviewGateID
+		review := configAutomationByAllowedRef(t, automations, reviewRef)
+		if review.Status != projectautomation.AutomationStatusEnabled || review.TriggerKind != projectautomation.TriggerKindAutomatic || review.SourceKind != projectautomation.AutomationSourceWorkflow {
+			t.Fatalf("%s review automation for %s lost status/trigger/source handoff: %#v", stageName, taskRef, review)
+		}
+		if review.PermissionRef == "" || !strings.HasPrefix(review.PermissionRef, projectautomation.PermissionSnapshotRefPrefix) {
+			t.Fatalf("%s review automation for %s missing permission snapshot ref: %#v", stageName, taskRef, review)
+		}
+		if review.CreatedByRunID != worker.CreatedByRunID || review.TraceID != worker.TraceID {
+			t.Fatalf("%s review automation for %s lost creator/trace continuity: worker=%#v review=%#v", stageName, taskRef, worker, review)
+		}
 	}
 }
 

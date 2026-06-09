@@ -87,6 +87,22 @@ expected_output = "safe implementation batch refs or blocked reason"
 failure_criteria = "block if tasks are not ready, overlap unsafely, or lack review refs"
 review_gate = "implementation-independent-review required before dispatch"
 resume_instructions = "resume by calling get_next and checking dependency and review refs"
+acceptance_criteria = [
+  "Selected tasks are ready, independently reviewed, dependency-complete, and have disjoint or explicitly safe affected files.",
+  "Selection output records safe implementation batch refs or exact blocked reasons."
+]
+stop_conditions = [
+  "Stop if ready tasks lack review refs, done dependencies, verifier requirements, or safe file scope.",
+  "Stop if selected tasks overlap unsafely or require hidden context."
+]
+verifier_ladder = [
+  "orchestrator checks ready task refs",
+  "orchestrator checks dependency and review refs",
+  "orchestrator checks file overlap and selected batch refs"
+]
+regression_test_applicability = "required classification from selected task metadata"
+downstream_impact_refs = ["ready-task-list-ref", "dependency-status-ref", "review-result-ref"]
+output_contract = "safe implementation batch refs or blocked reason with dependency, review, and file-overlap evidence"
 
 [[steps]]
 id = "run-implementation-batch"
@@ -104,6 +120,22 @@ expected_output = "changed files, evidence refs, risks, and tests not run for ea
 failure_criteria = "block if worker uses hidden context, runs full suite, edits out of scope, or lacks evidence"
 review_gate = "implementation-independent-review required before task completion"
 resume_instructions = "resume from automation run refs, changed files, evidence refs, and task statuses"
+acceptance_criteria = [
+  "Each worker uses only declared task metadata, attached refs, and allowed file scope.",
+  "Each worker output includes changed files, evidence refs, risk notes, and tests not run."
+]
+stop_conditions = [
+  "Stop if worker uses hidden context, edits outside declared scope, runs disallowed full suites, or omits evidence.",
+  "Stop if permission snapshot refs or automation run refs are missing."
+]
+verifier_ladder = [
+  "worker checks task metadata and permission snapshot refs",
+  "worker records changed files and evidence refs",
+  "orchestrator checks task statuses and automation run refs"
+]
+regression_test_applicability = "required when selected implementation task changes behavior"
+downstream_impact_refs = ["automation-run-ref", "changed-files-ref", "worker-evidence-ref"]
+output_contract = "worker output refs with changed files, evidence refs, risk notes, and tests not run"
 max_parallel_tasks = 2
 
 [[steps]]
@@ -121,6 +153,22 @@ verification_requirement = "attach review_result_ref for every implementation ta
 expected_output = "approved, rejected, needs_changes, or blocked review decisions"
 failure_criteria = "block on self-review, missing evidence, missing verifier, or unreviewed changed file"
 resume_instructions = "resume by reading worker outputs, changed files, verifier refs, and review refs"
+acceptance_criteria = [
+  "Every worker result is independently reviewed before any implementation task can be marked done.",
+  "Review decisions record approved, rejected, needs_changes, or blocked with exact evidence."
+]
+stop_conditions = [
+  "Stop on self-review, missing worker evidence, missing verifier refs, unreviewed changed files, or scope drift.",
+  "Stop if review cannot map output refs to concrete implementation tasks."
+]
+verifier_ladder = [
+  "reviewer checks worker evidence refs",
+  "reviewer checks changed files and verifier refs",
+  "reviewer attaches review result refs for every implementation task"
+]
+regression_test_applicability = "required review of worker regression evidence or not-feasible rationale"
+downstream_impact_refs = ["changed-files-ref", "worker-evidence-ref", "review-result-ref"]
+output_contract = "independent review decision refs mapped to each worker output and implementation task"
 
 [[steps]]
 id = "orchestrator-verification"
@@ -138,10 +186,60 @@ expected_output = "verifier refs attached to reviewed tasks"
 failure_criteria = "block if focused tests fail, review is missing, or diff check fails"
 review_gate = "implementation-independent-review required before verifier refs complete the task"
 resume_instructions = "resume by rerunning failed narrow verifier and checking attached review refs"
+acceptance_criteria = [
+  "Focused verifiers run before broader tests and git diff checks.",
+  "Verifier refs are attached only after independent review refs exist."
+]
+stop_conditions = [
+  "Stop if focused tests fail, review refs are missing, broader tests fail, or diff check fails.",
+  "Stop if verifier evidence cannot be mapped to reviewed implementation output."
+]
+verifier_ladder = [
+  "run focused verifier first",
+  "run broader tests after focused verifier passes",
+  "run git diff --check after test refs exist"
+]
+regression_test_applicability = "required unless implementation review records concrete not-feasible rationale"
+downstream_impact_refs = ["focused-test-ref", "full-test-ref", "diff-check-ref", "review-result-ref"]
+output_contract = "verifier refs for reviewed implementation tasks with ordered focused, broad, and diff-check evidence"
+
+[[steps]]
+id = "pr-gitops-readiness"
+kind = "work_task"
+title = "PR GitOps Readiness"
+agent = "implementation-orchestrator"
+depends_on = ["orchestrator-verification"]
+description = "Block commit, push, and draft PR handoff unless implementation review refs, verifier refs, regression evidence, generated artifact checks, branch policy, PR metadata, and metadata redaction checks are complete."
+evidence_needed = ["git-status-ref", "branch-policy-ref", "review-result-ref", "verifier-result-ref", "regression-test-ref", "generated-artifact-check-ref", "pr-description-ref", "metadata-redaction-ref"]
+files_to_read = ["configs/workflows/governed-workplan-implementation.toml", ".ai/INDEX.md", ".ai/rules/20-go-service-standards.md"]
+files_to_edit = []
+likely_files_affected = []
+verification_requirement = "confirm GitOps can proceed only after implementation review, verifier, regression, generated artifact, branch policy, PR metadata, and redaction refs pass"
+expected_output = "GitOps readiness ref or blocked reason"
+failure_criteria = "block if implementation review or verifier refs are missing, feasible regression tests are missing, generated artifacts are stale, branch policy fails, PR metadata is incomplete, or unsafe metadata would be published"
+review_gate = "implementation-independent-review required before GitOps readiness"
+resume_instructions = "resume by checking implementation review refs, verifier refs, git status refs, generated artifact refs, and PR metadata refs"
+acceptance_criteria = [
+  "GitOps readiness is recorded only after implementation review refs, verifier refs, regression evidence, generated artifact checks, branch policy, PR metadata, and metadata redaction checks pass.",
+  "GitOps handoff contains safe PR-ready refs and concrete blocked reasons when any gate is missing."
+]
+stop_conditions = [
+  "Stop if review refs, verifier refs, regression evidence, generated artifact checks, branch policy, PR metadata, or redaction checks are missing.",
+  "Stop if unsafe metadata would be committed, pushed, or published in the PR."
+]
+verifier_ladder = [
+  "orchestrator checks implementation review refs",
+  "orchestrator checks verifier and regression refs",
+  "orchestrator checks generated artifact, git status, and branch policy refs",
+  "orchestrator checks PR metadata and redaction refs"
+]
+regression_test_applicability = "required before GitOps readiness unless review approved concrete not-feasible rationale"
+downstream_impact_refs = ["branch-policy-ref", "generated-artifact-check-ref", "metadata-redaction-ref", "gitops-readiness-ref"]
+output_contract = "GitOps readiness ref or blocked reason with review refs, verifier refs, generated artifact checks, and safe PR metadata"
 
 [[review_gates]]
 id = "implementation-independent-review"
-applies_to = ["select-ready-tasks", "run-implementation-batch", "orchestrator-verification"]
+applies_to = ["select-ready-tasks", "run-implementation-batch", "orchestrator-verification", "pr-gitops-readiness"]
 reviewer_agent = "implementation-reviewer"
 required = true
 independent_from_owner = true
