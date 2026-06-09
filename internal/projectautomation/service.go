@@ -6677,6 +6677,9 @@ func (svc *Service) classifyDirtyScopePaths(projectID string, task projectworkpl
 		if scope == "" {
 			scope = firstMatchingTaskScope(path, supportScopes)
 		}
+		if scope == "" && parentBarrelForScope(path, append(current, likely...)) {
+			scope = path
+		}
 		if scope == "" {
 			outside = append(outside, path)
 			continue
@@ -6727,6 +6730,34 @@ func taskPathMatchesScope(path string, scope string) bool {
 	path = strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(path)), "/")
 	scope = strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(scope)), "/")
 	return path == scope || strings.HasPrefix(path, scope+"/")
+}
+
+func parentBarrelForScope(path string, scopes []string) bool {
+	path = strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(path)), "/")
+	if !isSafeTaskPath(path) || !isIndexBarrelPath(path) {
+		return false
+	}
+	for _, scope := range safeTaskPathspecs(scopes) {
+		dir := strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(scope)), "/")
+		parent := filepath.ToSlash(filepath.Dir(dir))
+		if parent == "." || parent == "/" || parent == dir {
+			continue
+		}
+		if path == parent+"/index.ts" || path == parent+"/index.tsx" || path == parent+"/index.js" || path == parent+"/index.jsx" {
+			return true
+		}
+	}
+	return false
+}
+
+func isIndexBarrelPath(path string) bool {
+	base := filepath.Base(filepath.ToSlash(strings.TrimSpace(path)))
+	switch base {
+	case "index.ts", "index.tsx", "index.js", "index.jsx":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSafeTaskPath(path string) bool {

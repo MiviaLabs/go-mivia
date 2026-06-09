@@ -10555,6 +10555,62 @@ func TestCompleteAttemptExpandsScopeForDirtyPathsUnderLikelyFiles(t *testing.T) 
 	}
 }
 
+func TestCompleteAttemptExpandsScopeForParentBarrelOfAllowedEditScope(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"apps/domain-booking/src/domain/repositories/booking.repository.interface.ts"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.FilesToEdit = []string{"apps/domain-booking/src/domain/repositories"}
+	task.LikelyFilesAffected = []string{"apps/domain-booking/src/infrastructure/database/repositories"}
+	task.EvidenceRefs = []string{"implementation/evidence"}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-a",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         task.PlanID,
+		TaskID:         task.ID,
+		WorkTaskStatus: task.Status,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		AttemptCount:   2,
+		SafeSummary:    RunSafeSummaryGitOpsPostTaskRecovery,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       automation.ProjectID,
+		RunID:           "run-a",
+		Status:          RunStatusFailed,
+		FailureCategory: "gitops_dirty_worktree_scope",
+		EvidenceRefs:    []string{"gitops-dirty-path:apps/domain-booking/src/domain/index.ts"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if run.Status != RunStatusFailed || run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery || run.FailureCategory != "gitops_post_task_failed_runner_post_task" {
+		t.Fatalf("expected GitOps recovery requeue after parent barrel expansion, got %+v", run)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if !containsString(requeuedTask.FilesToEdit, "apps/domain-booking/src/domain/index.ts") {
+		t.Fatalf("expected parent barrel to be added to files_to_edit, got %+v", requeuedTask.FilesToEdit)
+	}
+	if !strings.Contains(requeuedTask.ResumeInstructions, "apps/domain-booking/src/domain/index.ts") {
+		t.Fatalf("expected resume instructions to name barrel path, got %q", requeuedTask.ResumeInstructions)
+	}
+}
+
 func TestCompleteAttemptBlocksDirtyPathsOutsideLikelyFiles(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"apps/domain/src/service.ts"})
