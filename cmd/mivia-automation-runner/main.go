@@ -623,6 +623,9 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 	if failure := gitOpsPostTaskCloseoutFailure(taskMetadata); failure != "" {
 		return projectautomation.RunStatusFailed, failure, time.Since(started).Milliseconds(), []string{"gitops-failure:" + failure}
 	}
+	if failure := validateBoundedSmokeOutput(runWorkDir, taskMetadata); failure != "" {
+		return projectautomation.RunStatusFailed, failure, time.Since(started).Milliseconds(), []string{"gitops-failure:" + failure}
+	}
 	gitOps := newGitOpsService(gitOpsOptionsForTask(gitOpsOptions, taskMetadata))
 	gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 	if err != nil {
@@ -641,6 +644,51 @@ var newGitOpsService = projectgitops.New
 
 func shouldRunGitOpsPostTask(task runnerWorkTaskMetadata) bool {
 	return gitOpsPostTaskCloseoutFailure(task) == ""
+}
+
+func validateBoundedSmokeOutput(workDir string, task runnerWorkTaskMetadata) string {
+	if !taskUsesBoundedSmokeGitOpsVerification(task) {
+		return ""
+	}
+	expected := boundedSmokeExpectedLine(task)
+	if expected == "" {
+		return "bounded_smoke_expected_output_missing"
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, ".agentic", "automation-smoke.md"))
+	if err != nil {
+		return "bounded_smoke_output_missing"
+	}
+	if strings.TrimSpace(string(data)) != expected {
+		return "bounded_smoke_output_mismatch"
+	}
+	return ""
+}
+
+func boundedSmokeExpectedLine(task runnerWorkTaskMetadata) string {
+	for _, source := range []string{task.Description, task.ExpectedOutput} {
+		if token := boundedSmokeInputToken(source); token != "" {
+			return "smoke input ref: " + token
+		}
+	}
+	return ""
+}
+
+func boundedSmokeInputToken(source string) string {
+	const marker = "smoke input ref: "
+	index := strings.Index(source, marker)
+	if index < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(source[index+len(marker):])
+	if rest == "" {
+		return ""
+	}
+	token := strings.Fields(rest)[0]
+	token = strings.TrimRight(token, ".,;:")
+	if token == "" || strings.ContainsAny(token, "\x00\r\n/\\") {
+		return ""
+	}
+	return token
 }
 
 func gitOpsOptionsForTask(options projectgitops.Options, task runnerWorkTaskMetadata) projectgitops.Options {

@@ -359,6 +359,62 @@ func TestShouldRunGitOpsPostTaskRequiresCloseoutReady(t *testing.T) {
 	}
 }
 
+func TestValidateBoundedSmokeOutputRequiresExactPromptRef(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, ".agentic"), 0o755); err != nil {
+		t.Fatalf("create smoke dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, ".agentic", "automation-smoke.md"), []byte("smoke input ref: input:live-smoke-generic\n"), 0o644); err != nil {
+		t.Fatalf("write smoke marker: %v", err)
+	}
+	task := runnerWorkTaskMetadata{
+		TaskRef:                "smoke-draft-pr",
+		Description:            "Create exactly one short safe line: smoke input ref: input:live-smoke-generic. Do not touch other files.",
+		FilesToEdit:            []string{".agentic/automation-smoke.md"},
+		EvidenceRefs:           []string{"gitops-smoke-ref"},
+		GitOpsVerificationMode: "bounded_smoke",
+	}
+
+	if failure := validateBoundedSmokeOutput(workDir, task); failure != "" {
+		t.Fatalf("expected exact smoke output to pass, got %q", failure)
+	}
+}
+
+func TestValidateBoundedSmokeOutputRejectsStaleCodexOutput(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, ".agentic"), 0o755); err != nil {
+		t.Fatalf("create smoke dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, ".agentic", "automation-smoke.md"), []byte("smoke input ref: stale-generic\n"), 0o644); err != nil {
+		t.Fatalf("write smoke marker: %v", err)
+	}
+	task := runnerWorkTaskMetadata{
+		TaskRef:                "smoke-draft-pr",
+		Description:            "Create exactly one short safe line: smoke input ref: input:live-smoke-current. Do not touch other files.",
+		FilesToEdit:            []string{".agentic/automation-smoke.md"},
+		EvidenceRefs:           []string{"gitops-smoke-ref"},
+		GitOpsVerificationMode: "bounded_smoke",
+	}
+
+	if failure := validateBoundedSmokeOutput(workDir, task); failure != "bounded_smoke_output_mismatch" {
+		t.Fatalf("expected mismatch failure, got %q", failure)
+	}
+}
+
+func TestValidateBoundedSmokeOutputRequiresExpectedToken(t *testing.T) {
+	workDir := t.TempDir()
+	task := runnerWorkTaskMetadata{
+		TaskRef:                "smoke-draft-pr",
+		FilesToEdit:            []string{".agentic/automation-smoke.md"},
+		EvidenceRefs:           []string{"gitops-smoke-ref"},
+		GitOpsVerificationMode: "bounded_smoke",
+	}
+
+	if failure := validateBoundedSmokeOutput(workDir, task); failure != "bounded_smoke_expected_output_missing" {
+		t.Fatalf("expected missing expected-output failure, got %q", failure)
+	}
+}
+
 func TestGitOpsOptionsForTaskUsesBoundedSmokeVerificationOnlyForGuardedSmokeTask(t *testing.T) {
 	base := projectgitops.Options{Verification: projectgitops.VerificationProfile{
 		BootstrapCommands: []string{"pnpm install --frozen-lockfile"},
@@ -1363,6 +1419,13 @@ func TestRunGitOpsPostTaskRecoveryRequiresReviewRefs(t *testing.T) {
 
 func TestRunGitOpsPostTaskRecoveryAllowsBoundedSmokeWithoutManualCloseoutRefs(t *testing.T) {
 	sshKey, knownHosts := testRunnerGitOpsCredentialFiles(t)
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, ".agentic"), 0o755); err != nil {
+		t.Fatalf("create smoke dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, ".agentic", "automation-smoke.md"), []byte("smoke input ref: input:runner-smoke\n"), 0o644); err != nil {
+		t.Fatalf("write smoke marker: %v", err)
+	}
 	runner := &gitOpsRecordingRunner{results: []projectgitops.CommandResult{
 		{},
 		{Stdout: "?? .agentic/automation-smoke.md\n"},
@@ -1401,6 +1464,7 @@ func TestRunGitOpsPostTaskRecoveryAllowsBoundedSmokeWithoutManualCloseoutRefs(t 
 				TaskRef:                "smoke-draft-pr",
 				Title:                  "Smoke Draft PR",
 				Status:                 "needs_review",
+				Description:            "Create exactly one short safe line: smoke input ref: input:runner-smoke. Do not touch other files.",
 				FilesToEdit:            []string{".agentic/automation-smoke.md"},
 				EvidenceRefs:           []string{"gitops-smoke-ref"},
 				GitOpsVerificationMode: "bounded_smoke",
@@ -1412,7 +1476,7 @@ func TestRunGitOpsPostTaskRecoveryAllowsBoundedSmokeWithoutManualCloseoutRefs(t 
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", workDir, "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:           "run-1",
 			ProjectID:    "generic-monorepo",
@@ -1434,6 +1498,13 @@ func TestRunGitOpsPostTaskRecoveryAllowsBoundedSmokeWithoutManualCloseoutRefs(t 
 
 func TestRunGitOpsPostTaskRecoveryAllowsLegacyBoundedSmokeWithReviewRef(t *testing.T) {
 	sshKey, knownHosts := testRunnerGitOpsCredentialFiles(t)
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, ".agentic"), 0o755); err != nil {
+		t.Fatalf("create smoke dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, ".agentic", "automation-smoke.md"), []byte("smoke input ref: input:legacy-runner-smoke\n"), 0o644); err != nil {
+		t.Fatalf("write smoke marker: %v", err)
+	}
 	runner := &gitOpsRecordingRunner{results: []projectgitops.CommandResult{
 		{},
 		{Stdout: "?? .agentic/automation-smoke.md\n"},
@@ -1472,6 +1543,7 @@ func TestRunGitOpsPostTaskRecoveryAllowsLegacyBoundedSmokeWithReviewRef(t *testi
 				TaskRef:          "smoke-draft-pr",
 				Title:            "Smoke Draft PR",
 				Status:           "needs_review",
+				Description:      "Create exactly one short safe line: smoke input ref: input:legacy-runner-smoke. Do not touch other files.",
 				FilesToEdit:      []string{".agentic/automation-smoke.md"},
 				EvidenceRefs:     []string{"automation_run:run-1", "gitops-smoke-ref", "smoke-chain-ref"},
 				ReviewResultRefs: []string{"review_result_work_task_approved"},
@@ -1483,7 +1555,7 @@ func TestRunGitOpsPostTaskRecoveryAllowsLegacyBoundedSmokeWithReviewRef(t *testi
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", workDir, "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:           "run-1",
 			ProjectID:    "generic-monorepo",
