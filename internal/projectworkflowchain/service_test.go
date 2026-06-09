@@ -1297,6 +1297,58 @@ func TestHandleWorkPlanStatusChangedRetriesBlockedDraftPRFinalization(t *testing
 	}
 }
 
+func TestRetryGitOpsFinalizesBlockedReadyChainThroughPublicAPI(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	finalizer := &fakeGitOpsFinalizer{err: errors.New("git push failed")}
+	svc.SetGitOpsFinalizer(finalizer)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "orchestrator-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, planID := range []string{"plan-decomposition", "plan-implementation", "plan-post-validation"} {
+		if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); planID == "plan-post-validation" {
+			if err == nil {
+				t.Fatalf("expected initial GitOps failure")
+			}
+		} else if err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	blocked, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get blocked chain: %v", err)
+	}
+	if blocked.Status != ChainStatusBlocked || !blocked.GitOpsReady || !allStagesCompleted(blocked) {
+		t.Fatalf("expected blocked GitOps-ready chain before retry, got %#v", blocked)
+	}
+
+	finalizer.err = nil
+	finalizer.result = GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}
+	retried, err := svc.RetryGitOps(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("RetryGitOps returned error: %v", err)
+	}
+	if retried.Status != ChainStatusCompleted || retried.GitOpsReady || retried.PullRequestRef != "pr/GENERIC-1044" {
+		t.Fatalf("expected direct retry to complete chain with PR ref, got %#v", retried)
+	}
+	if len(finalizer.inputs) != 2 {
+		t.Fatalf("expected initial failure plus direct retry finalization, got %#v", finalizer.inputs)
+	}
+	retryInput := finalizer.inputs[1]
+	if retryInput.WorkPlan.ID != "plan-implementation" || retryInput.InputRef != "jira:GENERIC-1044" || retryInput.CreatedByRunID != "orchestrator-1" || retryInput.TraceID != "trace-1" {
+		t.Fatalf("direct GitOps retry lost implementation plan or root refs: %#v", retryInput)
+	}
+	if !containsString(retryInput.AllowedPathspecs, "internal/projectworkflowchain/service.go") || !containsString(retryInput.ReviewRefs, "review:task-post-validation") || !containsString(retryInput.VerifierRefs, "verifier:task-post-validation") {
+		t.Fatalf("direct GitOps retry lost implementation scope or validation evidence: %#v", retryInput)
+	}
+}
+
 func TestHandleWorkPlanStatusChangedBlocksWhenNextStageCannotCompile(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
