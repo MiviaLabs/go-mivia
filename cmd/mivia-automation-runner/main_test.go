@@ -1733,6 +1733,12 @@ func TestRunOnceSendsRichGenericCodexPromptAndDurableCompletion(t *testing.T) {
 			input.VerificationRequirement = "run focused generic pipeline regression"
 			input.ExpectedOutput = "code and test evidence"
 			input.FailureCriteria = "block on missing source evidence"
+			input.AcceptanceCriteria = []string{"generic behavior is implemented from source evidence"}
+			input.StopConditions = []string{"missing generic source evidence"}
+			input.VerifierLadder = []string{"focused generic regression test"}
+			input.RegressionApplicability = "required"
+			input.DownstreamImpactRefs = []string{"downstream.generic-impact"}
+			input.OutputContract = "bounded diff with evidence refs and verifier refs"
 			input.RunnerInstructions = []string{"preserve generic pipeline refs"}
 			writeJSON(t, w, projectautomation.ClaimedRun{
 				Run: projectautomation.AutomationRun{
@@ -1817,6 +1823,12 @@ func TestRunOnceSendsRichGenericCodexPromptAndDurableCompletion(t *testing.T) {
 		"dependency:generic-predecessor-done",
 		"internal/generic/source.go",
 		"run focused generic pipeline regression",
+		"generic behavior is implemented from source evidence",
+		"missing generic source evidence",
+		"focused generic regression test",
+		"required",
+		"downstream.generic-impact",
+		"bounded diff with evidence refs and verifier refs",
 		"preserve generic pipeline refs",
 		server.URL,
 	} {
