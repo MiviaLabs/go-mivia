@@ -21,9 +21,21 @@ func TestAutomationRoutesCreateRunAndList(t *testing.T) {
 		PlanID:                  "plan-1",
 		TaskRef:                 "task/a",
 		Title:                   "Task A",
+		Description:             "Implement generic HTTP boundary behavior.",
 		Status:                  projectworkplan.WorkTaskStatusReady,
+		EvidenceNeeded:          []string{"evidence:http-source"},
+		ContextPackRefs:         []string{"context:http-generic"},
+		LikelyFilesAffected:     []string{"internal/generic/http.go"},
 		VerificationRequirement: "orchestrator runs focused verifier",
+		ExpectedOutput:          "bounded implementation and verifier evidence",
+		FailureCriteria:         "block on missing HTTP boundary evidence",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
+		AcceptanceCriteria:      []string{"HTTP claim response includes usable Codex data"},
+		StopConditions:          []string{"missing claim or runner refs"},
+		VerifierLadder:          []string{"focused HTTP automation regression"},
+		RegressionApplicability: "required",
+		DownstreamImpactRefs:    []string{"downstream.http-boundary"},
+		OutputContract:          "REST claim and completion preserve live runner handoff metadata",
 	}}
 	svc := projectautomation.New(automationstore.NewMemoryStore(), workTasks, projectautomation.Options{
 		Enabled:                   true,
@@ -86,9 +98,21 @@ func TestAutomationExternalClaimAndCompleteRoutes(t *testing.T) {
 		PlanID:                  "plan-1",
 		TaskRef:                 "task/a",
 		Title:                   "Task A",
+		Description:             "Implement generic HTTP boundary behavior.",
 		Status:                  projectworkplan.WorkTaskStatusReady,
+		EvidenceNeeded:          []string{"evidence:http-source"},
+		ContextPackRefs:         []string{"context:http-generic"},
+		LikelyFilesAffected:     []string{"internal/generic/http.go"},
 		VerificationRequirement: "orchestrator runs focused verifier",
+		ExpectedOutput:          "bounded implementation and verifier evidence",
+		FailureCriteria:         "block on missing HTTP boundary evidence",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
+		AcceptanceCriteria:      []string{"HTTP claim response includes usable Codex data"},
+		StopConditions:          []string{"missing claim or runner refs"},
+		VerifierLadder:          []string{"focused HTTP automation regression"},
+		RegressionApplicability: "required",
+		DownstreamImpactRefs:    []string{"downstream.http-boundary"},
+		OutputContract:          "REST claim and completion preserve live runner handoff metadata",
 	}}
 	automationStore := automationstore.NewMemoryStore()
 	svc := projectautomation.New(automationStore, workTasks, projectautomation.Options{
@@ -128,6 +152,28 @@ func TestAutomationExternalClaimAndCompleteRoutes(t *testing.T) {
 	if claimed.Run.WorkTaskStatus != projectworkplan.WorkTaskStatusInProgress || claimed.Run.SafeSummary != "external_runner_queued" {
 		t.Fatalf("claim response lost work task status/action summary: %+v", claimed.Run)
 	}
+	if claimed.CodexInput.ProjectID != "project-1" || claimed.CodexInput.AutomationRunID != queued.ID || claimed.CodexInput.PlanID != "plan-1" || claimed.CodexInput.TaskID != "task-a" || claimed.CodexInput.TaskRef != "task/a" {
+		t.Fatalf("claim response lost Codex run/task refs: %+v", claimed.CodexInput)
+	}
+	for _, want := range []string{
+		"Implement generic HTTP boundary behavior.",
+		"evidence:http-source",
+		"context:http-generic",
+		"internal/generic/http.go",
+		"orchestrator runs focused verifier",
+		"bounded implementation and verifier evidence",
+		"block on missing HTTP boundary evidence",
+		"HTTP claim response includes usable Codex data",
+		"missing claim or runner refs",
+		"focused HTTP automation regression",
+		"required",
+		"downstream.http-boundary",
+		"REST claim and completion preserve live runner handoff metadata",
+	} {
+		if !codexInputContains(claimed.CodexInput, want) {
+			t.Fatalf("claim response Codex input lost %q: %+v", want, claimed.CodexInput)
+		}
+	}
 
 	heartbeat := requestJSON[projectautomation.AutomationRun](t, mux, http.MethodPost, "/api/v1/projects/project-1/automation-runs/"+queued.ID+"/heartbeat", map[string]any{
 		"claim_id":  claimed.Run.ClaimID,
@@ -161,6 +207,11 @@ func TestAutomationExternalClaimAndCompleteRoutes(t *testing.T) {
 	if len(list.AutomationRuns) != 1 || list.AutomationRuns[0].ID != queued.ID || list.AutomationRuns[0].ClaimID != claimed.Run.ClaimID || list.AutomationRuns[0].RunnerID != "runner-http-1" {
 		t.Fatalf("list run response lost completed external handoff fields: %+v", list)
 	}
+}
+
+func codexInputContains(input projectautomation.CodexTaskInput, want string) bool {
+	data, err := json.Marshal(input)
+	return err == nil && bytes.Contains(data, []byte(want))
 }
 
 func requestJSON[T any](t *testing.T, handler http.Handler, method string, path string, body any, wantStatus int) T {
@@ -209,12 +260,14 @@ func (fake *fakeWorkTasks) ListOpenWorkTasks(context.Context, projectworkplan.Wo
 func (fake *fakeWorkTasks) ClaimWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
 	claimed := fake.task
 	claimed.Status = projectworkplan.WorkTaskStatusClaimed
+	fake.task = claimed
 	return claimed, nil
 }
 
 func (fake *fakeWorkTasks) StartWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
 	started := fake.task
 	started.Status = projectworkplan.WorkTaskStatusInProgress
+	fake.task = started
 	return started, nil
 }
 
