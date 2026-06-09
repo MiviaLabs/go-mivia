@@ -71,6 +71,8 @@ Verification:
 
 - Run the narrowest meaningful check first.
 - Broaden verification when the change touches shared behavior or operational controls.
+- Test coverage for changed behavior must be contract-level and edge-case complete for the affected boundary. Do not accept a shallow unit, prompt-string, happy-path, or mocked-only test as sufficient when the real risk is in state transitions, persistence, runner/GitOps handoff, verifier execution, PR rendering, generated artifacts, concurrency, or recovery.
+- Before implementation, write or update a test plan that names the success path, failure paths, negative cases, retry/recovery behavior, downstream handoff shape, and terminal blocking behavior for the exact boundary being changed. Implementation may proceed only after that coverage plan is reflected in tests or the untestable part is explicitly justified with the verifier that replaces it.
 - For bug fixes and automation pipeline changes, add regression coverage for the exact failed contract before declaring the fix complete. Coverage must be broad enough to prove the behavior through the real state transition or integration boundary; shallow prompt/string/unit assertions are allowed only as supporting checks, never as the only proof.
 - For workflow, automation, GitOps, verifier, branch, PR, or closeout changes, cover the full contract boundary in tests: invalid input blocked, valid input advances, dependencies preserved, retries/recovery bounded, terminal failure reported with a safe category/ref, and downstream stage receives the exact artifact shape it expects.
 - When a downstream stage depends on an upstream artifact, test the handoff shape explicitly and in detail. Examples: Work Task dependency IDs, carried context refs, branch ticket refs, branch type, PR title/body values, verifier refs, review refs, generated-artifact refs, and recovery point refs.
@@ -82,6 +84,7 @@ Verification:
 Review:
 
 - Reviews must verify behavior against source, tests, config, logs, and runtime metadata. Do not approve based only on prompt wording or claimed intent.
+- Reviews must start by checking whether the test plan covers the changed contract end to end. If it does not cover realistic negative, edge, retry, recovery, concurrency, and downstream handoff cases, the review blocks until tests are added or a named verifier proves the same behavior.
 - For automation pipeline changes, reviewers must trace at least one successful path and one failure path through every affected stage boundary before approval.
 - A review finding is actionable only when it names the violated contract, the reachable code path, the missing or weak test, and the failure impact.
 - If coverage is insufficient for a high-risk path, the review must block or require additional tests. Do not convert missing tests into residual-risk prose when the path can be tested.
