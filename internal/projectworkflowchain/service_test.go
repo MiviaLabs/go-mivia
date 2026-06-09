@@ -217,6 +217,37 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	}
 }
 
+func TestStartWithSameCorrelationReturnsExistingActiveChainRun(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1", "workflow_chain_run_2")
+
+	first, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", CreatedByRunID: "operator-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	second, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", CreatedByRunID: "operator-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("retry start: %v", err)
+	}
+	if second.ChainRunID != first.ChainRunID || second.Status != first.Status || len(second.WorkPlanIDs) != 1 {
+		t.Fatalf("retry must return existing active chain run, first=%#v second=%#v", first, second)
+	}
+	runs, err := store.ListChainRuns(ctx, ChainFilter{ProjectID: "project-1", ChainRef: "chain-1"})
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("retry must not create duplicate chain runs: %#v", runs)
+	}
+	if len(workflows.compileInputs) != 1 || len(workPlans.activations) != 1 {
+		t.Fatalf("retry must not compile or activate a second plan, compile=%d activations=%#v", len(workflows.compileInputs), workPlans.activations)
+	}
+}
+
 func TestStartWithTracePropagatesHandoffMetadataToCompileAndActivation(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()

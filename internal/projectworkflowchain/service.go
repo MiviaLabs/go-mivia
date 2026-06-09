@@ -125,6 +125,13 @@ func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, e
 	if err := svc.validateConfiguredWorkflows(ctx, cfg); err != nil {
 		return StartResult{}, err
 	}
+	if !input.DryRun {
+		if existing, ok, err := svc.findCorrelatedChainRun(ctx, cfg, inputRef, runID, traceID); err != nil {
+			return StartResult{}, err
+		} else if ok {
+			return startResult(existing, false), nil
+		}
+	}
 	contextRefs, err := svc.resolveContextRefs(ctx, cfg, inputRef)
 	if err != nil {
 		return StartResult{}, err
@@ -194,6 +201,41 @@ func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, e
 		return StartResult{}, err
 	}
 	return startResult(created, false), nil
+}
+
+func (svc *Service) findCorrelatedChainRun(ctx context.Context, cfg Config, inputRef string, runID string, traceID string) (ChainRun, bool, error) {
+	if strings.TrimSpace(runID) == "" && strings.TrimSpace(traceID) == "" {
+		return ChainRun{}, false, nil
+	}
+	runs, err := svc.store.ListChainRuns(ctx, ChainFilter{ProjectID: cfg.ProjectID, ChainRef: cfg.ChainRef})
+	if err != nil {
+		return ChainRun{}, false, err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.After(runs[j].CreatedAt) })
+	for _, run := range runs {
+		if run.ProjectID != cfg.ProjectID || run.ChainRef != cfg.ChainRef || run.InputRef != inputRef {
+			continue
+		}
+		if isRetryableTerminalChainStatus(run.Status) {
+			continue
+		}
+		if strings.TrimSpace(runID) != "" && run.CreatedByRunID == runID {
+			return run, true, nil
+		}
+		if strings.TrimSpace(traceID) != "" && run.TraceID == traceID {
+			return run, true, nil
+		}
+	}
+	return ChainRun{}, false, nil
+}
+
+func isRetryableTerminalChainStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case ChainStatusBlocked, ChainStatusFailed, ChainStatusCancelled, ChainStatusSuperseded:
+		return true
+	default:
+		return false
+	}
 }
 
 func (svc *Service) Get(ctx context.Context, projectID, chainRunID string) (ChainRun, error) {

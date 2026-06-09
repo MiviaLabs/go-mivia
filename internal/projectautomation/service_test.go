@@ -724,6 +724,48 @@ func TestClaimNextRunReportsUnclaimableQueuedRunReason(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunBlocksQueuedRunForSupersededPlan(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-a", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {ID: task.PlanID, ProjectID: task.ProjectID, Status: projectworkplan.WorkPlanStatusSuperseded},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-stale",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         task.PlanID,
+		TaskID:         task.ID,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusReady,
+		Status:         RunStatusQueued,
+		RunnerKind:     RunnerKindCodexCLI,
+		SafeSummary:    "dependency_ready_automation_queued",
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected stale queued run to be reconciled away, got %v", err)
+	}
+	updated, err := store.GetRun(ctx, automation.ProjectID, "run-stale")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if updated.Status != RunStatusBlocked || updated.FailureCategory != "work_plan_terminal" {
+		t.Fatalf("expected queued run blocked by terminal plan before claim, got %+v", updated)
+	}
+}
+
 func TestClaimNextRunRecoversRunningRunWhenTaskMovedToVerifying(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
