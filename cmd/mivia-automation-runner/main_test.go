@@ -1838,6 +1838,125 @@ func TestRunOnceSendsRichGenericCodexPromptAndDurableCompletion(t *testing.T) {
 	}
 }
 
+func TestRunOnceReportsGenericCodexFailureAndContinuesToNextClaim(t *testing.T) {
+	setReadableCodexHome(t)
+	workDir := initRunnerGitRepo(t)
+	promptPath := filepath.Join(t.TempDir(), "failed-codex-prompt.txt")
+	codexPath := fakeCodexRecordingPromptAndExit(t, promptPath, 1)
+	var attempts []projectautomation.CompleteAttemptInput
+	var claimedIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			nextID := "run-failure-generic-1"
+			nextTaskID := "task-failure-generic-1"
+			if len(claimedIDs) == 1 {
+				nextID = "run-recovery-generic-2"
+				nextTaskID = "task-recovery-generic-2"
+			}
+			if len(claimedIDs) > 1 {
+				http.Error(w, "no queued run", http.StatusBadRequest)
+				return
+			}
+			claimedIDs = append(claimedIDs, nextID)
+			input := testCodexInput(nextID)
+			input.ProjectID = "project-1"
+			input.AutomationRunID = nextID
+			input.PlanID = "plan-generic-failure"
+			input.TaskID = nextTaskID
+			input.TaskRef = "implement-generic-recovery"
+			input.Title = "Implement Generic Recovery"
+			input.ContextPackRefs = []string{"context:generic-recovery"}
+			input.EvidenceNeeded = []string{"evidence:generic-recovery-source"}
+			input.LikelyFilesAffected = []string{"internal/generic/recovery.go"}
+			input.VerificationRequirement = "runner failure is durably reported before next claim"
+			input.AcceptanceCriteria = []string{"failed run is not treated as successful"}
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run: projectautomation.AutomationRun{
+					ID:        nextID,
+					ProjectID: "project-1",
+					PlanID:    "plan-generic-failure",
+					TaskID:    nextTaskID,
+					TraceID:   "trace-generic-recovery",
+					ClaimID:   "claim-" + nextID,
+				},
+				CodexInput: input,
+				TimeoutMS:  1000,
+			})
+		case "/api/v1/projects/project-1/work-plans/plan-generic-failure":
+			writeJSON(t, w, runnerWorkPlan{ID: "plan-generic-failure", ProjectID: "project-1", IsolationMode: "shared"})
+		case "/api/v1/projects/project-1/work-tasks/task-failure-generic-1", "/api/v1/projects/project-1/work-tasks/task-recovery-generic-2":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:                      filepath.Base(r.URL.Path),
+				TaskRef:                 "implement-generic-recovery",
+				Status:                  "in_progress",
+				EvidenceRefs:            []string{"evidence:generic-recovery-source"},
+				ContextPackRefs:         []string{"context:generic-recovery"},
+				LikelyFilesAffected:     []string{"internal/generic/recovery.go"},
+				VerificationRequirement: "runner failure is durably reported before next claim",
+			})
+		case "/api/v1/projects/project-1/automation-runs/run-failure-generic-1/attempt-result", "/api/v1/projects/project-1/automation-runs/run-recovery-generic-2/attempt-result":
+			var input projectautomation.CompleteAttemptInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode attempt: %v", err)
+			}
+			attempts = append(attempts, input)
+			runID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/projects/project-1/automation-runs/"), "/attempt-result")
+			writeJSON(t, w, projectautomation.AutomationRun{ID: runID, ProjectID: "project-1", PlanID: "plan-generic-failure", Status: input.Status, FailureCategory: input.FailureCategory, ClaimID: input.ClaimID, RunnerID: input.RunnerID})
+		case "/api/v1/projects/project-1/automation-runs/run-failure-generic-1", "/api/v1/projects/project-1/automation-runs/run-recovery-generic-2":
+			runID := filepath.Base(r.URL.Path)
+			var status string
+			var failureCategory string
+			var claimID string
+			var runnerID string
+			for i, attempt := range attempts {
+				if (i == 0 && runID == "run-failure-generic-1") || (i == 1 && runID == "run-recovery-generic-2") {
+					status = attempt.Status
+					failureCategory = attempt.FailureCategory
+					claimID = attempt.ClaimID
+					runnerID = attempt.RunnerID
+				}
+			}
+			writeJSON(t, w, projectautomation.AutomationRun{ID: runID, ProjectID: "project-1", PlanID: "plan-generic-failure", Status: status, FailureCategory: failureCategory, ClaimID: claimID, RunnerID: runnerID})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-generic-recovery"}
+	for i := 0; i < 2; i++ {
+		status, claimedAny, attempted := claimRunExecuteAndReport(t.Context(), client, config.Config{}, "project-1", "implementation-worker", codexLaunchOptions{Path: codexPath, Launcher: "direct", WorkDir: workDir, Sandbox: "workspace-write"})
+		if status == 0 || !claimedAny || !attempted {
+			t.Fatalf("run %d expected failed Codex attempt with claim and durable report, status=%d claimed=%v attempted=%v", i+1, status, claimedAny, attempted)
+		}
+	}
+	if strings.Join(claimedIDs, ",") != "run-failure-generic-1,run-recovery-generic-2" {
+		t.Fatalf("runner must continue to next live claim after failure, got %+v", claimedIDs)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("expected two failure attempts, got %+v", attempts)
+	}
+	for i, attempt := range attempts {
+		if attempt.Status != projectautomation.RunStatusFailed || attempt.FailureCategory != "codex_cli_failed" {
+			t.Fatalf("attempt %d lost failed Codex status/action: %+v", i+1, attempt)
+		}
+		if attempt.ClaimID == "" || attempt.RunnerID != "runner-generic-recovery" || attempt.DurationMS < 0 {
+			t.Fatalf("attempt %d lost claim/runner/duration refs: %+v", i+1, attempt)
+		}
+	}
+	promptData, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read failed Codex prompt: %v", err)
+	}
+	prompt := string(promptData)
+	for _, want := range []string{"context:generic-recovery", "evidence:generic-recovery-source", "internal/generic/recovery.go", "runner failure is durably reported before next claim", "failed run is not treated as successful"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("failed Codex prompt lost expected handoff data %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
 	setReadableCodexHome(t)
 	var completed atomic.Int32
@@ -3149,6 +3268,17 @@ func fakeCodexRecordingPromptAndLastMessage(t *testing.T, promptPath string, mes
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "codex")
 	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-test; exit 0; fi\nout=''\nprev=''\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--output-last-message\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncat > " + shellQuoteForTest(promptPath) + "\nif [ -n \"$out\" ]; then cat > \"$out\" <<'EOF'\n" + message + "\nEOF\nfi\nexit 0\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	return binary
+}
+
+func fakeCodexRecordingPromptAndExit(t *testing.T, promptPath string, execStatus int) string {
+	t.Helper()
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-test; exit 0; fi\ncat > " + shellQuoteForTest(promptPath) + "\nexit " + string(rune('0'+execStatus)) + "\n"
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
 	}
