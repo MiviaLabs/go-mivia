@@ -231,6 +231,71 @@ func TestGitOpsRecoveryFailureCategoryOrFallbackNamesEmptyFailure(t *testing.T) 
 	}
 }
 
+func TestRunnerClientCompleteAttemptCarriesClaimRunnerAndFailureRefs(t *testing.T) {
+	var posted projectautomation.CompleteAttemptInput
+	var sawPost bool
+	var sawGet bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			sawPost = true
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Fatalf("decode attempt-result payload: %v", err)
+			}
+			writeJSON(t, w, projectautomation.AutomationRun{
+				ID:              "run-1",
+				ProjectID:       "project-1",
+				Status:          projectautomation.RunStatusFailed,
+				FailureCategory: "gitops_dirty_worktree_scope",
+				ClaimID:         "claim-1",
+				RunnerID:        "runner-live-1",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			sawGet = true
+			writeJSON(t, w, projectautomation.AutomationRun{
+				ID:              "run-1",
+				ProjectID:       "project-1",
+				Status:          projectautomation.RunStatusFailed,
+				FailureCategory: "gitops_dirty_worktree_scope",
+				ClaimID:         "claim-1",
+				RunnerID:        "runner-live-1",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-live-1"}
+	run, err := client.completeAttempt(t.Context(), "project-1", projectautomation.AutomationRun{
+		ID:      "run-1",
+		ClaimID: "claim-1",
+	}, projectautomation.CompleteAttemptInput{
+		Status:          projectautomation.RunStatusFailed,
+		FailureCategory: "gitops_dirty_worktree_scope",
+		DurationMS:      250,
+		EvidenceRefs:    []string{"gitops-failure:gitops_dirty_worktree_scope", "gitops-dirty-path:apps/domain/src/module.ts"},
+	})
+	if err != nil {
+		t.Fatalf("completeAttempt returned error: %v", err)
+	}
+	if !sawPost || !sawGet {
+		t.Fatalf("expected attempt-result post and durable get, sawPost=%v sawGet=%v", sawPost, sawGet)
+	}
+	if posted.ClaimID != "claim-1" || posted.RunnerID != "runner-live-1" {
+		t.Fatalf("attempt-result payload lost claim/runner handoff refs: %+v", posted)
+	}
+	if posted.Status != projectautomation.RunStatusFailed || posted.FailureCategory != "gitops_dirty_worktree_scope" || posted.DurationMS != 250 {
+		t.Fatalf("attempt-result payload lost failure status/action: %+v", posted)
+	}
+	if strings.Join(posted.EvidenceRefs, ",") != "gitops-failure:gitops_dirty_worktree_scope,gitops-dirty-path:apps/domain/src/module.ts" {
+		t.Fatalf("attempt-result payload lost failure evidence refs: %+v", posted.EvidenceRefs)
+	}
+	if run.Status != projectautomation.RunStatusFailed || run.ClaimID != "claim-1" || run.RunnerID != "runner-live-1" {
+		t.Fatalf("completeAttempt did not return durable handoff state: %+v", run)
+	}
+}
+
 func TestGitOpsFailureEvidenceRefsNameRuntimeSetupFailure(t *testing.T) {
 	err := fmt.Errorf("%w: safe_directory_home", projectgitops.ErrRuntimeFailure)
 	refs := gitOpsFailureEvidenceRefs(err)
