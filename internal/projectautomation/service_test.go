@@ -4792,6 +4792,28 @@ func TestGitOpsVerificationRepairPromptFromTaskMetadata(t *testing.T) {
 	}
 }
 
+func TestCloseoutMissingRecoveryPromptRequiresGovernedJSON(t *testing.T) {
+	task := readyTask("task-a", "repair-closeout", []string{"internal/projectautomation/service.go"})
+	task.ResumeInstructions = "Previous attempt failed after automation_task_closeout_missing."
+	task.EvidenceRefs = []string{"gitops-failure:automation_task_closeout_missing"}
+	input := codexInputForRun(AutomationRun{
+		ID:              "run-a",
+		ProjectID:       "project-1",
+		FailureCategory: "gitops_recovery_failed_requires_implementation",
+		SafeSummary:     "gitops_recovery_requeued_implementation_after_automation_task_closeout_missing",
+	}, task)
+	prompt := RenderCodexTaskPrompt(input)
+	for _, want := range []string{
+		"The previous attempt failed because governed closeout JSON was missing",
+		"Your final response must be exactly one governed closeout JSON object",
+		"Do not exit with prose-only output",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected closeout recovery prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestClaimNextRunRecoversVerifyingWriteTaskMissingGitOpsRefs(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()

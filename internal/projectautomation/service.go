@@ -5607,6 +5607,12 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 			"Do not implement unrelated feature behavior. Do not commit, push, or create pull requests; runner GitOps retries after closeout.",
 		)
 	}
+	if isAutomationTaskCloseoutMissingRecovery(run, task) {
+		instructions = append(instructions,
+			"The previous attempt failed because governed closeout JSON was missing. Your final response must be exactly one governed closeout JSON object.",
+			"Do not exit with prose-only output. If no code change is needed, still return closeout_action=needs_review with safe evidence_refs and verifier_result_refs, or closeout_action=block with the exact safe blocker.",
+		)
+	}
 	governedInstructions := GovernedWorkflowStepInstructions(task.TaskRef)
 	implementationCloseoutInstructions := ImplementationTaskCloseoutInstructions(task.TaskRef, task.FilesToEdit)
 	if strings.HasPrefix(task.TaskRef, "review-") && len(governedInstructions) == 0 {
@@ -5659,6 +5665,16 @@ func isGitOpsVerificationRepairTask(run AutomationRun, task projectworkplan.Work
 	}, " ")
 	text = strings.ToLower(text)
 	return strings.Contains(text, "gitops_verification_failed") || strings.Contains(text, "gitops_verification_repair")
+}
+
+func isAutomationTaskCloseoutMissingRecovery(run AutomationRun, task projectworkplan.WorkTask) bool {
+	text := strings.Join([]string{
+		run.SafeSummary,
+		run.FailureCategory,
+		task.ResumeInstructions,
+		strings.Join(task.EvidenceRefs, " "),
+	}, " ")
+	return strings.Contains(strings.ToLower(text), "automation_task_closeout_missing")
 }
 
 func GovernedWorkflowStepInstructions(taskRef string) []string {
