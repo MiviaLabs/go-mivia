@@ -52,6 +52,9 @@ func TestGovernedWorkflowCloseoutInstructionsAvoidValidatorForbiddenLiterals(t *
 	if !strings.Contains(instructions, "source-evidence") || !strings.Contains(instructions, "log-evidence") {
 		t.Fatalf("governed closeout instructions should provide safe replacement terms: %s", instructions)
 	}
+	if !strings.Contains(instructions, "bounded diff refs plus verifier refs") {
+		t.Fatalf("governed closeout instructions should give safe output_contract wording: %s", instructions)
+	}
 }
 
 func TestCallAutomationToolCreateAcceptsCommonCompatibilityAliases(t *testing.T) {

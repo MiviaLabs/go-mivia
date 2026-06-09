@@ -549,8 +549,24 @@ func normalizeGovernedCloseoutObjectTextField(task map[string]json.RawMessage, f
 
 func normalizeGovernedCloseoutStructuredTextField(task map[string]json.RawMessage, field string, max int) bool {
 	rawValue, ok := task[field]
-	if !ok || rawJSONValueIsStringOrNull(rawValue) {
+	if !ok {
 		return false
+	}
+	if rawJSONValueIsStringOrNull(rawValue) {
+		var value string
+		if err := json.Unmarshal(rawValue, &value); err != nil {
+			return false
+		}
+		normalized := normalizeGovernedCloseoutOutputContractText(value)
+		if normalized == value {
+			return false
+		}
+		encoded, err := json.Marshal(normalized)
+		if err != nil {
+			return false
+		}
+		task[field] = encoded
+		return true
 	}
 	value, err := closeoutTextFromObject(rawValue)
 	if err != nil {
@@ -560,6 +576,7 @@ func normalizeGovernedCloseoutStructuredTextField(task map[string]json.RawMessag
 	if value == "" {
 		return false
 	}
+	value = normalizeGovernedCloseoutOutputContractText(value)
 	if len(value) > max {
 		value = value[:max]
 	}
@@ -569,6 +586,32 @@ func normalizeGovernedCloseoutStructuredTextField(task map[string]json.RawMessag
 	}
 	task[field] = encoded
 	return true
+}
+
+func normalizeGovernedCloseoutOutputContractText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"provider_payload", "evidence refs",
+		"provider payload", "evidence refs",
+		"raw_prompt", "prompt ref",
+		"raw prompt", "prompt ref",
+		"raw_completion", "completion ref",
+		"raw completion", "completion ref",
+		"raw_stderr", "stderr ref",
+		"raw stderr", "stderr ref",
+		"raw log", "log-evidence ref",
+		"raw source", "source-evidence ref",
+		"source dump", "source-evidence ref",
+	)
+	lower := strings.ToLower(value)
+	normalized := replacer.Replace(lower)
+	if normalized != lower {
+		return normalized
+	}
+	return value
 }
 
 func compactJSONText(raw json.RawMessage) string {

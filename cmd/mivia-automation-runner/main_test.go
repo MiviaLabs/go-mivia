@@ -2783,6 +2783,31 @@ func TestParseGovernedCloseoutNormalizesStructuredOutputContract(t *testing.T) {
 	}
 }
 
+func TestParseGovernedCloseoutNormalizesUnsafeOutputContractLabels(t *testing.T) {
+	payload := strings.Replace(
+		governedCloseoutFixtureJSON(),
+		`"output_contract":"code change with verifier evidence"`,
+		`"output_contract":"provider_payload with raw source and raw stderr refs"`,
+		1,
+	)
+	output, err := parseGovernedCloseoutOutput(payload)
+	if err != nil {
+		t.Fatalf("unsafe output_contract labels should normalize before validation: %v", err)
+	}
+	got := output.ChildTasks[0].OutputContract
+	for _, forbidden := range []string{"provider_payload", "raw source", "raw stderr"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("normalized output_contract still contains forbidden label %q: %q", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "evidence refs") || !strings.Contains(got, "source-evidence ref") || !strings.Contains(got, "stderr ref") {
+		t.Fatalf("normalized output_contract should use safe ref wording, got %q", got)
+	}
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("normalized unsafe output_contract labels should pass governed validation: %v", err)
+	}
+}
+
 func TestParseGovernedCloseoutTruncatesTopLevelCloseoutReasons(t *testing.T) {
 	longReason := strings.Repeat("x", closeoutWorkTaskTextMax+25)
 	payload := `{
