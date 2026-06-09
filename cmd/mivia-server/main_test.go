@@ -110,6 +110,36 @@ func TestWorkflowCompileBranchTemplateUsesGenericTicketScopedPattern(t *testing.
 	}
 }
 
+func TestWorkflowCompileOptionsUseProjectGitOpsConventions(t *testing.T) {
+	cfg := config.Config{
+		GitOperations: config.GitOperations{Conventions: config.GitOpsConventions{
+			BranchTemplate:    "{{change_type}}-{{ticket_ref}}-global",
+			DefaultChangeType: "chore",
+		}},
+		Projects: []config.Project{{
+			ID: "mass-monorepo",
+			GitOperations: &config.GitOperations{
+				BranchPrefix:      "",
+				BranchNamePattern: "^(feat|fix|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+				Conventions: config.GitOpsConventions{
+					BranchTemplate:    "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}",
+					AllowedTypes:      []string{"feat", "fix", "chore"},
+					DefaultChangeType: "feat",
+				},
+			},
+		}},
+	}
+
+	options := workflowCompileOptions(cfg)
+	mass := options["mass-monorepo"]
+	if mass.DefaultChangeType != "feat" {
+		t.Fatalf("project default change type must override global default, got %#v", mass)
+	}
+	if mass.BranchSummaryTemplate != "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}" {
+		t.Fatalf("project branch template must be adapted for workflow refs, got %#v", mass)
+	}
+}
+
 func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *testing.T) {
 	repo := initServerGitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "apps", "domain", "src", "module.ts"), []byte("export const value = 2;\n"), 0o600); err != nil {

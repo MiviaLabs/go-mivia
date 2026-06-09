@@ -757,11 +757,32 @@ func mergeServerGitOpsConventions(base config.GitOpsConventions, override config
 	if strings.TrimSpace(override.CommitScope) != "" {
 		merged.CommitScope = override.CommitScope
 	}
+	if strings.TrimSpace(override.BranchTemplate) != "" {
+		merged.BranchTemplate = override.BranchTemplate
+	}
+	if override.RequireTicketRef {
+		merged.RequireTicketRef = true
+	}
+	if strings.TrimSpace(override.TicketRefPattern) != "" {
+		merged.TicketRefPattern = override.TicketRefPattern
+	}
+	if strings.TrimSpace(override.TicketURLTemplate) != "" {
+		merged.TicketURLTemplate = override.TicketURLTemplate
+	}
+	if len(override.AllowedTypes) > 0 {
+		merged.AllowedTypes = append([]string(nil), override.AllowedTypes...)
+	}
+	if strings.TrimSpace(override.DefaultChangeType) != "" {
+		merged.DefaultChangeType = override.DefaultChangeType
+	}
 	if strings.TrimSpace(override.CommitSummaryTemplate) != "" {
 		merged.CommitSummaryTemplate = override.CommitSummaryTemplate
 	}
 	if strings.TrimSpace(override.PullRequestTitleTemplate) != "" {
 		merged.PullRequestTitleTemplate = override.PullRequestTitleTemplate
+	}
+	if strings.TrimSpace(override.PullRequestBodyTemplate) != "" {
+		merged.PullRequestBodyTemplate = override.PullRequestBodyTemplate
 	}
 	if strings.TrimSpace(override.WhatChangedTemplate) != "" {
 		merged.WhatChangedTemplate = override.WhatChangedTemplate
