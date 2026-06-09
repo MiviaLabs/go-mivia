@@ -25,7 +25,7 @@ func TestValidateConfigRejectsUnsafeAndInvalidChains(t *testing.T) {
 	}{
 		{"duplicate stage", func(cfg *Config) { cfg.Stages[1].StageRef = cfg.Stages[0].StageRef }},
 		{"cycle", func(cfg *Config) { cfg.Stages[0].DependsOn = []string{"implementation"} }},
-		{"unsafe pattern", func(cfg *Config) { cfg.InputPattern = "^MASS-.*$" }},
+		{"unsafe pattern", func(cfg *Config) { cfg.InputPattern = "^GENERIC-.*$" }},
 		{"missing post validation", func(cfg *Config) {
 			cfg.Stages = cfg.Stages[:2]
 			cfg.GitOpsMode = GitOpsModeDraftPRAfterValidation
@@ -55,18 +55,18 @@ func TestStartDryRunRejectsUnsafeInputAndDoesNotCreateRun(t *testing.T) {
 	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "somebody@example.com", DryRun: true}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected unsafe input rejection, got %v", err)
 	}
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", DryRun: true})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", DryRun: true})
 	if err != nil {
 		t.Fatalf("dry-run start: %v", err)
 	}
-	if !result.DryRun || result.InputRef != "jira:MASS-1044" || len(result.StageRuns) != 3 {
+	if !result.DryRun || result.InputRef != "jira:GENERIC-1044" || len(result.StageRuns) != 3 {
 		t.Fatalf("unexpected dry-run result: %#v", result)
 	}
-	result, err = svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "jira:MASS-1044", DryRun: true})
+	result, err = svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "jira:GENERIC-1044", DryRun: true})
 	if err != nil {
 		t.Fatalf("dry-run start with prefixed Jira input: %v", err)
 	}
-	if !result.DryRun || result.InputRef != "jira:MASS-1044" || len(result.StageRuns) != 3 {
+	if !result.DryRun || result.InputRef != "jira:GENERIC-1044" || len(result.StageRuns) != 3 {
 		t.Fatalf("unexpected prefixed dry-run result: %#v", result)
 	}
 	runs, err := store.ListChainRuns(ctx, ChainFilter{ProjectID: "project-1"})
@@ -83,22 +83,22 @@ func TestStartDryRunPreflightsLocalJiraContextBeforePersistence(t *testing.T) {
 	store := newTestChainStore()
 	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
 	svc := New(store, workflows, &fakeWorkPlans{}, []Config{localIngestedTestConfig()})
-	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContext("MASS-1044", true)})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContext("GENERIC-1044", true)})
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", DryRun: true})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", DryRun: true})
 	if err != nil {
 		t.Fatalf("dry-run start: %v", err)
 	}
-	if !containsString(result.ContextRefs, "jira-context:MASS-1044:summary") || !containsString(result.ContextRefs, "jira-context:MASS-1044:scope") {
+	if !containsString(result.ContextRefs, "jira-context:GENERIC-1044:summary") || !containsString(result.ContextRefs, "jira-context:GENERIC-1044:scope") {
 		t.Fatalf("dry run missing verified context refs: %#v", result.ContextRefs)
 	}
-	if !containsString(result.ContextRefs, "jira-context:MASS-1044:implementation-evidence") || !containsString(result.ContextRefs, "jira-context:MASS-1044:source-anchors") || !containsString(result.ContextRefs, "jira-context:MASS-1044:verifier-scope") {
+	if !containsString(result.ContextRefs, "jira-context:GENERIC-1044:implementation-evidence") || !containsString(result.ContextRefs, "jira-context:GENERIC-1044:source-anchors") || !containsString(result.ContextRefs, "jira-context:GENERIC-1044:verifier-scope") {
 		t.Fatalf("dry run missing implementation context refs: %#v", result.ContextRefs)
 	}
 	if len(workflows.compileInputs) != 3 {
 		t.Fatalf("expected dry run to compile all stages, got %d", len(workflows.compileInputs))
 	}
-	if !containsString(workflows.compileInputs[0].ContextPackRefs, "jira-context:MASS-1044:scope") || !containsString(workflows.compileInputs[0].ContextPackRefs, "jira-context:MASS-1044:implementation-evidence") {
+	if !containsString(workflows.compileInputs[0].ContextPackRefs, "jira-context:GENERIC-1044:scope") || !containsString(workflows.compileInputs[0].ContextPackRefs, "jira-context:GENERIC-1044:implementation-evidence") {
 		t.Fatalf("compile input missing context refs: %#v", workflows.compileInputs[0])
 	}
 	runs, err := store.ListChainRuns(ctx, ChainFilter{ProjectID: "project-1"})
@@ -115,9 +115,9 @@ func TestStartRejectsLocalJiraContextMissingScopeBeforeRunCreation(t *testing.T)
 	store := newTestChainStore()
 	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
 	svc := New(store, workflows, &fakeWorkPlans{}, []Config{localIngestedTestConfig()})
-	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContext("MASS-1044", false)})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContext("GENERIC-1044", false)})
 
-	_, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	_, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "description_or_acceptance_criteria") {
 		t.Fatalf("expected missing scope rejection, got %v", err)
 	}
@@ -138,9 +138,9 @@ func TestStartRejectsLocalJiraContextMissingImplementationEvidenceBeforeRunCreat
 	store := newTestChainStore()
 	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
 	svc := New(store, workflows, &fakeWorkPlans{}, []Config{localIngestedTestConfig()})
-	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContextWithoutImplementationEvidence("MASS-1044")})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContextWithoutImplementationEvidence("GENERIC-1044")})
 
-	_, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	_, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "implementation_evidence") {
 		t.Fatalf("expected missing implementation evidence rejection, got %v", err)
 	}
@@ -164,7 +164,7 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", CreatedByRunID: "run-1"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -184,13 +184,13 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 		t.Fatalf("expected first-stage compile input, got %#v", workflows.compileInputs)
 	}
 	firstCompile := workflows.compileInputs[0]
-	if firstCompile.UserRequestRef != "jira:MASS-1044" || firstCompile.CreatedByRunID != "run-1" || firstCompile.TraceID != "" {
+	if firstCompile.UserRequestRef != "jira:GENERIC-1044" || firstCompile.CreatedByRunID != "run-1" || firstCompile.TraceID != "" {
 		t.Fatalf("first-stage compile must preserve input and caller refs, got %#v", firstCompile)
 	}
-	if !containsString(firstCompile.ContextPackRefs, "jira:MASS-1044") {
+	if !containsString(firstCompile.ContextPackRefs, "jira:GENERIC-1044") {
 		t.Fatalf("first-stage compile missing input context ref, got %#v", firstCompile.ContextPackRefs)
 	}
-	if !strings.Contains(firstCompile.TitleOverride, "jira:MASS-1044") || !strings.Contains(firstCompile.TitleOverride, "decomposition") {
+	if !strings.Contains(firstCompile.TitleOverride, "jira:GENERIC-1044") || !strings.Contains(firstCompile.TitleOverride, "decomposition") {
 		t.Fatalf("first-stage compile title must include input and stage, got %q", firstCompile.TitleOverride)
 	}
 
@@ -215,10 +215,10 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 		t.Fatalf("expected implementation compile input, got %#v", workflows.compileInputs)
 	}
 	nextCompile := workflows.compileInputs[1]
-	if nextCompile.UserRequestRef != "jira:MASS-1044" || nextCompile.CreatedByRunID != "run-1" {
+	if nextCompile.UserRequestRef != "jira:GENERIC-1044" || nextCompile.CreatedByRunID != "run-1" {
 		t.Fatalf("next-stage compile must preserve input and creator run refs, got %#v", nextCompile)
 	}
-	if !containsString(nextCompile.ContextPackRefs, "jira:MASS-1044") || !strings.Contains(nextCompile.TitleOverride, "implementation") {
+	if !containsString(nextCompile.ContextPackRefs, "jira:GENERIC-1044") || !strings.Contains(nextCompile.TitleOverride, "implementation") {
 		t.Fatalf("next-stage compile must preserve context and stage title, got %#v", nextCompile)
 	}
 }
@@ -231,11 +231,11 @@ func TestStartWithSameCorrelationReturnsExistingActiveChainRun(t *testing.T) {
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	svc.newID = deterministicIDs("workflow_chain_run_1", "workflow_chain_run_2")
 
-	first, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", CreatedByRunID: "operator-1", TraceID: "trace-1"})
+	first, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "operator-1", TraceID: "trace-1"})
 	if err != nil {
 		t.Fatalf("first start: %v", err)
 	}
-	second, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", CreatedByRunID: "operator-1", TraceID: "trace-1"})
+	second, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "operator-1", TraceID: "trace-1"})
 	if err != nil {
 		t.Fatalf("retry start: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestStartWithTracePropagatesHandoffMetadataToCompileAndActivation(t *testin
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", CreatedByRunID: "orchestrator-1", TraceID: "trace-1"}); err != nil {
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "orchestrator-1", TraceID: "trace-1"}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if len(workflows.compileInputs) != 1 {
@@ -335,7 +335,7 @@ func TestStartDoesNotActivateFirstStageBeforeChainRunPersists(t *testing.T) {
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"}); err == nil {
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"}); err == nil {
 		t.Fatalf("expected start to fail when chain run persistence fails")
 	}
 	if len(workPlans.activations) != 0 || len(workPlans.released) != 0 {
@@ -355,7 +355,7 @@ func TestStartDoesNotActivateFirstStageBeforeStageMetadataUpdatePersists(t *test
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 	store.updateErr = errors.New("chain update unavailable")
 
-	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"}); err == nil {
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"}); err == nil {
 		t.Fatalf("expected start to fail when first-stage metadata update fails")
 	}
 	if len(workPlans.activations) != 0 || len(workPlans.released) != 0 {
@@ -369,11 +369,11 @@ func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *tes
 	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
 	workPlans := &fakeWorkPlans{}
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
-	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/MASS-1044"}}
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}}
 	svc.SetGitOpsFinalizer(finalizer)
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *tes
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
-	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/MASS-1044" {
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/GENERIC-1044" {
 		t.Fatalf("expected completed chain with draft PR ref, got %#v", run)
 	}
 	if run.StageRuns[2].Status != StageStatusCompleted || run.NextAction == "" {
@@ -421,20 +421,20 @@ func TestJiraTicketChainPreservesEveryAutomationHandoffThroughDraftPR(t *testing
 	workPlans := &fakeWorkPlans{}
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{
-		CommitRef:      "commit/MASS-1044",
-		PushRef:        "push/MASS-1044",
-		PullRequestRef: "pr/MASS-1044",
-		EvidenceRefs:   []string{"gitops-evidence:MASS-1044"},
+		CommitRef:      "commit/GENERIC-1044",
+		PushRef:        "push/GENERIC-1044",
+		PullRequestRef: "pr/GENERIC-1044",
+		EvidenceRefs:   []string{"gitops-evidence:GENERIC-1044"},
 	}}
 	svc.SetGitOpsFinalizer(finalizer)
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", CreatedByRunID: "orchestrator-run-1", TraceID: "trace-1"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "orchestrator-run-1", TraceID: "trace-1"})
 	if err != nil {
 		t.Fatalf("start chain: %v", err)
 	}
 	assertChainStageHandoff(t, result.StageRuns[0], "decomposition", "workflow-decomposition", "plan-decomposition", "task-decomposition", "automation-decomposition", StageStatusQueued)
-	if result.InputRef != "jira:MASS-1044" || result.NextAction != "decomposition automation will run when planned tasks transition to ready" {
+	if result.InputRef != "jira:GENERIC-1044" || result.NextAction != "decomposition automation will run when planned tasks transition to ready" {
 		t.Fatalf("start result lost Jira input or next action: %#v", result)
 	}
 	if len(workflows.compileInputs) != 1 || workflows.compileInputs[0].CreatedByRunID != "orchestrator-run-1" || workflows.compileInputs[0].TraceID != "trace-1" {
@@ -453,10 +453,10 @@ func TestJiraTicketChainPreservesEveryAutomationHandoffThroughDraftPR(t *testing
 	if err != nil {
 		t.Fatalf("get completed run: %v", err)
 	}
-	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/MASS-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/GENERIC-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
 		t.Fatalf("completed chain lost final status/action/PR handoff: %#v", run)
 	}
-	if run.CreatedByRunID != "orchestrator-run-1" || run.TraceID != "trace-1" || run.InputRef != "jira:MASS-1044" {
+	if run.CreatedByRunID != "orchestrator-run-1" || run.TraceID != "trace-1" || run.InputRef != "jira:GENERIC-1044" {
 		t.Fatalf("completed chain lost root refs: %#v", run)
 	}
 	if len(run.WorkPlanIDs) != 3 || len(run.AutomationIDs) != 3 || len(run.StageRuns) != 3 {
@@ -472,10 +472,10 @@ func TestJiraTicketChainPreservesEveryAutomationHandoffThroughDraftPR(t *testing
 		t.Fatalf("expected all three stages compiled, got %#v", workflows.compileInputs)
 	}
 	for i, input := range workflows.compileInputs {
-		if input.UserRequestRef != "jira:MASS-1044" || input.CreatedByRunID != "orchestrator-run-1" || input.TraceID != "trace-1" {
+		if input.UserRequestRef != "jira:GENERIC-1044" || input.CreatedByRunID != "orchestrator-run-1" || input.TraceID != "trace-1" {
 			t.Fatalf("compile input %d lost Jira/run/trace refs: %#v", i, input)
 		}
-		if len(input.ContextPackRefs) == 0 || !containsString(input.ContextPackRefs, "jira:MASS-1044") {
+		if len(input.ContextPackRefs) == 0 || !containsString(input.ContextPackRefs, "jira:GENERIC-1044") {
 			t.Fatalf("compile input %d lost context refs: %#v", i, input)
 		}
 	}
@@ -483,7 +483,7 @@ func TestJiraTicketChainPreservesEveryAutomationHandoffThroughDraftPR(t *testing
 		t.Fatalf("expected exactly one GitOps finalization, got %#v", finalizer.inputs)
 	}
 	gitopsInput := finalizer.inputs[0]
-	if gitopsInput.InputRef != "jira:MASS-1044" || gitopsInput.CreatedByRunID != "orchestrator-run-1" || gitopsInput.TraceID != "trace-1" {
+	if gitopsInput.InputRef != "jira:GENERIC-1044" || gitopsInput.CreatedByRunID != "orchestrator-run-1" || gitopsInput.TraceID != "trace-1" {
 		t.Fatalf("GitOps input lost Jira/run/trace refs: %#v", gitopsInput)
 	}
 	if len(gitopsInput.StageRuns) != 3 || len(gitopsInput.AutomationIDs) != 3 || gitopsInput.WorkPlan.ID != "plan-implementation" {
@@ -739,7 +739,7 @@ func TestHandleWorkPlanStatusChangedDoesNotActivateNextStageBeforeChainUpdatePer
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -762,11 +762,11 @@ func TestHandleWorkPlanStatusChangedDoesNotFinalizeGitOpsBeforeCheckpointPersist
 	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
 	workPlans := &fakeWorkPlans{}
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
-	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/MASS-1044"}}
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}}
 	svc.SetGitOpsFinalizer(finalizer)
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"}); err != nil {
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	for _, planID := range []string{"plan-decomposition", "plan-implementation"} {
@@ -792,7 +792,7 @@ func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizerMissing(t *testing
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -835,7 +835,7 @@ func TestHandleWorkPlanStatusChangedStopsChainWhenStagePlanCancelledOrSuperseded
 			svc := New(store, workflows, workPlans, []Config{testConfig()})
 			svc.newID = deterministicIDs("workflow_chain_run_1")
 
-			result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+			result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 			if err != nil {
 				t.Fatalf("start: %v", err)
 			}
@@ -862,7 +862,7 @@ func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizationFails(t *testin
 	svc.SetGitOpsFinalizer(&fakeGitOpsFinalizer{err: errors.New("gitops failed")})
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -889,7 +889,7 @@ func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizerCreatesNoOutput(t 
 		name   string
 		result GitOpsFinalizeResult
 	}{
-		{name: "missing-pr", result: GitOpsFinalizeResult{CommitRef: "commit/MASS-1044"}},
+		{name: "missing-pr", result: GitOpsFinalizeResult{CommitRef: "commit/GENERIC-1044"}},
 		{name: "no-changes", result: GitOpsFinalizeResult{NoChanges: true}},
 		{name: "skipped", result: GitOpsFinalizeResult{Skipped: true}},
 	} {
@@ -901,7 +901,7 @@ func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizerCreatesNoOutput(t 
 			svc.SetGitOpsFinalizer(&fakeGitOpsFinalizer{result: tc.result})
 			svc.newID = deterministicIDs("workflow_chain_run_1")
 
-			result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+			result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 			if err != nil {
 				t.Fatalf("start: %v", err)
 			}
@@ -934,7 +934,7 @@ func TestHandleWorkPlanStatusChangedRetriesBlockedDraftPRFinalization(t *testing
 	svc.SetGitOpsFinalizer(finalizer)
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -955,7 +955,7 @@ func TestHandleWorkPlanStatusChangedRetriesBlockedDraftPRFinalization(t *testing
 	}
 
 	finalizer.err = nil
-	finalizer.result = GitOpsFinalizeResult{PullRequestRef: "pr/MASS-1044"}
+	finalizer.result = GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}
 	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
 		t.Fatalf("retry GitOps finalization: %v", err)
 	}
@@ -963,7 +963,7 @@ func TestHandleWorkPlanStatusChangedRetriesBlockedDraftPRFinalization(t *testing
 	if err != nil {
 		t.Fatalf("get completed run: %v", err)
 	}
-	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/MASS-1044" {
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/GENERIC-1044" {
 		t.Fatalf("expected retry to complete chain with PR ref, got %#v", run)
 	}
 	if len(finalizer.inputs) != 2 || finalizer.inputs[1].WorkPlan.ID != "plan-implementation" {
@@ -979,7 +979,7 @@ func TestHandleWorkPlanStatusChangedBlocksWhenNextStageCannotCompile(t *testing.
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -1004,7 +1004,7 @@ func TestHandleWorkPlanStatusChangedBlocksChainWhenStagePlanBlocks(t *testing.T)
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -1031,7 +1031,7 @@ func TestHandleWorkPlanStatusChangedFailsChainWhenStagePlanFails(t *testing.T) {
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
-	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -1050,7 +1050,7 @@ func TestHandleWorkPlanStatusChangedFailsChainWhenStagePlanFails(t *testing.T) {
 func TestStartRejectsUnknownWorkflowRef(t *testing.T) {
 	ctx := context.Background()
 	svc := New(newTestChainStore(), &fakeWorkflowAPI{workflows: enabledWorkflows()[:1]}, &fakeWorkPlans{}, []Config{testConfig()})
-	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", DryRun: true}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", DryRun: true}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected unknown workflow rejection, got %v", err)
 	}
 }
@@ -1061,7 +1061,7 @@ func testConfig() Config {
 		ChainRef:             "chain-1",
 		Enabled:              true,
 		InputKind:            InputKindJiraIssueKey,
-		InputPattern:         "^MASS-[0-9]+$",
+		InputPattern:         "^GENERIC-[0-9]+$",
 		ContextProvider:      ContextProviderJira,
 		DefaultTitleTemplate: "{{input_ref}} governed delivery",
 		GitOpsMode:           GitOpsModeDraftPRAfterValidation,

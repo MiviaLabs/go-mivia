@@ -44,7 +44,7 @@ func TestCallToolStartRejectsUnknownFields(t *testing.T) {
 	_, err := CallTool(context.Background(), fakeChainAPI{}, "projects.workflow_chains.start", mustArgs(t, map[string]any{
 		"id":         "project-1",
 		"chain_ref":  "chain-1",
-		"input_text": "MASS-1044",
+		"input_text": "GENERIC-1044",
 		"raw_prompt": "do unsafe work",
 	}))
 	if !errors.Is(err, ErrInvalidInput) {
@@ -56,7 +56,7 @@ func TestCallToolStartRejectsUnsafeMetadata(t *testing.T) {
 	_, err := CallTool(context.Background(), fakeChainAPI{}, "projects.workflow_chains.start", mustArgs(t, map[string]any{
 		"id":         "project-1",
 		"chain_ref":  "chain-1",
-		"input_text": "MASS-1044",
+		"input_text": "GENERIC-1044",
 		"trace_id":   "secret-token",
 	}))
 	if !errors.Is(err, ErrInvalidInput) {
@@ -68,7 +68,7 @@ func TestCallToolAcceptsUnderscoreAlias(t *testing.T) {
 	result, err := CallTool(context.Background(), fakeChainAPI{}, "projects_workflow_chains_start", mustArgs(t, map[string]any{
 		"id":         "project-1",
 		"chain_ref":  "chain-1",
-		"input_text": "MASS-1044",
+		"input_text": "GENERIC-1044",
 	}))
 	if err != nil {
 		t.Fatalf("start alias: %v", err)
@@ -77,7 +77,7 @@ func TestCallToolAcceptsUnderscoreAlias(t *testing.T) {
 		t.Fatalf("expected non-error tool result marker, got %#v", result["isError"])
 	}
 	structured := result["structuredContent"].(projectworkflowchain.StartResult)
-	if structured.InputRef != "jira:MASS-1044" {
+	if structured.InputRef != "jira:GENERIC-1044" {
 		t.Fatalf("unexpected structured result: %#v", structured)
 	}
 }
@@ -91,7 +91,7 @@ func TestCallToolRetryGitOpsUsesSafeRefsOnly(t *testing.T) {
 		t.Fatalf("retry gitops: %v", err)
 	}
 	structured := result["structuredContent"].(projectworkflowchain.ChainRun)
-	if structured.PullRequestRef != "pr/MASS-1044" {
+	if structured.PullRequestRef != "pr/GENERIC-1044" {
 		t.Fatalf("unexpected structured result: %#v", structured)
 	}
 }
@@ -129,7 +129,7 @@ func TestCallToolGetAndListPreserveWorkflowChainHandoffMetadata(t *testing.T) {
 				t.Fatalf("%s: %v", tc.tool, err)
 			}
 			body := result["content"].([]map[string]string)[0]["text"]
-			if !strings.Contains(body, `"pull_request_ref":"pr/MASS-1044"`) || !strings.Contains(body, `"next_action":"workflow chain completed with draft PR GitOps output"`) {
+			if !strings.Contains(body, `"pull_request_ref":"pr/GENERIC-1044"`) || !strings.Contains(body, `"next_action":"workflow chain completed with draft PR GitOps output"`) {
 				t.Fatalf("tool content lost handoff refs/actions: %s", body)
 			}
 			switch structured := result["structuredContent"].(type) {
@@ -151,7 +151,7 @@ func TestCallToolStartReturnsSafeRefsOnly(t *testing.T) {
 	result, err := CallTool(context.Background(), fakeChainAPI{}, "projects.workflow_chains.start", mustArgs(t, map[string]any{
 		"id":         "project-1",
 		"chain_ref":  "chain-1",
-		"input_text": "MASS-1044",
+		"input_text": "GENERIC-1044",
 		"dry_run":    true,
 	}))
 	if err != nil {
@@ -165,7 +165,7 @@ func TestCallToolStartReturnsSafeRefsOnly(t *testing.T) {
 		t.Fatalf("result leaked raw input field: %s", body)
 	}
 	structured := result["structuredContent"].(projectworkflowchain.StartResult)
-	if structured.InputRef != "jira:MASS-1044" {
+	if structured.InputRef != "jira:GENERIC-1044" {
 		t.Fatalf("unexpected structured result: %#v", structured)
 	}
 }
@@ -279,7 +279,7 @@ func (fakeChainAPI) CallWorkflowChainTool(_ context.Context, name string, _ json
 	if name != "projects.workflow_chains.start" {
 		return nil, projectworkflowchain.ErrInvalidInput
 	}
-	return projectworkflowchain.StartResult{ProjectID: "project-1", ChainRef: "chain-1", InputRef: "jira:MASS-1044", Status: projectworkflowchain.ChainStatusPlanned, DryRun: true}, nil
+	return projectworkflowchain.StartResult{ProjectID: "project-1", ChainRef: "chain-1", InputRef: "jira:GENERIC-1044", Status: projectworkflowchain.ChainStatusPlanned, DryRun: true}, nil
 }
 
 func completedChainRun() projectworkflowchain.ChainRun {
@@ -287,11 +287,11 @@ func completedChainRun() projectworkflowchain.ChainRun {
 		ID:             "workflow_chain_run_1",
 		ProjectID:      "project-1",
 		ChainRef:       "chain-1",
-		InputRef:       "jira:MASS-1044",
+		InputRef:       "jira:GENERIC-1044",
 		Status:         projectworkflowchain.ChainStatusCompleted,
 		AutomationIDs:  []string{"automation-decomposition", "automation-implementation", "automation-validation"},
 		GitOpsReady:    false,
-		PullRequestRef: "pr/MASS-1044",
+		PullRequestRef: "pr/GENERIC-1044",
 		NextAction:     "workflow chain completed with draft PR GitOps output",
 		StageRuns: []projectworkflowchain.StageRun{
 			{StageRef: "decomposition", WorkflowID: "workflow-decomposition", Status: projectworkflowchain.StageStatusCompleted, AutomationIDs: []string{"automation-decomposition"}},
@@ -303,7 +303,7 @@ func completedChainRun() projectworkflowchain.ChainRun {
 
 func assertCompletedChainHandoff(t *testing.T, run projectworkflowchain.ChainRun) {
 	t.Helper()
-	if run.Status != projectworkflowchain.ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/MASS-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+	if run.Status != projectworkflowchain.ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/GENERIC-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
 		t.Fatalf("chain handoff status/actions were not preserved: %#v", run)
 	}
 	if len(run.AutomationIDs) != 3 || len(run.StageRuns) != 3 {

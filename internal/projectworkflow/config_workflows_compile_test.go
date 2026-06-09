@@ -124,7 +124,7 @@ func TestDecompositionWorkflowCompilesRichTaskPackets(t *testing.T) {
 	}
 }
 
-func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) {
+func TestGENERICGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) {
 	ctx := context.Background()
 	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
 	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
@@ -132,11 +132,11 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	svc := projectworkflow.New(workflowStore)
 	svc.SetCompilerDependencies(workPlans, automations)
 	svc.SetCompileOptionsByProject(map[string]projectworkflow.CompileOptions{
-		"mass-monorepo": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
+		"generic-monorepo": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
 	})
 
-	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-decomposition-planning.toml"), "mass-monorepo")
-	assertMassAgentsCanReadLocalTicketEvidence(t, decomposition)
+	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "generic", "governed-decomposition-planning.toml"), "generic-monorepo")
+	assertGENERICAgentsCanReadLocalTicketEvidence(t, decomposition)
 	planningWorker := configAgentByID(t, decomposition, "planning-worker")
 	if !containsConfigString(planningWorker.AllowedTools, "projects.work_tasks.create") {
 		t.Fatalf("planning-worker must be able to create concrete child implementation tasks, tools=%#v", planningWorker.AllowedTools)
@@ -147,30 +147,30 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 			t.Fatalf("decompose-work-plan expected_output must require %q, got %q", want, decomposeStep.ExpectedOutput)
 		}
 	}
-	decompositionResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: decomposition.ProjectID, WorkflowID: decomposition.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "mass-decomposition-test-run"})
+	decompositionResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: decomposition.ProjectID, WorkflowID: decomposition.ID, UserRequestRef: "jira:GENERIC-1044", CreatedByRunID: "GENERIC-decomposition-test-run"})
 	if err != nil {
-		t.Fatalf("compile MASS decomposition workflow: %v", err)
+		t.Fatalf("compile GENERIC decomposition workflow: %v", err)
 	}
-	assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, decomposition)
-	decompositionTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "mass-monorepo", PlanID: decompositionResult.WorkPlanID})
+	assertGENERICPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, decomposition)
+	decompositionTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "generic-monorepo", PlanID: decompositionResult.WorkPlanID})
 	if err != nil {
-		t.Fatalf("list MASS decomposition tasks: %v", err)
+		t.Fatalf("list GENERIC decomposition tasks: %v", err)
 	}
 	compiledDecomposeTask := compiledTaskByRef(t, decompositionTasks, "decompose-work-plan")
 	if len(compiledDecomposeTask.AcceptanceCriteria) == 0 || len(compiledDecomposeTask.StopConditions) == 0 || len(compiledDecomposeTask.VerifierLadder) == 0 || compiledDecomposeTask.RegressionApplicability == "" || len(compiledDecomposeTask.DownstreamImpactRefs) == 0 || compiledDecomposeTask.OutputContract == "" {
-		t.Fatalf("MASS decompose-work-plan must compile first-class governance fields, got %#v", compiledDecomposeTask)
+		t.Fatalf("GENERIC decompose-work-plan must compile first-class governance fields, got %#v", compiledDecomposeTask)
 	}
 	if discover := compiledTaskByRef(t, decompositionTasks, "discover-planning-context"); discover.Status != projectworkplan.WorkTaskStatusReady || len(discover.DependencyTaskIDs) != 0 {
-		t.Fatalf("MASS root decomposition task must compile ready with no dependencies, got %#v", discover)
+		t.Fatalf("GENERIC root decomposition task must compile ready with no dependencies, got %#v", discover)
 	}
 	for _, ref := range []string{"map-downstream-impact", "decompose-work-plan", "mark-ready-after-review"} {
 		task := compiledTaskByRef(t, decompositionTasks, ref)
 		if task.Status != projectworkplan.WorkTaskStatusPlanned || len(task.DependencyTaskIDs) == 0 {
-			t.Fatalf("MASS dependent decomposition task %s must compile planned with dependencies, got %#v", ref, task)
+			t.Fatalf("GENERIC dependent decomposition task %s must compile planned with dependencies, got %#v", ref, task)
 		}
 	}
 
-	smokeGitOps := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-smoke-gitops.toml"), "mass-monorepo")
+	smokeGitOps := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "generic", "governed-smoke-gitops.toml"), "generic-monorepo")
 	smokeWorker := configAgentByID(t, smokeGitOps, "smoke-gitops-worker")
 	smokeRuntime, err := time.ParseDuration(smokeWorker.MaxRuntime)
 	if err != nil {
@@ -181,33 +181,33 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	}
 	smokeResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: smokeGitOps.ProjectID, WorkflowID: smokeGitOps.ID, UserRequestRef: "input:smoke-20260608g", CreatedByRunID: "same-smoke-run"})
 	if err != nil {
-		t.Fatalf("compile MASS smoke GitOps workflow: %v", err)
+		t.Fatalf("compile GENERIC smoke GitOps workflow: %v", err)
 	}
-	smokePlan, err := workPlans.GetWorkPlan(ctx, "mass-monorepo", smokeResult.WorkPlanID)
+	smokePlan, err := workPlans.GetWorkPlan(ctx, "generic-monorepo", smokeResult.WorkPlanID)
 	if err != nil {
-		t.Fatalf("get MASS smoke GitOps plan: %v", err)
+		t.Fatalf("get GENERIC smoke GitOps plan: %v", err)
 	}
 	if !strings.HasPrefix(smokePlan.GitBranchRef, "chore-smoke-20260608g-governed-smoke-gitops-compile-") || strings.Contains(smokePlan.GitBranchRef, "input-smoke") {
 		t.Fatalf("smoke GitOps branch must satisfy ticket branch policy without leaking input prefix, got %q", smokePlan.GitBranchRef)
 	}
-	smokeTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "mass-monorepo", PlanID: smokeResult.WorkPlanID})
+	smokeTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "generic-monorepo", PlanID: smokeResult.WorkPlanID})
 	if err != nil {
-		t.Fatalf("list MASS smoke GitOps tasks: %v", err)
+		t.Fatalf("list GENERIC smoke GitOps tasks: %v", err)
 	}
 	smokeTask := compiledTaskByRef(t, smokeTasks, "smoke-draft-pr")
 	if !strings.Contains(smokeTask.Description, "input:smoke-20260608g") || strings.Contains(smokeTask.Description, "{{user_request_ref}}") {
-		t.Fatalf("MASS smoke GitOps task must compile concrete input ref into worker packet, got %q", smokeTask.Description)
+		t.Fatalf("GENERIC smoke GitOps task must compile concrete input ref into worker packet, got %q", smokeTask.Description)
 	}
 
-	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"), "mass-monorepo")
-	assertMassAgentsCanReadLocalTicketEvidence(t, implementation)
+	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "generic", "governed-workplan-implementation.toml"), "generic-monorepo")
+	assertGENERICAgentsCanReadLocalTicketEvidence(t, implementation)
 	for i := 0; i < 2; i++ {
-		if _, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: implementation.ProjectID, WorkflowID: implementation.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "same-ticket-run"}); err != nil {
+		if _, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: implementation.ProjectID, WorkflowID: implementation.ID, UserRequestRef: "jira:GENERIC-1044", CreatedByRunID: "same-ticket-run"}); err != nil {
 			t.Fatalf("compile implementation workflow %d: %v", i+1, err)
 		}
 	}
-	assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, implementation)
-	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "mass-monorepo"})
+	assertGENERICPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, implementation)
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "generic-monorepo"})
 	if err != nil {
 		t.Fatalf("list plans: %v", err)
 	}
@@ -215,8 +215,8 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	var implementationPlan projectworkplan.WorkPlan
 	for _, plan := range plans {
 		if strings.Contains(plan.PlanRef, "governed-workplan-implementation") {
-			if !strings.HasPrefix(plan.GitBranchRef, "chore-MASS-1044-governed-workplan-implementation-compile-") {
-				t.Fatalf("implementation branch must preserve MASS policy and compile uniqueness, got %q", plan.GitBranchRef)
+			if !strings.HasPrefix(plan.GitBranchRef, "chore-GENERIC-1044-governed-workplan-implementation-compile-") {
+				t.Fatalf("implementation branch must preserve GENERIC policy and compile uniqueness, got %q", plan.GitBranchRef)
 			}
 			if _, exists := branches[plan.GitBranchRef]; exists {
 				t.Fatalf("implementation branch refs must be unique across same-ticket compiles, duplicate %q", plan.GitBranchRef)
@@ -228,7 +228,7 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	if len(branches) != 2 {
 		t.Fatalf("expected two unique implementation branch refs, got %#v", branches)
 	}
-	implementationTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "mass-monorepo", PlanID: implementationPlan.ID})
+	implementationTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "generic-monorepo", PlanID: implementationPlan.ID})
 	if err != nil {
 		t.Fatalf("list implementation tasks: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	if batchTask.ID == "" || batchTask.ReviewGate == "" {
 		t.Fatalf("run-implementation-batch must compile as a concrete reviewed Work Task: %#v", batchTask)
 	}
-	allAutomations, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: "mass-monorepo"})
+	allAutomations, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: "generic-monorepo"})
 	if err != nil {
 		t.Fatalf("list implementation automations: %v", err)
 	}
@@ -250,22 +250,22 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 		t.Fatal("expected independent review automation for run-implementation-batch")
 	}
 
-	validation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-post-implementation-validation.toml"), "mass-monorepo")
-	assertMassAgentsCanReadLocalTicketEvidence(t, validation)
-	if _, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: validation.ProjectID, WorkflowID: validation.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "validation-ticket-run"}); err != nil {
+	validation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "generic", "governed-post-implementation-validation.toml"), "generic-monorepo")
+	assertGENERICAgentsCanReadLocalTicketEvidence(t, validation)
+	if _, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: validation.ProjectID, WorkflowID: validation.ID, UserRequestRef: "jira:GENERIC-1044", CreatedByRunID: "validation-ticket-run"}); err != nil {
 		t.Fatalf("compile validation workflow: %v", err)
 	}
-	assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, validation)
+	assertGENERICPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, validation)
 }
 
-func TestMassGovernedDecompositionPlanningStageSequence(t *testing.T) {
+func TestGENERICGovernedDecompositionPlanningStageSequence(t *testing.T) {
 	ctx := context.Background()
 	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
 	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
 	svc := projectworkflow.New(workflowstore.NewMemoryStore())
 	svc.SetCompilerDependencies(workPlans, automations)
 
-	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-decomposition-planning.toml"), "mass-monorepo")
+	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "generic", "governed-decomposition-planning.toml"), "generic-monorepo")
 	expectedOrder := []string{
 		"discover-planning-context",
 		"map-downstream-impact",
@@ -301,7 +301,7 @@ func TestMassGovernedDecompositionPlanningStageSequence(t *testing.T) {
 	}
 }
 
-func TestMassGovernedDecompositionQueuesOnlyRootTaskOnPlanActivation(t *testing.T) {
+func TestGENERICGovernedDecompositionQueuesOnlyRootTaskOnPlanActivation(t *testing.T) {
 	ctx := context.Background()
 	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
 	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
@@ -320,10 +320,10 @@ func TestMassGovernedDecompositionQueuesOnlyRootTaskOnPlanActivation(t *testing.
 	svc := projectworkflow.New(workflowstore.NewMemoryStore())
 	svc.SetCompilerDependencies(workPlans, automations)
 
-	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-decomposition-planning.toml"), "mass-monorepo")
-	result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: decomposition.ProjectID, WorkflowID: decomposition.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "mass-decomposition-activation-test"})
+	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "generic", "governed-decomposition-planning.toml"), "generic-monorepo")
+	result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: decomposition.ProjectID, WorkflowID: decomposition.ID, UserRequestRef: "jira:GENERIC-1044", CreatedByRunID: "GENERIC-decomposition-activation-test"})
 	if err != nil {
-		t.Fatalf("compile MASS decomposition workflow: %v", err)
+		t.Fatalf("compile GENERIC decomposition workflow: %v", err)
 	}
 	plan, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{ProjectID: decomposition.ProjectID, PlanID: result.WorkPlanID, Status: projectworkplan.WorkPlanStatusActive})
 	if err != nil {
@@ -355,17 +355,17 @@ func TestMassGovernedDecompositionQueuesOnlyRootTaskOnPlanActivation(t *testing.
 	}
 }
 
-func TestMassGovernedGitOpsReadinessContracts(t *testing.T) {
+func TestGENERICGovernedGitOpsReadinessContracts(t *testing.T) {
 	ctx := context.Background()
 	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
 	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
 	svc := projectworkflow.New(workflowstore.NewMemoryStore())
 	svc.SetCompilerDependencies(workPlans, automations)
 
-	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"), "mass-monorepo")
+	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "generic", "governed-workplan-implementation.toml"), "generic-monorepo")
 	implementationReady := configStepByID(t, implementation, "pr-gitops-readiness")
-	assertMassGitOpsReadinessStep(t, implementation, implementationReady, "implementation-independent-review")
-	implementationResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: implementation.ProjectID, WorkflowID: implementation.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "gitops-readiness-implementation-test"})
+	assertGENERICGitOpsReadinessStep(t, implementation, implementationReady, "implementation-independent-review")
+	implementationResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: implementation.ProjectID, WorkflowID: implementation.ID, UserRequestRef: "jira:GENERIC-1044", CreatedByRunID: "gitops-readiness-implementation-test"})
 	if err != nil {
 		t.Fatalf("compile implementation workflow: %v", err)
 	}
@@ -373,12 +373,12 @@ func TestMassGovernedGitOpsReadinessContracts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list implementation tasks: %v", err)
 	}
-	assertCompiledMassGitOpsReadinessTask(t, compiledTaskByRef(t, implementationTasks, "pr-gitops-readiness"), "implementation-independent-review")
+	assertCompiledGENERICGitOpsReadinessTask(t, compiledTaskByRef(t, implementationTasks, "pr-gitops-readiness"), "implementation-independent-review")
 
-	validation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-post-implementation-validation.toml"), "mass-monorepo")
+	validation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "generic", "governed-post-implementation-validation.toml"), "generic-monorepo")
 	validationReady := configStepByID(t, validation, "final-pr-readiness")
-	assertMassGitOpsReadinessStep(t, validation, validationReady, "post-implementation-validation-review")
-	validationResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: validation.ProjectID, WorkflowID: validation.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "gitops-readiness-validation-test"})
+	assertGENERICGitOpsReadinessStep(t, validation, validationReady, "post-implementation-validation-review")
+	validationResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: validation.ProjectID, WorkflowID: validation.ID, UserRequestRef: "jira:GENERIC-1044", CreatedByRunID: "gitops-readiness-validation-test"})
 	if err != nil {
 		t.Fatalf("compile validation workflow: %v", err)
 	}
@@ -386,10 +386,10 @@ func TestMassGovernedGitOpsReadinessContracts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list validation tasks: %v", err)
 	}
-	assertCompiledMassGitOpsReadinessTask(t, compiledTaskByRef(t, validationTasks, "final-pr-readiness"), "post-implementation-validation-review")
+	assertCompiledGENERICGitOpsReadinessTask(t, compiledTaskByRef(t, validationTasks, "final-pr-readiness"), "post-implementation-validation-review")
 }
 
-func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) {
+func TestGENERICJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) {
 	ctx := context.Background()
 	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
 	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
@@ -397,7 +397,7 @@ func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) 
 	svc := projectworkflow.New(workflowStore)
 	svc.SetCompilerDependencies(workPlans, automations)
 	svc.SetCompileOptionsByProject(map[string]projectworkflow.CompileOptions{
-		"mass-monorepo": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
+		"generic-monorepo": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
 	})
 
 	stages := []struct {
@@ -413,11 +413,11 @@ func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) 
 	}{
 		{
 			name:         "decomposition",
-			path:         filepath.Join("..", "..", "configs", "workflows", "mass", "governed-decomposition-planning.toml"),
+			path:         filepath.Join("..", "..", "configs", "workflows", "generic", "governed-decomposition-planning.toml"),
 			workflowRef:  "governed-decomposition-planning",
 			reviewGate:   "planning-readiness-review",
 			rootTask:     "discover-planning-context",
-			createdByRun: "mass-pipeline-decomposition",
+			createdByRun: "GENERIC-pipeline-decomposition",
 			expectedTasks: []string{
 				"discover-planning-context",
 				"map-downstream-impact",
@@ -428,12 +428,12 @@ func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) 
 		},
 		{
 			name:         "implementation",
-			path:         filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"),
+			path:         filepath.Join("..", "..", "configs", "workflows", "generic", "governed-workplan-implementation.toml"),
 			workflowRef:  "governed-workplan-implementation",
 			reviewGate:   "implementation-independent-review",
 			rootTask:     "select-ready-tasks",
 			prReadyTask:  "pr-gitops-readiness",
-			createdByRun: "mass-pipeline-implementation",
+			createdByRun: "GENERIC-pipeline-implementation",
 			expectedTasks: []string{
 				"select-ready-tasks",
 				"analyze-downstream-impact",
@@ -446,12 +446,12 @@ func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) 
 		},
 		{
 			name:         "post-validation",
-			path:         filepath.Join("..", "..", "configs", "workflows", "mass", "governed-post-implementation-validation.toml"),
+			path:         filepath.Join("..", "..", "configs", "workflows", "generic", "governed-post-implementation-validation.toml"),
 			workflowRef:  "governed-post-implementation-validation",
 			reviewGate:   "post-implementation-validation-review",
 			rootTask:     "collect-final-scope",
 			prReadyTask:  "final-pr-readiness",
-			createdByRun: "mass-pipeline-validation",
+			createdByRun: "GENERIC-pipeline-validation",
 			expectedTasks: []string{
 				"collect-final-scope",
 				"validate-regression-and-downstream",
@@ -464,30 +464,30 @@ func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) 
 
 	for _, stage := range stages {
 		t.Run(stage.name, func(t *testing.T) {
-			workflow := importConfigWorkflow(t, ctx, svc, stage.path, "mass-monorepo")
+			workflow := importConfigWorkflow(t, ctx, svc, stage.path, "generic-monorepo")
 			if workflow.WorkflowRef != stage.workflowRef {
 				t.Fatalf("expected workflow %q, got %q", stage.workflowRef, workflow.WorkflowRef)
 			}
-			assertMassAgentsCanReadLocalTicketEvidence(t, workflow)
+			assertGENERICAgentsCanReadLocalTicketEvidence(t, workflow)
 			result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{
 				ProjectID:      workflow.ProjectID,
 				WorkflowID:     workflow.ID,
-				UserRequestRef: "jira:MASS-1044",
+				UserRequestRef: "jira:GENERIC-1044",
 				CreatedByRunID: stage.createdByRun,
 				TraceID:        "trace-" + stage.name,
 			})
 			if err != nil {
 				t.Fatalf("compile %s workflow: %v", stage.name, err)
 			}
-			assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, workflow)
+			assertGENERICPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, workflow)
 			plan, err := workPlans.GetWorkPlan(ctx, workflow.ProjectID, result.WorkPlanID)
 			if err != nil {
 				t.Fatalf("get %s plan: %v", stage.name, err)
 			}
-			if plan.UserRequestRef != "jira:MASS-1044" || plan.CreatedByRunID != stage.createdByRun || plan.TraceID != "trace-"+stage.name {
+			if plan.UserRequestRef != "jira:GENERIC-1044" || plan.CreatedByRunID != stage.createdByRun || plan.TraceID != "trace-"+stage.name {
 				t.Fatalf("%s plan lost Jira/run/trace handoff refs: %#v", stage.name, plan)
 			}
-			if !strings.Contains(plan.PlanRef, stage.workflowRef) || !strings.HasPrefix(plan.GitBranchRef, "chore-MASS-1044-"+stage.workflowRef+"-compile-") {
+			if !strings.Contains(plan.PlanRef, stage.workflowRef) || !strings.HasPrefix(plan.GitBranchRef, "chore-GENERIC-1044-"+stage.workflowRef+"-compile-") {
 				t.Fatalf("%s plan lost workflow or branch handoff policy: %#v", stage.name, plan)
 			}
 			tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: workflow.ProjectID, PlanID: plan.ID})
@@ -503,7 +503,7 @@ func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) 
 				if !ok {
 					t.Fatalf("%s missing compiled task %q in %#v", stage.name, taskRef, tasks)
 				}
-				assertMassPipelineCompiledTaskHandoff(t, stage.name, task, stage.reviewGate, stage.requiredTexts, index == 0)
+				assertGENERICPipelineCompiledTaskHandoff(t, stage.name, task, stage.reviewGate, stage.requiredTexts, index == 0)
 				if index == 0 && task.Status != projectworkplan.WorkTaskStatusReady {
 					t.Fatalf("%s root task must compile ready, got %#v", stage.name, task)
 				}
@@ -511,7 +511,7 @@ func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) 
 					t.Fatalf("%s dependent task %q must compile planned with dependencies, got %#v", stage.name, taskRef, task)
 				}
 				if stage.prReadyTask != "" && taskRef == stage.prReadyTask {
-					assertCompiledMassGitOpsReadinessTask(t, task, stage.reviewGate)
+					assertCompiledGENERICGitOpsReadinessTask(t, task, stage.reviewGate)
 				}
 			}
 			compiledAutomations, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: workflow.ProjectID})
@@ -519,7 +519,7 @@ func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) 
 				t.Fatalf("list %s automations: %v", stage.name, err)
 			}
 			planAutomations := configAutomationsForPlan(compiledAutomations, plan.ID)
-			assertMassPipelineAutomationsForTasks(t, stage.name, planAutomations, compiledByRef, stage.expectedTasks, stage.reviewGate)
+			assertGENERICPipelineAutomationsForTasks(t, stage.name, planAutomations, compiledByRef, stage.expectedTasks, stage.reviewGate)
 		})
 	}
 }
@@ -829,19 +829,19 @@ func configAgentByID(t *testing.T, workflow projectworkflow.WorkflowDefinition, 
 	return projectworkflow.WorkflowAgentDefinition{}
 }
 
-func assertMassAgentsCanReadLocalTicketEvidence(t *testing.T, workflow projectworkflow.WorkflowDefinition) {
+func assertGENERICAgentsCanReadLocalTicketEvidence(t *testing.T, workflow projectworkflow.WorkflowDefinition) {
 	t.Helper()
 	for _, agent := range workflow.Agents {
 		if !containsConfigString(agent.AllowedTools, "projects.jira.issue.get") {
-			t.Fatalf("MASS agent %s/%s must be able to read bounded local Jira issue content for ticket-scoped work, tools=%#v", workflow.WorkflowRef, agent.ID, agent.AllowedTools)
+			t.Fatalf("GENERIC agent %s/%s must be able to read bounded local Jira issue content for ticket-scoped work, tools=%#v", workflow.WorkflowRef, agent.ID, agent.AllowedTools)
 		}
 		if !containsConfigString(agent.AllowedTools, "projects.integrations.search") {
-			t.Fatalf("MASS agent %s/%s must be able to search bounded local integration content for ticket-scoped work, tools=%#v", workflow.WorkflowRef, agent.ID, agent.AllowedTools)
+			t.Fatalf("GENERIC agent %s/%s must be able to search bounded local integration content for ticket-scoped work, tools=%#v", workflow.WorkflowRef, agent.ID, agent.AllowedTools)
 		}
 	}
 }
 
-func assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t *testing.T, ctx context.Context, store projectworkflow.Store, workflow projectworkflow.WorkflowDefinition) {
+func assertGENERICPermissionSnapshotsCanReadLocalTicketEvidence(t *testing.T, ctx context.Context, store projectworkflow.Store, workflow projectworkflow.WorkflowDefinition) {
 	t.Helper()
 	snapshots, err := store.ListPermissionSnapshots(ctx, projectworkflow.PermissionSnapshotFilter{ProjectID: workflow.ProjectID, WorkflowID: workflow.ID})
 	if err != nil {
@@ -852,10 +852,10 @@ func assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t *testing.T, ctx c
 	}
 	for _, snapshot := range snapshots {
 		if !containsConfigString(snapshot.AllowedTools, "projects.jira.issue.get") {
-			t.Fatalf("MASS snapshot %s/%s must carry local Jira read permission, tools=%#v", workflow.WorkflowRef, snapshot.AgentID, snapshot.AllowedTools)
+			t.Fatalf("GENERIC snapshot %s/%s must carry local Jira read permission, tools=%#v", workflow.WorkflowRef, snapshot.AgentID, snapshot.AllowedTools)
 		}
 		if !containsConfigString(snapshot.AllowedTools, "projects.integrations.search") {
-			t.Fatalf("MASS snapshot %s/%s must carry local integration search permission, tools=%#v", workflow.WorkflowRef, snapshot.AgentID, snapshot.AllowedTools)
+			t.Fatalf("GENERIC snapshot %s/%s must carry local integration search permission, tools=%#v", workflow.WorkflowRef, snapshot.AgentID, snapshot.AllowedTools)
 		}
 	}
 }
@@ -882,7 +882,7 @@ func configReviewGateByID(t *testing.T, workflow projectworkflow.WorkflowDefinit
 	return projectworkflow.WorkflowReviewGate{}
 }
 
-func assertMassGitOpsReadinessStep(t *testing.T, workflow projectworkflow.WorkflowDefinition, step projectworkflow.WorkflowStep, reviewGateID string) {
+func assertGENERICGitOpsReadinessStep(t *testing.T, workflow projectworkflow.WorkflowDefinition, step projectworkflow.WorkflowStep, reviewGateID string) {
 	t.Helper()
 	if !strings.Contains(step.ReviewGate, reviewGateID) {
 		t.Fatalf("workflow %s step %s must require review gate %q, got %q", workflow.WorkflowRef, step.ID, reviewGateID, step.ReviewGate)
@@ -899,7 +899,7 @@ func assertMassGitOpsReadinessStep(t *testing.T, workflow projectworkflow.Workfl
 	}
 }
 
-func assertCompiledMassGitOpsReadinessTask(t *testing.T, task projectworkplan.WorkTask, reviewGateID string) {
+func assertCompiledGENERICGitOpsReadinessTask(t *testing.T, task projectworkplan.WorkTask, reviewGateID string) {
 	t.Helper()
 	if task.Status != projectworkplan.WorkTaskStatusPlanned {
 		t.Fatalf("GitOps readiness task must compile planned until dependencies/review complete, got %#v", task)
@@ -1008,9 +1008,9 @@ func assertGenericPipelineAutomationsForTasks(t *testing.T, stageName string, au
 	}
 }
 
-func assertMassPipelineCompiledTaskHandoff(t *testing.T, stageName string, task projectworkplan.WorkTask, reviewGateID string, requiredTexts []string, isRoot bool) {
+func assertGENERICPipelineCompiledTaskHandoff(t *testing.T, stageName string, task projectworkplan.WorkTask, reviewGateID string, requiredTexts []string, isRoot bool) {
 	t.Helper()
-	if task.ID == "" || task.ProjectID != "mass-monorepo" || task.PlanID == "" || task.TaskRef == "" {
+	if task.ID == "" || task.ProjectID != "generic-monorepo" || task.PlanID == "" || task.TaskRef == "" {
 		t.Fatalf("%s task missing stable refs: %#v", stageName, task)
 	}
 	if task.OwnerAgent == "" || task.Description == "" || task.ExpectedOutput == "" || task.FailureCriteria == "" || task.ResumeInstructions == "" {
@@ -1037,7 +1037,7 @@ func assertMassPipelineCompiledTaskHandoff(t *testing.T, stageName string, task 
 	}
 }
 
-func assertMassPipelineAutomationsForTasks(t *testing.T, stageName string, automations []projectautomation.Automation, tasksByRef map[string]projectworkplan.WorkTask, taskRefs []string, reviewGateID string) {
+func assertGENERICPipelineAutomationsForTasks(t *testing.T, stageName string, automations []projectautomation.Automation, tasksByRef map[string]projectworkplan.WorkTask, taskRefs []string, reviewGateID string) {
 	t.Helper()
 	for _, taskRef := range taskRefs {
 		task, ok := tasksByRef[taskRef]

@@ -20,7 +20,7 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	svc, workflowStore, workPlans, automations := newCompileFixture()
 	workflowStore.seedWorkflow(baseCompileWorkflow())
 
-	result, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "request-1", ContextPackRefs: []string{"jira-context:MASS-1044:summary", "jira-context:MASS-1044:scope"}, CreatedByRunID: "run-1", TraceID: "trace-1"})
+	result, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "request-1", ContextPackRefs: []string{"jira-context:GENERIC-1044:summary", "jira-context:GENERIC-1044:scope"}, CreatedByRunID: "run-1", TraceID: "trace-1"})
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestCompileWorkflowCreatesGovernedObjects(t *testing.T) {
 	if !containsString(impl.EvidenceNeeded, "review gate review-implement") {
 		t.Fatalf("implementation task missing review requirement: %#v", impl.EvidenceNeeded)
 	}
-	if !containsString(impl.ContextPackRefs, "context-pack:workflow-compiler") || !containsString(impl.ContextPackRefs, "jira-context:MASS-1044:scope") {
+	if !containsString(impl.ContextPackRefs, "context-pack:workflow-compiler") || !containsString(impl.ContextPackRefs, "jira-context:GENERIC-1044:scope") {
 		t.Fatalf("implementation task missing workflow or compile context refs: %#v", impl.ContextPackRefs)
 	}
 	reviewer := taskByRef(t, tasks, "review-implement-step-review-implement")
@@ -179,7 +179,7 @@ func TestCompileWorkflowUsesProjectBranchPolicyOptions(t *testing.T) {
 		"project-1": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
 	})
 
-	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "jira:MASS-1044", CreatedByRunID: "run-1"}); err != nil {
+	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "jira:GENERIC-1044", CreatedByRunID: "run-1"}); err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}
 	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
@@ -189,7 +189,7 @@ func TestCompileWorkflowUsesProjectBranchPolicyOptions(t *testing.T) {
 	if len(plans) != 1 {
 		t.Fatalf("expected one plan, got %d", len(plans))
 	}
-	if got, wantPrefix := plans[0].GitBranchRef, "chore-MASS-1044-workflow-ref-compile-"; !strings.HasPrefix(got, wantPrefix) {
+	if got, wantPrefix := plans[0].GitBranchRef, "chore-GENERIC-1044-workflow-ref-compile-"; !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("GitBranchRef = %q, want prefix %q", got, wantPrefix)
 	}
 }
@@ -256,7 +256,7 @@ func TestCompileWorkflowProjectBranchPolicyStaysUniqueAcrossSameTicketCompiles(t
 	})
 
 	for i := 0; i < 2; i++ {
-		if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "jira:MASS-1044", CreatedByRunID: "operator-real-ticket-run"}); err != nil {
+		if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "jira:GENERIC-1044", CreatedByRunID: "operator-real-ticket-run"}); err != nil {
 			t.Fatalf("compile workflow %d: %v", i+1, err)
 		}
 	}
@@ -270,7 +270,7 @@ func TestCompileWorkflowProjectBranchPolicyStaysUniqueAcrossSameTicketCompiles(t
 	seenBranches := map[string]struct{}{}
 	seenWorktrees := map[string]struct{}{}
 	for _, plan := range plans {
-		if !strings.HasPrefix(plan.GitBranchRef, "chore-MASS-1044-workflow-ref-compile-") {
+		if !strings.HasPrefix(plan.GitBranchRef, "chore-GENERIC-1044-workflow-ref-compile-") {
 			t.Fatalf("GitBranchRef must preserve policy prefix and compile uniqueness, got %q", plan.GitBranchRef)
 		}
 		if _, exists := seenBranches[plan.GitBranchRef]; exists {

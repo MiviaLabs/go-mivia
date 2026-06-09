@@ -340,7 +340,13 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	}
 	runCodexOptions := codexOptions
 	runCodexOptions.WorkDir = runWorkDir
+	claimed.CodexInput.ProjectID = firstNonEmpty(claimed.CodexInput.ProjectID, claimed.Run.ProjectID, projectID)
+	claimed.CodexInput.AutomationRunID = firstNonEmpty(claimed.CodexInput.AutomationRunID, claimed.Run.ID)
+	claimed.CodexInput.TraceID = firstNonEmpty(claimed.CodexInput.TraceID, claimed.Run.TraceID)
+	claimed.CodexInput.PlanID = firstNonEmpty(claimed.CodexInput.PlanID, claimed.Run.PlanID)
+	claimed.CodexInput.TaskID = firstNonEmpty(claimed.CodexInput.TaskID, claimed.Run.TaskID)
 	claimed.CodexInput.MCPServerURL = client.baseURL
+	claimed.CodexInput.RunnerInstructions = appendMissingRunnerInstructions(claimed.CodexInput.RunnerInstructions, projectautomation.GovernedWorkflowStepInstructions(claimed.CodexInput.TaskRef)...)
 	claimed.CodexInput.RunnerInstructions = append(claimed.CodexInput.RunnerInstructions, verificationInstructionsForProject(cfg, projectID)...)
 	gitOps := projectgitops.New(gitOpsOptions)
 	readOnlyReviewRun := isReadOnlyReviewRun(claimed)
@@ -671,6 +677,18 @@ func containsRunnerString(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func appendMissingRunnerInstructions(existing []string, candidates ...string) []string {
+	out := append([]string(nil), existing...)
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || containsRunnerString(out, candidate) {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
 }
 
 func gitOpsPostTaskCloseoutFailure(task runnerWorkTaskMetadata) string {

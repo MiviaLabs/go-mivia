@@ -46,6 +46,7 @@ func ProjectStreamHandler(recorder *Recorder) http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(http.StatusOK)
+		events := recorder.Subscribe(r.Context())
 		replay := recorder.Recent(projectID, limit)
 		if hasCursor {
 			replay = recorder.Since(projectID, afterID, maxReplayBatch)
@@ -59,7 +60,6 @@ func ProjectStreamHandler(recorder *Recorder) http.Handler {
 		}
 		flusher.Flush()
 
-		events := recorder.Subscribe(r.Context())
 		ticker := time.NewTicker(activityReplayPollInterval)
 		defer ticker.Stop()
 		for {

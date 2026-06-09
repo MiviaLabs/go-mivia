@@ -68,17 +68,17 @@ func TestWorkflowChainConfigsInheritGlobalGitOpsWhenProjectOverridesBranchPolicy
 		GitOperations: config.GitOperations{Enabled: true},
 		Projects: []config.Project{
 			{
-				ID: "mass-monorepo",
+				ID: "generic-monorepo",
 				GitOperations: &config.GitOperations{
 					BranchPrefix:      "",
-					BranchNamePattern: "^(feat|fix|docs|chore)-MASS-[0-9]+$",
+					BranchNamePattern: "^(feat|fix|docs|chore)-GENERIC-[0-9]+$",
 				},
 				WorkflowChains: []config.WorkflowChain{
 					{
-						ChainRef:     "mass-governed-ticket-delivery",
+						ChainRef:     "GENERIC-governed-ticket-delivery",
 						Enabled:      true,
 						InputKind:    "jira_issue_key",
-						InputPattern: "^MASS-[0-9]+$",
+						InputPattern: "^GENERIC-[0-9]+$",
 						ContextMode:  "local_ingested",
 						GitOpsMode:   projectworkflowchain.GitOpsModeDraftPRAfterValidation,
 						Stages:       []config.WorkflowChainStage{{StageRef: "decomposition", WorkflowRef: "governed-decomposition-planning"}},
@@ -114,11 +114,11 @@ func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *te
 	}
 	t.Setenv("MIVIA_TEST_GIT_EMAIL", "mivia@example.test")
 	registry, err := projectregistry.NewRegistry([]config.Project{{
-		ID:             "mass-monorepo",
-		DisplayName:    "MASS",
+		ID:             "generic-monorepo",
+		DisplayName:    "GENERIC",
 		RootPath:       repo,
 		Enabled:        true,
-		GraphNamespace: "mass-monorepo",
+		GraphNamespace: "generic-monorepo",
 		DigestMode:     projectregistry.DigestModeMetadataOnly,
 		UpdatePolicy:   projectregistry.UpdatePolicyManual,
 	}}, projectregistry.Options{
@@ -134,7 +134,7 @@ func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *te
 			GitOperations: config.GitOperations{
 				Enabled:              true,
 				CommitAfterTask:      true,
-				BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+				BranchNamePattern:    "^(feat|fix|docs|chore)-GENERIC-[0-9]+(-[a-z0-9-]+)*$",
 				CommitAuthorEmailEnv: "MIVIA_TEST_GIT_EMAIL",
 			},
 		},
@@ -142,15 +142,15 @@ func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *te
 	}
 
 	result, err := finalizer.FinalizeWorkflowChain(t.Context(), projectworkflowchain.GitOpsFinalizeInput{
-		ProjectID:        "mass-monorepo",
-		ChainRunID:       "workflow_chain_run_mass_1044",
-		InputRef:         "jira:MASS-1044",
-		WorkPlan:         projectworkplan.WorkPlan{ID: "plan-post-validation", ProjectID: "mass-monorepo", GitBranchRef: "chore-MASS-1044-governed-post-implementation-validation-compile-1", GitBaseRef: "main"},
+		ProjectID:        "generic-monorepo",
+		ChainRunID:       "workflow_chain_run_GENERIC_1044",
+		InputRef:         "jira:GENERIC-1044",
+		WorkPlan:         projectworkplan.WorkPlan{ID: "plan-post-validation", ProjectID: "generic-monorepo", GitBranchRef: "chore-GENERIC-1044-governed-post-implementation-validation-compile-1", GitBaseRef: "main"},
 		StageRuns:        []projectworkflowchain.StageRun{{StageRef: "post-validation", WorkTaskIDs: []string{"task-final-pr-readiness"}}},
 		AllowedPathspecs: []string{"apps/domain/src/module.ts"},
 		ReviewRefs:       []string{"review_result:post_validation_approved"},
 		VerifierRefs:     []string{"verifier:focused_tests_passed"},
-		TestResults:      []string{"go test ./apps/domain -run TestMass1044 -count=1"},
+		TestResults:      []string{"go test ./apps/domain -run TestGENERIC1044 -count=1"},
 	})
 	if err != nil {
 		t.Fatalf("FinalizeWorkflowChain returned error: %v", err)
@@ -161,10 +161,10 @@ func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *te
 	message := runServerGitOutput(t, repo, "log", "-1", "--format=%B")
 	for _, want := range []string{
 		"Work Task ID: task-final-pr-readiness",
-		"Automation Run ID: workflow_chain_run_mass_1044",
+		"Automation Run ID: workflow_chain_run_GENERIC_1044",
 		"Review refs: review_result:post_validation_approved",
 		"Verifier refs: verifier:focused_tests_passed",
-		"go test ./apps/domain -run TestMass1044 -count=1",
+		"go test ./apps/domain -run TestGENERIC1044 -count=1",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("final GitOps commit lost handoff field %q:\n%s", want, message)
@@ -172,43 +172,72 @@ func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *te
 	}
 }
 
-func TestLocalConfigLoadsMassTicketPipelineEntryWorkflows(t *testing.T) {
-	cfg, err := config.LoadPath(filepath.Join("..", "..", "configs", "mivia-server.local.toml"))
-	if err != nil {
-		t.Fatalf("load local config: %v", err)
+func TestGenericTicketPipelineConfigLoadsEntryWorkflows(t *testing.T) {
+	cfg := config.Config{
+		ConfigPath:    filepath.Join("..", "..", "mivia-test.toml"),
+		GitOperations: config.GitOperations{Enabled: true},
+		Workflows: config.Workflows{
+			Enabled: true,
+			DefinitionPaths: []string{
+				filepath.Join("configs", "workflows", "generic", "governed-decomposition-planning.toml"),
+				filepath.Join("configs", "workflows", "generic", "governed-workplan-implementation.toml"),
+				filepath.Join("configs", "workflows", "generic", "governed-post-implementation-validation.toml"),
+			},
+		},
+		Projects: []config.Project{{
+			ID:          "generic-monorepo",
+			DisplayName: "Generic Monorepo",
+			RootPath:    "/tmp/generic-monorepo",
+			Enabled:     true,
+			WorkflowChains: []config.WorkflowChain{{
+				ChainRef:             "GENERIC-governed-ticket-delivery",
+				Enabled:              true,
+				InputKind:            "jira_issue_key",
+				InputPattern:         "^GENERIC-[0-9]+$",
+				ContextProvider:      "jira",
+				ContextMode:          "local_ingested",
+				DefaultTitleTemplate: "{{input_ref}} governed delivery",
+				GitOpsMode:           "draft_pr_after_post_validation",
+				Stages: []config.WorkflowChainStage{
+					{StageRef: "decomposition", WorkflowRef: "governed-decomposition-planning", Trigger: "on_chain_start", RequiredStatusBeforeNext: "completed"},
+					{StageRef: "implementation", WorkflowRef: "governed-workplan-implementation", Trigger: "after_stage_review_passed", DependsOn: []string{"decomposition"}, RequiredStatusBeforeNext: "completed"},
+					{StageRef: "post-validation", WorkflowRef: "governed-post-implementation-validation", Trigger: "after_stage_review_passed", DependsOn: []string{"implementation"}, RequiredStatusBeforeNext: "completed"},
+				},
+			}},
+		}},
 	}
 	chains := workflowChainConfigs(cfg)
-	var massChain projectworkflowchain.Config
+	var GENERICChain projectworkflowchain.Config
 	for _, chain := range chains {
-		if chain.ProjectID == "mass-monorepo" && chain.ChainRef == "mass-governed-ticket-delivery" {
-			massChain = chain
+		if chain.ProjectID == "generic-monorepo" && chain.ChainRef == "GENERIC-governed-ticket-delivery" {
+			GENERICChain = chain
 			break
 		}
 	}
-	if massChain.ChainRef == "" || !massChain.Enabled || !massChain.GitOpsEnabled || massChain.GitOpsMode != projectworkflowchain.GitOpsModeDraftPRAfterValidation {
-		t.Fatalf("local MASS chain must be enabled with final draft PR GitOps: %#v", massChain)
+	if GENERICChain.ChainRef == "" || !GENERICChain.Enabled || !GENERICChain.GitOpsEnabled || GENERICChain.GitOpsMode != projectworkflowchain.GitOpsModeDraftPRAfterValidation {
+		t.Fatalf("local GENERIC chain must be enabled with final draft PR GitOps: %#v", GENERICChain)
 	}
-	if massChain.InputKind != projectworkflowchain.InputKindJiraIssueKey || massChain.InputPattern != "^MASS-[0-9]+$" || massChain.ContextMode != projectworkflowchain.ContextModeLocalIngested {
-		t.Fatalf("local MASS chain must start from local-ingested Jira keys only: %#v", massChain)
+	if GENERICChain.InputKind != projectworkflowchain.InputKindJiraIssueKey || GENERICChain.InputPattern != "^GENERIC-[0-9]+$" || GENERICChain.ContextMode != projectworkflowchain.ContextModeLocalIngested {
+		t.Fatalf("local GENERIC chain must start from local-ingested Jira keys only: %#v", GENERICChain)
 	}
 	workflows := projectworkflow.New(workflowstore.NewMemoryStore())
 	if err := loadConfiguredWorkflows(t.Context(), cfg, workflows, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatalf("load configured workflows: %v", err)
 	}
-	loaded, err := workflows.ListWorkflows(t.Context(), projectworkflow.WorkflowFilter{ProjectID: "mass-monorepo"})
+	loaded, err := workflows.ListWorkflows(t.Context(), projectworkflow.WorkflowFilter{ProjectID: "generic-monorepo"})
 	if err != nil {
-		t.Fatalf("list MASS workflows: %v", err)
+		t.Fatalf("list GENERIC workflows: %v", err)
 	}
 	loadedRefs := map[string]bool{}
 	for _, workflow := range loaded {
 		loadedRefs[workflow.WorkflowRef] = true
 	}
-	if len(massChain.Stages) != 3 {
-		t.Fatalf("MASS ticket chain must have decomposition, implementation, and post-validation stages: %#v", massChain.Stages)
+	if len(GENERICChain.Stages) != 3 {
+		t.Fatalf("GENERIC ticket chain must have decomposition, implementation, and post-validation stages: %#v", GENERICChain.Stages)
 	}
-	for _, stage := range massChain.Stages {
+	for _, stage := range GENERICChain.Stages {
 		if !loadedRefs[stage.WorkflowRef] {
-			t.Fatalf("MASS chain stage %s references workflow %s that was not loaded from local config; loaded=%#v", stage.StageRef, stage.WorkflowRef, loadedRefs)
+			t.Fatalf("GENERIC chain stage %s references workflow %s that was not loaded from local config; loaded=%#v", stage.StageRef, stage.WorkflowRef, loadedRefs)
 		}
 	}
 }

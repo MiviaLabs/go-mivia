@@ -1,7 +1,7 @@
 id = "workflow-post-implementation-validation"
-project_id = "mass-monorepo"
+project_id = "generic-monorepo"
 workflow_ref = "governed-post-implementation-validation"
-title = "MASS Governed Post Implementation Validation"
+title = "GENERIC Governed Post Implementation Validation"
 purpose = "Independently validate completed implementation work for regressions, downstream impact, generated artifact drift, security/privacy risk, and PR/GitOps readiness before merge."
 status = "enabled"
 
@@ -37,7 +37,7 @@ id = "validation-reviewer"
 display_name = "Validation Reviewer"
 purpose = "Independently reviews final implementation correctness, downstream reachability, regressions, generated artifacts, and sensitive-risk coverage."
 instructions = "Reject validation if any feasible regression test is missing, downstream impact is unreviewed, generated artifacts are stale, auth/tenancy/PII/API/migration risk is untested, or PR metadata would publish unsafe details."
-allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
+allowed_skills = ["mivia-mcp", "project-review"]
 allowed_tools = [
   "projects.integrations.search",
   "projects.jira.issue.get",
@@ -167,7 +167,7 @@ evidence_needed = ["regression-test-ref", "affected-targets-ref", "lint-ref", "t
 files_to_read = [".agentic/workflows/governed-post-implementation-validation.toml"]
 files_to_edit = []
 likely_files_affected = []
-verification_requirement = "run feasible regression tests first, then affected MASS checks, generated artifact checks, and git diff --check before validation can pass"
+verification_requirement = "run feasible regression tests first, then affected GENERIC checks, generated artifact checks, and git diff --check before validation can pass"
 expected_output = "verifier refs attached to implementation tasks and validation task"
 failure_criteria = "block if any required regression, affected, policy, generated artifact, or diff check is missing or failed"
 review_gate = "post-implementation-validation-review required before GitOps readiness"

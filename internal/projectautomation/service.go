@@ -4833,7 +4833,7 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		"Use only the bounded task scope and likely affected files unless current source proves a narrower necessary change.",
 		"Do not run verifier commands unless this task explicitly allows worker verification.",
 	}
-	governedInstructions := governedWorkflowStepInstructions(task.TaskRef)
+	governedInstructions := GovernedWorkflowStepInstructions(task.TaskRef)
 	if strings.HasPrefix(task.TaskRef, "review-") && len(governedInstructions) == 0 {
 		instructions = append(instructions,
 			"This is an independent review task. Do not edit implementation files.",
@@ -4869,6 +4869,11 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		OutputContract:          task.OutputContract,
 		RunnerInstructions:      instructions,
 	}
+}
+
+func GovernedWorkflowStepInstructions(taskRef string) []string {
+	instructions := governedWorkflowStepInstructions(taskRef)
+	return append([]string(nil), instructions...)
 }
 
 func governedWorkflowStepInstructions(taskRef string) []string {

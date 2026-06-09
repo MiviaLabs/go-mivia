@@ -145,7 +145,7 @@ func TestServiceImportConfigWorkflowDefinitions(t *testing.T) {
 			}
 			store := newWorkflowServiceStore()
 			svc := testWorkflowService(store)
-			result, err := svc.ImportWorkflowTOML(ctx, ImportWorkflowTOMLInput{ProjectID: "mass-monorepo", Data: data, CreatedByRunID: "run-import", TraceID: "trace-import"})
+			result, err := svc.ImportWorkflowTOML(ctx, ImportWorkflowTOMLInput{ProjectID: "generic-monorepo", Data: data, CreatedByRunID: "run-import", TraceID: "trace-import"})
 			if err != nil {
 				t.Fatalf("import checked-in workflow: %v issues=%#v", err, result.ValidationIssues)
 			}

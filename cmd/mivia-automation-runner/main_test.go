@@ -171,7 +171,7 @@ func TestDedicatedWorktreeRunnerInstructionsBlockBaseWorkspaceEdits(t *testing.T
 	}
 	prompt := projectautomation.RenderCodexTaskPrompt(projectautomation.CodexTaskInput{
 		SchemaVersion:      1,
-		ProjectID:          "mass-monorepo",
+		ProjectID:          "generic-monorepo",
 		AutomationRunID:    "run-1",
 		PlanID:             "plan-1",
 		TaskID:             "task-1",
@@ -472,7 +472,7 @@ func TestResolveTaskScopedRunWorkDirCreatesSuffixedDedicatedWorktree(t *testing.
 
 func TestResolveTaskScopedRunWorkDirSupportsLegacySharedRefsSafely(t *testing.T) {
 	baseWorkDir := filepath.Join(t.TempDir(), "repo")
-	taskID := "MASS/../../old task\nunsafe"
+	taskID := "generic/../../old task\nunsafe"
 	taskToken := taskScopedRefToken(taskID)
 	if taskToken == "" || strings.Contains(taskToken, "..") || strings.ContainsAny(taskToken, "/\\\r\n") || taskToken == taskID {
 		t.Fatalf("expected deterministic safe task token, got %q", taskToken)
@@ -481,16 +481,16 @@ func TestResolveTaskScopedRunWorkDirSupportsLegacySharedRefsSafely(t *testing.T)
 	var observedBranchRef string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/projects/mass/work-plans/legacy-plan":
+		case "/api/v1/projects/generic/work-plans/legacy-plan":
 			writeJSON(t, w, runnerWorkPlan{
 				ID:             "legacy-plan",
-				ProjectID:      "mass",
+				ProjectID:      "generic",
 				IsolationMode:  "shared",
 				GitBaseRef:     "main",
-				GitBranchRef:   "fix-MASS-0000-shared-audit",
+				GitBranchRef:   "fix-generic-0000-shared-audit",
 				GitWorktreeRef: "audit/0606031743-domain-realtime-ops",
 			})
-		case "/api/v1/projects/mass/workspace/git/worktrees":
+		case "/api/v1/projects/generic/workspace/git/worktrees":
 			var input struct {
 				WorktreeRef string `json:"worktree_ref"`
 				BranchRef   string `json:"branch_ref"`
@@ -505,11 +505,11 @@ func TestResolveTaskScopedRunWorkDirSupportsLegacySharedRefsSafely(t *testing.T)
 			if input.WorktreeRef != wantWorktreeRef {
 				t.Fatalf("expected scoped legacy worktree ref %q, got %+v", wantWorktreeRef, input)
 			}
-			wantBranchRef := "fix-MASS-0000-shared-audit-" + taskToken
+			wantBranchRef := "fix-generic-0000-shared-audit-" + taskToken
 			if input.BranchRef != wantBranchRef || input.BaseRef != "main" {
 				t.Fatalf("unexpected scoped legacy branch/base refs: %+v", input)
 			}
-			target, err := dedicatedWorktreePath(baseWorkDir, "mass", input.WorktreeRef)
+			target, err := dedicatedWorktreePath(baseWorkDir, "generic", input.WorktreeRef)
 			if err != nil {
 				t.Fatalf("dedicated worktree path: %v", err)
 			}
@@ -528,7 +528,7 @@ func TestResolveTaskScopedRunWorkDirSupportsLegacySharedRefsSafely(t *testing.T)
 	defer server.Close()
 
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
-	resolved, err := client.resolveTaskScopedRunWorkDir(t.Context(), "mass", "legacy-plan", taskID, baseWorkDir)
+	resolved, err := client.resolveTaskScopedRunWorkDir(t.Context(), "generic", "legacy-plan", taskID, baseWorkDir)
 	if err != nil {
 		t.Fatalf("resolveTaskScopedRunWorkDir returned error: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestResolveTaskScopedRunWorkDirSupportsLegacySharedRefsSafely(t *testing.T)
 	if strings.Contains(observedWorktreeRef, taskID) || strings.Contains(observedBranchRef, taskID) {
 		t.Fatalf("scoped refs must not contain raw unsafe task ID: worktree=%q branch=%q", observedWorktreeRef, observedBranchRef)
 	}
-	want, err := dedicatedWorktreePath(baseWorkDir, "mass", observedWorktreeRef)
+	want, err := dedicatedWorktreePath(baseWorkDir, "generic", observedWorktreeRef)
 	if err != nil {
 		t.Fatalf("dedicated worktree path: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestRunnerFallsBackToTaskScopedWorktreeForLegacySharedRefs(t *testing.T) {
 	codexPath := fakeCodexRecordingArgs(t, argsPath, 1)
 	var completed projectautomation.CompleteAttemptInput
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/v1/projects/mass/work-tasks/") {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/projects/generic/work-tasks/") {
 			writeJSON(t, w, runnerWorkTaskMetadata{
 				ID:           taskID,
 				Status:       "needs_review",
@@ -570,18 +570,18 @@ func TestRunnerFallsBackToTaskScopedWorktreeForLegacySharedRefs(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
-		case "/api/v1/projects/mass/automation-runs/claim-next":
+		case "/api/v1/projects/generic/automation-runs/claim-next":
 			writeJSON(t, w, projectautomation.ClaimedRun{
 				Run: projectautomation.AutomationRun{
 					ID:          "run-1",
-					ProjectID:   "mass",
+					ProjectID:   "generic",
 					PlanID:      "legacy-plan",
 					TaskID:      taskID,
 					SafeSummary: "pre_execution_recovery",
 				},
 				CodexInput: projectautomation.CodexTaskInput{
 					SchemaVersion:           1,
-					ProjectID:               "mass",
+					ProjectID:               "generic",
 					AutomationRunID:         "run-1",
 					PlanID:                  "legacy-plan",
 					TaskID:                  taskID,
@@ -592,16 +592,16 @@ func TestRunnerFallsBackToTaskScopedWorktreeForLegacySharedRefs(t *testing.T) {
 				},
 				TimeoutMS: 1000,
 			})
-		case "/api/v1/projects/mass/work-plans/legacy-plan":
+		case "/api/v1/projects/generic/work-plans/legacy-plan":
 			writeJSON(t, w, runnerWorkPlan{
 				ID:             "legacy-plan",
-				ProjectID:      "mass",
+				ProjectID:      "generic",
 				IsolationMode:  "shared",
 				GitBaseRef:     "main",
 				GitBranchRef:   "mivia/shared-audit",
 				GitWorktreeRef: "shared/audit",
 			})
-		case "/api/v1/projects/mass/workspace/git/worktrees":
+		case "/api/v1/projects/generic/workspace/git/worktrees":
 			var input struct {
 				WorktreeRef string `json:"worktree_ref"`
 				BranchRef   string `json:"branch_ref"`
@@ -614,14 +614,14 @@ func TestRunnerFallsBackToTaskScopedWorktreeForLegacySharedRefs(t *testing.T) {
 			if input.WorktreeRef != "shared/audit-"+taskToken {
 				t.Fatalf("expected task-scoped legacy worktree ref, got %+v", input)
 			}
-			target, err := dedicatedWorktreePath(baseWorkDir, "mass", input.WorktreeRef)
+			target, err := dedicatedWorktreePath(baseWorkDir, "generic", input.WorktreeRef)
 			if err != nil {
 				t.Fatalf("dedicated worktree path: %v", err)
 			}
 			createdTarget = target
 			runGit(t, baseWorkDir, "worktree", "add", "-B", input.BranchRef, target, input.BaseRef)
 			writeJSON(t, w, map[string]any{"applied": true})
-		case "/api/v1/projects/mass/automation-runs/run-1/attempt-result":
+		case "/api/v1/projects/generic/automation-runs/run-1/attempt-result":
 			if err := json.NewDecoder(r.Body).Decode(&completed); err != nil {
 				t.Fatalf("decode attempt result: %v", err)
 			}
@@ -633,7 +633,7 @@ func TestRunnerFallsBackToTaskScopedWorktreeForLegacySharedRefs(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.Config{GitOperations: config.GitOperations{Enabled: true, CommitAfterTask: true, RequireCleanBeforeTask: true}}
-	status, _, claimed := claimRunExecuteAndReport(t.Context(), &runnerClient{baseURL: server.URL, http: server.Client()}, cfg, "mass", "agent-1", codexLaunchOptions{Path: codexPath, WorkDir: baseWorkDir, Sandbox: "workspace-write"})
+	status, _, claimed := claimRunExecuteAndReport(t.Context(), &runnerClient{baseURL: server.URL, http: server.Client()}, cfg, "generic", "agent-1", codexLaunchOptions{Path: codexPath, WorkDir: baseWorkDir, Sandbox: "workspace-write"})
 	if !claimed || status == 0 {
 		t.Fatalf("expected claimed failed codex run after fallback, claimed=%v status=%d", claimed, status)
 	}
@@ -985,10 +985,10 @@ func TestGitOpsPostTaskInputCarriesRunAndTaskMetadata(t *testing.T) {
 }
 
 func TestGitOpsPostTaskInputAddsBoundedSmokeCloseoutRefs(t *testing.T) {
-	input := gitOpsPostTaskInput("mass-monorepo", "/tmp/worktree", "fallback-operator", projectautomation.ClaimedRun{
+	input := gitOpsPostTaskInput("generic-monorepo", "/tmp/worktree", "fallback-operator", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:           "automation_run_1",
-			ProjectID:    "mass-monorepo",
+			ProjectID:    "generic-monorepo",
 			AutomationID: "automation_1",
 			AgentID:      "smoke-gitops-worker",
 			PlanID:       "work_plan_1",
@@ -1186,10 +1186,10 @@ func TestGitOpsOptionsForProjectInheritsSparseOverride(t *testing.T) {
 			},
 		},
 		Projects: []config.Project{{
-			ID: "mass-monorepo",
+			ID: "generic-monorepo",
 			GitOperations: &config.GitOperations{
 				BranchPrefix:      "",
-				BranchNamePattern: "^(feat|fix)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+				BranchNamePattern: "^(feat|fix)-generic-[0-9]+(-[a-z0-9-]+)*$",
 				Conventions: config.GitOpsConventions{
 					CommitType:          "chore",
 					WhatChangedTemplate: "Project-specific summary",
@@ -1198,7 +1198,7 @@ func TestGitOpsOptionsForProjectInheritsSparseOverride(t *testing.T) {
 		}},
 	}
 
-	options := gitOpsOptionsForProject(cfg, "mass-monorepo")
+	options := gitOpsOptionsForProject(cfg, "generic-monorepo")
 	if !options.Enabled || !options.CommitAfterTask || !options.PushAfterTask || !options.DraftPRAfterPush || !options.RequireCleanBeforeTask {
 		t.Fatalf("expected sparse project override to inherit enabled GitOps booleans, got %+v", options)
 	}
@@ -1284,7 +1284,7 @@ func TestRunGitOpsPostTaskRecoveryRequiresVerifierRefs(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+		case "/api/v1/projects/generic-monorepo/work-tasks/task-1":
 			writeJSON(t, w, runnerWorkTaskMetadata{
 				ID:               "task-1",
 				TaskRef:          "ordinary-gitops-task",
@@ -1301,10 +1301,10 @@ func TestRunGitOpsPostTaskRecoveryRequiresVerifierRefs(t *testing.T) {
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:          "run-1",
-			ProjectID:   "mass-monorepo",
+			ProjectID:   "generic-monorepo",
 			PlanID:      "plan-1",
 			TaskID:      "task-1",
 			SafeSummary: projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
@@ -1326,7 +1326,7 @@ func TestRunGitOpsPostTaskRecoveryRequiresReviewRefs(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+		case "/api/v1/projects/generic-monorepo/work-tasks/task-1":
 			writeJSON(t, w, runnerWorkTaskMetadata{
 				ID:                 "task-1",
 				TaskRef:            "smoke-draft-pr",
@@ -1343,10 +1343,10 @@ func TestRunGitOpsPostTaskRecoveryRequiresReviewRefs(t *testing.T) {
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:          "run-1",
-			ProjectID:   "mass-monorepo",
+			ProjectID:   "generic-monorepo",
 			PlanID:      "plan-1",
 			TaskID:      "task-1",
 			SafeSummary: projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
@@ -1395,7 +1395,7 @@ func TestRunGitOpsPostTaskRecoveryAllowsBoundedSmokeWithoutManualCloseoutRefs(t 
 	t.Setenv("GH_TOKEN", "token")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+		case "/api/v1/projects/generic-monorepo/work-tasks/task-1":
 			writeJSON(t, w, runnerWorkTaskMetadata{
 				ID:                     "task-1",
 				TaskRef:                "smoke-draft-pr",
@@ -1412,10 +1412,10 @@ func TestRunGitOpsPostTaskRecoveryAllowsBoundedSmokeWithoutManualCloseoutRefs(t 
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:           "run-1",
-			ProjectID:    "mass-monorepo",
+			ProjectID:    "generic-monorepo",
 			AutomationID: "automation-1",
 			AgentID:      "agent-1",
 			PlanID:       "plan-1",
@@ -1466,7 +1466,7 @@ func TestRunGitOpsPostTaskRecoveryAllowsLegacyBoundedSmokeWithReviewRef(t *testi
 	t.Setenv("GH_TOKEN", "token")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+		case "/api/v1/projects/generic-monorepo/work-tasks/task-1":
 			writeJSON(t, w, runnerWorkTaskMetadata{
 				ID:               "task-1",
 				TaskRef:          "smoke-draft-pr",
@@ -1483,10 +1483,10 @@ func TestRunGitOpsPostTaskRecoveryAllowsLegacyBoundedSmokeWithReviewRef(t *testi
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:           "run-1",
-			ProjectID:    "mass-monorepo",
+			ProjectID:    "generic-monorepo",
 			AutomationID: "automation-1",
 			AgentID:      "agent-1",
 			PlanID:       "plan-1",
@@ -1550,7 +1550,7 @@ func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
 	t.Setenv("GH_TOKEN", "token")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+		case "/api/v1/projects/generic-monorepo/work-tasks/task-1":
 			writeJSON(t, w, runnerWorkTaskMetadata{
 				ID:                 "task-1",
 				TaskRef:            "smoke-draft-pr",
@@ -1567,10 +1567,10 @@ func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:           "run-1",
-			ProjectID:    "mass-monorepo",
+			ProjectID:    "generic-monorepo",
 			AutomationID: "automation-1",
 			AgentID:      "agent-1",
 			PlanID:       "plan-1",
@@ -1597,7 +1597,7 @@ func TestRunGitOpsPostTaskRecoveryReportsMissingRunnerSSHMount(t *testing.T) {
 	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+		case "/api/v1/projects/generic-monorepo/work-tasks/task-1":
 			writeJSON(t, w, runnerWorkTaskMetadata{
 				ID:                 "task-1",
 				TaskRef:            "smoke-draft-pr",
@@ -1614,10 +1614,10 @@ func TestRunGitOpsPostTaskRecoveryReportsMissingRunnerSSHMount(t *testing.T) {
 	defer server.Close()
 	client := &runnerClient{baseURL: server.URL, http: server.Client()}
 
-	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "mass-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+	status, failure, _, _ := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:          "run-1",
-			ProjectID:   "mass-monorepo",
+			ProjectID:   "generic-monorepo",
 			PlanID:      "plan-1",
 			TaskID:      "task-1",
 			SafeSummary: projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
@@ -2275,20 +2275,20 @@ func TestRunOnceFailsGovernanceStepsWithoutExplicitCloseout(t *testing.T) {
 			var completed atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/api/v1/projects/mass-monorepo/automation-runs/claim-next":
+				case "/api/v1/projects/generic-monorepo/automation-runs/claim-next":
 					input := testCodexInput("run-1")
-					input.ProjectID = "mass-monorepo"
+					input.ProjectID = "generic-monorepo"
 					input.TaskRef = taskRef
 					writeJSON(t, w, projectautomation.ClaimedRun{
-						Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "mass-monorepo", PlanID: "plan-1", TaskID: "task-1"},
+						Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "generic-monorepo", PlanID: "plan-1", TaskID: "task-1"},
 						CodexInput: input,
 						TimeoutMS:  1000,
 					})
-				case "/api/v1/projects/mass-monorepo/work-plans/plan-1":
-					writeJSON(t, w, runnerWorkPlan{ID: "plan-1", ProjectID: "mass-monorepo", IsolationMode: "shared"})
-				case "/api/v1/projects/mass-monorepo/work-tasks/task-1":
+				case "/api/v1/projects/generic-monorepo/work-plans/plan-1":
+					writeJSON(t, w, runnerWorkPlan{ID: "plan-1", ProjectID: "generic-monorepo", IsolationMode: "shared"})
+				case "/api/v1/projects/generic-monorepo/work-tasks/task-1":
 					writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: taskRef, Status: "in_progress"})
-				case "/api/v1/projects/mass-monorepo/automation-runs/run-1/attempt-result":
+				case "/api/v1/projects/generic-monorepo/automation-runs/run-1/attempt-result":
 					var input projectautomation.CompleteAttemptInput
 					if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 						t.Fatalf("decode attempt: %v", err)
@@ -2304,7 +2304,7 @@ func TestRunOnceFailsGovernanceStepsWithoutExplicitCloseout(t *testing.T) {
 			}))
 			defer server.Close()
 
-			status := run([]string{"--server", server.URL, "--project", "mass-monorepo", "--codex", "/bin/true"})
+			status := run([]string{"--server", server.URL, "--project", "generic-monorepo", "--codex", "/bin/true"})
 			if status == 0 {
 				t.Fatal("expected exit failure when governed closeout is missing")
 			}
@@ -3022,6 +3022,106 @@ func TestWriteCodexInputWritesRenderedPrompt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("rendered prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestRunOnceProvidesRuntimeCodexPromptContract(t *testing.T) {
+	setReadableCodexHome(t)
+	configPath := filepath.Join(t.TempDir(), "mivia.toml")
+	if err := os.WriteFile(configPath, []byte(`version = 1
+
+[verification]
+always_before_pr = ["go test ./internal/projectworkflowchain -run TestGeneric"]
+
+[[verification.generated_artifacts]]
+command = "go generate ./internal/projectworkflowchain"
+paths = ["internal/projectworkflowchain/generated_contract.go"]
+required_before_pr = true
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("MIVIA_CONFIG_PATH", configPath)
+	promptPath := filepath.Join(t.TempDir(), "prompt.txt")
+	codexPath := fakeCodexRecordingPromptAndLastMessage(t, promptPath, governedCloseoutFixtureJSON())
+	var completed projectautomation.CompleteAttemptInput
+	var statusMoved atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			input := testCodexInput("run-1")
+			input.TaskRef = "decompose-work-plan"
+			input.Title = "Decompose generic delivery"
+			input.ContextPackRefs = []string{"context.generic.delivery"}
+			input.EvidenceNeeded = []string{"evidence.generic.source"}
+			input.LikelyFilesAffected = []string{"internal/projectworkflowchain/service.go"}
+			input.ExpectedOutput = "child task packets with verifier contracts"
+			input.DownstreamImpactRefs = []string{"impact.generic.workflow-chain"}
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", PlanID: "plan-1", TaskID: "task-1", TraceID: "trace-1"},
+				CodexInput: input,
+				TimeoutMS:  1000,
+			})
+		case "/api/v1/projects/project-1/work-plans/plan-1":
+			writeJSON(t, w, runnerWorkPlan{ID: "plan-1", ProjectID: "project-1", IsolationMode: "shared"})
+		case "/api/v1/projects/project-1/work-plans/plan-1/tasks":
+			writeJSON(t, w, map[string]string{"id": "child-1"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/evidence", "/api/v1/projects/project-1/work-tasks/task-1/verifier-results":
+			writeJSON(t, w, map[string]string{"ref": "ok"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/status":
+			statusMoved.Add(1)
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}})
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			if statusMoved.Load() > 0 {
+				writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}, VerifierResultRefs: []string{"verifier.governed"}})
+				return
+			}
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "decompose-work-plan", Status: "in_progress"})
+		case "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			if err := json.NewDecoder(r.Body).Decode(&completed); err != nil {
+				t.Fatalf("decode attempt: %v", err)
+			}
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", Status: completed.Status})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	status := run([]string{"--server", server.URL, "--project", "project-1", "--codex", codexPath})
+	if status != 0 {
+		t.Fatalf("expected runner success, got %d", status)
+	}
+	if completed.Status != projectautomation.RunStatusCompleted || completed.FailureCategory != "" {
+		t.Fatalf("expected completed attempt, got %+v", completed)
+	}
+	data, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read captured prompt: %v", err)
+	}
+	prompt := string(data)
+	for _, want := range []string{
+		"Mivia server URL: " + server.URL,
+		"Automation run ID: run-1",
+		"Trace ID: trace-1",
+		"Work Plan ID: plan-1",
+		"Work Task ID: task-1",
+		"Work Task ref: decompose-work-plan",
+		"context.generic.delivery",
+		"evidence.generic.source",
+		"internal/projectworkflowchain/service.go",
+		"child task packets with verifier contracts",
+		"impact.generic.workflow-chain",
+		"Your final response must be a single JSON object",
+		"go test ./internal/projectworkflowchain -run TestGeneric",
+		"Generated artifact verification is required before PR; run or satisfy: go generate ./internal/projectworkflowchain",
+		"Generated artifact paths that may need committing: internal/projectworkflowchain/generated_contract.go",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("captured Codex prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Concrete REST closeout endpoints") {
+		t.Fatalf("governed wrapper prompt must not instruct Codex to mutate lifecycle directly:\n%s", prompt)
 	}
 }
 
@@ -3821,8 +3921,8 @@ func TestParseGovernedCloseoutRejectsChildTaskObjectStringFieldAsValidation(t *t
 		"safe_next_action":"review child tasks",
 		"evidence_refs":["task-decomposition-ref"],
 		"child_tasks":[{
-			"task_ref":"implement-mass-1044",
-			"title":"Implement MASS-1044",
+			"task_ref":"implement-generic-1044",
+			"title":"Implement generic-1044",
 			"description":"Implement bounded change",
 			"verification_requirement":{"command":"go test ./..."},
 			"expected_output":"implementation complete",
@@ -3846,8 +3946,8 @@ func TestParseGovernedCloseoutNormalizesChildTaskObjectArrayItems(t *testing.T) 
 		"safe_next_action":"review child tasks",
 		"evidence_refs":["task-decomposition-ref"],
 		"child_tasks":[{
-			"task_ref":"implement-mass-1044",
-			"title":"Implement MASS-1044",
+			"task_ref":"implement-generic-1044",
+			"title":"Implement generic-1044",
 			"description":"Implement bounded change",
 			"evidence_needed":[{"ref":"source-evidence"}],
 			"files_to_read":[{"path":"apps/domain/file.ts"}],
@@ -3957,7 +4057,7 @@ func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T
 	task = validGovernedCloseoutChildTaskForTest()
 	task.ContextPackRefs = []string{"context-pack:manifest:68c3ee2ad1556459"}
 	task.DependencyTaskIDs = []string{"work_task:parent+1"}
-	task.DownstreamImpactRefs = []string{"impact/ref@mass+1044"}
+	task.DownstreamImpactRefs = []string{"impact/ref@generic+1044"}
 	err = validateGovernedCloseoutOutput(governedCloseoutOutput{
 		CloseoutAction: "needs_review",
 		EvidenceRefs:   []string{"task-decomposition-ref"},
@@ -3999,7 +4099,7 @@ func TestGovernedChildTaskRunnerAcceptedPayloadsMatchWorkTaskService(t *testing.
 		"safe refs": func(task *governedCloseoutWorkTask) {
 			task.ContextPackRefs = []string{"context-pack:manifest:68c3ee2ad1556459"}
 			task.DependencyTaskIDs = []string{"work_task:parent+1"}
-			task.DownstreamImpactRefs = []string{"impact/ref@mass+1044"}
+			task.DownstreamImpactRefs = []string{"impact/ref@generic+1044"}
 		},
 		"discovery scope without files": func(task *governedCloseoutWorkTask) {
 			task.Description = "Perform discovery and produce bounded implementation task metadata."
@@ -4010,7 +4110,7 @@ func TestGovernedChildTaskRunnerAcceptedPayloadsMatchWorkTaskService(t *testing.
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			child := validGovernedCloseoutChildTaskForTest()
-			child.TaskRef = "implement-mass-1044-" + strings.ReplaceAll(name, " ", "-")
+			child.TaskRef = "implement-generic-1044-" + strings.ReplaceAll(name, " ", "-")
 			mutate(&child)
 			output := governedCloseoutOutput{
 				CloseoutAction: "needs_review",
@@ -4057,8 +4157,8 @@ func TestParseGovernedCloseoutNormalizesChildTaskDecompositionQualityObject(t *t
 		"safe_next_action":"review child tasks",
 		"evidence_refs":["task-decomposition-ref"],
 		"child_tasks":[{
-			"task_ref":"implement-mass-1044",
-			"title":"Implement MASS-1044",
+			"task_ref":"implement-generic-1044",
+			"title":"Implement generic-1044",
 			"description":"Implement bounded change",
 			"evidence_needed":["source-evidence"],
 			"files_to_read":["apps/domain/file.ts"],
@@ -4090,8 +4190,8 @@ func TestParseGovernedCloseoutNormalizesChildTaskStructuredDecompositionQualityO
 		"safe_next_action":"review child tasks",
 		"evidence_refs":["task-decomposition-ref"],
 		"child_tasks":[{
-			"task_ref":"implement-mass-1044",
-			"title":"Implement MASS-1044",
+			"task_ref":"implement-generic-1044",
+			"title":"Implement generic-1044",
 			"description":"Implement bounded change",
 			"evidence_needed":["source-evidence"],
 			"files_to_read":["apps/domain/file.ts"],
@@ -4166,8 +4266,8 @@ func TestParseGovernedCloseoutNormalizesChildTaskRegressionApplicabilityObject(t
 		"safe_next_action":"review child tasks",
 		"evidence_refs":["task-decomposition-ref"],
 		"child_tasks":[{
-			"task_ref":"implement-mass-1044",
-			"title":"Implement MASS-1044",
+			"task_ref":"implement-generic-1044",
+			"title":"Implement generic-1044",
 			"description":"Implement bounded change",
 			"evidence_needed":["source-evidence"],
 			"files_to_read":["apps/domain/file.ts"],
@@ -4194,8 +4294,8 @@ func TestParseGovernedCloseoutNormalizesChildTaskRegressionApplicabilityObject(t
 
 func validGovernedCloseoutChildTaskForTest() governedCloseoutWorkTask {
 	return governedCloseoutWorkTask{
-		TaskRef:                 "implement-mass-1044",
-		Title:                   "Implement MASS-1044",
+		TaskRef:                 "implement-generic-1044",
+		Title:                   "Implement generic-1044",
 		Description:             "Implement bounded change",
 		EvidenceNeeded:          []string{"source-evidence"},
 		FilesToRead:             []string{"apps/domain/file.ts"},

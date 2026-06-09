@@ -1,15 +1,15 @@
 id = "workflow-workplan-implementation"
-project_id = "mass-monorepo"
+project_id = "generic-monorepo"
 workflow_ref = "governed-workplan-implementation"
-title = "MASS Governed Work Plan Implementation"
-purpose = "Execute reviewed ready MASS Work Tasks through bounded workers, independent review, orchestrator verification, and metadata-only automation."
+title = "GENERIC Governed Work Plan Implementation"
+purpose = "Execute reviewed ready GENERIC Work Tasks through bounded workers, independent review, orchestrator verification, and metadata-only automation."
 status = "enabled"
 
 [[agents]]
 id = "implementation-worker"
 display_name = "Implementation Worker"
-purpose = "Implements one ready MASS Work Task from metadata and attached refs only."
-instructions = "Claim exactly one ready task, edit only declared scope, attach bounded evidence, and run only task-scoped checks explicitly allowed by the task. Before changing behavior, confirm the task's regression-test applicability decision. If a regression test is feasible, add or update it before/with the fix and run the focused verifier. Create and close MASS local agentic task evidence when the scope is not Flutter-only. Do not bypass git hooks."
+purpose = "Implements one ready GENERIC Work Task from metadata and attached refs only."
+instructions = "Claim exactly one ready task, edit only declared scope, attach bounded evidence, and run only task-scoped checks explicitly allowed by the task. Before changing behavior, confirm the task's regression-test applicability decision. If a regression test is feasible, add or update it before/with the fix and run the focused verifier. Create and close GENERIC local agentic task evidence when the scope is not Flutter-only. Do not bypass git hooks."
 allowed_skills = ["mivia-mcp", "write-tests", "project-implement"]
 allowed_tools = [
   "projects.integrations.search",
@@ -36,7 +36,7 @@ id = "implementation-reviewer"
 display_name = "Implementation Reviewer"
 purpose = "Independently reviews changed files, evidence, verifier refs, and task outcome before completion."
 instructions = "Review changed files and evidence independently. Reject self-review, missing verifier refs, scope drift, unsafe metadata, untested feasible behavior changes, missing regression test when feasible, weak not-feasible regression-test rationale, missing downstream impact analysis, missing introduced-by-task attribution, PII/logging leaks, and auth/tenancy regressions."
-allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
+allowed_skills = ["mivia-mcp", "project-review"]
 allowed_tools = [
   "projects.integrations.search",
   "projects.jira.issue.get",
@@ -60,7 +60,7 @@ max_retries = 0
 id = "implementation-orchestrator"
 display_name = "Implementation Orchestrator"
 purpose = "Owns task dispatch, focused verification, final broader checks, and completion gates."
-instructions = "Dispatch only reviewed ready tasks. Run focused verifiers before broader checks. Complete tasks only after verifier and independent review refs exist. Use MASS package-local commands before repo-wide commands, then baseline policy checks when risk warrants."
+instructions = "Dispatch only reviewed ready tasks. Run focused verifiers before broader checks. Complete tasks only after verifier and independent review refs exist. Use GENERIC package-local commands before repo-wide commands, then baseline policy checks when risk warrants."
 allowed_skills = ["mivia-mcp", "write-tests"]
 allowed_tools = [
   "projects.integrations.search",
@@ -85,7 +85,7 @@ id = "select-ready-tasks"
 kind = "work_task"
 title = "Select Ready Tasks"
 agent = "implementation-orchestrator"
-description = "Select reviewed ready Work Tasks with done dependencies, complete downstream impact metadata, focused verifier ladder, and disjoint likely affected files for the next MASS implementation batch."
+description = "Select reviewed ready Work Tasks with done dependencies, complete downstream impact metadata, focused verifier ladder, and disjoint likely affected files for the next GENERIC implementation batch."
 evidence_needed = ["ready-task-list-ref", "dependency-status-ref", "review-result-ref", "downstream-impact-ref", "regression-test-applicability-ref", "verifier-ladder-ref"]
 files_to_read = [".agentic/workflows/governed-workplan-implementation.toml"]
 files_to_edit = []

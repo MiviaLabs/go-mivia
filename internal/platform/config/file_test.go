@@ -147,16 +147,16 @@ func TestLoadFileConfig_AcceptsProjectWorkflowChains(t *testing.T) {
 version = 1
 
 [[projects]]
-id = "mass-monorepo"
-display_name = "MASS"
+id = "generic-monorepo"
+display_name = "GENERIC"
 root_path = "/absolute/path/to/project"
 enabled = true
 
 [[projects.workflow_chains]]
-chain_ref = "mass-governed-ticket-delivery"
+chain_ref = "GENERIC-governed-ticket-delivery"
 enabled = true
 input_kind = "jira_issue_key"
-input_pattern = "^MASS-[0-9]+$"
+input_pattern = "^GENERIC-[0-9]+$"
 context_provider = "jira"
 context_mode = "local_ingested"
 default_title_template = "{{input_ref}} governed delivery"
@@ -192,7 +192,7 @@ required_status_before_next = "completed"
 		t.Fatalf("expected workflow chain config to apply: %v", err)
 	}
 	chains := merged.Projects[0].WorkflowChains
-	if len(chains) != 1 || chains[0].ChainRef != "mass-governed-ticket-delivery" || len(chains[0].Stages) != 3 {
+	if len(chains) != 1 || chains[0].ChainRef != "GENERIC-governed-ticket-delivery" || len(chains[0].Stages) != 3 {
 		t.Fatalf("unexpected workflow chain config: %#v", chains)
 	}
 	if chains[0].Stages[1].DependsOn[0] != "decomposition" {

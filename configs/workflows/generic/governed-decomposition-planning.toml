@@ -1,15 +1,15 @@
 id = "workflow-decomposition-planning"
-project_id = "mass-monorepo"
+project_id = "generic-monorepo"
 workflow_ref = "governed-decomposition-planning"
-title = "MASS Governed Decomposition And Planning"
-purpose = "Convert a MASS objective into a Work Plan with isolated ready Work Tasks, risk classification, evidence needs, verifier scope, and independent review gates."
+title = "GENERIC Governed Decomposition And Planning"
+purpose = "Convert a GENERIC objective into a Work Plan with isolated ready Work Tasks, risk classification, evidence needs, verifier scope, and independent review gates."
 status = "enabled"
 
 [[agents]]
 id = "planning-worker"
 display_name = "Planning Worker"
-purpose = "Reads bounded MASS context and drafts low-intelligence-ready Work Task metadata."
-instructions = "Use Mivia context health and bounded context refs first. Create metadata-only Work Tasks executable from task fields and attached refs without hidden chat context. Classify MASS risk areas before decomposition. Split work into single-objective task packets sized for one isolated worker. Respect MASS local agentic workflow and Flutter-only exceptions."
+purpose = "Reads bounded GENERIC context and drafts low-intelligence-ready Work Task metadata."
+instructions = "Use Mivia context health and bounded context refs first. Create metadata-only Work Tasks executable from task fields and attached refs without hidden chat context. Classify GENERIC risk areas before decomposition. Split work into single-objective task packets sized for one isolated worker. Respect GENERIC local agentic workflow and Flutter-only exceptions."
 allowed_skills = ["mivia-mcp", "project-plan", "plan-task"]
 allowed_tools = [
   "projects.list",
@@ -33,7 +33,7 @@ max_retries = 1
 [[agents]]
 id = "planning-reviewer"
 display_name = "Planning Reviewer"
-purpose = "Reviews MASS Work Plan and Work Task decomposition for readiness, evidence, dependencies, and verifier scope."
+purpose = "Reviews GENERIC Work Plan and Work Task decomposition for readiness, evidence, dependencies, and verifier scope."
 instructions = "Reject decomposition that lacks source evidence, downstream impact analysis, regression-test applicability decision, verifier scope, dependencies, resume instructions, review gates, files_to_read, expected files_to_edit or explicit discovery scope, acceptance criteria, stop conditions, or clear task granularity. Treat docs and ticket text as narration until source-checked."
 allowed_skills = ["mivia-mcp", "project-plan-review", "project-review"]
 allowed_tools = [
@@ -81,7 +81,7 @@ id = "discover-planning-context"
 kind = "work_task"
 title = "Discover Planning Context"
 agent = "planning-worker"
-description = "Identify MASS instructions, current project state, relevant docs, source areas, package boundaries, risk domains, generated artifacts, and Mivia surface gaps for the requested objective."
+description = "Identify GENERIC instructions, current project state, relevant docs, source areas, package boundaries, risk domains, generated artifacts, and Mivia surface gaps for the requested objective."
 evidence_needed = ["project-context-health", "repo-instructions-ref", "context-pack-ref", "mcp-surface-gap-ref", "risk-domain-ref", "package-boundary-ref"]
 files_to_read = [
   "AGENTS.md",
@@ -164,7 +164,7 @@ kind = "work_task"
 title = "Decompose Work Plan"
 agent = "planning-worker"
 depends_on = ["map-downstream-impact"]
-description = "Create granular MASS Work Tasks. Each task must have one objective, bounded files_to_read, expected files_to_edit or explicit discovery scope, dependencies, downstream impact refs, regression-test applicability decision, acceptance criteria, stop conditions, verifier ladder, review gate, output contract, and resume instructions. Split tasks that cross unrelated packages, risk domains, generated artifacts, or verification ladders."
+description = "Create granular GENERIC Work Tasks. Each task must have one objective, bounded files_to_read, expected files_to_edit or explicit discovery scope, dependencies, downstream impact refs, regression-test applicability decision, acceptance criteria, stop conditions, verifier ladder, review gate, output contract, and resume instructions. Split tasks that cross unrelated packages, risk domains, generated artifacts, or verification ladders."
 evidence_needed = ["context-pack-ref", "task-decomposition-ref", "dependency-map-ref", "downstream-impact-ref", "regression-test-applicability-ref", "acceptance-criteria-ref", "verifier-ladder-ref"]
 files_to_read = [
   ".agentic/README.md",
@@ -178,7 +178,7 @@ files_to_read = [
 files_to_edit = []
 likely_files_affected = [".agentic", "docs", "apps", "libs", "packages", "infra"]
 verification_requirement = "orchestrator checks every task is granular, low-intelligence-ready, risk-classified, downstream-impact-linked, regression-test-classified, and mapped to focused verifier commands before ready status"
-expected_output = "Work Tasks in planned status with complete MASS-specific metadata, regression-test decision, acceptance criteria, stop conditions, and verifier ladder"
+expected_output = "Work Tasks in planned status with complete GENERIC-specific metadata, regression-test decision, acceptance criteria, stop conditions, and verifier ladder"
 failure_criteria = "block if any task depends on hidden chat context, is too broad, crosses unrelated packages/risk domains, lacks downstream impact refs, lacks regression-test applicability decision, lacks a feasible regression test or concrete not-feasible reason, lacks acceptance criteria, lacks stop conditions, lacks risk classification, or lacks review and verifier requirements"
 review_gate = "planning-readiness-review must approve task packets before ready status"
 resume_instructions = "resume from Work Plan id, task refs, dependency map, and evidence refs"

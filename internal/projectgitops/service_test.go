@@ -133,7 +133,7 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 		PushAfterTask:        true,
 		DraftPRAfterPush:     true,
 		RemoteName:           "origin",
-		BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+		BranchNamePattern:    "^(feat|fix|docs|chore)-GENERIC-[0-9]+(-[a-z0-9-]+)*$",
 		SSHPrivateKeyPath:    sshKey,
 		SSHKnownHostsPath:    knownHosts,
 		GitHubTokenEnv:       "GH_TOKEN",
@@ -149,12 +149,12 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
 		WorkDir:         "/tmp/worktree",
-		ProjectID:       "mass-monorepo",
+		ProjectID:       "generic-monorepo",
 		PlanID:          "work_plan_1",
 		TaskID:          "work_task_1",
 		TaskRef:         "workflow-chain-finalize",
-		TaskTitle:       "jira:MASS-1044 final GitOps",
-		BranchName:      "chore-MASS-1044-governed-workplan-implementation",
+		TaskTitle:       "jira:GENERIC-1044 final GitOps",
+		BranchName:      "chore-GENERIC-1044-governed-workplan-implementation",
 		AutomationID:    "workflow-chain-gitops",
 		AutomationRunID: "workflow_chain_run_1",
 		OperatorID:      "mivia-workflow-chain",
@@ -171,7 +171,7 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 	joined := commandArgs(runner.commands)
 	if !strings.Contains(joined, "rev-list --count origin/main..HEAD") ||
 		!strings.Contains(joined, "sh -lc pnpm -s nx affected -t test --base=origin/main --head=HEAD") ||
-		!strings.Contains(joined, "push --no-verify origin HEAD:chore-MASS-1044-governed-workplan-implementation") ||
+		!strings.Contains(joined, "push --no-verify origin HEAD:chore-GENERIC-1044-governed-workplan-implementation") ||
 		!strings.Contains(joined, "pr create --draft") {
 		t.Fatalf("expected rev-list, verifier, push, and draft PR commands, got %q", joined)
 	}
@@ -184,7 +184,7 @@ func TestPostTaskPushUsesGitHubTokenCredentialHelper(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M .agentic/automation-smoke.md\n"},
-		{Stdout: "chore-MASS-0000-smoke\n"},
+		{Stdout: "chore-GENERIC-0000-smoke\n"},
 		{},
 		{},
 		{},
@@ -198,7 +198,7 @@ func TestPostTaskPushUsesGitHubTokenCredentialHelper(t *testing.T) {
 		PushAfterTask:     true,
 		RemoteName:        "origin",
 		GitHubTokenEnv:    "GH_TOKEN",
-		BranchNamePattern: "^chore-MASS-[0-9]+(-[a-z0-9-]+)*$",
+		BranchNamePattern: "^chore-GENERIC-[0-9]+(-[a-z0-9-]+)*$",
 	}, runner)
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
@@ -219,7 +219,7 @@ func TestPostTaskPushUsesGitHubTokenCredentialHelper(t *testing.T) {
 	}
 	push := runner.commands[len(runner.commands)-1]
 	joinedArgs := strings.Join(push.Args, "\n")
-	for _, want := range []string{"credential.helper=", "credential.helper=!gh auth git-credential", "push", "HEAD:chore-MASS-0000-smoke"} {
+	for _, want := range []string{"credential.helper=", "credential.helper=!gh auth git-credential", "push", "HEAD:chore-GENERIC-0000-smoke"} {
 		if !strings.Contains(joinedArgs, want) {
 			t.Fatalf("expected push args to contain %q, got %#v", want, push.Args)
 		}
@@ -263,7 +263,7 @@ func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testi
 		PushAfterTask:        true,
 		DraftPRAfterPush:     true,
 		RemoteName:           "origin",
-		BranchNamePattern:    "^(feat|fix|docs|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+		BranchNamePattern:    "^(feat|fix|docs|chore)-GENERIC-[0-9]+(-[a-z0-9-]+)*$",
 		SSHPrivateKeyPath:    sshKey,
 		SSHKnownHostsPath:    knownHosts,
 		GitHubTokenEnv:       "GH_TOKEN",
@@ -276,13 +276,13 @@ func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testi
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
 		WorkDir:         "/tmp/worktree",
-		ProjectID:       "mass-monorepo",
+		ProjectID:       "generic-monorepo",
 		PlanID:          "work_plan_1",
 		TaskID:          "work_task_1",
 		TaskRef:         "workflow-chain-finalize",
-		TaskTitle:       "jira:MASS-1044 final GitOps",
-		BranchName:      "chore-MASS-1044-governed-workplan-implementation",
-		BaseRef:         "release/mass-2026-06",
+		TaskTitle:       "jira:GENERIC-1044 final GitOps",
+		BranchName:      "chore-GENERIC-1044-governed-workplan-implementation",
+		BaseRef:         "release/GENERIC-2026-06",
 		AutomationID:    "workflow-chain-gitops",
 		AutomationRunID: "workflow_chain_run_1",
 		OperatorID:      "mivia-workflow-chain",
@@ -297,7 +297,7 @@ func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testi
 		t.Fatalf("expected draft PR refs, got %#v", result)
 	}
 	joined := commandArgs(runner.commands)
-	if !strings.Contains(joined, "rev-list --count origin/release/mass-2026-06..HEAD") {
+	if !strings.Contains(joined, "rev-list --count origin/release/GENERIC-2026-06..HEAD") {
 		t.Fatalf("expected configured base ref in rev-list, got %q", joined)
 	}
 	if strings.Contains(joined, "rev-list --count origin/main..HEAD") {
@@ -317,7 +317,7 @@ func TestPostTaskStagesOnlyChangedFilesInsideAllowedScopes(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M apps/domain-inventory/src/trpc/trpc.router.ts\n?? apps/domain-inventory/src/trpc/__tests__/family-pricing-user-context.spec.ts\n"},
-		{Stdout: "fix-MASS-0000-family-pricing\n"},
+		{Stdout: "fix-GENERIC-0000-family-pricing\n"},
 		{},
 		{},
 		{},
@@ -426,7 +426,7 @@ func TestPostTaskAllowsRenameWithinAllowedScope(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: "R  apps/domain-inventory/src/trpc/old.ts -> apps/domain-inventory/src/trpc/new.ts\n"},
-		{Stdout: "fix-MASS-0000-family-pricing\n"},
+		{Stdout: "fix-GENERIC-0000-family-pricing\n"},
 		{},
 		{},
 		{},
@@ -516,7 +516,7 @@ func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M README.md\n"},
-		{Stdout: "feature/MASS-123-docs\n"},
+		{Stdout: "feature/GENERIC-123-docs\n"},
 		{},
 		{},
 		{},
@@ -530,7 +530,7 @@ func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing
 		PushAfterTask:        true,
 		RemoteName:           "origin",
 		BranchPrefix:         "",
-		BranchNamePattern:    `^(feat|fix|docs)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
+		BranchNamePattern:    `^(feat|fix|docs)-GENERIC-[0-9]+(-[a-z0-9-]+)*$`,
 		CommitAuthorName:     "Mivia Automation",
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
 		SSHPrivateKeyPath:    sshKey,
@@ -552,15 +552,15 @@ func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing
 	if err != nil {
 		t.Fatalf("expected derived branch to pass policy: %v", err)
 	}
-	if got := strings.Join(runner.commands[3].Args, " "); got != "-c safe.directory=/tmp/worktree checkout -B fix-MASS-0000-automation-run-1" {
+	if got := strings.Join(runner.commands[3].Args, " "); got != "-c safe.directory=/tmp/worktree checkout -B fix-GENERIC-0000-automation-run-1" {
 		t.Fatalf("expected derived branch checkout, got %q", got)
 	}
-	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:fix-MASS-0000-automation-run-1" {
+	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:fix-GENERIC-0000-automation-run-1" {
 		t.Fatalf("expected push to derived branch, got %q", got)
 	}
 }
 
-func TestPostTaskDerivesFakeMassBranchForTicketlessSmokeInputBranch(t *testing.T) {
+func TestPostTaskDerivesFakeGENERICBranchForTicketlessSmokeInputBranch(t *testing.T) {
 	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{results: []CommandResult{
 		{},
@@ -578,7 +578,7 @@ func TestPostTaskDerivesFakeMassBranchForTicketlessSmokeInputBranch(t *testing.T
 		PushAfterTask:        true,
 		RemoteName:           "origin",
 		BranchPrefix:         "",
-		BranchNamePattern:    `^(feat|fix|docs|chore|refactor|hotfix|revert)-MASS-[0-9]+(-[a-z0-9-]+)*$|^chore-smoke-[A-Za-z0-9._+-]{1,80}(-[a-z0-9-]+)*$`,
+		BranchNamePattern:    `^(feat|fix|docs|chore|refactor|hotfix|revert)-GENERIC-[0-9]+(-[a-z0-9-]+)*$|^chore-smoke-[A-Za-z0-9._+-]{1,80}(-[a-z0-9-]+)*$`,
 		CommitAuthorName:     "Mivia Automation",
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
 		SSHPrivateKeyPath:    sshKey,
@@ -589,7 +589,7 @@ func TestPostTaskDerivesFakeMassBranchForTicketlessSmokeInputBranch(t *testing.T
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
 		WorkDir:          "/tmp/worktree",
-		ProjectID:        "mass-monorepo",
+		ProjectID:        "generic-monorepo",
 		PlanID:           "work_plan_1",
 		TaskID:           "work_task_1",
 		TaskRef:          "smoke-draft-pr",
@@ -606,8 +606,8 @@ func TestPostTaskDerivesFakeMassBranchForTicketlessSmokeInputBranch(t *testing.T
 	if result.CommitRef != "git-commit-abc123def456" {
 		t.Fatalf("unexpected commit ref: %#v", result)
 	}
-	if got := strings.Join(runner.commands[2].Args, " "); got != "-c safe.directory=/tmp/worktree checkout -B chore-MASS-0000-smoke-draft-pr" {
-		t.Fatalf("expected fake MASS-0000 smoke branch checkout, got %q", got)
+	if got := strings.Join(runner.commands[2].Args, " "); got != "-c safe.directory=/tmp/worktree checkout -B chore-GENERIC-0000-smoke-draft-pr" {
+		t.Fatalf("expected fake GENERIC-0000 smoke branch checkout, got %q", got)
 	}
 	if got := strings.Join(runner.commands[3].Args, " "); got != "-c safe.directory=/tmp/worktree add -- .agentic/automation-smoke.md" {
 		t.Fatalf("expected only smoke marker staged, got %q", got)
@@ -725,7 +725,7 @@ func TestFailureCategoryWithDetailReportsMissingCommitAuthorEmailFile(t *testing
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M .agentic/automation-smoke.md\n"},
-		{Stdout: "chore-MASS-0000-governed-smoke-gitops\n"},
+		{Stdout: "chore-GENERIC-0000-governed-smoke-gitops\n"},
 		{},
 		{},
 	}}
@@ -817,7 +817,7 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 		{},
 		{},
 		{Stdout: " M packages/contracts/src/schemas/auth.ts\n M packages/contracts/dist/openapi.json\n M packages/contracts/dist/openapi.yaml\n"},
-		{Stdout: "fix-MASS-0000-contracts\n"},
+		{Stdout: "fix-GENERIC-0000-contracts\n"},
 		{},
 		{},
 		{},
@@ -888,7 +888,7 @@ func TestPostTaskFailsBeforePushWhenPostCommitVerificationFails(t *testing.T) {
 		results: []CommandResult{
 			{},
 			{Stdout: " M packages/contracts/src/schemas/auth.ts\n"},
-			{Stdout: "fix-MASS-0000-contracts\n"},
+			{Stdout: "fix-GENERIC-0000-contracts\n"},
 		},
 		errs: []error{
 			nil,
@@ -936,7 +936,7 @@ func TestPostTaskFailsBeforePushWhenPostCommitVerificationFails(t *testing.T) {
 }
 
 func TestSafeTestResultPreservesLongVerifierCommand(t *testing.T) {
-	command := "pnpm exec nx affected -t lint --base=origin/main --head=HEAD --exclude=mass-core,tag:platform:mobile,tag:platform:web --parallel=4 --max-warnings=0"
+	command := "pnpm exec nx affected -t lint --base=origin/main --head=HEAD --exclude=GENERIC-core,tag:platform:mobile,tag:platform:web --parallel=4 --max-warnings=0"
 	got := safeTestResult(command, "passed")
 	if !strings.Contains(got, "tag:platform:web") || !strings.Contains(got, "--max-warnings=0") {
 		t.Fatalf("expected full verifier command preserved, got %q", got)
@@ -965,7 +965,7 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
 		{Stdout: " M README.md\n"},
-		{Stdout: "docs-MASS-123-docs\n"},
+		{Stdout: "docs-GENERIC-123-docs\n"},
 		{},
 		{},
 		{},
@@ -978,7 +978,7 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 		PushAfterTask:        true,
 		RemoteName:           "origin",
 		BranchPrefix:         "",
-		BranchNamePattern:    `^(feat|fix|docs)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
+		BranchNamePattern:    `^(feat|fix|docs)-GENERIC-[0-9]+(-[a-z0-9-]+)*$`,
 		CommitAuthorName:     "Mivia Automation",
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
 		SSHPrivateKeyPath:    sshKey,
@@ -1003,7 +1003,7 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 	if result.PushRef == "" {
 		t.Fatalf("expected push ref, got %+v", result)
 	}
-	if got := strings.Join(runner.commands[7].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:docs-MASS-123-docs" {
+	if got := strings.Join(runner.commands[7].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:docs-GENERIC-123-docs" {
 		t.Fatalf("expected push to matching branch, got %q", got)
 	}
 }
@@ -1144,7 +1144,7 @@ func TestRenderUsesConfiguredConventionsAndMetadata(t *testing.T) {
 
 func TestRenderAllowsLongSafeGitOpsMetadata(t *testing.T) {
 	longTaskRef := "workflow/" + strings.Repeat("safe-ref-segment-", 24)
-	longBranch := "chore-MASS-0000-" + strings.Repeat("safe-branch-segment-", 18)
+	longBranch := "chore-GENERIC-0000-" + strings.Repeat("safe-branch-segment-", 18)
 	longReviewRef := "review:" + strings.Repeat("safe-ref-segment-", 24)
 	longTestResult := "go test ./internal/projectgitops: passed " + strings.Repeat("safe-output-segment ", 30)
 
@@ -1190,7 +1190,7 @@ func TestRenderDerivesTicketRefFromBranchForProjectPRTemplates(t *testing.T) {
 		TaskID:          "work_task_1",
 		TaskRef:         "fix-readme-structure",
 		TaskTitle:       "Fix README structure entry",
-		BranchName:      "fix-MASS-0000-readme-structure-entry",
+		BranchName:      "fix-GENERIC-0000-readme-structure-entry",
 		AutomationID:    "automation_1",
 		AutomationRunID: "automation_run_1",
 		OperatorID:      "operator_1",
@@ -1206,12 +1206,12 @@ func TestRenderDerivesTicketRefFromBranchForProjectPRTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected render to succeed: %v", err)
 	}
-	if rendered.PullRequestTitle != "chore(MASS-0000): complete fix-readme-structure" {
+	if rendered.PullRequestTitle != "chore(GENERIC-0000): complete fix-readme-structure" {
 		t.Fatalf("unexpected PR title %q", rendered.PullRequestTitle)
 	}
 	for _, want := range []string{
-		"https://rimthan-lab.atlassian.net/browse/MASS-0000",
-		"- plan-task: yes (https://rimthan-lab.atlassian.net/browse/MASS-0000)",
+		"https://rimthan-lab.atlassian.net/browse/GENERIC-0000",
+		"- plan-task: yes (https://rimthan-lab.atlassian.net/browse/GENERIC-0000)",
 		"- pr-audit: N/A",
 		"Automation Run ID: automation_run_1",
 	} {
@@ -1223,7 +1223,7 @@ func TestRenderDerivesTicketRefFromBranchForProjectPRTemplates(t *testing.T) {
 
 func TestRenderUsesSafeUnavailableTicketPlaceholderForTicketlessSmokePR(t *testing.T) {
 	rendered, err := Render(PostTaskInput{
-		ProjectID:       "mass-monorepo",
+		ProjectID:       "generic-monorepo",
 		PlanID:          "work_plan_1",
 		TaskID:          "work_task_1",
 		TaskRef:         "smoke-draft-pr",

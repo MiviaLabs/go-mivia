@@ -1,5 +1,5 @@
 id = "workflow-governed-smoke-gitops"
-project_id = "mass-monorepo"
+project_id = "generic-monorepo"
 workflow_ref = "governed-smoke-gitops"
 title = "Governed Smoke GitOps"
 purpose = "Exercise the automation GitOps tail with one tiny controlled file edit and draft PR creation."
@@ -31,7 +31,7 @@ title = "Smoke Draft PR"
 agent = "smoke-gitops-worker"
 description = "Create or update the bounded smoke marker file with exactly this safe input ref value: {{user_request_ref}}. This lets the runner exercise GitOps commit, push, and draft PR creation."
 evidence_needed = ["smoke-chain-ref", "gitops-smoke-ref"]
-files_to_read = ["configs/workflows/mass/governed-smoke-gitops.toml"]
+files_to_read = ["configs/workflows/generic/governed-smoke-gitops.toml"]
 files_to_edit = [".agentic/automation-smoke.md"]
 likely_files_affected = [".agentic/automation-smoke.md"]
 verification_requirement = "runner verifies the bounded diff and GitOps evidence refs"

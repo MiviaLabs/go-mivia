@@ -1,8 +1,8 @@
 id = "workflow-code-review-bug-planning"
-project_id = "mass-monorepo"
+project_id = "generic-monorepo"
 workflow_ref = "governed-code-review-bug-planning"
-title = "MASS Governed Automatic Code Review Bug Planning"
-purpose = "Run automatic governed code review over a bounded MASS ref or diff, confirm only evidence-backed bugs through independent review, and create governed bug Work Plans for confirmed findings."
+title = "GENERIC Governed Automatic Code Review Bug Planning"
+purpose = "Run automatic governed code review over a bounded GENERIC ref or diff, confirm only evidence-backed bugs through independent review, and create governed bug Work Plans for confirmed findings."
 status = "enabled"
 
 [[agents]]
@@ -10,7 +10,7 @@ id = "code-review-scanner"
 display_name = "Code Review Scanner"
 purpose = "Inspects bounded changed files, source anchors, tests, contracts, and docs to propose candidate defects with evidence refs only."
 instructions = "Report only concrete candidate bugs with source anchors, impact, reachability, changed-range attribution, falsification notes, and bounded evidence refs. Do not report style-only or speculative risks. Pay special attention to auth, tenancy, PII, audit logs, public APIs, contracts, Temporal/eventing, migrations, and Flutter behavior when in scope."
-allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
+allowed_skills = ["mivia-mcp", "project-review"]
 allowed_tools = [
   "projects.get",
   "projects.context_health",
@@ -37,7 +37,7 @@ id = "bug-finding-reviewer"
 display_name = "Bug Finding Reviewer"
 purpose = "Independently validates or rejects candidate findings using source anchors and safe evidence refs."
 instructions = "Independently falsify each candidate against current source and changed-range attribution. Approve only confirmed behavioral bugs with bounded evidence and reachable impact. Reject duplicates, weak claims, style-only issues, and pre-existing issues not worsened by the reviewed change."
-allowed_skills = ["mivia-mcp", "project-review", "mass-pr-review"]
+allowed_skills = ["mivia-mcp", "project-review"]
 allowed_tools = [
   "projects.workspace.file_read",
   "projects.context_pack.build",
@@ -82,14 +82,14 @@ id = "collect-review-scope"
 kind = "work_task"
 title = "Collect Review Scope"
 agent = "code-review-scanner"
-description = "Collect bounded review scope for a manual or automatic MASS code review run, including git status/diff refs, changed-file refs, context health, relevant source anchors, and test/doc context."
+description = "Collect bounded review scope for a manual or automatic GENERIC code review run, including git status/diff refs, changed-file refs, context health, relevant source anchors, and test/doc context."
 evidence_needed = ["review-request-ref", "git-status-ref", "git-diff-ref", "context-health-ref", "changed-file-refs"]
 files_to_read = [
   "AGENTS.md",
   "CODEX.md",
   ".agentic/README.md",
   ".agentic/skills/project-review/SKILL.md",
-  ".agentic/skills/mass-pr-review/SKILL.md",
+  ".agentic/skills/GENERIC-pr-review/SKILL.md",
   "docs/ai/AI_AGENT_BOUNDARIES.md",
   ".agentic/policies/repo-standards.md",
   ".agentic/policies/risk-review-mapping.yaml",
@@ -114,7 +114,7 @@ evidence_needed = ["review-scope-ref", "source-anchor-refs", "candidate-finding-
 files_to_read = [
   ".agentic/README.md",
   ".agentic/skills/project-review/SKILL.md",
-  ".agentic/skills/mass-pr-review/SKILL.md",
+  ".agentic/skills/GENERIC-pr-review/SKILL.md",
   ".agentic/workflows/governed-code-review-bug-planning.toml"
 ]
 files_to_edit = []

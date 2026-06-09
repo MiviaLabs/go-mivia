@@ -68,7 +68,7 @@ func testRun(id string, status string) projectworkflowchain.ChainRun {
 		ID:          id,
 		ProjectID:   "project-1",
 		ChainRef:    "chain-1",
-		InputRef:    "jira:MASS-1044",
+		InputRef:    "jira:GENERIC-1044",
 		Status:      status,
 		WorkPlanIDs: []string{"plan-decomposition"},
 		StageRuns: []projectworkflowchain.StageRun{{

@@ -20,7 +20,7 @@ func TestLadybugStorePersistsChainRunsAcrossStoreInstances(t *testing.T) {
 	first := NewLadybugStore(graph)
 	run := testRun("run-1", projectworkflowchain.ChainStatusQueued)
 	run.GitOpsReady = true
-	run.PullRequestRef = "pr/MASS-1044"
+	run.PullRequestRef = "pr/GENERIC-1044"
 	run.NextAction = "workflow chain completed with draft PR GitOps output"
 	run.AutomationIDs = []string{"automation-decomposition", "automation-implementation", "automation-validation"}
 	run.StageRuns[0].Status = projectworkflowchain.StageStatusCompleted

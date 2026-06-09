@@ -87,7 +87,7 @@ definition_paths = [
   "configs/workflows/governed-decomposition-planning.toml",
   "configs/workflows/governed-workplan-implementation.toml",
   "configs/workflows/governed-code-review-bug-planning.toml",
-  "configs/workflows/mass/governed-post-implementation-validation.toml",
+  "configs/workflows/generic/governed-post-implementation-validation.toml",
 ]
 
 [automation]
@@ -193,11 +193,11 @@ always_before_pr = []
 # command = "pnpm -s nx run contracts:verify-openapi"
 # required_before_pr = true
 #
-# MASS automation profile example:
+# GENERIC automation profile example:
 #
 # [projects.git_operations]
 # branch_prefix = ""
-# branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-MASS-[0-9]+(-[a-z0-9-]+)*$"
+# branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-GENERIC-[0-9]+(-[a-z0-9-]+)*$"
 #
 # [projects.git_operations.dirty_scope_recovery]
 # allowed_support_pathspecs = [
@@ -227,8 +227,8 @@ always_before_pr = []
 #   "pnpm install --frozen-lockfile --prefer-offline --ignore-scripts",
 # ]
 # always_before_pr = [
-#   "pnpm exec nx affected -t lint --base=origin/main --head=HEAD --exclude=mass-core,tag:platform:mobile,tag:platform:web --parallel=4 --max-warnings=0",
-#   "pnpm exec nx affected -t typecheck --base=origin/main --head=HEAD --exclude=mass-core,tag:platform:mobile,tag:platform:web --parallel=4",
+#   "pnpm exec nx affected -t lint --base=origin/main --head=HEAD --exclude=GENERIC-core,tag:platform:mobile,tag:platform:web --parallel=4 --max-warnings=0",
+#   "pnpm exec nx affected -t typecheck --base=origin/main --head=HEAD --exclude=GENERIC-core,tag:platform:mobile,tag:platform:web --parallel=4",
 #   "pnpm exec tsc -p tsconfig.docker.json --noEmit",
 #   "semgrep scan --config policies/semgrep/rules/ --error apps/ libs/ packages/",
 # ]

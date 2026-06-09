@@ -84,25 +84,25 @@ func TestImpactAnalyzer_WorkspaceUnavailableFallsBack(t *testing.T) {
 func TestImpactAnalyzer_UsesGraphEdgesForExternalProject(t *testing.T) {
 	graph := &fakeImpactGraph{
 		files: map[string]projectingestion.FileMetadata{
-			"interface":   {ID: "interface", ProjectID: "mass-monorepo", RelativePath: "apps/domain-loyalty/src/domain/repositories/point-wallet.repository.interface.ts", Status: "eligible", Present: true, RelativePathOK: true},
-			"implementer": {ID: "implementer", ProjectID: "mass-monorepo", RelativePath: "apps/domain-loyalty/src/infrastructure/database/repositories/drizzle-point-wallet.repository.ts", Status: "eligible", Present: true, RelativePathOK: true},
-			"module":      {ID: "module", ProjectID: "mass-monorepo", RelativePath: "apps/domain-loyalty/src/point-wallet.module.ts", Status: "eligible", Present: true, RelativePathOK: true},
+			"interface":   {ID: "interface", ProjectID: "generic-monorepo", RelativePath: "apps/domain-loyalty/src/domain/repositories/point-wallet.repository.interface.ts", Status: "eligible", Present: true, RelativePathOK: true},
+			"implementer": {ID: "implementer", ProjectID: "generic-monorepo", RelativePath: "apps/domain-loyalty/src/infrastructure/database/repositories/drizzle-point-wallet.repository.ts", Status: "eligible", Present: true, RelativePathOK: true},
+			"module":      {ID: "module", ProjectID: "generic-monorepo", RelativePath: "apps/domain-loyalty/src/point-wallet.module.ts", Status: "eligible", Present: true, RelativePathOK: true},
 		},
 		symbolsByFile: map[string][]projectingestion.SymbolMetadata{
-			"interface": {{ID: "sym-interface", FileID: "interface", ProjectID: "mass-monorepo", Kind: string(projectingestion.SymbolKindType), Name: "PointWalletRepository"}},
+			"interface": {{ID: "sym-interface", FileID: "interface", ProjectID: "generic-monorepo", Kind: string(projectingestion.SymbolKindType), Name: "PointWalletRepository"}},
 		},
 		refsBySymbol: map[string][]projectingestion.SymbolReferenceMetadata{
-			"sym-interface": {{ID: "ref-module", FileID: "module", ProjectID: "mass-monorepo", TargetSymbolID: "sym-interface", TargetName: "PointWalletRepository"}},
+			"sym-interface": {{ID: "ref-module", FileID: "module", ProjectID: "generic-monorepo", TargetSymbolID: "sym-interface", TargetName: "PointWalletRepository"}},
 		},
 		nameRefs: map[string][]projectingestion.SymbolReferenceMetadata{
-			"PointWalletRepository": {{ID: "ref-impl", FileID: "implementer", ProjectID: "mass-monorepo", TargetName: "PointWalletRepository", Kind: "implements"}},
+			"PointWalletRepository": {{ID: "ref-impl", FileID: "implementer", ProjectID: "generic-monorepo", TargetName: "PointWalletRepository", Kind: "implements"}},
 		},
 		implementersBySym: map[string][]projectingestion.SymbolImplementation{
-			"sym-interface": {{ID: "impl-edge", FileID: "implementer", ProjectID: "mass-monorepo", Kind: "implements", ImplementerName: "DrizzlePointWalletRepository", ImplementedName: "PointWalletRepository"}},
+			"sym-interface": {{ID: "impl-edge", FileID: "implementer", ProjectID: "generic-monorepo", Kind: "implements", ImplementerName: "DrizzlePointWalletRepository", ImplementedName: "PointWalletRepository"}},
 		},
 	}
 	result, err := NewImpactAnalyzerWithGraph(nil, graph).Analyze(context.Background(), ImpactAnalysisRequest{
-		ProjectID:    "mass-monorepo",
+		ProjectID:    "generic-monorepo",
 		ChangedPaths: []string{"apps/domain-loyalty/src/domain/repositories/point-wallet.repository.interface.ts"},
 	})
 	if err != nil {

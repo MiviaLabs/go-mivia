@@ -201,7 +201,7 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 		OwnerAgent:              "smoke-gitops-worker",
 		Description:             "Create one bounded smoke marker file.",
 		EvidenceNeeded:          []string{"gitops-smoke-ref"},
-		FilesToRead:             []string{"configs/workflows/mass/governed-smoke-gitops.toml"},
+		FilesToRead:             []string{"configs/workflows/generic/governed-smoke-gitops.toml"},
 		FilesToEdit:             []string{".agentic/automation-smoke.md"},
 		LikelyFilesAffected:     []string{".agentic/automation-smoke.md"},
 		VerificationRequirement: "runner verifies bounded diff and GitOps refs",
@@ -462,7 +462,7 @@ func TestRenderCodexTaskPromptIncludesExecutionInstructions(t *testing.T) {
 }
 
 func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
-	run := AutomationRun{ID: "run-1", ProjectID: "mass-monorepo", TraceID: "trace-1"}
+	run := AutomationRun{ID: "run-1", ProjectID: "generic-monorepo", TraceID: "trace-1"}
 	cases := map[string][]string{
 		"decompose-work-plan": {
 			"must produce concrete child Work Task metadata",
@@ -530,7 +530,7 @@ func TestCodexInputForRunAddsGovernedWorkflowStepInstructions(t *testing.T) {
 		if strings.Contains(prompt, "http://mivia-server:8080") || strings.Contains(prompt, "method=tools/call") || strings.Contains(prompt, "JSON-RPC tools/call") || strings.Contains(prompt, "governed MCP closeout") {
 			t.Fatalf("task %s prompt must not use stale MCP closeout wording:\n%s", taskRef, prompt)
 		}
-		if strings.Contains(prompt, "Concrete REST closeout endpoints") || strings.Contains(prompt, "http://runtime-host:19090/api/v1/projects/mass-monorepo/work-tasks/task-1/status") {
+		if strings.Contains(prompt, "Concrete REST closeout endpoints") || strings.Contains(prompt, "http://runtime-host:19090/api/v1/projects/generic-monorepo/work-tasks/task-1/status") {
 			t.Fatalf("task %s prompt must not ask governed wrappers to perform REST closeout:\n%s", taskRef, prompt)
 		}
 		for _, want := range wants {
@@ -981,15 +981,15 @@ func TestGenericWorkflowPipelineQueuesClaimsCompletesAndReviewsDependentHandoffs
 			"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
 		},
 		tasks: map[string]projectworkplan.WorkTask{
-			discovery.ID:       discovery,
-			implementation.ID:  implementation,
-			review.ID:          review,
+			discovery.ID:      discovery,
+			implementation.ID: implementation,
+			review.ID:         review,
 		},
 	}
 	svc := New(store, fake, Options{
-		Enabled:         true,
-		RunnerEnabled:   true,
-		RunnerExecution: RunnerExecutionExternal,
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  RunnerExecutionExternal,
 		MaxParallelTasks: 1,
 		WorkPlanStatusTrigger: WorkPlanStatusTriggerOptions{
 			Enabled:  true,
@@ -1214,9 +1214,9 @@ func TestClaimNextRunCodexInputIncludesPlanAndDependencyContext(t *testing.T) {
 			"plan-1": {
 				ID:             "plan-1",
 				ProjectID:      "project-1",
-				PlanRef:        "governed-decomposition-planning:MASS-1044",
-				UserRequestRef: "jira:MASS-1044",
-				Title:          "Decompose MASS-1044",
+				PlanRef:        "governed-decomposition-planning:GENERIC-1044",
+				UserRequestRef: "jira:GENERIC-1044",
+				Title:          "Decompose GENERIC-1044",
 				GoalSummary:    "Classify Codex usage limit failures for future automation runs.",
 				Status:         projectworkplan.WorkPlanStatusActive,
 				ResumeSummary:  "Use discovery and downstream impact refs before decomposition.",
@@ -1255,7 +1255,7 @@ func TestClaimNextRunCodexInputIncludesPlanAndDependencyContext(t *testing.T) {
 	prompt := RenderCodexTaskPrompt(claimed.CodexInput)
 	for _, want := range []string{
 		"Work Plan context",
-		"jira:MASS-1044",
+		"jira:GENERIC-1044",
 		"Classify Codex usage limit failures",
 		"Completed dependency context",
 		"discover-planning-context",
@@ -4898,8 +4898,8 @@ func TestCreateRemediationFromFindingRedactsTimestampRefsFromHumanText(t *testin
 		Severity:                "medium",
 		ImplementationAgentID:   "worker-a",
 		GitBaseRef:              "main",
-		GitBranchRef:            "mivia/MASS-0000-fix-family-pricing-promo-user",
-		GitWorktreeRef:          "wt-MASS-0000-fix-family-pricing-promo-user",
+		GitBranchRef:            "mivia/GENERIC-0000-fix-family-pricing-promo-user",
+		GitWorktreeRef:          "wt-GENERIC-0000-fix-family-pricing-promo-user",
 		FilesToRead:             []string{"apps"},
 		FilesToEdit:             []string{"apps"},
 		EvidenceRefs:            []string{"review-confirmed"},
@@ -4950,8 +4950,8 @@ func TestCreateRemediationFromFindingResumesExistingPartialPlan(t *testing.T) {
 		Severity:                "medium",
 		ImplementationAgentID:   "worker-a",
 		GitBaseRef:              "main",
-		GitBranchRef:            "mivia/MASS-0000-fix-family-pricing-promo-user",
-		GitWorktreeRef:          "wt-MASS-0000-fix-family-pricing-promo-user",
+		GitBranchRef:            "mivia/GENERIC-0000-fix-family-pricing-promo-user",
+		GitWorktreeRef:          "wt-GENERIC-0000-fix-family-pricing-promo-user",
 		FilesToRead:             []string{"apps"},
 		FilesToEdit:             []string{"apps"},
 		EvidenceRefs:            []string{"review-confirmed"},
@@ -4984,8 +4984,8 @@ func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *te
 		Severity:                "high",
 		ImplementationAgentID:   "worker-a",
 		GitBaseRef:              "main",
-		GitBranchRef:            "fix-MASS-0000-readme-structure-entry",
-		GitWorktreeRef:          "fix-MASS-0000-readme-structure-entry",
+		GitBranchRef:            "fix-GENERIC-0000-readme-structure-entry",
+		GitWorktreeRef:          "fix-GENERIC-0000-readme-structure-entry",
 		FilesToRead:             []string{"internal/projectautomation/service.go"},
 		FilesToEdit:             []string{"internal/projectautomation/service.go"},
 		EvidenceRefs:            []string{"review:confirmed"},
@@ -5025,7 +5025,7 @@ func TestCreateRemediationFromFindingCreatesPlanTaskAndAutomaticAutomation(t *te
 	if !contains(result.ReviewAutomation.AllowedTaskRefs, result.ReviewTask.ID) || !contains(result.ReviewAutomation.AllowedTaskRefs, result.ReviewTask.TaskRef) {
 		t.Fatalf("review automation must target review task id/ref, got %#v", result.ReviewAutomation.AllowedTaskRefs)
 	}
-	if result.WorkPlan.GitBaseRef != "main" || result.WorkPlan.GitBranchRef != "fix-MASS-0000-readme-structure-entry-finding-review-1" || result.WorkPlan.GitWorktreeRef != "fix-MASS-0000-readme-structure-entry-finding-review-1" {
+	if result.WorkPlan.GitBaseRef != "main" || result.WorkPlan.GitBranchRef != "fix-GENERIC-0000-readme-structure-entry-finding-review-1" || result.WorkPlan.GitWorktreeRef != "fix-GENERIC-0000-readme-structure-entry-finding-review-1" {
 		t.Fatalf("expected project-specific git refs, got base=%q branch=%q worktree=%q", result.WorkPlan.GitBaseRef, result.WorkPlan.GitBranchRef, result.WorkPlan.GitWorktreeRef)
 	}
 	wantEvidence := []string{"confirmed-finding-finding-review-1", "review-confirmed"}
@@ -5615,7 +5615,7 @@ func TestRunNowExecutesCodexCLIAndLeavesTaskForVerification(t *testing.T) {
 
 func TestRenderCodexTaskPromptAllowsReadOnlyMCPFallbackForGovernedWrappers(t *testing.T) {
 	prompt := RenderCodexTaskPrompt(CodexTaskInput{
-		ProjectID:       "mass-monorepo",
+		ProjectID:       "generic-monorepo",
 		MCPServerURL:    "http://mivia-server:8080",
 		AutomationRunID: "automation-run-1",
 		PlanID:          "work-plan-1",
@@ -5623,8 +5623,8 @@ func TestRenderCodexTaskPromptAllowsReadOnlyMCPFallbackForGovernedWrappers(t *te
 		TaskRef:         "decompose-work-plan",
 		Title:           "Decompose Work Plan",
 		ContextPackRefs: []string{
-			"jira:MASS-1044",
-			"jira-context:MASS-1044:summary",
+			"jira:GENERIC-1044",
+			"jira-context:GENERIC-1044:summary",
 		},
 		VerificationRequirement: "verify child task metadata before closeout",
 	})
@@ -5638,7 +5638,7 @@ func TestRenderCodexTaskPromptAllowsReadOnlyMCPFallbackForGovernedWrappers(t *te
 			t.Fatalf("rendered governed prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	if strings.Contains(prompt, "/api/v1/projects/mass-monorepo/work-tasks/work-task-1/") {
+	if strings.Contains(prompt, "/api/v1/projects/generic-monorepo/work-tasks/work-task-1/") {
 		t.Fatalf("governed wrapper prompt must not include REST lifecycle closeout endpoints:\n%s", prompt)
 	}
 }
@@ -7779,7 +7779,7 @@ func TestClaimNextRunClosesBoundedGitOpsTaskAfterDraftPREvidence(t *testing.T) {
 		"automation_run:run-smoke",
 		"gitops-smoke-ref",
 		"gitops-commit:abc123",
-		"gitops-push:origin/chore-MASS-0000-governed-smoke",
+		"gitops-push:origin/chore-GENERIC-0000-governed-smoke",
 		"draft-pr:https://github.com/MiviaLabs/go-mivia/pull/1",
 	}
 	task.VerifierResultRefs = []string{"bounded-smoke-marker-present"}
