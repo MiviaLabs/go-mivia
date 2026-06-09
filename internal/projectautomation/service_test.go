@@ -10652,6 +10652,69 @@ func TestClaimNextRunRequeuesExhaustedGitOpsRecoveryAfterRestart(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunRequeuesExhaustedGitOpsVerificationFailureAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.EvidenceRefs = []string{"implementation/evidence", "gitops-failure:gitops_verification_failed_lint123"}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries,
+		SafeSummary:     RunSafeSummaryGitOpsPostTaskRecovery,
+		FailureCategory: "gitops_post_task_failed_runner_post_task",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID == "run-a" || claimed.Run.TaskID != task.ID || claimed.Run.Status != RunStatusRunning {
+		t.Fatalf("expected verifier-repair replacement run, got %+v", claimed.Run)
+	}
+	exhausted, err := store.GetRun(ctx, automation.ProjectID, "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if exhausted.Status != RunStatusFailed || exhausted.FailureCategory != "gitops_recovery_failed_requires_verification_repair" || !strings.Contains(exhausted.SafeSummary, "gitops_verification_failed_lint123") {
+		t.Fatalf("expected exhausted run to preserve verifier failure for repair, got %+v", exhausted)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusInProgress || requeuedTask.ClaimedByRunID != claimed.Run.ID {
+		t.Fatalf("expected verifier-repair run to claim task, task=%+v run=%+v", requeuedTask, claimed.Run)
+	}
+	prompt := RenderCodexTaskPrompt(claimed.CodexInput)
+	for _, want := range []string{
+		"GitOps verifier-repair run",
+		"gitops_verification_failed_lint123",
+		"Do not implement unrelated feature behavior",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected verifier-repair prompt to contain %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestResetGitOpsRecoveryReopensBlockedRecoveryRun(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
@@ -10832,6 +10895,81 @@ func TestResetGitOpsRecoveryRearmsRequeuedImplementationAfterRecoveryFailure(t *
 	}
 	if claimed.Run.ID != "run-a" || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
 		t.Fatalf("unexpected claimed reset recovery run: %+v", claimed.Run)
+	}
+}
+
+func TestResetGitOpsRecoveryPreservesVerifierFailureEvidenceAfterRetryExhaustion(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusReady
+	task.AgentRunIDs = []string{"run-a"}
+	task.EvidenceRefs = []string{
+		"implementation/evidence",
+		"gitops-failure:gitops_post_task_failed_runner_post_task",
+		"gitops-failure:gitops_verification_failed_go_test",
+	}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    1,
+		FailureCategory: "gitops_recovery_failed_requires_verification_repair",
+		SafeSummary:     "gitops_recovery_requeued_verification_repair_after_gitops_verification_failed_go_test",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	reset, err := svc.ResetGitOpsRecovery(ctx, ResetGitOpsRecoveryInput{ProjectID: automation.ProjectID, RunID: "run-a"})
+	if err != nil {
+		t.Fatalf("ResetGitOpsRecovery returned error: %v", err)
+	}
+	taskAfterReset := fake.tasks[task.ID]
+	taskAfterReset.Status = projectworkplan.WorkTaskStatusVerifying
+	taskAfterReset.ClaimedByRunID = "run-a"
+	fake.tasks[task.ID] = taskAfterReset
+	reset.Status = RunStatusFailed
+	reset.WorkTaskStatus = projectworkplan.WorkTaskStatusVerifying
+	reset.AttemptCount = defaultAutomationMaxRetries
+	reset.FailureCategory = "gitops_post_task_failed_runner_post_task"
+	reset.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
+	reset.UpdatedAt = now.Add(time.Second)
+	if _, err := store.UpdateRun(ctx, reset); err != nil {
+		t.Fatalf("UpdateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID == "run-a" || claimed.Run.TaskID != task.ID || claimed.Run.Status != RunStatusRunning {
+		t.Fatalf("expected verifier-repair replacement run after reset exhaustion, got %+v", claimed.Run)
+	}
+	exhausted, err := store.GetRun(ctx, automation.ProjectID, "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if exhausted.Status != RunStatusFailed || exhausted.FailureCategory != "gitops_recovery_failed_requires_verification_repair" || !strings.Contains(exhausted.SafeSummary, "gitops_verification_failed_go_test") {
+		t.Fatalf("expected reset exhausted run to preserve verifier failure, got %+v", exhausted)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusInProgress || requeuedTask.ClaimedByRunID != claimed.Run.ID {
+		t.Fatalf("expected verifier-repair replacement to claim task, task=%+v run=%+v", requeuedTask, claimed.Run)
 	}
 }
 

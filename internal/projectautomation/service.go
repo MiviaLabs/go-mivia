@@ -1729,7 +1729,9 @@ func (svc *Service) reconcileExhaustedGitOpsRecoveryRuns(ctx context.Context, pr
 			}
 			continue
 		}
-		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory, nil); err != nil {
+		evidenceRefs := append([]string(nil), task.EvidenceRefs...)
+		evidenceRefs = append(evidenceRefs, task.VerifierResultRefs...)
+		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory, evidenceRefs); err != nil {
 			return err
 		}
 	}
@@ -2512,6 +2514,7 @@ func (svc *Service) requeueTaskAfterGitOpsVerificationFailure(ctx context.Contex
 
 func normalizeGitOpsRecoveryFailureCategory(category string, evidenceRefs []string) string {
 	category = strings.TrimSpace(category)
+	var fallback string
 	for _, ref := range evidenceRefs {
 		ref = strings.TrimSpace(ref)
 		if !strings.HasPrefix(ref, "gitops-failure:") {
@@ -2519,8 +2522,17 @@ func normalizeGitOpsRecoveryFailureCategory(category string, evidenceRefs []stri
 		}
 		candidate := strings.TrimSpace(strings.TrimPrefix(ref, "gitops-failure:"))
 		if candidate != "" {
-			return safeFailure(candidate)
+			candidate = safeFailure(candidate)
+			if isGitOpsVerificationFailure(candidate) {
+				return candidate
+			}
+			if fallback == "" {
+				fallback = candidate
+			}
 		}
+	}
+	if fallback != "" {
+		return fallback
 	}
 	if category == "gitops_post_task_failed" || category == "gitops_post_task_failed_unclassified" {
 		return "gitops_post_task_failed_runner_post_task"
