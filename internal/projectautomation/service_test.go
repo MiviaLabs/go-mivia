@@ -5746,7 +5746,7 @@ func TestClaimNextRunBlocksReadyTaskWithoutEnabledMatchingAutomationForActivePla
 	}
 }
 
-func TestClaimNextRunClaimsImplementationReadyTaskForSelectorAutomation(t *testing.T) {
+func TestClaimNextRunLeavesImplementationReadyTaskForSelectorAutomation(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "implement-feature", []string{"internal/foo.go"})
 	task.FilesToEdit = []string{"internal/foo.go"}
@@ -5781,19 +5781,15 @@ func TestClaimNextRunClaimsImplementationReadyTaskForSelectorAutomation(t *testi
 		t.Fatalf("CreateAutomation returned error: %v", err)
 	}
 
-	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: task.ProjectID, RunnerKind: RunnerKindCodexCLI})
-	if err != nil {
-		t.Fatalf("ClaimNextRun returned error: %v", err)
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: task.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run without blocking selector input, got %v", err)
 	}
-	if claimed.Run.TaskID != task.ID || claimed.Run.WorkTaskStatus != projectworkplan.WorkTaskStatusInProgress || claimed.Run.AgentID != "implementation-orchestrator" || claimed.Run.Status != RunStatusRunning {
-		t.Fatalf("selector automation claimed wrong task/run: %#v", claimed)
+	readyTask := fake.tasks[task.ID]
+	if readyTask.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected implementation task to remain ready for selector automation, got %#v", readyTask)
 	}
-	claimedTask := fake.tasks[task.ID]
-	if claimedTask.Status != projectworkplan.WorkTaskStatusInProgress || claimedTask.ClaimedByRunID != claimed.Run.ID {
-		t.Fatalf("expected implementation task claimed by selector automation, got %#v", claimedTask)
-	}
-	if claimedTask.BlockedReason != "" {
-		t.Fatalf("expected no blocked reason on selector input, got %q", claimedTask.BlockedReason)
+	if readyTask.BlockedReason != "" {
+		t.Fatalf("expected no blocked reason on selector input, got %q", readyTask.BlockedReason)
 	}
 	if fake.plans[task.PlanID].Status != projectworkplan.WorkPlanStatusActive {
 		t.Fatalf("expected parent plan to remain active, got %#v", fake.plans[task.PlanID])

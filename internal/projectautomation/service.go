@@ -906,7 +906,7 @@ func enabledAutomationReadiness(automations []Automation, task projectworkplan.W
 		if automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || automation.PlanID != task.PlanID {
 			continue
 		}
-		if !containsRef(automation.RequiredReviewTaskIDs, task.ID) && !automationCanScheduleReadyTask(automation, task) {
+		if !containsRef(automation.RequiredReviewTaskIDs, task.ID) && validateAllowedTaskRef(automation, task) != nil {
 			continue
 		}
 		err := validateExecutableTask(task)
@@ -942,7 +942,7 @@ func hasEnabledAutomationForReadyTask(automations []Automation, task projectwork
 		if containsRef(automation.RequiredReviewTaskIDs, task.ID) {
 			return true
 		}
-		if automationCanScheduleReadyTask(automation, task) {
+		if validateAllowedTaskRef(automation, task) == nil {
 			return true
 		}
 	}
@@ -1870,7 +1870,7 @@ func (svc *Service) hasReadyAutomaticTask(ctx context.Context, automation Automa
 		return false
 	}
 	for _, task := range tasks {
-		if automationCanScheduleReadyTask(automation, task) && validateExecutableTask(task) == nil && svc.dependenciesDone(ctx, task) {
+		if validateAllowedTaskRef(automation, task) == nil && validateExecutableTask(task) == nil && svc.dependenciesDone(ctx, task) {
 			return true
 		}
 	}
@@ -4115,7 +4115,7 @@ func (svc *Service) reconcileReadyAutomationsForPlan(ctx context.Context, projec
 			if automation.PlanID != planID || automation.TriggerKind != TriggerKindAutomatic {
 				continue
 			}
-			if !automationCanScheduleReadyTask(automation, task) {
+			if validateAllowedTaskRef(automation, task) != nil {
 				continue
 			}
 			if err := svc.queueReadyDependentAutomation(ctx, automation, task); err != nil {
@@ -5855,8 +5855,8 @@ func (svc *Service) resolveTask(ctx context.Context, run AutomationRun, automati
 			return projectworkplan.WorkTask{}, err
 		}
 		if !svc.isAutomationReviewTask(automation, task.ID) && !svc.isAutomationReviewTask(automation, task.TaskRef) {
-			if !automationCanScheduleReadyTask(automation, task) {
-				return projectworkplan.WorkTask{}, fmt.Errorf("%w: task_ref_not_allowed", ErrInvalidInput)
+			if err := validateAllowedTaskRef(automation, task); err != nil {
+				return projectworkplan.WorkTask{}, err
 			}
 		}
 		return task, nil
@@ -5866,7 +5866,7 @@ func (svc *Service) resolveTask(ctx context.Context, run AutomationRun, automati
 		return projectworkplan.WorkTask{}, err
 	}
 	for _, task := range tasks {
-		if !automationCanScheduleReadyTask(automation, task) {
+		if validateAllowedTaskRef(automation, task) != nil {
 			continue
 		}
 		if err := validateExecutableTask(task); err == nil && svc.dependenciesDone(ctx, task) {
@@ -5914,8 +5914,8 @@ func (svc *Service) validateAutomationPolicy(ctx context.Context, automation Aut
 			return fmt.Errorf("%w: task_unavailable", ErrInvalidInput)
 		}
 		if !svc.isAutomationReviewTask(automation, task.ID) && !svc.isAutomationReviewTask(automation, task.TaskRef) {
-			if !automationCanScheduleReadyTask(automation, task) {
-				return fmt.Errorf("%w: task_ref_not_allowed", ErrInvalidInput)
+			if err := validateAllowedTaskRef(automation, task); err != nil {
+				return err
 			}
 		}
 	}
@@ -6062,27 +6062,6 @@ func validateAllowedTaskRef(automation Automation, task projectworkplan.WorkTask
 		}
 	}
 	return fmt.Errorf("%w: task_ref_not_allowed", ErrInvalidInput)
-}
-
-func automationCanScheduleReadyTask(automation Automation, task projectworkplan.WorkTask) bool {
-	if validateAllowedTaskRef(automation, task) == nil {
-		return true
-	}
-	return readyTaskMatchesSelectorAutomation(automation, task)
-}
-
-func readyTaskMatchesSelectorAutomation(automation Automation, task projectworkplan.WorkTask) bool {
-	if task.Status != projectworkplan.WorkTaskStatusReady ||
-		task.DecompositionQuality != projectworkplan.DecompositionReady ||
-		strings.TrimSpace(task.VerificationRequirement) == "" ||
-		len(task.FilesToEdit) == 0 ||
-		isGovernedWorkflowTaskRef(task.TaskRef) {
-		return false
-	}
-	return automation.Status == AutomationStatusEnabled &&
-		automation.TriggerKind == TriggerKindAutomatic &&
-		automation.PlanID == task.PlanID &&
-		containsRef(automation.AllowedTaskRefs, "select-ready-tasks")
 }
 
 func validatePermissionSnapshotRef(value string) error {
