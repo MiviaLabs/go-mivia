@@ -3083,6 +3083,64 @@ func TestCompleteAttemptBlocksTerminalGitOpsCommandFailureInsteadOfRequeueingImp
 	}
 }
 
+func TestCompleteAttemptPreservesGitOpsVerifierFailureEvidenceWithoutRunnerEvidence(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "fix-verifier", []string{"apps/domain/src/service.ts"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.AgentRunIDs = []string{"run-a"}
+	task.EvidenceRefs = []string{"implementation.diff"}
+	task.VerifierResultRefs = []string{"verifier.focused"}
+	task.ReviewResultRefs = []string{"review.approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	run := AutomationRun{
+		ID:             "run-a",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         task.PlanID,
+		TaskID:         task.ID,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		AttemptCount:   1,
+		ClaimID:        "claim-a",
+		RunnerID:       "runner-a",
+		SafeSummary:    RunSafeSummaryGitOpsPostTaskRecovery,
+		WorkTaskStatus: task.Status,
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       automation.ProjectID,
+		RunID:           run.ID,
+		ClaimID:         run.ClaimID,
+		RunnerID:        run.RunnerID,
+		Status:          RunStatusFailed,
+		FailureCategory: "gitops_verification_failed_domain_booking_tests",
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if updated.FailureCategory != "gitops_recovery_failed_requires_verification_repair" || !strings.Contains(updated.SafeSummary, "gitops_verification_failed_domain_booking_tests") {
+		t.Fatalf("expected verifier repair requeue to name failing verifier, got %+v", updated)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected task requeued for verifier repair, got %+v", requeuedTask)
+	}
+	if !containsString(requeuedTask.EvidenceRefs, "gitops-failure:gitops_verification_failed_domain_booking_tests") {
+		t.Fatalf("expected verifier failure evidence to survive empty runner evidence, got %+v", requeuedTask.EvidenceRefs)
+	}
+	if !strings.Contains(requeuedTask.ResumeInstructions, "gitops_verification_failed_domain_booking_tests") {
+		t.Fatalf("expected repair resume instructions to name failing verifier, got %q", requeuedTask.ResumeInstructions)
+	}
+}
+
 func TestRequeuePreExecutionRecoveryDoesNotExpandLocalTaskDirtyPaths(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "fix-a", []string{"apps/frontend-mobile/lib"})

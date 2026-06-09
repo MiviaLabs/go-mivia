@@ -1983,6 +1983,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	if err != nil {
 		return AutomationRun{}, err
 	}
+	if isRecoverableGitOpsPostTaskFailure(failureCategory) || isGitOpsRecoveryFailure(failureCategory) {
+		evidenceRefs = appendGitOpsFailureEvidenceRef(evidenceRefs, failureCategory)
+	}
 	claimRefs, err := safeRefList(input.ClaimRefs, "claim_refs")
 	if err != nil {
 		return AutomationRun{}, err
