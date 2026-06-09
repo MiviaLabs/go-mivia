@@ -195,13 +195,15 @@ func listTasksHandler(list func(*http.Request, projectworkplan.WorkTaskFilter) (
 			Status:         strings.TrimSpace(r.URL.Query().Get("status")),
 			OwnerAgent:     strings.TrimSpace(r.URL.Query().Get("owner_agent")),
 			ClaimedByRunID: firstQuery(r, "claimed_by_run_id", "run_id"),
+			PageSize:       pageSize + 1,
+			PageToken:      strconv.Itoa(pageToken),
 		}
 		tasks, err := list(r, filter)
 		if err != nil {
 			writeResult(w, nil, err, http.StatusOK)
 			return
 		}
-		writeResult(w, paginateTasks(tasks, pageSize, pageToken), nil, http.StatusOK)
+		writeResult(w, paginateFetchedTasks(tasks, pageSize, pageToken), nil, http.StatusOK)
 	})
 }
 
@@ -544,6 +546,21 @@ func paginateTasks(tasks []projectworkplan.WorkTask, pageSize int, pageToken int
 	out := taskListResponse{WorkTasks: tasks[pageToken:end]}
 	if end < len(tasks) {
 		out.NextPageToken = strconv.Itoa(end)
+	}
+	return out
+}
+
+func paginateFetchedTasks(tasks []projectworkplan.WorkTask, pageSize int, pageToken int) taskListResponse {
+	if len(tasks) == 0 {
+		return taskListResponse{WorkTasks: []projectworkplan.WorkTask{}}
+	}
+	end := len(tasks)
+	if end > pageSize {
+		end = pageSize
+	}
+	out := taskListResponse{WorkTasks: tasks[:end]}
+	if len(tasks) > pageSize {
+		out.NextPageToken = strconv.Itoa(pageToken + pageSize)
 	}
 	return out
 }

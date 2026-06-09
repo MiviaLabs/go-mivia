@@ -170,10 +170,7 @@ func (store *LadybugStore) ListWorkTasks(ctx context.Context, filter model.WorkT
 	for _, node := range nodes {
 		task := nodeToWorkTask(node)
 		if task.ProjectID == filter.ProjectID {
-			if err := store.hydrateTaskAttachmentRefs(ctx, &task); err != nil {
-				return nil, err
-			}
-			tasks = append(tasks, cloneWorkTask(task))
+			tasks = append(tasks, task)
 		}
 	}
 	sort.Slice(tasks, func(i, j int) bool {
@@ -182,6 +179,17 @@ func (store *LadybugStore) ListWorkTasks(ctx context.Context, filter model.WorkT
 		}
 		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
 	})
+	start, end, err := taskPageBounds(len(tasks), filter)
+	if err != nil {
+		return nil, err
+	}
+	tasks = tasks[start:end]
+	for i := range tasks {
+		if err := store.hydrateTaskAttachmentRefs(ctx, &tasks[i]); err != nil {
+			return nil, err
+		}
+		tasks[i] = cloneWorkTask(tasks[i])
+	}
 	return tasks, nil
 }
 

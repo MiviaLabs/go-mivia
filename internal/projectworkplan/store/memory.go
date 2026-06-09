@@ -137,7 +137,11 @@ func (store *MemoryStore) ListWorkTasks(_ context.Context, filter projectworkpla
 		}
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
-	return out, nil
+	start, end, err := taskPageBounds(len(out), filter)
+	if err != nil {
+		return nil, err
+	}
+	return out[start:end], nil
 }
 
 func (store *MemoryStore) UpdateWorkTask(_ context.Context, task projectworkplan.WorkTask) (projectworkplan.WorkTask, error) {

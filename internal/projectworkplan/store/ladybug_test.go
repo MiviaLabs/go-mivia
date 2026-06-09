@@ -52,6 +52,42 @@ func TestLadybugStoreCreateGetListPlanAndTask(t *testing.T) {
 	}
 }
 
+func TestLadybugStoreListWorkTasksPaginatesBeforeHydratingAttachments(t *testing.T) {
+	ctx := context.Background()
+	graph := ladybug.NewMemoryGraph()
+	store := bootstrappedWorkPlanStore(t, ctx, graph)
+	plan := createWorkPlan(t, ctx, store, "project-a", "plan/ref/paged")
+
+	first := createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/001", nil)
+	second := createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/002", nil)
+	third := createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/003", nil)
+	if _, err := store.CreateAttachment(ctx, model.Attachment{
+		ID:              "attachment/ref/002",
+		ProjectID:       plan.ProjectID,
+		PlanID:          plan.ID,
+		TaskID:          second.ID,
+		Kind:            "evidence_ref",
+		Ref:             "evidence/ref/002",
+		AttachedByRunID: "agent_run_attachment",
+	}); err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	page, err := store.ListWorkTasks(ctx, model.WorkTaskFilter{ProjectID: plan.ProjectID, PlanID: plan.ID, PageSize: 2, PageToken: "1"})
+	if err != nil {
+		t.Fatalf("list paged tasks: %v", err)
+	}
+	if len(page) != 2 {
+		t.Fatalf("expected two paged tasks, got %#v", page)
+	}
+	if page[0].ID != second.ID || page[1].ID != third.ID || page[0].ID == first.ID {
+		t.Fatalf("expected offset page to return second and third tasks, got %#v", page)
+	}
+	if len(page[0].EvidenceRefs) != 1 || page[0].EvidenceRefs[0] != "evidence/ref/002" {
+		t.Fatalf("expected returned task attachments to be hydrated, got %#v", page[0])
+	}
+}
+
 func TestLadybugStorePreservesCommaContainingTaskLists(t *testing.T) {
 	ctx := context.Background()
 	graph := ladybug.NewMemoryGraph()
