@@ -4,10 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
+	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflowchain"
+	chainstore "github.com/MiviaLabs/go-mivia/internal/projectworkflowchain/store"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
 )
 
 func TestToolDefinitionsExposeWorkflowChainTools(t *testing.T) {
@@ -161,6 +170,100 @@ func TestCallToolStartReturnsSafeRefsOnly(t *testing.T) {
 	}
 }
 
+func TestCallToolGenericChainUsesRealCompilerAndPreservesGeneratedHandoffs(t *testing.T) {
+	ctx := context.Background()
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  projectautomation.RunnerExecutionExternal,
+		MaxParallelTasks: 2,
+		PermissionResolver: mcpRealPermissionResolver{
+			allowedRunnerKinds: []string{projectautomation.RunnerKindCodexCLI},
+		},
+		WorkPlanStatusTrigger: projectautomation.WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	workflows := projectworkflow.New(workflowstore.NewMemoryStore())
+	workflows.SetCompilerDependencies(workPlans, automations)
+	for _, path := range []string{
+		"configs/workflows/governed-decomposition-planning.toml",
+		"configs/workflows/governed-workplan-implementation.toml",
+		"configs/workflows/governed-post-implementation-validation.toml",
+	} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "..", path))
+		if err != nil {
+			t.Fatalf("read workflow %s: %v", path, err)
+		}
+		if _, err := workflows.ImportWorkflowTOML(ctx, projectworkflow.ImportWorkflowTOMLInput{ProjectID: "project-1", Data: data, CreatedByRunID: "mcp-import", TraceID: "trace-mcp-real"}); err != nil {
+			t.Fatalf("import workflow %s: %v", path, err)
+		}
+	}
+	chainSvc := projectworkflowchain.New(chainstore.NewMemoryStore(), workflows, workPlans, []projectworkflowchain.Config{mcpGenericChainConfig()})
+	finalizer := &mcpGitOpsFinalizer{result: projectworkflowchain.GitOpsFinalizeResult{
+		CommitRef:      "commit/generic-mcp-2044",
+		PushRef:        "push/generic-mcp-2044",
+		PullRequestRef: "pr/generic-mcp-2044",
+		EvidenceRefs:   []string{"gitops-evidence:generic-mcp-2044"},
+	}}
+	chainSvc.SetGitOpsFinalizer(finalizer)
+	workPlans.SetStatusChangeHandler(mcpStatusFanout{handlers: []projectworkplan.WorkPlanStatusChangeHandler{automations, chainSvc}})
+
+	started, err := CallTool(ctx, chainSvc, "projects.workflow_chains.start", mustArgs(t, map[string]any{
+		"id":                "project-1",
+		"chain_ref":         "generic-chain",
+		"input_text":        "ticket/GENERIC-2044",
+		"created_by_run_id": "codex-mcp-run-2044",
+		"trace_id":          "trace-generic-mcp-2044",
+	}))
+	if err != nil {
+		t.Fatalf("real MCP start: %v", err)
+	}
+	startResult := started["structuredContent"].(projectworkflowchain.StartResult)
+	if startResult.Status != projectworkflowchain.ChainStatusQueued || startResult.InputRef != "input:ticket/GENERIC-2044" || len(startResult.WorkPlanIDs) != 1 || len(startResult.AutomationIDs) == 0 {
+		t.Fatalf("MCP start lost generated handoff refs: %#v", startResult)
+	}
+	if strings.Contains(started["content"].([]map[string]string)[0]["text"], `"input_text"`) {
+		t.Fatalf("MCP start leaked raw input field: %s", started["content"].([]map[string]string)[0]["text"])
+	}
+	for _, stageRef := range []string{"decomposition", "implementation", "post-validation"} {
+		run, err := chainSvc.Get(ctx, "project-1", startResult.ChainRunID)
+		if err != nil {
+			t.Fatalf("get chain before %s: %v", stageRef, err)
+		}
+		stage := mcpStageRunByRef(t, run, stageRef)
+		mcpAssertQueuedRuns(t, ctx, automations, "project-1", stage)
+		mcpCompleteGeneratedPlan(t, ctx, workPlans, "project-1", stage.WorkPlanID, stageRef)
+	}
+	got, err := CallTool(ctx, chainSvc, "projects.workflow_chains.get", mustArgs(t, map[string]any{
+		"id":           "project-1",
+		"chain_run_id": startResult.ChainRunID,
+	}))
+	if err != nil {
+		t.Fatalf("real MCP get: %v", err)
+	}
+	run := got["structuredContent"].(projectworkflowchain.ChainRun)
+	if run.Status != projectworkflowchain.ChainStatusCompleted || run.PullRequestRef != "pr/generic-mcp-2044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+		t.Fatalf("MCP get lost completed status/action/PR refs: %#v", run)
+	}
+	if len(finalizer.inputs) != 1 || finalizer.inputs[0].InputRef != "input:ticket/GENERIC-2044" || finalizer.inputs[0].CreatedByRunID != "codex-mcp-run-2044" || finalizer.inputs[0].TraceID != "trace-generic-mcp-2044" {
+		t.Fatalf("GitOps finalizer lost MCP chain refs: %#v", finalizer.inputs)
+	}
+	if !containsString(finalizer.inputs[0].AllowedPathspecs, "internal/projectworkflowchain/service.go") || !containsString(finalizer.inputs[0].ReviewRefs, "review:mcp-generated-implementation") || !containsString(finalizer.inputs[0].VerifierRefs, "verifier:mcp-generated-post-validation") {
+		t.Fatalf("GitOps finalizer lost generated task outputs: %#v", finalizer.inputs[0])
+	}
+	listed, err := CallTool(ctx, chainSvc, "projects.workflow_chains.list", mustArgs(t, map[string]any{"id": "project-1", "status": projectworkflowchain.ChainStatusCompleted}))
+	if err != nil {
+		t.Fatalf("real MCP list: %v", err)
+	}
+	listResult := listed["structuredContent"].(projectworkflowchain.ListResult)
+	if len(listResult.Runs) != 1 || listResult.Runs[0].PullRequestRef != "pr/generic-mcp-2044" {
+		t.Fatalf("MCP list lost completed chain refs: %#v", listResult)
+	}
+}
+
 type fakeChainAPI struct{}
 
 func (fakeChainAPI) CallWorkflowChainTool(_ context.Context, name string, _ json.RawMessage) (any, error) {
@@ -209,6 +312,154 @@ func assertCompletedChainHandoff(t *testing.T, run projectworkflowchain.ChainRun
 	if run.StageRuns[2].StageRef != "post-validation" || run.StageRuns[2].WorkflowID != "workflow-validation" || len(run.StageRuns[2].AutomationIDs) != 1 {
 		t.Fatalf("post-validation stage handoff metadata was not preserved: %#v", run.StageRuns[2])
 	}
+}
+
+type mcpStatusFanout struct {
+	handlers []projectworkplan.WorkPlanStatusChangeHandler
+}
+
+func (fanout mcpStatusFanout) HandleWorkPlanStatusChanged(ctx context.Context, change projectworkplan.WorkPlanStatusChange) error {
+	for _, handler := range fanout.handlers {
+		if handler == nil {
+			continue
+		}
+		if err := handler.HandleWorkPlanStatusChanged(ctx, change); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type mcpRealPermissionResolver struct {
+	allowedRunnerKinds []string
+}
+
+func (resolver mcpRealPermissionResolver) CheckAutomationPermission(_ context.Context, input projectautomation.PermissionCheckInput) (projectautomation.PermissionSnapshotMetadata, error) {
+	return projectautomation.PermissionSnapshotMetadata{
+		PermissionRef:      input.PermissionRef,
+		AgentID:            input.AgentID,
+		AllowedRunnerKinds: append([]string(nil), resolver.allowedRunnerKinds...),
+	}, nil
+}
+
+type mcpGitOpsFinalizer struct {
+	result projectworkflowchain.GitOpsFinalizeResult
+	inputs []projectworkflowchain.GitOpsFinalizeInput
+	err    error
+}
+
+func (finalizer *mcpGitOpsFinalizer) FinalizeWorkflowChain(_ context.Context, input projectworkflowchain.GitOpsFinalizeInput) (projectworkflowchain.GitOpsFinalizeResult, error) {
+	finalizer.inputs = append(finalizer.inputs, input)
+	if finalizer.err != nil {
+		return projectworkflowchain.GitOpsFinalizeResult{}, finalizer.err
+	}
+	return finalizer.result, nil
+}
+
+func mcpGenericChainConfig() projectworkflowchain.Config {
+	return projectworkflowchain.Config{
+		ProjectID:            "project-1",
+		ChainRef:             "generic-chain",
+		Enabled:              true,
+		InputKind:            projectworkflowchain.InputKindSafeRef,
+		InputPattern:         "^ticket/GENERIC-[0-9]+$",
+		ContextProvider:      projectworkflowchain.ContextProviderIndexedRepo,
+		DefaultTitleTemplate: "{{input_ref}} generic MCP delivery",
+		GitOpsMode:           projectworkflowchain.GitOpsModeDraftPRAfterValidation,
+		GitOpsEnabled:        true,
+		Stages: []projectworkflowchain.StageConfig{
+			{StageRef: "decomposition", WorkflowRef: "governed-decomposition-planning", Trigger: projectworkflowchain.TriggerOnChainStart, RequiredStatusBeforeNext: projectworkflowchain.StageStatusCompleted},
+			{StageRef: "implementation", WorkflowRef: "governed-workplan-implementation", Trigger: projectworkflowchain.TriggerAfterStageReviewPassed, DependsOn: []string{"decomposition"}, RequiredStatusBeforeNext: projectworkflowchain.StageStatusCompleted},
+			{StageRef: "post-validation", WorkflowRef: "governed-post-implementation-validation", Trigger: projectworkflowchain.TriggerAfterStageReviewPassed, DependsOn: []string{"implementation"}, RequiredStatusBeforeNext: projectworkflowchain.StageStatusCompleted},
+		},
+	}
+}
+
+func mcpStageRunByRef(t *testing.T, run projectworkflowchain.ChainRun, stageRef string) projectworkflowchain.StageRun {
+	t.Helper()
+	for _, stage := range run.StageRuns {
+		if stage.StageRef == stageRef {
+			if stage.WorkPlanID == "" || len(stage.WorkTaskIDs) == 0 || len(stage.AutomationIDs) == 0 {
+				t.Fatalf("stage %s lost generated refs: %#v", stageRef, stage)
+			}
+			return stage
+		}
+	}
+	t.Fatalf("stage %s not found: %#v", stageRef, run.StageRuns)
+	return projectworkflowchain.StageRun{}
+}
+
+func mcpAssertQueuedRuns(t *testing.T, ctx context.Context, svc *projectautomation.Service, projectID string, stage projectworkflowchain.StageRun) {
+	t.Helper()
+	runs, err := svc.ListRuns(ctx, projectautomation.RunFilter{ProjectID: projectID, PlanID: stage.WorkPlanID, Status: projectautomation.RunStatusQueued})
+	if err != nil {
+		t.Fatalf("list queued runs for %s: %v", stage.StageRef, err)
+	}
+	if len(runs) == 0 {
+		t.Fatalf("stage %s did not queue automation through status fanout", stage.StageRef)
+	}
+	taskIDs := map[string]struct{}{}
+	for _, taskID := range stage.WorkTaskIDs {
+		taskIDs[taskID] = struct{}{}
+	}
+	for _, run := range runs {
+		if run.OrchestratorRunID == "" || run.TaskID == "" || run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+			t.Fatalf("queued run lost live refs/status for %s: %#v", stage.StageRef, run)
+		}
+		if _, ok := taskIDs[run.TaskID]; !ok {
+			t.Fatalf("queued run references task outside generated stage %s: %#v", stage.StageRef, run)
+		}
+	}
+}
+
+func mcpCompleteGeneratedPlan(t *testing.T, ctx context.Context, svc *projectworkplan.Service, projectID string, planID string, stageRef string) {
+	t.Helper()
+	tasks, err := svc.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		t.Fatalf("list tasks for %s: %v", stageRef, err)
+	}
+	for _, task := range tasks {
+		if stageRef == "implementation" && len(task.FilesToEdit) == 0 {
+			task.FilesToEdit = []string{"internal/projectworkflowchain/service.go", "cmd/mivia-automation-runner/main_test.go"}
+		}
+		task.Status = projectworkplan.WorkTaskStatusDone
+		task.Outcome = "MCP generated " + stageRef + " output accepted"
+		task.EvidenceRefs = appendUniqueString(task.EvidenceRefs, "evidence:mcp-generated-"+stageRef)
+		task.ReviewResultRefs = appendUniqueString(task.ReviewResultRefs, "review:mcp-generated-"+stageRef)
+		task.VerifierResultRefs = appendUniqueString(task.VerifierResultRefs, "verifier:mcp-generated-"+stageRef)
+		if _, err := svc.UpdateWorkTask(ctx, task); err != nil {
+			t.Fatalf("update generated task %s/%s: %v", stageRef, task.TaskRef, err)
+		}
+	}
+	if _, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      projectID,
+		PlanID:         planID,
+		Status:         projectworkplan.WorkPlanStatusDone,
+		Outcome:        "MCP generated " + stageRef + " stage completed",
+		SafeNextAction: "advance MCP generic chain",
+		RunID:          "mcp-complete-" + stageRef,
+		TraceID:        "trace-generic-mcp-2044",
+	}); err != nil {
+		t.Fatalf("mark generated plan %s done: %v", stageRef, err)
+	}
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func containsString(values []string, value string) bool {
+	for _, existing := range values {
+		if existing == value {
+			return true
+		}
+	}
+	return false
 }
 
 func mustArgs(t *testing.T, value any) json.RawMessage {
