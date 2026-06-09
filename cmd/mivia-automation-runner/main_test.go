@@ -1709,6 +1709,123 @@ func TestRunOnceReportsCompletedAttempt(t *testing.T) {
 	}
 }
 
+func TestRunOnceSendsRichGenericCodexPromptAndDurableCompletion(t *testing.T) {
+	setReadableCodexHome(t)
+	workDir := initRunnerGitRepo(t)
+	promptPath := filepath.Join(t.TempDir(), "codex-prompt.txt")
+	codexPath := fakeCodexRecordingPromptAndLastMessage(t, promptPath, "generic implementation completed")
+	var completed projectautomation.CompleteAttemptInput
+	var taskReads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/automation-runs/claim-next":
+			input := testCodexInput("run-generic-1")
+			input.AutomationRunID = "run-generic-1"
+			input.PlanID = "plan-generic-1"
+			input.TaskID = "task-generic-1"
+			input.TaskRef = "implement-generic-change"
+			input.Title = "Implement Generic Change"
+			input.ContextPackRefs = []string{"context:generic-ticket", "repo:generic-change"}
+			input.EvidenceNeeded = []string{"evidence:source-anchor", "evidence:dependency-map"}
+			input.WorkPlanContext = []string{"plan-context:generic-scope"}
+			input.DependencyContext = []string{"dependency:generic-predecessor-done"}
+			input.LikelyFilesAffected = []string{"internal/generic/source.go"}
+			input.VerificationRequirement = "run focused generic pipeline regression"
+			input.ExpectedOutput = "code and test evidence"
+			input.FailureCriteria = "block on missing source evidence"
+			input.RunnerInstructions = []string{"preserve generic pipeline refs"}
+			writeJSON(t, w, projectautomation.ClaimedRun{
+				Run: projectautomation.AutomationRun{
+					ID:           "run-generic-1",
+					ProjectID:    "project-1",
+					PlanID:       "plan-generic-1",
+					TaskID:       "task-generic-1",
+					AutomationID: "automation-generic-1",
+					AgentID:      "implementation-worker",
+					TraceID:      "trace-generic-1",
+					ClaimID:      "claim-generic-1",
+				},
+				CodexInput: input,
+				TimeoutMS:  1000,
+			})
+		case "/api/v1/projects/project-1/work-plans/plan-generic-1":
+			writeJSON(t, w, runnerWorkPlan{ID: "plan-generic-1", ProjectID: "project-1", IsolationMode: "shared"})
+		case "/api/v1/projects/project-1/work-tasks/task-generic-1":
+			if taskReads.Add(1) == 1 {
+				writeJSON(t, w, runnerWorkTaskMetadata{
+					ID:                      "task-generic-1",
+					TaskRef:                 "implement-generic-change",
+					Title:                   "Implement Generic Change",
+					Status:                  "in_progress",
+					EvidenceRefs:            []string{"evidence:source-anchor", "evidence:dependency-map"},
+					ContextPackRefs:         []string{"context:generic-ticket", "repo:generic-change"},
+					FilesToRead:             []string{"internal/generic/source.go"},
+					LikelyFilesAffected:     []string{"internal/generic"},
+					VerificationRequirement: "run focused generic pipeline regression",
+					ExpectedOutput:          "code and test evidence",
+					FailureCriteria:         "block on missing source evidence",
+				})
+				return
+			}
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:                 "task-generic-1",
+				TaskRef:            "implement-generic-change",
+				Title:              "Implement Generic Change",
+				Status:             "verifying",
+				EvidenceRefs:       []string{"evidence:source-anchor", "evidence:dependency-map"},
+				ReviewResultRefs:  []string{"review:generic-implementation"},
+				VerifierResultRefs: []string{"verifier:generic-regression"},
+			})
+		case "/api/v1/projects/project-1/automation-runs/run-generic-1/attempt-result":
+			if err := json.NewDecoder(r.Body).Decode(&completed); err != nil {
+				t.Fatalf("decode attempt: %v", err)
+			}
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-generic-1", ProjectID: "project-1", PlanID: "plan-generic-1", TaskID: "task-generic-1", Status: completed.Status, ClaimID: completed.ClaimID, RunnerID: completed.RunnerID})
+		case "/api/v1/projects/project-1/automation-runs/run-generic-1":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-generic-1", ProjectID: "project-1", PlanID: "plan-generic-1", TaskID: "task-generic-1", Status: completed.Status, ClaimID: completed.ClaimID, RunnerID: completed.RunnerID})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	status, claimedAny, attempted := claimRunExecuteAndReport(t.Context(), &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-generic-1"}, config.Config{}, "project-1", "implementation-worker", codexLaunchOptions{Path: codexPath, Launcher: "direct", WorkDir: workDir, Sandbox: "workspace-write"})
+	if status != 0 || !claimedAny || !attempted {
+		t.Fatalf("expected runner success with claim and attempt, status=%d claimed=%v attempted=%v", status, claimedAny, attempted)
+	}
+	if completed.Status != projectautomation.RunStatusCompleted || completed.FailureCategory != "" {
+		t.Fatalf("expected completed attempt, got %+v", completed)
+	}
+	if completed.ClaimID != "claim-generic-1" || completed.RunnerID != "runner-generic-1" || completed.DurationMS < 0 {
+		t.Fatalf("completion payload lost claim/runner/duration data: %+v", completed)
+	}
+	promptData, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read recorded Codex prompt: %v", err)
+	}
+	prompt := string(promptData)
+	for _, want := range []string{
+		"run-generic-1",
+		"plan-generic-1",
+		"task-generic-1",
+		"implement-generic-change",
+		"context:generic-ticket",
+		"repo:generic-change",
+		"evidence:source-anchor",
+		"evidence:dependency-map",
+		"plan-context:generic-scope",
+		"dependency:generic-predecessor-done",
+		"internal/generic/source.go",
+		"run focused generic pipeline regression",
+		"preserve generic pipeline refs",
+		server.URL,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("Codex prompt lost expected handoff data %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
 	setReadableCodexHome(t)
 	var completed atomic.Int32
@@ -3009,6 +3126,17 @@ func fakeCodexWritingLastMessage(t *testing.T, message string) string {
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "codex")
 	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-test; exit 0; fi\nout=''\nprev=''\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--output-last-message\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$out\" ]; then cat > \"$out\" <<'EOF'\n" + message + "\nEOF\nfi\nexit 0\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	return binary
+}
+
+func fakeCodexRecordingPromptAndLastMessage(t *testing.T, promptPath string, message string) string {
+	t.Helper()
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-test; exit 0; fi\nout=''\nprev=''\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--output-last-message\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ncat > " + shellQuoteForTest(promptPath) + "\nif [ -n \"$out\" ]; then cat > \"$out\" <<'EOF'\n" + message + "\nEOF\nfi\nexit 0\n"
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
 	}
