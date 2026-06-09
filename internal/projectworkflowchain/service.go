@@ -773,12 +773,17 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 		}
 	}
 	carriedCount := 0
+	carriedBySourceRef := map[string]string{}
 	for _, task := range sourceTasks {
 		if !chainStageOutputTask(task, compiledTaskIDs) {
 			continue
 		}
 		carriedCount++
 		if existing, exists := existingTasksByRef[task.TaskRef]; exists {
+			carriedBySourceRef[task.ID] = existing.ID
+			if ref := strings.TrimSpace(task.TaskRef); ref != "" {
+				carriedBySourceRef[ref] = existing.ID
+			}
 			automationID, err := svc.ensureCarriedImplementationAutomation(ctx, projectID, compiled.WorkPlanID, run, existing)
 			if err != nil {
 				return err
@@ -788,7 +793,7 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 			}
 			continue
 		}
-		dependencyIDs := carriedTaskDependencyIDs(task, sourceRefs)
+		dependencyIDs := carriedTaskDependencyIDs(task, sourceRefs, carriedBySourceRef)
 		status := projectworkplan.WorkTaskStatusPlanned
 		if len(dependencyIDs) == 0 {
 			status = projectworkplan.WorkTaskStatusReady
@@ -805,6 +810,10 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 			return err
 		}
 		existingTasksByRef[created.TaskRef] = created
+		carriedBySourceRef[task.ID] = created.ID
+		if ref := strings.TrimSpace(task.TaskRef); ref != "" {
+			carriedBySourceRef[ref] = created.ID
+		}
 	}
 	if carriedCount == 0 && hasDecompositionWorkflowTask && targetPlanHasSelector(targetTasks) {
 		return fmt.Errorf("%w: missing_carried_implementation_tasks", ErrInvalidInput)
@@ -986,12 +995,20 @@ func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task 
 	}
 }
 
-func carriedTaskDependencyIDs(task projectworkplan.WorkTask, sourceRefs map[string]struct{}) []string {
+func carriedTaskDependencyIDs(task projectworkplan.WorkTask, sourceRefs map[string]struct{}, carriedBySourceRef map[string]string) []string {
 	if len(task.DependencyTaskIDs) == 0 {
 		return nil
 	}
 	out := make([]string, 0, len(task.DependencyTaskIDs))
 	for _, dep := range task.DependencyTaskIDs {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
+		}
+		if carriedID := strings.TrimSpace(carriedBySourceRef[dep]); carriedID != "" {
+			out = append(out, carriedID)
+			continue
+		}
 		if _, sourceRef := sourceRefs[dep]; sourceRef {
 			continue
 		}

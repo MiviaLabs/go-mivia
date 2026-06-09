@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -545,6 +546,73 @@ func TestAdvancingStagePreservesExternalDependenciesOnCarriedImplementationTasks
 	carried := workPlans.createdTasks[0]
 	if carried.Status != projectworkplan.WorkTaskStatusPlanned || !containsString(carried.DependencyTaskIDs, "upstream-external-task") {
 		t.Fatalf("external dependencies must be preserved and keep task planned, got %#v", carried)
+	}
+}
+
+func TestAdvancingStageNormalizesCarriedTaskRefDependenciesToCreatedTaskIDs(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	queryTask := projectworkplan.WorkTask{
+		ID:                      "source-query-task",
+		ProjectID:               "project-1",
+		PlanID:                  "plan-decomposition",
+		TaskRef:                 "mass-1044-expired-booking-repository-query",
+		Title:                   "Add Expired Booking Selection Query",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		FilesToEdit:             []string{"apps/domain-booking/src/repository.ts"},
+		VerificationRequirement: "focused repository verifier",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	}
+	triggerTask := projectworkplan.WorkTask{
+		ID:                      "source-trigger-task",
+		ProjectID:               "project-1",
+		PlanID:                  "plan-decomposition",
+		TaskRef:                 "mass-1044-booking-expiry-background-trigger",
+		Title:                   "Wire Expiry Cleanup Background Trigger",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		FilesToEdit:             []string{"apps/domain-booking/src/booking-expiry-reconciler.service.ts"},
+		DependencyTaskIDs:       []string{"mass-1044-expired-booking-repository-query"},
+		VerificationRequirement: "focused trigger verifier",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+	}
+	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
+		"plan-decomposition": {
+			{ID: "select-ready-tasks", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusReady, DecompositionQuality: projectworkplan.DecompositionReady},
+			queryTask,
+			triggerTask,
+		},
+		"plan-implementation": {
+			{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
+		},
+	}}
+	automations := &fakeAutomationAPI{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.SetAutomationAPI(automations)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if len(workPlans.createdTasks) != 2 {
+		t.Fatalf("expected two carried implementation tasks, got %#v", workPlans.createdTasks)
+	}
+	query := workPlans.createdTasks[0]
+	trigger := workPlans.createdTasks[1]
+	if query.TaskRef != queryTask.TaskRef || query.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("query task should be first and ready, got %#v", query)
+	}
+	if trigger.TaskRef != triggerTask.TaskRef {
+		t.Fatalf("trigger task should be second, got %#v", trigger)
+	}
+	if trigger.Status != projectworkplan.WorkTaskStatusPlanned {
+		t.Fatalf("dependent trigger must remain planned until query task completes, got %#v", trigger)
+	}
+	if got, want := trigger.DependencyTaskIDs, []string{"created-" + queryTask.TaskRef}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("trigger dependency must be normalized to carried task id, got %#v want %#v", got, want)
 	}
 }
 
