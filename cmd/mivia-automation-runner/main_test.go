@@ -1514,11 +1514,13 @@ func TestRunGitOpsPostTaskRecoveryReportsDraftPRCommandFailure(t *testing.T) {
 			{},
 			{},
 			{Stdout: "abc123def456\n"},
+			{Stdout: "https://github.com/example/repo.git\n"},
 			{},
 			{},
 			{},
 		},
 		errs: []error{
+			nil,
 			nil,
 			nil,
 			nil,

@@ -758,7 +758,25 @@ func (svc *Service) gitPush(ctx context.Context, workDir string, branch string) 
 		args = append([]string{"-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"}, args...)
 		env = append(env, githubEnv...)
 	}
+	if remotePath, err := svc.localRemoteSafeDirectory(ctx, workDir); err == nil && remotePath != "" {
+		if _, err := svc.git(ctx, workDir, nil, "config", "--global", "--add", "safe.directory", remotePath); err != nil {
+			return CommandResult{}, err
+		}
+		args = append([]string{"-c", "safe.directory=" + remotePath}, args...)
+	}
 	return svc.git(ctx, workDir, env, args...)
+}
+
+func (svc *Service) localRemoteSafeDirectory(ctx context.Context, workDir string) (string, error) {
+	remote := strings.TrimSpace(svc.options.RemoteName)
+	if remote == "" {
+		remote = "origin"
+	}
+	result, err := svc.git(ctx, workDir, nil, "config", "--get", "remote."+remote+".url")
+	if err != nil {
+		return "", err
+	}
+	return safeLocalRemotePath(strings.TrimSpace(result.Stdout)), nil
 }
 
 func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) error {
@@ -784,6 +802,20 @@ func safeGitDirectoryArg(dir string) string {
 		return ""
 	}
 	return dir
+}
+
+func safeLocalRemotePath(remoteURL string) string {
+	remoteURL = strings.TrimSpace(remoteURL)
+	if remoteURL == "" || strings.ContainsAny(remoteURL, "\x00\r\n") {
+		return ""
+	}
+	if strings.HasPrefix(remoteURL, "file://") {
+		remoteURL = strings.TrimPrefix(remoteURL, "file://")
+	}
+	if !filepath.IsAbs(remoteURL) {
+		return ""
+	}
+	return filepath.Clean(remoteURL)
 }
 
 func runtimeFailure(detail string, cause error) error {

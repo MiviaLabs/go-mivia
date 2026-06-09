@@ -122,6 +122,8 @@ func TestPostTaskPushesWithoutExplicitSSHCredentials(t *testing.T) {
 		{},
 		{},
 		{Stdout: "abc123def456\n"},
+		{Stdout: "/remote.git\n"},
+		{},
 		{},
 	}}
 	svc := NewWithRunner(Options{
@@ -153,11 +155,14 @@ func TestPostTaskPushesWithoutExplicitSSHCredentials(t *testing.T) {
 	if result.CommitRef != "git-commit-abc123def456" || result.PushRef == "" || !containsString(result.EvidenceRefs, "git-push-completed") {
 		t.Fatalf("expected commit and push refs, got %#v", result)
 	}
-	if got := strings.Join(runner.commands[7].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify local-smoke HEAD:governed-smoke-gitops-live-smoke-run" {
+	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree config --global --add safe.directory /remote.git" {
+		t.Fatalf("expected local remote safe.directory config, got %q", got)
+	}
+	if got := strings.Join(runner.commands[9].Args, " "); got != "-c safe.directory=/tmp/worktree -c safe.directory=/remote.git push --no-verify local-smoke HEAD:governed-smoke-gitops-live-smoke-run" {
 		t.Fatalf("expected push to configured remote branch without SSH env, got %q", got)
 	}
-	if len(runner.commands[7].Env) != 0 {
-		t.Fatalf("expected no injected SSH/GitHub env for repository-native push, got %+v", runner.commands[7].Env)
+	if len(runner.commands[9].Env) != 0 {
+		t.Fatalf("expected no injected SSH/GitHub env for repository-native push, got %+v", runner.commands[9].Env)
 	}
 }
 
@@ -172,10 +177,12 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 			{},
 			{},
 			{},
+			{Stdout: "https://github.com/example/repo.git\n"},
 			{},
 			{Stdout: "https://github.com/example/repo/pull/123\n"},
 		},
 		errs: []error{
+			nil,
 			nil,
 			nil,
 			nil,
@@ -248,6 +255,7 @@ func TestPostTaskPushUsesGitHubTokenCredentialHelper(t *testing.T) {
 		{},
 		{},
 		{Stdout: "abc123def456\n"},
+		{Stdout: "https://github.com/example/repo.git\n"},
 		{},
 	}}
 	t.Setenv("GH_TOKEN", "test-token")
@@ -288,6 +296,50 @@ func TestPostTaskPushUsesGitHubTokenCredentialHelper(t *testing.T) {
 	}
 	if hasEnvPrefix(push.Env, "GIT_SSH_COMMAND=") {
 		t.Fatalf("did not expect SSH env for token-only push, got %+v", push.Env)
+	}
+}
+
+func TestGitPushTrustsAbsoluteLocalRemotePath(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{Stdout: "/remote.git\n"},
+		{},
+		{},
+	}}
+	svc := NewWithRunner(Options{RemoteName: "local-smoke"}, runner)
+
+	if _, err := svc.gitPush(context.Background(), "/tmp/worktree", "feature/any-valid-branch"); err != nil {
+		t.Fatalf("expected local remote push to succeed: %v", err)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("expected remote url probe and push, got %d", len(runner.commands))
+	}
+	if got := strings.Join(runner.commands[1].Args, " "); got != "-c safe.directory=/tmp/worktree config --global --add safe.directory /remote.git" {
+		t.Fatalf("expected local remote safe.directory config, got %q", got)
+	}
+	if got := strings.Join(runner.commands[2].Args, " "); got != "-c safe.directory=/tmp/worktree -c safe.directory=/remote.git push --no-verify local-smoke HEAD:feature/any-valid-branch" {
+		t.Fatalf("expected push to trust worktree and local remote, got %q", got)
+	}
+}
+
+func TestGitPushDoesNotTreatRelativeOrSSHRemoteAsSafeDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		remoteURL string
+	}{
+		{name: "relative", remoteURL: "../remote.git\n"},
+		{name: "ssh", remoteURL: "git@github.com:example/repo.git\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &recordingRunner{results: []CommandResult{{Stdout: tc.remoteURL}, {}}}
+			svc := NewWithRunner(Options{RemoteName: "origin"}, runner)
+
+			if _, err := svc.gitPush(context.Background(), "/tmp/worktree", "feature/any-valid-branch"); err != nil {
+				t.Fatalf("expected push to succeed: %v", err)
+			}
+			if got := strings.Join(runner.commands[1].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:feature/any-valid-branch" {
+				t.Fatalf("expected no remote safe.directory for %s remote, got %q", tc.name, got)
+			}
+		})
 	}
 }
 
@@ -621,7 +673,7 @@ func TestPostTaskDerivesProjectBranchWhenCurrentBranchViolatesPattern(t *testing
 	if got := strings.Join(runner.commands[3].Args, " "); got != "-c safe.directory=/tmp/worktree checkout -B fix-GENERIC-0000-automation-run-1" {
 		t.Fatalf("expected derived branch checkout, got %q", got)
 	}
-	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:fix-GENERIC-0000-automation-run-1" {
+	if got := strings.Join(runner.commands[9].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:fix-GENERIC-0000-automation-run-1" {
 		t.Fatalf("expected push to derived branch, got %q", got)
 	}
 }
@@ -1168,7 +1220,7 @@ func TestPostTaskAllowsPushFromBranchMatchingProjectPattern(t *testing.T) {
 	if result.PushRef == "" {
 		t.Fatalf("expected push ref, got %+v", result)
 	}
-	if got := strings.Join(runner.commands[7].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:docs-GENERIC-123-docs" {
+	if got := strings.Join(runner.commands[8].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify origin HEAD:docs-GENERIC-123-docs" {
 		t.Fatalf("expected push to matching branch, got %q", got)
 	}
 }
@@ -1440,10 +1492,12 @@ func TestPostTaskCreatesDraftPRWithRenderedMetadata(t *testing.T) {
 			{},
 			{},
 			{Stdout: "abc123def456\n"},
+			{Stdout: "https://github.com/example/repo.git\n"},
 			{},
 			{Stdout: "https://github.example/pull/1\n"},
 		},
 		errs: []error{
+			nil,
 			nil,
 			nil,
 			nil,
