@@ -3911,6 +3911,9 @@ func (svc *Service) updatePlanAfterTerminalTask(ctx context.Context, task projec
 	}
 	switch task.Status {
 	case projectworkplan.WorkTaskStatusBlocked:
+		if svc.planHasActiveOrPendingConcreteWork(ctx, task) {
+			return nil
+		}
 		_, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
 			ProjectID:     task.ProjectID,
 			PlanID:        task.PlanID,
@@ -4016,6 +4019,49 @@ func (svc *Service) reconcileReadyAutomationsForProject(ctx context.Context, pro
 		}
 	}
 	return nil
+}
+
+func (svc *Service) planHasActiveOrPendingConcreteWork(ctx context.Context, terminalTask projectworkplan.WorkTask) bool {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(terminalTask.ProjectID) == "" || strings.TrimSpace(terminalTask.PlanID) == "" {
+		return false
+	}
+	if !isGovernedWorkflowTaskRef(terminalTask.TaskRef) {
+		return false
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{
+		ProjectID: terminalTask.ProjectID,
+		PlanID:    terminalTask.PlanID,
+	})
+	if err != nil {
+		return false
+	}
+	for _, candidate := range tasks {
+		if candidate.ID == terminalTask.ID || isGovernedWorkflowTaskRef(candidate.TaskRef) || isReviewTask(candidate) {
+			continue
+		}
+		if !concreteTaskCanStillAdvancePlan(candidate) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func concreteTaskCanStillAdvancePlan(task projectworkplan.WorkTask) bool {
+	if len(task.FilesToEdit) == 0 && task.DecompositionQuality != projectworkplan.DecompositionReady {
+		return false
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusPlanned,
+		projectworkplan.WorkTaskStatusReady,
+		projectworkplan.WorkTaskStatusClaimed,
+		projectworkplan.WorkTaskStatusInProgress,
+		projectworkplan.WorkTaskStatusNeedsReview,
+		projectworkplan.WorkTaskStatusVerifying:
+		return true
+	default:
+		return false
+	}
 }
 
 func (svc *Service) blockActivePlanFromStaleBlockedTasks(ctx context.Context, projectID string, planID string) error {

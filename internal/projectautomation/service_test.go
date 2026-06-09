@@ -2136,6 +2136,37 @@ func TestUpdatePlanAfterTerminalTaskPropagatesCancelledAndSuperseded(t *testing.
 	}
 }
 
+func TestUpdatePlanAfterTerminalGovernedWrapperDoesNotBlockPlanWithConcreteWorkInProgress(t *testing.T) {
+	ctx := context.Background()
+	selector := readyTask("task-selector", "select-ready-tasks", []string{"configs/workflows/governed-workplan-implementation.toml"})
+	selector.Status = projectworkplan.WorkTaskStatusBlocked
+	selector.BlockedReason = "missing-ready-implementation-task"
+	selector.ResumeInstructions = "wait for concrete implementation task to complete"
+	worker := readyTask("task-worker", "mass-1044-expired-booking-repository-queries", []string{"apps/domain-booking/src/infrastructure/database/repositories/booking.repository.ts"})
+	worker.Status = projectworkplan.WorkTaskStatusInProgress
+	worker.OwnerAgent = "implementation-worker"
+	worker.FilesToEdit = []string{"apps/domain-booking/src/infrastructure/database/repositories/booking.repository.ts"}
+	worker.DecompositionQuality = projectworkplan.DecompositionReady
+	worker.VerificationRequirement = "run focused repository regression tests"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			selector.PlanID: {ID: selector.PlanID, ProjectID: selector.ProjectID, Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{
+			selector.ID: selector,
+			worker.ID:   worker,
+		},
+	}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+
+	if err := svc.updatePlanAfterTerminalTask(ctx, selector); err != nil {
+		t.Fatalf("updatePlanAfterTerminalTask returned error: %v", err)
+	}
+	if got := fake.plans[selector.PlanID].Status; got != projectworkplan.WorkPlanStatusActive {
+		t.Fatalf("expected parent plan to stay active while concrete work is in progress, got %q", got)
+	}
+}
+
 func TestCompleteAttemptBlocksCodexUsageLimitWithoutReplacement(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
