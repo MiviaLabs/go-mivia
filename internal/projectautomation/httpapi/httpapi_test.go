@@ -90,7 +90,8 @@ func TestAutomationExternalClaimAndCompleteRoutes(t *testing.T) {
 		VerificationRequirement: "orchestrator runs focused verifier",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	}}
-	svc := projectautomation.New(automationstore.NewMemoryStore(), workTasks, projectautomation.Options{
+	automationStore := automationstore.NewMemoryStore()
+	svc := projectautomation.New(automationStore, workTasks, projectautomation.Options{
 		Enabled:          true,
 		RunnerEnabled:    true,
 		RunnerExecution:  projectautomation.RunnerExecutionExternal,
@@ -116,17 +117,49 @@ func TestAutomationExternalClaimAndCompleteRoutes(t *testing.T) {
 
 	claimed := requestJSON[projectautomation.ClaimedRun](t, mux, http.MethodPost, "/api/v1/projects/project-1/automation-runs/claim-next", map[string]any{
 		"runner_kind": projectautomation.RunnerKindCodexCLI,
+		"runner_id":   "runner-http-1",
 	}, http.StatusOK)
 	if claimed.Run.ID != queued.ID || claimed.CodexInput.TaskID != "task-a" {
 		t.Fatalf("unexpected claim: %+v", claimed)
 	}
+	if claimed.Run.Status != projectautomation.RunStatusRunning || claimed.Run.ClaimID == "" || claimed.Run.RunnerID != "runner-http-1" || claimed.Run.ClaimedAt.IsZero() || claimed.Run.LastHeartbeatAt.IsZero() || claimed.Run.LeaseExpiresAt.IsZero() {
+		t.Fatalf("claim response lost external runner lifecycle fields: %+v", claimed.Run)
+	}
+	if claimed.Run.WorkTaskStatus != projectworkplan.WorkTaskStatusInProgress || claimed.Run.SafeSummary != "external_runner_queued" {
+		t.Fatalf("claim response lost work task status/action summary: %+v", claimed.Run)
+	}
+
+	heartbeat := requestJSON[projectautomation.AutomationRun](t, mux, http.MethodPost, "/api/v1/projects/project-1/automation-runs/"+queued.ID+"/heartbeat", map[string]any{
+		"claim_id":  claimed.Run.ClaimID,
+		"runner_id": "runner-http-1",
+	}, http.StatusOK)
+	if heartbeat.Status != projectautomation.RunStatusRunning || heartbeat.ClaimID != claimed.Run.ClaimID || heartbeat.RunnerID != "runner-http-1" || heartbeat.LastHeartbeatAt.IsZero() || heartbeat.LeaseExpiresAt.IsZero() {
+		t.Fatalf("heartbeat response lost claim/lease handoff fields: %+v", heartbeat)
+	}
 
 	done := requestJSON[projectautomation.AutomationRun](t, mux, http.MethodPost, "/api/v1/projects/project-1/automation-runs/"+queued.ID+"/attempt-result", map[string]any{
-		"status":      projectautomation.RunStatusCompleted,
-		"duration_ms": 100,
+		"claim_id":             claimed.Run.ClaimID,
+		"runner_id":            "runner-http-1",
+		"status":               projectautomation.RunStatusCompleted,
+		"duration_ms":          100,
+		"evidence_refs":        []string{"evidence:http-worker"},
+		"claim_refs":           []string{"claim:http-worker"},
+		"verifier_result_refs": []string{"verifier:http-worker"},
+		"review_result_refs":   []string{"review:http-worker"},
 	}, http.StatusOK)
-	if done.Status != projectautomation.RunStatusVerifying {
-		t.Fatalf("expected verifier-required status, got %+v", done)
+	if done.Status != projectautomation.RunStatusVerifying || done.ClaimID != claimed.Run.ClaimID || done.RunnerID != "runner-http-1" || done.FinishedAt.IsZero() {
+		t.Fatalf("completion response lost verifying claim/runner handoff fields: %+v", done)
+	}
+	if done.SafeSummary != "external_codex_cli_completed_verification_required" {
+		t.Fatalf("completion response lost safe next action summary: %+v", done)
+	}
+	gotRun := requestJSON[projectautomation.AutomationRun](t, mux, http.MethodGet, "/api/v1/projects/project-1/automation-runs/"+queued.ID, nil, http.StatusOK)
+	if gotRun.Status != projectautomation.RunStatusVerifying || gotRun.ClaimID != claimed.Run.ClaimID || gotRun.RunnerID != "runner-http-1" || gotRun.SafeSummary != done.SafeSummary {
+		t.Fatalf("get run response lost completed external handoff fields: %+v", gotRun)
+	}
+	list := requestJSON[runListResponse](t, mux, http.MethodGet, "/api/v1/projects/project-1/automation-runs?status="+projectautomation.RunStatusVerifying, nil, http.StatusOK)
+	if len(list.AutomationRuns) != 1 || list.AutomationRuns[0].ID != queued.ID || list.AutomationRuns[0].ClaimID != claimed.Run.ClaimID || list.AutomationRuns[0].RunnerID != "runner-http-1" {
+		t.Fatalf("list run response lost completed external handoff fields: %+v", list)
 	}
 }
 
