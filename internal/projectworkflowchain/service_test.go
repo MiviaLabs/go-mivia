@@ -174,6 +174,19 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	if got, want := strings.Join(workPlans.events[:2], ","), "release:task-decomposition,activate:plan-decomposition"; got != want {
 		t.Fatalf("stage activation must release tasks before plan active event, got %s", got)
 	}
+	if len(workflows.compileInputs) != 1 {
+		t.Fatalf("expected first-stage compile input, got %#v", workflows.compileInputs)
+	}
+	firstCompile := workflows.compileInputs[0]
+	if firstCompile.UserRequestRef != "jira:MASS-1044" || firstCompile.CreatedByRunID != "run-1" || firstCompile.TraceID != "" {
+		t.Fatalf("first-stage compile must preserve input and caller refs, got %#v", firstCompile)
+	}
+	if !containsString(firstCompile.ContextPackRefs, "jira:MASS-1044") {
+		t.Fatalf("first-stage compile missing input context ref, got %#v", firstCompile.ContextPackRefs)
+	}
+	if !strings.Contains(firstCompile.TitleOverride, "jira:MASS-1044") || !strings.Contains(firstCompile.TitleOverride, "decomposition") {
+		t.Fatalf("first-stage compile title must include input and stage, got %q", firstCompile.TitleOverride)
+	}
 
 	err = svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone})
 	if err != nil {
@@ -191,6 +204,49 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	}
 	if got, want := strings.Join(workPlans.events[2:4], ","), "release:task-implementation,activate:plan-implementation"; got != want {
 		t.Fatalf("next stage activation must release tasks before plan active event, got %s", got)
+	}
+	if len(workflows.compileInputs) != 2 {
+		t.Fatalf("expected implementation compile input, got %#v", workflows.compileInputs)
+	}
+	nextCompile := workflows.compileInputs[1]
+	if nextCompile.UserRequestRef != "jira:MASS-1044" || nextCompile.CreatedByRunID != "run-1" {
+		t.Fatalf("next-stage compile must preserve input and creator run refs, got %#v", nextCompile)
+	}
+	if !containsString(nextCompile.ContextPackRefs, "jira:MASS-1044") || !strings.Contains(nextCompile.TitleOverride, "implementation") {
+		t.Fatalf("next-stage compile must preserve context and stage title, got %#v", nextCompile)
+	}
+}
+
+func TestStartWithTracePropagatesHandoffMetadataToCompileAndActivation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	if _, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", CreatedByRunID: "orchestrator-1", TraceID: "trace-1"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if len(workflows.compileInputs) != 1 {
+		t.Fatalf("expected one compile input, got %#v", workflows.compileInputs)
+	}
+	if workflows.compileInputs[0].CreatedByRunID != "orchestrator-1" || workflows.compileInputs[0].TraceID != "trace-1" {
+		t.Fatalf("compile input must propagate orchestrator and trace refs, got %#v", workflows.compileInputs[0])
+	}
+	if len(workPlans.statusUpdates) != 1 {
+		t.Fatalf("expected first-stage activation update, got %#v", workPlans.statusUpdates)
+	}
+	update := workPlans.statusUpdates[0]
+	if update.RunID != "orchestrator-1" || update.TraceID != "trace-1" || update.SafeNextAction == "" {
+		t.Fatalf("plan activation must propagate run/trace/action metadata, got %#v", update)
+	}
+	if len(workPlans.taskStatusUpdates) != 1 {
+		t.Fatalf("expected first-stage task release update, got %#v", workPlans.taskStatusUpdates)
+	}
+	taskUpdate := workPlans.taskStatusUpdates[0]
+	if taskUpdate.RunID != "orchestrator-1" || taskUpdate.TraceID != "trace-1" || taskUpdate.SafeNextAction == "" {
+		t.Fatalf("task release must propagate run/trace/action metadata, got %#v", taskUpdate)
 	}
 }
 
@@ -473,6 +529,47 @@ func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizationFails(t *testin
 	}
 }
 
+func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizerCreatesNoOutput(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		result GitOpsFinalizeResult
+	}{
+		{name: "missing-pr", result: GitOpsFinalizeResult{CommitRef: "commit/MASS-1044"}},
+		{name: "no-changes", result: GitOpsFinalizeResult{NoChanges: true}},
+		{name: "skipped", result: GitOpsFinalizeResult{Skipped: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestChainStore()
+			workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+			workPlans := &fakeWorkPlans{}
+			svc := New(store, workflows, workPlans, []Config{testConfig()})
+			svc.SetGitOpsFinalizer(&fakeGitOpsFinalizer{result: tc.result})
+			svc.newID = deterministicIDs("workflow_chain_run_1")
+
+			result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044"})
+			if err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			for _, planID := range []string{"plan-decomposition", "plan-implementation"} {
+				if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+					t.Fatalf("advance after %s done: %v", planID, err)
+				}
+			}
+			if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected no-output GitOps finalization to block, got %v", err)
+			}
+			run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+			if err != nil {
+				t.Fatalf("get run: %v", err)
+			}
+			if run.Status != ChainStatusBlocked || !run.GitOpsReady || run.PullRequestRef != "" || !strings.HasPrefix(run.StageRuns[2].BlockedReason, "gitops_finalize_failed") {
+				t.Fatalf("expected blocked GitOps-ready chain without PR ref, got %#v", run)
+			}
+		})
+	}
+}
+
 func TestHandleWorkPlanStatusChangedRetriesBlockedDraftPRFinalization(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
@@ -752,11 +849,13 @@ func TestGitOpsFinalizeMetadataUsesExplicitEditScopeOnly(t *testing.T) {
 }
 
 type fakeWorkPlans struct {
-	activations     []string
-	released        []string
-	events          []string
-	openTasksByPlan map[string][]projectworkplan.WorkTask
-	tasksByID       map[string]projectworkplan.WorkTask
+	activations       []string
+	released          []string
+	events            []string
+	openTasksByPlan   map[string][]projectworkplan.WorkTask
+	tasksByID         map[string]projectworkplan.WorkTask
+	statusUpdates     []projectworkplan.UpdateWorkPlanStatusInput
+	taskStatusUpdates []projectworkplan.UpdateWorkTaskStatusInput
 }
 
 func (fake *fakeWorkPlans) GetWorkPlan(_ context.Context, projectID string, planID string) (projectworkplan.WorkPlan, error) {
@@ -766,6 +865,7 @@ func (fake *fakeWorkPlans) GetWorkPlan(_ context.Context, projectID string, plan
 func (fake *fakeWorkPlans) UpdateWorkPlanStatus(_ context.Context, input projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error) {
 	fake.activations = append(fake.activations, input.PlanID)
 	fake.events = append(fake.events, "activate:"+input.PlanID)
+	fake.statusUpdates = append(fake.statusUpdates, input)
 	return projectworkplan.WorkPlan{ID: input.PlanID, ProjectID: input.ProjectID, Status: input.Status}, nil
 }
 
@@ -828,6 +928,7 @@ func (fake *fakeWorkPlans) ListOpenWorkTasks(_ context.Context, filter projectwo
 func (fake *fakeWorkPlans) UpdateWorkTaskStatus(_ context.Context, input projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error) {
 	fake.released = append(fake.released, input.TaskID)
 	fake.events = append(fake.events, "release:"+input.TaskID)
+	fake.taskStatusUpdates = append(fake.taskStatusUpdates, input)
 	return projectworkplan.WorkTask{ID: input.TaskID, ProjectID: input.ProjectID, Status: input.Status}, nil
 }
 

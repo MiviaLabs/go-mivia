@@ -9451,6 +9451,66 @@ func TestClaimNextRunDoesNotRequeueAbandonedRunFromTerminalPlan(t *testing.T) {
 	}
 }
 
+func TestClaimNextRunRecoversGitOpsPostTaskFailureWithDurableClaim(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "allowed-task", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-gitops-recovery"
+	task.AgentRunIDs = []string{"run-gitops-recovery"}
+	task.EvidenceRefs = []string{"gitops-failure:gitops_post_task_failed_runner_post_task"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  RunnerExecutionExternal,
+		MaxParallelTasks: 1,
+		PermissionResolver: &fakePermissionResolver{metadata: PermissionSnapshotMetadata{
+			AgentID:            "agent-1",
+			AllowedRunnerKinds: []string{RunnerKindCodexCLI},
+		}},
+	})
+	automation := createWorkflowAutomation(t, ctx, svc, []string{"allowed-task"}, "agent-1")
+	now := time.Now().UTC().Add(-time.Minute)
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-gitops-recovery",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    1,
+		SafeSummary:     RunSafeSummaryGitOpsPostTaskRecovery,
+		FailureCategory: "gitops_post_task_failed_runner_post_task",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		FinishedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-1"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID != "run-gitops-recovery" || claimed.Run.Status != RunStatusRunning || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
+		t.Fatalf("expected GitOps recovery run to be reclaimed, got %#v", claimed.Run)
+	}
+	if claimed.Run.AttemptCount != 2 || claimed.Run.ClaimID == "" || claimed.Run.RunnerID != "runner-1" || claimed.Run.LastHeartbeatAt.IsZero() || claimed.Run.LeaseExpiresAt.IsZero() {
+		t.Fatalf("expected durable external claim fields on GitOps recovery run, got %#v", claimed.Run)
+	}
+	durable, err := store.GetRun(ctx, automation.ProjectID, claimed.Run.ID)
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if durable.Status != RunStatusRunning || durable.ClaimID != claimed.Run.ClaimID || durable.FailureCategory != "" || durable.FinishedAt.IsZero() == false {
+		t.Fatalf("durable GitOps recovery claim mismatch, got %#v", durable)
+	}
+}
+
 func TestCreateWorkflowAutomationRequiresPermissionSnapshotRef(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t, Options{AllowManualRunner: true})
