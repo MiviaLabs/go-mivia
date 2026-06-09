@@ -102,6 +102,22 @@ expected_output = "bounded planning context summary, risk classification, packag
 failure_criteria = "block if context freshness, scope, risk domain, package boundary, or Mivia availability cannot be established"
 review_gate = "planning-readiness-review required before context task is done"
 resume_instructions = "resume by reading attached context refs and current Work Plan metadata"
+acceptance_criteria = [
+  "Context refs identify current repo instructions, local ticket evidence, package boundaries, risk domains, and Mivia surface availability.",
+  "The context packet is metadata-only and contains only bounded refs, safe summaries, and no machine-local path disclosures or unbounded code excerpts."
+]
+stop_conditions = [
+  "Stop if local Jira evidence, repo instructions, package boundaries, or context health cannot be established.",
+  "Stop if context would require live Jira/Confluence connector access or unbounded source capture."
+]
+verifier_ladder = [
+  "orchestrator checks attached context refs and risk-domain refs",
+  "orchestrator confirms package-boundary and Mivia surface refs exist",
+  "orchestrator verifies metadata-only evidence before downstream mapping"
+]
+regression_test_applicability = "not applicable until code-impacting tasks are identified; record code-impacting implications for decomposition"
+downstream_impact_refs = ["package-boundary-ref", "risk-domain-ref", "mcp-surface-gap-ref"]
+output_contract = "bounded planning context packet with source-backed refs, risk domains, package boundaries, and no raw sensitive content"
 
 [[steps]]
 id = "map-downstream-impact"
@@ -125,6 +141,22 @@ expected_output = "downstream impact map with affected packages, contracts, gene
 failure_criteria = "block if affected downstream surfaces cannot be bounded or if source/reference/call evidence is missing for code-impact claims"
 review_gate = "planning-readiness-review required before decomposition consumes impact map"
 resume_instructions = "resume from downstream impact refs, package boundary refs, and risk-domain refs"
+acceptance_criteria = [
+  "Downstream impact refs cover affected packages, contracts, generated artifacts, events, migrations, policies, observability, and integrations or record concrete non-applicability.",
+  "Verifier implications and regression-test applicability are explicit before task decomposition consumes the map."
+]
+stop_conditions = [
+  "Stop if downstream impact cannot be bounded from current source and refs.",
+  "Stop if generated artifacts, contracts, or sensitive-risk surfaces are potentially affected but unclassified."
+]
+verifier_ladder = [
+  "orchestrator checks changed-path impact refs",
+  "orchestrator checks reference or call graph refs where available",
+  "orchestrator confirms verifier implications and regression applicability are recorded"
+]
+regression_test_applicability = "required classification for every code-impacting downstream surface before decomposition"
+downstream_impact_refs = ["changed-path-impact-ref", "reference-search-ref", "contract-impact-ref", "generated-artifact-impact-ref"]
+output_contract = "downstream impact packet with affected surfaces, verifier implications, regression classification, and blocking gaps"
 
 [[steps]]
 id = "decompose-work-plan"
@@ -168,6 +200,22 @@ expected_output = "ready task refs or blocked task refs with resume instructions
 failure_criteria = "block if any task lacks independent review, granularity, downstream impact refs, regression-test applicability decision, feasible regression test or not-feasible reason, acceptance criteria, stop conditions, verifier ladder, or required metadata"
 review_gate = "planning-readiness-review required before status changes"
 resume_instructions = "resume by listing task statuses and checking attached review refs"
+acceptance_criteria = [
+  "Only independently reviewed tasks with complete governance metadata are moved to ready.",
+  "Incomplete tasks remain planned or blocked with concrete missing metadata and resume instructions."
+]
+stop_conditions = [
+  "Stop if any task lacks review refs, downstream impact refs, regression applicability, verifier ladder, acceptance criteria, or stop conditions.",
+  "Stop if ready status would release a task with unresolved dependencies or hidden context requirements."
+]
+verifier_ladder = [
+  "orchestrator lists planned and reviewed tasks",
+  "orchestrator validates governance fields on every candidate ready task",
+  "orchestrator updates only eligible task statuses and records ready or blocked refs"
+]
+regression_test_applicability = "not applicable to status-only orchestration; verify candidate task regression applicability before release"
+downstream_impact_refs = ["ready-task-list-ref", "downstream-impact-ref", "regression-test-applicability-ref"]
+output_contract = "ready-task refs and blocked-task refs with review evidence, missing metadata reasons, and next actions"
 
 [[review_gates]]
 id = "planning-readiness-review"

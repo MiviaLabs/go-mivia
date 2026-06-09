@@ -95,6 +95,22 @@ expected_output = "safe implementation batch refs or blocked reason"
 failure_criteria = "block if tasks are not ready, overlap unsafely, lack downstream impact refs, lack regression-test applicability decision, lack verifier ladder, or lack review refs"
 review_gate = "implementation-independent-review required before dispatch"
 resume_instructions = "resume by calling get_next and checking dependency and review refs"
+acceptance_criteria = [
+  "Selected tasks are ready, reviewed, dependency-complete, non-overlapping, and have downstream impact and regression applicability metadata.",
+  "The selected batch is safe to dispatch with explicit verifier ladder and no hidden context requirements."
+]
+stop_conditions = [
+  "Stop if any candidate task lacks review refs, done dependencies, downstream impact refs, regression applicability, or verifier ladder.",
+  "Stop if likely affected files overlap unsafely or generated artifact impact is unclassified."
+]
+verifier_ladder = [
+  "orchestrator lists ready tasks and dependency statuses",
+  "orchestrator validates review refs, downstream impact refs, and regression applicability",
+  "orchestrator confirms disjoint scope before dispatch"
+]
+regression_test_applicability = "required for each selected implementation task before dispatch"
+downstream_impact_refs = ["dependency-status-ref", "downstream-impact-ref", "regression-test-applicability-ref"]
+output_contract = "safe implementation batch refs or blocked reason with missing metadata and next action"
 
 [[steps]]
 id = "analyze-downstream-impact"
@@ -116,6 +132,22 @@ verification_requirement = "attach or require downstream impact refs and regress
 expected_output = "approved impact map, regression-test scope, expanded verifier ladder, or blocked reason"
 failure_criteria = "block if downstream impact cannot be bounded, if regression-test scope is missing, if affected generated artifacts are unknown, or if security/privacy/API/migration impact lacks explicit verifier requirements"
 resume_instructions = "resume from changed-path impact refs, affected targets, generated artifact refs, and verifier ladder"
+acceptance_criteria = [
+  "Impact map covers changed paths, affected targets, contracts, generated artifacts, integrations, and sensitive-risk surfaces.",
+  "Regression-test scope and expanded verifier ladder are attached or a concrete blocked reason is recorded."
+]
+stop_conditions = [
+  "Stop if downstream impact, generated artifacts, contracts, or sensitive-risk scope cannot be bounded.",
+  "Stop if regression-test scope is missing for a feasible behavior change."
+]
+verifier_ladder = [
+  "reviewer checks changed-path and reference refs",
+  "reviewer checks affected target, contract, generated artifact, and integration refs",
+  "reviewer records regression-test scope and verifier implications"
+]
+regression_test_applicability = "required classification before implementation automation is queued"
+downstream_impact_refs = ["changed-path-impact-ref", "affected-targets-ref", "generated-artifact-impact-ref", "integration-impact-ref"]
+output_contract = "approved or blocked impact packet with regression scope, downstream refs, generated artifact refs, and verifier ladder"
 
 [[steps]]
 id = "run-implementation-batch"
@@ -133,6 +165,22 @@ expected_output = "changed files, evidence refs, risks, and tests not run for ea
 failure_criteria = "block if worker uses hidden context, runs broad repo suites, edits out of scope, changes downstream surfaces not in the impact map, lacks a feasible regression test or concrete not-feasible reason, lacks evidence, or skips required local agentic task evidence"
 review_gate = "implementation-independent-review required before task completion"
 resume_instructions = "resume from automation run refs, changed files, evidence refs, and task statuses"
+acceptance_criteria = [
+  "Each worker edits only declared task scope and attaches changed-file, evidence, local-agentic, downstream-impact, and regression-test refs.",
+  "Each worker records tests run, tests not run, risk notes, and acceptance-criteria disposition for its task."
+]
+stop_conditions = [
+  "Stop if a worker needs hidden context, broad unapproved commands, out-of-scope edits, or unclassified downstream changes.",
+  "Stop if feasible regression tests or local agentic evidence are missing without a concrete non-applicability reason."
+]
+verifier_ladder = [
+  "worker runs task-scoped regression test first when feasible",
+  "worker runs the narrow verifier from the task ladder",
+  "orchestrator checks evidence refs and changed files before review"
+]
+regression_test_applicability = "mandatory for each implementation task; add/update feasible regression tests before claiming fixed behavior"
+downstream_impact_refs = ["downstream-impact-ref", "changed-files-ref", "regression-test-ref", "local-agentic-task-ref"]
+output_contract = "per-task worker output refs with changed files, evidence, regression test disposition, risks, and tests not run"
 max_parallel_tasks = 2
 
 [[steps]]
@@ -150,6 +198,22 @@ verification_requirement = "attach review_result_ref for every implementation ta
 expected_output = "approved, rejected, needs_changes, or blocked review decisions with downstream impact disposition"
 failure_criteria = "block on self-review, missing evidence, missing verifier, missing feasible regression test or concrete not-feasible reason, missing introduced-by-task attribution, missing downstream reachability, unreviewed changed file, unreviewed generated artifact, or unreviewed sensitive-data impact"
 resume_instructions = "resume by reading worker outputs, changed files, verifier refs, and review refs"
+acceptance_criteria = [
+  "Every implementation result receives an independent review decision with changed-file, verifier, downstream, regression, and attribution disposition.",
+  "Rejected or blocked tasks include exact missing evidence and resume instructions."
+]
+stop_conditions = [
+  "Stop on self-review, missing verifier refs, missing feasible regression tests, unreviewed generated artifacts, or unbounded sensitive-risk impact.",
+  "Stop if introduced-by-task attribution or downstream reachability cannot be verified."
+]
+verifier_ladder = [
+  "reviewer checks changed files and worker evidence",
+  "reviewer checks verifier refs and regression evidence",
+  "reviewer checks downstream reachability and generated artifact disposition"
+]
+regression_test_applicability = "review must confirm feasible regression tests exist or a concrete not-feasible reason is recorded"
+downstream_impact_refs = ["downstream-reachability-ref", "introduced-by-task-ref", "generated-artifact-check-ref"]
+output_contract = "review decision refs for each implementation task with downstream, regression, attribution, and risk disposition"
 
 [[steps]]
 id = "orchestrator-verification"
@@ -167,6 +231,23 @@ expected_output = "verifier refs attached to reviewed tasks"
 failure_criteria = "block if feasible regression tests are missing or fail, focused tests fail, affected downstream checks are missing, generated artifact checks are missing when applicable, review is missing, or diff check fails"
 review_gate = "implementation-independent-review required before verifier refs complete the task"
 resume_instructions = "resume by rerunning failed narrow verifier and checking attached review refs"
+acceptance_criteria = [
+  "Focused regression tests run first when feasible, followed by affected checks required by downstream impact.",
+  "Verifier refs are attached only after review refs, generated artifact checks, local agentic close refs, and diff checks are verified."
+]
+stop_conditions = [
+  "Stop on failing or missing feasible regression tests, missing affected checks, stale generated artifacts, missing review refs, or diff-check failure.",
+  "Stop if broader checks are required by impact but not runnable or not recorded."
+]
+verifier_ladder = [
+  "run feasible regression test first",
+  "run narrow affected verifier",
+  "run affected lint/typecheck/test/docs/policy/generated artifact checks as warranted",
+  "run git diff --check last"
+]
+regression_test_applicability = "required; if not feasible, attach concrete non-feasible rationale before broader checks"
+downstream_impact_refs = ["affected-targets-ref", "generated-artifact-check-ref", "local-agentic-close-ref"]
+output_contract = "verifier refs with ordered command evidence, review refs, generated artifact disposition, and tests not run"
 
 [[steps]]
 id = "pr-gitops-readiness"
@@ -189,6 +270,23 @@ expected_output = "GitOps ready ref or blocked reason"
 failure_criteria = "block if branch policy fails, worktree contains unreviewed changes, feasible regression tests are missing, generated artifacts are stale, review/verifier refs are missing, PR metadata is incomplete, or unsafe metadata would be published"
 review_gate = "implementation-independent-review required before GitOps readiness"
 resume_instructions = "resume by checking git status refs, verifier refs, review refs, generated artifact refs, and PR metadata refs"
+acceptance_criteria = [
+  "GitOps readiness is recorded only after clean scoped changes, branch policy, review refs, verifier refs, regression evidence, generated artifact checks, and metadata redaction checks pass.",
+  "Draft PR metadata includes safe summary, tests, risks, generated artifact disposition, and no forbidden sensitive or unbounded metadata."
+]
+stop_conditions = [
+  "Stop if branch policy, worktree scope, review refs, verifier refs, regression evidence, generated artifacts, PR metadata, or redaction checks are missing.",
+  "Stop if unsafe metadata would be committed, pushed, or published in PR text."
+]
+verifier_ladder = [
+  "orchestrator checks git status and scoped diff refs",
+  "orchestrator checks review and verifier refs",
+  "orchestrator checks generated artifact and regression evidence",
+  "orchestrator checks PR metadata redaction and branch policy"
+]
+regression_test_applicability = "required before GitOps readiness unless a concrete not-feasible reason is attached"
+downstream_impact_refs = ["git-status-ref", "branch-policy-ref", "generated-artifact-check-ref", "metadata-redaction-ref"]
+output_contract = "GitOps ready ref or blocked reason with branch policy, scoped diff, verifier/review refs, regression evidence, generated artifact checks, and safe PR metadata"
 
 [[review_gates]]
 id = "implementation-independent-review"

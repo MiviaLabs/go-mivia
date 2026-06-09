@@ -389,6 +389,141 @@ func TestMassGovernedGitOpsReadinessContracts(t *testing.T) {
 	assertCompiledMassGitOpsReadinessTask(t, compiledTaskByRef(t, validationTasks, "final-pr-readiness"), "post-implementation-validation-review")
 }
 
+func TestMassJiraTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) {
+	ctx := context.Background()
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
+	workflowStore := workflowstore.NewMemoryStore()
+	svc := projectworkflow.New(workflowStore)
+	svc.SetCompilerDependencies(workPlans, automations)
+	svc.SetCompileOptionsByProject(map[string]projectworkflow.CompileOptions{
+		"mass-monorepo": {BranchPrefix: "", BranchSummaryTemplate: "chore-{{ticket_ref}}-{{workflow_ref}}"},
+	})
+
+	stages := []struct {
+		name          string
+		path          string
+		workflowRef   string
+		reviewGate    string
+		expectedTasks []string
+		rootTask      string
+		prReadyTask   string
+		createdByRun  string
+		requiredTexts []string
+	}{
+		{
+			name:         "decomposition",
+			path:         filepath.Join("..", "..", "configs", "workflows", "mass", "governed-decomposition-planning.toml"),
+			workflowRef:  "governed-decomposition-planning",
+			reviewGate:   "planning-readiness-review",
+			rootTask:     "discover-planning-context",
+			createdByRun: "mass-pipeline-decomposition",
+			expectedTasks: []string{
+				"discover-planning-context",
+				"map-downstream-impact",
+				"decompose-work-plan",
+				"mark-ready-after-review",
+			},
+			requiredTexts: []string{},
+		},
+		{
+			name:         "implementation",
+			path:         filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"),
+			workflowRef:  "governed-workplan-implementation",
+			reviewGate:   "implementation-independent-review",
+			rootTask:     "select-ready-tasks",
+			prReadyTask:  "pr-gitops-readiness",
+			createdByRun: "mass-pipeline-implementation",
+			expectedTasks: []string{
+				"select-ready-tasks",
+				"analyze-downstream-impact",
+				"run-implementation-batch",
+				"review-implementation-batch",
+				"orchestrator-verification",
+				"pr-gitops-readiness",
+			},
+			requiredTexts: []string{},
+		},
+		{
+			name:         "post-validation",
+			path:         filepath.Join("..", "..", "configs", "workflows", "mass", "governed-post-implementation-validation.toml"),
+			workflowRef:  "governed-post-implementation-validation",
+			reviewGate:   "post-implementation-validation-review",
+			rootTask:     "collect-final-scope",
+			prReadyTask:  "final-pr-readiness",
+			createdByRun: "mass-pipeline-validation",
+			expectedTasks: []string{
+				"collect-final-scope",
+				"validate-regression-and-downstream",
+				"run-final-verification",
+				"final-pr-readiness",
+			},
+			requiredTexts: []string{},
+		},
+	}
+
+	for _, stage := range stages {
+		t.Run(stage.name, func(t *testing.T) {
+			workflow := importConfigWorkflow(t, ctx, svc, stage.path, "mass-monorepo")
+			if workflow.WorkflowRef != stage.workflowRef {
+				t.Fatalf("expected workflow %q, got %q", stage.workflowRef, workflow.WorkflowRef)
+			}
+			assertMassAgentsCanReadLocalTicketEvidence(t, workflow)
+			result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{
+				ProjectID:      workflow.ProjectID,
+				WorkflowID:     workflow.ID,
+				UserRequestRef: "jira:MASS-1044",
+				CreatedByRunID: stage.createdByRun,
+				TraceID:        "trace-" + stage.name,
+			})
+			if err != nil {
+				t.Fatalf("compile %s workflow: %v", stage.name, err)
+			}
+			assertMassPermissionSnapshotsCanReadLocalTicketEvidence(t, ctx, workflowStore, workflow)
+			plan, err := workPlans.GetWorkPlan(ctx, workflow.ProjectID, result.WorkPlanID)
+			if err != nil {
+				t.Fatalf("get %s plan: %v", stage.name, err)
+			}
+			if plan.UserRequestRef != "jira:MASS-1044" || plan.CreatedByRunID != stage.createdByRun || plan.TraceID != "trace-"+stage.name {
+				t.Fatalf("%s plan lost Jira/run/trace handoff refs: %#v", stage.name, plan)
+			}
+			if !strings.Contains(plan.PlanRef, stage.workflowRef) || !strings.HasPrefix(plan.GitBranchRef, "chore-MASS-1044-"+stage.workflowRef+"-compile-") {
+				t.Fatalf("%s plan lost workflow or branch handoff policy: %#v", stage.name, plan)
+			}
+			tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: workflow.ProjectID, PlanID: plan.ID})
+			if err != nil {
+				t.Fatalf("list %s tasks: %v", stage.name, err)
+			}
+			compiledByRef := map[string]projectworkplan.WorkTask{}
+			for _, task := range tasks {
+				compiledByRef[task.TaskRef] = task
+			}
+			for index, taskRef := range stage.expectedTasks {
+				task, ok := compiledByRef[taskRef]
+				if !ok {
+					t.Fatalf("%s missing compiled task %q in %#v", stage.name, taskRef, tasks)
+				}
+				assertMassPipelineCompiledTaskHandoff(t, stage.name, task, stage.reviewGate, stage.requiredTexts, index == 0)
+				if index == 0 && task.Status != projectworkplan.WorkTaskStatusReady {
+					t.Fatalf("%s root task must compile ready, got %#v", stage.name, task)
+				}
+				if index > 0 && (task.Status != projectworkplan.WorkTaskStatusPlanned || len(task.DependencyTaskIDs) == 0) {
+					t.Fatalf("%s dependent task %q must compile planned with dependencies, got %#v", stage.name, taskRef, task)
+				}
+				if stage.prReadyTask != "" && taskRef == stage.prReadyTask {
+					assertCompiledMassGitOpsReadinessTask(t, task, stage.reviewGate)
+				}
+			}
+			compiledAutomations, err := automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: workflow.ProjectID})
+			if err != nil {
+				t.Fatalf("list %s automations: %v", stage.name, err)
+			}
+			planAutomations := configAutomationsForPlan(compiledAutomations, plan.ID)
+			assertMassPipelineAutomationsForTasks(t, stage.name, planAutomations, compiledByRef, stage.expectedTasks, stage.reviewGate)
+		})
+	}
+}
+
 func TestConfigWorkflowReviewGateCoverage(t *testing.T) {
 	paths, err := configWorkflowPaths()
 	if err != nil {
@@ -658,6 +793,69 @@ func assertCompiledMassGitOpsReadinessTask(t *testing.T, task projectworkplan.Wo
 	}
 	if !strings.Contains(task.FailureCriteria, "unsafe metadata") || !strings.Contains(task.VerificationRequirement, "GitOps") {
 		t.Fatalf("compiled GitOps readiness task must preserve GitOps/redaction failure contract, got %#v", task)
+	}
+}
+
+func assertMassPipelineCompiledTaskHandoff(t *testing.T, stageName string, task projectworkplan.WorkTask, reviewGateID string, requiredTexts []string, isRoot bool) {
+	t.Helper()
+	if task.ID == "" || task.ProjectID != "mass-monorepo" || task.PlanID == "" || task.TaskRef == "" {
+		t.Fatalf("%s task missing stable refs: %#v", stageName, task)
+	}
+	if task.OwnerAgent == "" || task.Description == "" || task.ExpectedOutput == "" || task.FailureCriteria == "" || task.ResumeInstructions == "" {
+		t.Fatalf("%s task %s missing executable handoff text fields: %#v", stageName, task.TaskRef, task)
+	}
+	reviewerOwned := strings.Contains(task.OwnerAgent, "reviewer")
+	if !reviewerOwned && (task.ReviewGate == "" || !strings.Contains(task.ReviewGate, reviewGateID)) {
+		t.Fatalf("%s task %s missing review gate %q: %#v", stageName, task.TaskRef, reviewGateID, task)
+	}
+	if len(task.EvidenceNeeded) == 0 || (len(task.LikelyFilesAffected) == 0 && len(task.FilesToRead) == 0 && len(task.FilesToEdit) == 0) || task.VerificationRequirement == "" {
+		t.Fatalf("%s task %s missing evidence/scope/verifier handoff fields: %#v", stageName, task.TaskRef, task)
+	}
+	if len(task.AcceptanceCriteria) == 0 || len(task.StopConditions) == 0 || len(task.VerifierLadder) == 0 || task.RegressionApplicability == "" || len(task.DownstreamImpactRefs) == 0 || task.OutputContract == "" {
+		t.Fatalf("%s task %s missing first-class governance fields: %#v", stageName, task.TaskRef, task)
+	}
+	if isRoot && len(task.DependencyTaskIDs) != 0 {
+		t.Fatalf("%s root task %s must not depend on later work, got %#v", stageName, task.TaskRef, task.DependencyTaskIDs)
+	}
+	text := task.Description + " " + task.ExpectedOutput + " " + task.FailureCriteria + " " + task.VerificationRequirement + " " + task.OutputContract
+	for _, want := range requiredTexts {
+		if !strings.Contains(text, want) {
+			t.Fatalf("%s task %s handoff contract missing %q in %#v", stageName, task.TaskRef, want, task)
+		}
+	}
+}
+
+func assertMassPipelineAutomationsForTasks(t *testing.T, stageName string, automations []projectautomation.Automation, tasksByRef map[string]projectworkplan.WorkTask, taskRefs []string, reviewGateID string) {
+	t.Helper()
+	for _, taskRef := range taskRefs {
+		task, ok := tasksByRef[taskRef]
+		if !ok {
+			t.Fatalf("%s missing compiled task for automation assertion %q", stageName, taskRef)
+		}
+		worker := configAutomationByAllowedRef(t, automations, taskRef)
+		if worker.Status != projectautomation.AutomationStatusEnabled || worker.TriggerKind != projectautomation.TriggerKindAutomatic || worker.SourceKind != projectautomation.AutomationSourceWorkflow {
+			t.Fatalf("%s worker automation for %s lost status/trigger/source handoff: %#v", stageName, taskRef, worker)
+		}
+		if worker.PermissionRef == "" || !strings.HasPrefix(worker.PermissionRef, projectautomation.PermissionSnapshotRefPrefix) {
+			t.Fatalf("%s worker automation for %s missing permission snapshot ref: %#v", stageName, taskRef, worker)
+		}
+		if worker.CreatedByRunID == "" || worker.TraceID == "" {
+			t.Fatalf("%s worker automation for %s missing creator/trace handoff: %#v", stageName, taskRef, worker)
+		}
+		if strings.Contains(task.OwnerAgent, "reviewer") {
+			continue
+		}
+		reviewRef := "review-" + taskRef + "-" + reviewGateID
+		review := configAutomationByAllowedRef(t, automations, reviewRef)
+		if review.Status != projectautomation.AutomationStatusEnabled || review.TriggerKind != projectautomation.TriggerKindAutomatic || review.SourceKind != projectautomation.AutomationSourceWorkflow {
+			t.Fatalf("%s review automation for %s lost status/trigger/source handoff: %#v", stageName, taskRef, review)
+		}
+		if review.PermissionRef == "" || !strings.HasPrefix(review.PermissionRef, projectautomation.PermissionSnapshotRefPrefix) {
+			t.Fatalf("%s review automation for %s missing permission snapshot ref: %#v", stageName, taskRef, review)
+		}
+		if review.CreatedByRunID != worker.CreatedByRunID || review.TraceID != worker.TraceID {
+			t.Fatalf("%s review automation for %s lost creator/trace continuity: worker=%#v review=%#v", stageName, taskRef, worker, review)
+		}
 	}
 }
 
