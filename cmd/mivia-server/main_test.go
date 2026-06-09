@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
+	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflowchain"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
@@ -152,6 +156,47 @@ func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *te
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("final GitOps commit lost handoff field %q:\n%s", want, message)
+		}
+	}
+}
+
+func TestLocalConfigLoadsMassTicketPipelineEntryWorkflows(t *testing.T) {
+	cfg, err := config.LoadPath(filepath.Join("..", "..", "configs", "mivia-server.local.toml"))
+	if err != nil {
+		t.Fatalf("load local config: %v", err)
+	}
+	chains := workflowChainConfigs(cfg)
+	var massChain projectworkflowchain.Config
+	for _, chain := range chains {
+		if chain.ProjectID == "mass-monorepo" && chain.ChainRef == "mass-governed-ticket-delivery" {
+			massChain = chain
+			break
+		}
+	}
+	if massChain.ChainRef == "" || !massChain.Enabled || !massChain.GitOpsEnabled || massChain.GitOpsMode != projectworkflowchain.GitOpsModeDraftPRAfterValidation {
+		t.Fatalf("local MASS chain must be enabled with final draft PR GitOps: %#v", massChain)
+	}
+	if massChain.InputKind != projectworkflowchain.InputKindJiraIssueKey || massChain.InputPattern != "^MASS-[0-9]+$" || massChain.ContextMode != projectworkflowchain.ContextModeLocalIngested {
+		t.Fatalf("local MASS chain must start from local-ingested Jira keys only: %#v", massChain)
+	}
+	workflows := projectworkflow.New(workflowstore.NewMemoryStore())
+	if err := loadConfiguredWorkflows(t.Context(), cfg, workflows, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatalf("load configured workflows: %v", err)
+	}
+	loaded, err := workflows.ListWorkflows(t.Context(), projectworkflow.WorkflowFilter{ProjectID: "mass-monorepo"})
+	if err != nil {
+		t.Fatalf("list MASS workflows: %v", err)
+	}
+	loadedRefs := map[string]bool{}
+	for _, workflow := range loaded {
+		loadedRefs[workflow.WorkflowRef] = true
+	}
+	if len(massChain.Stages) != 3 {
+		t.Fatalf("MASS ticket chain must have decomposition, implementation, and post-validation stages: %#v", massChain.Stages)
+	}
+	for _, stage := range massChain.Stages {
+		if !loadedRefs[stage.WorkflowRef] {
+			t.Fatalf("MASS chain stage %s references workflow %s that was not loaded from local config; loaded=%#v", stage.StageRef, stage.WorkflowRef, loadedRefs)
 		}
 	}
 }
