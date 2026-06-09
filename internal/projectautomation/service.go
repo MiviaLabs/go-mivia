@@ -4616,6 +4616,12 @@ type CodexTaskInput struct {
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string   `json:"output_contract,omitempty"`
 	RunnerInstructions      []string `json:"runner_instructions"`
 }
 
@@ -4659,6 +4665,12 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	writePromptLine(&builder, "- Expected output", input.ExpectedOutput)
 	writePromptLine(&builder, "- Failure criteria", input.FailureCriteria)
 	writePromptLine(&builder, "- Resume instructions", input.ResumeInstructions)
+	writePromptList(&builder, "- Acceptance criteria", input.AcceptanceCriteria)
+	writePromptList(&builder, "- Stop conditions", input.StopConditions)
+	writePromptList(&builder, "- Verifier ladder", input.VerifierLadder)
+	writePromptLine(&builder, "- Regression test applicability", input.RegressionApplicability)
+	writePromptList(&builder, "- Downstream impact refs", input.DownstreamImpactRefs)
+	writePromptLine(&builder, "- Output contract", input.OutputContract)
 	if !isGovernedWorkflowTaskRef(input.TaskRef) {
 		writeConcreteRESTCloseoutEndpoints(&builder, input)
 	}
@@ -4849,6 +4861,12 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		ExpectedOutput:          task.ExpectedOutput,
 		FailureCriteria:         task.FailureCriteria,
 		ResumeInstructions:      task.ResumeInstructions,
+		AcceptanceCriteria:      append([]string(nil), task.AcceptanceCriteria...),
+		StopConditions:          append([]string(nil), task.StopConditions...),
+		VerifierLadder:          append([]string(nil), task.VerifierLadder...),
+		RegressionApplicability: task.RegressionApplicability,
+		DownstreamImpactRefs:    append([]string(nil), task.DownstreamImpactRefs...),
+		OutputContract:          task.OutputContract,
 		RunnerInstructions:      instructions,
 	}
 }

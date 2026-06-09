@@ -1042,6 +1042,7 @@ func TestGenericWorkflowPipelineQueuesClaimsCompletesAndReviewsDependentHandoffs
 	if claimedDiscovery.Run.ID != discoveryRuns[0].ID || claimedDiscovery.Run.Status != RunStatusRunning || claimedDiscovery.Run.ClaimID == "" || claimedDiscovery.Run.RunnerID != "runner-generic" || claimedDiscovery.Run.LastHeartbeatAt.IsZero() || claimedDiscovery.Run.LeaseExpiresAt.IsZero() {
 		t.Fatalf("discovery claim must persist live runner fields, got %#v", claimedDiscovery.Run)
 	}
+	assertClaimedCodexInput(t, claimedDiscovery, discovery, "planning-worker")
 	if got := fake.tasks[discovery.ID]; got.Status != projectworkplan.WorkTaskStatusInProgress || got.ClaimedByRunID != claimedDiscovery.Run.ID {
 		t.Fatalf("discovery work task must be in progress and owned by run, got %#v", got)
 	}
@@ -1079,6 +1080,12 @@ func TestGenericWorkflowPipelineQueuesClaimsCompletesAndReviewsDependentHandoffs
 	}
 	if claimedImplementation.Run.ID != implementationRuns[0].ID || claimedImplementation.Run.Status != RunStatusRunning || claimedImplementation.Run.ClaimID == "" {
 		t.Fatalf("implementation claim must be running with claim fields, got %#v", claimedImplementation.Run)
+	}
+	assertClaimedCodexInput(t, claimedImplementation, implementation, "implementation-worker")
+	for _, want := range []string{"generic behavior is implemented from source evidence", "missing generic source evidence", "focused generic regression test", "downstream.generic-impact", "bounded diff, evidence refs, verifier refs, and review refs"} {
+		if !strings.Contains(RenderCodexTaskPrompt(claimedImplementation.CodexInput), want) {
+			t.Fatalf("implementation Codex prompt lost governance data %q:\n%s", want, RenderCodexTaskPrompt(claimedImplementation.CodexInput))
+		}
 	}
 	implementationEvidenceRefs := []string{
 		"evidence.implementation.diff",
@@ -1118,6 +1125,7 @@ func TestGenericWorkflowPipelineQueuesClaimsCompletesAndReviewsDependentHandoffs
 	if err != nil {
 		t.Fatalf("ClaimNextRun review returned error: %v", err)
 	}
+	assertClaimedCodexInput(t, claimedReview, review, "review-worker")
 	reviewTask := completedTaskForAutomationRun(fake.tasks[review.ID], claimedReview.Run.ID, nil, []string{"evidence.review.approval"}, []string{"claim.review.complete"}, nil, "independent review completed")
 	reviewTask.ReviewExemptReason = "review task is the independent review gate"
 	fake.tasks[review.ID] = reviewTask
@@ -10660,4 +10668,62 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func assertClaimedCodexInput(t *testing.T, claimed ClaimedRun, task projectworkplan.WorkTask, ownerAgent string) {
+	t.Helper()
+	input := claimed.CodexInput
+	if input.ProjectID != claimed.Run.ProjectID || input.AutomationRunID != claimed.Run.ID || input.PlanID != claimed.Run.PlanID || input.TaskID != task.ID || input.TaskRef != task.TaskRef {
+		t.Fatalf("claimed Codex input lost run/plan/task refs: run=%#v input=%#v task=%#v", claimed.Run, input, task)
+	}
+	if claimed.Run.AgentID != ownerAgent {
+		t.Fatalf("claimed run lost owner agent: got %q want %q", claimed.Run.AgentID, ownerAgent)
+	}
+	if input.Title != task.Title || input.Description != task.Description || input.VerificationRequirement != task.VerificationRequirement || input.ExpectedOutput != task.ExpectedOutput || input.FailureCriteria != task.FailureCriteria {
+		t.Fatalf("claimed Codex input lost task text contract: input=%#v task=%#v", input, task)
+	}
+	if input.RegressionApplicability != task.RegressionApplicability || input.OutputContract != task.OutputContract {
+		t.Fatalf("claimed Codex input lost governance scalar contract: input=%#v task=%#v", input, task)
+	}
+	for _, want := range task.EvidenceNeeded {
+		if !contains(input.EvidenceNeeded, want) {
+			t.Fatalf("claimed Codex input lost evidence_needed ref %q: %#v", want, input.EvidenceNeeded)
+		}
+	}
+	for _, want := range task.ContextPackRefs {
+		if !contains(input.ContextPackRefs, want) {
+			t.Fatalf("claimed Codex input lost context ref %q: %#v", want, input.ContextPackRefs)
+		}
+	}
+	for _, want := range task.LikelyFilesAffected {
+		if !contains(input.LikelyFilesAffected, want) {
+			t.Fatalf("claimed Codex input lost likely affected path %q: %#v", want, input.LikelyFilesAffected)
+		}
+	}
+	for _, want := range task.AcceptanceCriteria {
+		if !contains(input.AcceptanceCriteria, want) {
+			t.Fatalf("claimed Codex input lost acceptance criterion %q: %#v", want, input.AcceptanceCriteria)
+		}
+	}
+	for _, want := range task.StopConditions {
+		if !contains(input.StopConditions, want) {
+			t.Fatalf("claimed Codex input lost stop condition %q: %#v", want, input.StopConditions)
+		}
+	}
+	for _, want := range task.VerifierLadder {
+		if !contains(input.VerifierLadder, want) {
+			t.Fatalf("claimed Codex input lost verifier ladder entry %q: %#v", want, input.VerifierLadder)
+		}
+	}
+	for _, want := range task.DownstreamImpactRefs {
+		if !contains(input.DownstreamImpactRefs, want) {
+			t.Fatalf("claimed Codex input lost downstream impact ref %q: %#v", want, input.DownstreamImpactRefs)
+		}
+	}
+	prompt := RenderCodexTaskPrompt(input)
+	for _, want := range []string{claimed.Run.ID, claimed.Run.PlanID, task.ID, task.TaskRef, task.Title, task.VerificationRequirement} {
+		if strings.TrimSpace(want) != "" && !strings.Contains(prompt, want) {
+			t.Fatalf("rendered Codex prompt lost %q:\n%s", want, prompt)
+		}
+	}
 }
