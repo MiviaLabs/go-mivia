@@ -355,6 +355,40 @@ func TestMassGovernedDecompositionQueuesOnlyRootTaskOnPlanActivation(t *testing.
 	}
 }
 
+func TestMassGovernedGitOpsReadinessContracts(t *testing.T) {
+	ctx := context.Background()
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{AllowManualRunner: true, MaxParallelTasks: 2})
+	svc := projectworkflow.New(workflowstore.NewMemoryStore())
+	svc.SetCompilerDependencies(workPlans, automations)
+
+	implementation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-workplan-implementation.toml"), "mass-monorepo")
+	implementationReady := configStepByID(t, implementation, "pr-gitops-readiness")
+	assertMassGitOpsReadinessStep(t, implementation, implementationReady, "implementation-independent-review")
+	implementationResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: implementation.ProjectID, WorkflowID: implementation.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "gitops-readiness-implementation-test"})
+	if err != nil {
+		t.Fatalf("compile implementation workflow: %v", err)
+	}
+	implementationTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: implementation.ProjectID, PlanID: implementationResult.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list implementation tasks: %v", err)
+	}
+	assertCompiledMassGitOpsReadinessTask(t, compiledTaskByRef(t, implementationTasks, "pr-gitops-readiness"), "implementation-independent-review")
+
+	validation := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-post-implementation-validation.toml"), "mass-monorepo")
+	validationReady := configStepByID(t, validation, "final-pr-readiness")
+	assertMassGitOpsReadinessStep(t, validation, validationReady, "post-implementation-validation-review")
+	validationResult, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: validation.ProjectID, WorkflowID: validation.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "gitops-readiness-validation-test"})
+	if err != nil {
+		t.Fatalf("compile validation workflow: %v", err)
+	}
+	validationTasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: validation.ProjectID, PlanID: validationResult.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list validation tasks: %v", err)
+	}
+	assertCompiledMassGitOpsReadinessTask(t, compiledTaskByRef(t, validationTasks, "final-pr-readiness"), "post-implementation-validation-review")
+}
+
 func TestConfigWorkflowReviewGateCoverage(t *testing.T) {
 	paths, err := configWorkflowPaths()
 	if err != nil {
@@ -590,6 +624,41 @@ func configReviewGateByID(t *testing.T, workflow projectworkflow.WorkflowDefinit
 	}
 	t.Fatalf("missing workflow review gate %q", id)
 	return projectworkflow.WorkflowReviewGate{}
+}
+
+func assertMassGitOpsReadinessStep(t *testing.T, workflow projectworkflow.WorkflowDefinition, step projectworkflow.WorkflowStep, reviewGateID string) {
+	t.Helper()
+	if !strings.Contains(step.ReviewGate, reviewGateID) {
+		t.Fatalf("workflow %s step %s must require review gate %q, got %q", workflow.WorkflowRef, step.ID, reviewGateID, step.ReviewGate)
+	}
+	for _, ref := range []string{"git-status-ref", "branch-policy-ref", "review-result-ref", "verifier-result-ref", "regression-test-ref", "generated-artifact-check-ref", "pr-description-ref", "metadata-redaction-ref"} {
+		if !containsConfigString(step.EvidenceNeeded, ref) {
+			t.Fatalf("workflow %s step %s missing GitOps readiness evidence %q, evidence=%#v", workflow.WorkflowRef, step.ID, ref, step.EvidenceNeeded)
+		}
+	}
+	for _, text := range []string{"GitOps", "unsafe metadata", "review", "verifier", "regression", "generated artifact"} {
+		if !strings.Contains(step.VerificationRequirement+step.FailureCriteria+step.ExpectedOutput, text) {
+			t.Fatalf("workflow %s step %s GitOps readiness contract missing %q, step=%#v", workflow.WorkflowRef, step.ID, text, step)
+		}
+	}
+}
+
+func assertCompiledMassGitOpsReadinessTask(t *testing.T, task projectworkplan.WorkTask, reviewGateID string) {
+	t.Helper()
+	if task.Status != projectworkplan.WorkTaskStatusPlanned {
+		t.Fatalf("GitOps readiness task must compile planned until dependencies/review complete, got %#v", task)
+	}
+	if !strings.Contains(task.ReviewGate, reviewGateID) {
+		t.Fatalf("GitOps readiness task missing review gate %q, got %#v", reviewGateID, task)
+	}
+	for _, ref := range []string{"git-status-ref", "branch-policy-ref", "review-result-ref", "verifier-result-ref", "regression-test-ref", "generated-artifact-check-ref", "pr-description-ref", "metadata-redaction-ref"} {
+		if !containsConfigString(task.EvidenceNeeded, ref) {
+			t.Fatalf("compiled GitOps readiness task missing evidence %q, got %#v", ref, task.EvidenceNeeded)
+		}
+	}
+	if !strings.Contains(task.FailureCriteria, "unsafe metadata") || !strings.Contains(task.VerificationRequirement, "GitOps") {
+		t.Fatalf("compiled GitOps readiness task must preserve GitOps/redaction failure contract, got %#v", task)
+	}
 }
 
 func configAutomationByAllowedRef(t *testing.T, automations []projectautomation.Automation, ref string) projectautomation.Automation {
