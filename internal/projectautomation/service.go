@@ -835,6 +835,9 @@ func (svc *Service) blockReadyTasksWithoutEnabledAutomation(ctx context.Context,
 		if readyTaskIsConsumedBySelectorAutomation(automations, task) {
 			continue
 		}
+		if svc.readyTaskIsWorkflowChainDecompositionOutput(ctx, projectID, planID, task) {
+			continue
+		}
 		blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
 			ProjectID:          task.ProjectID,
 			TaskID:             task.ID,
@@ -872,6 +875,29 @@ func readyTaskIsConsumedBySelectorAutomation(automations []Automation, task proj
 		}
 	}
 	return false
+}
+
+func (svc *Service) readyTaskIsWorkflowChainDecompositionOutput(ctx context.Context, projectID string, planID string, task projectworkplan.WorkTask) bool {
+	if svc == nil || svc.workTasks == nil ||
+		task.Status != projectworkplan.WorkTaskStatusReady ||
+		task.DecompositionQuality != projectworkplan.DecompositionReady ||
+		strings.TrimSpace(task.VerificationRequirement) == "" ||
+		len(task.FilesToEdit) == 0 ||
+		isGovernedWorkflowTaskRef(task.TaskRef) {
+		return false
+	}
+	plan, err := svc.workTasks.GetWorkPlan(ctx, projectID, planID)
+	if err != nil {
+		return false
+	}
+	return workPlanRefIsGovernedDecompositionStage(plan.PlanRef) ||
+		workPlanRefIsGovernedDecompositionStage(plan.ParallelGroupRef) ||
+		workPlanRefIsGovernedDecompositionStage(plan.WorkspaceRef)
+}
+
+func workPlanRefIsGovernedDecompositionStage(ref string) bool {
+	ref = strings.ToLower(strings.TrimSpace(ref))
+	return strings.Contains(ref, "governed-decomposition-planning")
 }
 
 func enabledAutomationReadiness(automations []Automation, task projectworkplan.WorkTask) (bool, error) {

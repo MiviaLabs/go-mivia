@@ -5686,6 +5686,39 @@ func TestClaimNextRunLeavesImplementationReadyTaskForSelectorAutomation(t *testi
 	}
 }
 
+func TestClaimNextRunLeavesWorkflowChainDecompositionOutputReady(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "implement-mass-1044-expired-booking-cleanup", []string{"internal/foo.go"})
+	task.FilesToEdit = []string{"internal/foo.go"}
+	task.VerificationRequirement = "run focused regression test, then affected checks"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			task.PlanID: {
+				ID:        task.PlanID,
+				ProjectID: task.ProjectID,
+				PlanRef:   "workflow/governed-decomposition-planning:MASS-1044",
+				Status:    projectworkplan.WorkPlanStatusActive,
+			},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: task.ProjectID, RunnerKind: RunnerKindCodexCLI}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no queued run without blocking workflow-chain decomposition output, got %v", err)
+	}
+	readyTask := fake.tasks[task.ID]
+	if readyTask.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected decomposition output task to remain ready for workflow-chain carryover, got %#v", readyTask)
+	}
+	if readyTask.BlockedReason != "" {
+		t.Fatalf("expected no blocked reason on decomposition output, got %q", readyTask.BlockedReason)
+	}
+	if fake.plans[task.PlanID].Status != projectworkplan.WorkPlanStatusActive {
+		t.Fatalf("expected parent decomposition plan to remain active, got %#v", fake.plans[task.PlanID])
+	}
+}
+
 func TestClaimNextRunQueuesReadyTaskWithCompletedTaskRefDependency(t *testing.T) {
 	ctx := context.Background()
 	source := readyTask("task-source", "generic-source-task", []string{"internal/source.go"})
