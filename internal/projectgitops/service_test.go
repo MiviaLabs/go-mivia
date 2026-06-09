@@ -131,6 +131,104 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	}
 }
 
+func TestPostTaskCreatesDraftPRWithMASSTicketConventions(t *testing.T) {
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{Stdout: " M apps/domain/src/module.ts\n"},
+			{Stdout: "feat-MASS-1044-governed-post-implementation-validation-compile-9ef\n"},
+			{},
+			{},
+			{},
+			{Stdout: "abc123def456\n"},
+			{Stdout: "https://github.com/MiviaLabs/mass-monorepo.git\n"},
+			{},
+			{},
+			{Stdout: "https://github.com/MiviaLabs/mass-monorepo/pull/1044\n"},
+		},
+		errs: []error{
+			nil, nil, nil, nil, nil, nil, nil, nil,
+			errors.New("no pull request found"),
+			nil,
+		},
+	}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		DraftPRAfterPush:     true,
+		BranchNamePattern:    "^(feat|fix|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+		GitHubCLIPath:        "gh",
+		GitHubTokenEnv:       "MIVIA_TEST_GH_TOKEN",
+		Conventions: Conventions{
+			AllowedChangeTypes:       []string{"feat", "fix", "chore"},
+			DefaultChangeType:        "feat",
+			RequireTicket:            true,
+			TicketRefPattern:         "^MASS-[0-9]+$",
+			TicketURLTemplate:        "https://mivialabs.atlassian.net/browse/{{ticket_ref}}",
+			PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): {{work_task_title}}",
+			PullRequestBodyTemplate:  "Ticket: {{ticket_url}}\n\n{{what_changed}}\n\n{{how_verified}}\n\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}\nTests: {{test_results}}",
+		},
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	t.Setenv("MIVIA_TEST_GH_TOKEN", "test-token")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/mass-worktree",
+		ProjectID:        "mass-monorepo",
+		PlanID:           "work_plan_mass_1044",
+		TaskID:           "work_task_final_readiness",
+		TaskRef:          "final-pr-readiness",
+		TaskTitle:        "booking expiry service v2",
+		TicketRef:        "MASS-1044",
+		ChangeType:       "feat",
+		BranchName:       "feat-MASS-1044-governed-post-implementation-validation-compile-9ef",
+		BaseRef:          "main",
+		AutomationID:     "automation_mass_1044",
+		AutomationRunID:  "workflow_chain_run_mass_1044",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"apps/domain/src/module.ts"},
+		ReviewRefs:       []string{"review_result:post_validation_approved"},
+		VerifierRefs:     []string{"verifier:focused_tests_passed"},
+		TestResults:      []string{"pnpm exec nx affected -t test --base=origin/main: passed"},
+	})
+	if err != nil {
+		t.Fatalf("expected MASS GitOps draft PR to succeed: %v", err)
+	}
+	if result.PullRequestRef == "" || !containsString(result.EvidenceRefs, "draft-pr-ready") {
+		t.Fatalf("expected draft PR evidence, got %#v", result)
+	}
+	var create Command
+	for _, command := range runner.commands {
+		if command.Path == "gh" && len(command.Args) >= 3 && command.Args[0] == "pr" && command.Args[1] == "create" {
+			create = command
+			break
+		}
+	}
+	if create.Path == "" {
+		t.Fatalf("expected gh pr create command, got %#v", runner.commands)
+	}
+	args := strings.Join(create.Args, "\n")
+	for _, want := range []string{
+		"--draft",
+		"feat(MASS-1044): booking expiry service v2",
+		"https://mivialabs.atlassian.net/browse/MASS-1044",
+		"review_result:post_validation_approved",
+		"verifier:focused_tests_passed",
+		"pnpm exec nx affected -t test --base=origin/main: passed",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("expected PR create args to contain %q, got %#v", want, create.Args)
+		}
+	}
+	if !containsEnv(create.Env, "GH_TOKEN=test-token") {
+		t.Fatalf("expected GitHub token env for PR creation, got %#v", create.Env)
+	}
+}
+
 func TestRunPostCommitVerificationRunsAutofixAndRetriesFailedVerifier(t *testing.T) {
 	runner := &recordingRunner{
 		errs: []error{
