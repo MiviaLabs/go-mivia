@@ -221,6 +221,23 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	if !containsString(nextCompile.ContextPackRefs, "jira:GENERIC-1044") || !strings.Contains(nextCompile.TitleOverride, "implementation") {
 		t.Fatalf("next-stage compile must preserve context and stage title, got %#v", nextCompile)
 	}
+
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-implementation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance post-validation: %v", err)
+	}
+	run, err = svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get run after implementation: %v", err)
+	}
+	if run.StageRuns[1].Status != StageStatusCompleted || run.StageRuns[2].Status != StageStatusQueued || len(run.WorkPlanIDs) != 3 {
+		t.Fatalf("expected post-validation queued after implementation done: %#v", run)
+	}
+	if workPlans.activations[2] != "plan-post-validation" {
+		t.Fatalf("expected post-validation plan activation, got %#v", workPlans.activations)
+	}
+	if got, want := strings.Join(workPlans.events[4:6], ","), "release:task-post-validation,activate:plan-post-validation"; got != want {
+		t.Fatalf("post-validation activation must release tasks before plan active event, got %s", got)
+	}
 }
 
 func TestAdvancingStageCarriesGeneratedImplementationTasksToNextPlan(t *testing.T) {
@@ -423,6 +440,52 @@ func TestAdvancingStagePreservesExternalDependenciesOnCarriedImplementationTasks
 	carried := workPlans.createdTasks[0]
 	if carried.Status != projectworkplan.WorkTaskStatusPlanned || !containsString(carried.DependencyTaskIDs, "upstream-external-task") {
 		t.Fatalf("external dependencies must be preserved and keep task planned, got %#v", carried)
+	}
+}
+
+func TestReleaseCompiledTasksReleasesCarriedImplementationAfterExternalDependencyDone(t *testing.T) {
+	ctx := context.Background()
+	carried := projectworkplan.WorkTask{
+		ID:                      "created-implement-external-dependent-slice",
+		ProjectID:               "project-1",
+		PlanID:                  "plan-implementation",
+		TaskRef:                 "implement-external-dependent-slice",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		OwnerAgent:              "implementation-worker",
+		FilesToEdit:             []string{"internal/output.go"},
+		DependencyTaskIDs:       []string{"upstream-external-task"},
+		VerificationRequirement: "focused verifier",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+		AcceptanceCriteria:      []string{"works"},
+		StopConditions:          []string{"blocked"},
+		VerifierLadder:          []string{"unit"},
+		RegressionApplicability: "required",
+		DownstreamImpactRefs:    []string{"impact-ref"},
+		OutputContract:          "diff plus evidence",
+	}
+	workPlans := &fakeWorkPlans{
+		openTasksByPlan: map[string][]projectworkplan.WorkTask{
+			"plan-implementation": {carried},
+		},
+		tasksByID: map[string]projectworkplan.WorkTask{
+			"upstream-external-task": {ID: "upstream-external-task", ProjectID: "project-1", Status: projectworkplan.WorkTaskStatusDone},
+		},
+	}
+	svc := New(newTestChainStore(), &fakeWorkflowAPI{}, workPlans, []Config{testConfig()})
+
+	err := svc.releaseCompiledTasks(ctx, "project-1", projectworkflow.WorkflowCompileResult{
+		WorkPlanID:  "plan-implementation",
+		WorkTaskIDs: []string{carried.ID},
+	}, ChainRun{ID: "workflow_chain_run_1", CreatedByRunID: "run-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("releaseCompiledTasks returned error: %v", err)
+	}
+	if len(workPlans.taskStatusUpdates) != 1 {
+		t.Fatalf("expected carried task release after dependency done, got %#v", workPlans.taskStatusUpdates)
+	}
+	update := workPlans.taskStatusUpdates[0]
+	if update.TaskID != carried.ID || update.Status != projectworkplan.WorkTaskStatusReady || update.RunID != "run-1" || update.TraceID != "trace-1" {
+		t.Fatalf("unexpected carried task release update: %#v", update)
 	}
 }
 
