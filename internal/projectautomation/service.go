@@ -2421,6 +2421,22 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 					task = expanded
 				}
 			}
+			readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+				WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+					ProjectID:          task.ProjectID,
+					TaskID:             task.ID,
+					SafeNextAction:     "gitops_recovery_failed_requeue_implementation",
+					RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+					TraceID:            firstNonEmpty(run.TraceID, run.ID),
+					ResumeInstructions: recoveryResumeInstructions("GitOps dirty paths were inside likely_files_affected and files_to_edit was expanded for retry: " + strings.Join(dirtyPaths, ", ")),
+					EvidenceRefs:       append([]string(nil), evidenceRefs...),
+				},
+				Status: projectworkplan.WorkTaskStatusReady,
+			})
+			if err != nil {
+				return AutomationRun{}, err
+			}
+			task = readyTask
 			run.Status = RunStatusFailed
 			run.WorkTaskStatus = task.Status
 			run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
@@ -2435,7 +2451,18 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 				run.FinishedAt = now
 			}
 			run.UpdatedAt = now
-			return svc.store.UpdateRun(ctx, run)
+			updated, err := svc.store.UpdateRun(ctx, run)
+			if err != nil {
+				return AutomationRun{}, err
+			}
+			automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+			if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, task) != nil {
+				return updated, nil
+			}
+			if err := svc.queueReadyDependentAutomation(ctx, automation, task); err != nil {
+				return updated, nil
+			}
+			return updated, nil
 		}
 	}
 	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{

@@ -10520,12 +10520,18 @@ func TestCompleteAttemptExpandsScopeForDirtyPathsUnderLikelyFiles(t *testing.T) 
 	if !strings.Contains(requeuedTask.ResumeInstructions, "apps/domain/src/module.ts") {
 		t.Fatalf("expected resume instructions to name dirty path, got %q", requeuedTask.ResumeInstructions)
 	}
-	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-b"})
-	if err != nil {
-		t.Fatalf("ClaimNextRun returned error: %v", err)
+	var queued AutomationRun
+	for _, candidate := range store.runs {
+		if candidate.ID != "run-a" && candidate.TaskID == task.ID && candidate.Status == RunStatusQueued {
+			queued = candidate
+			break
+		}
 	}
-	if claimed.Run.ID != "run-a" || claimed.Run.SafeSummary != RunSafeSummaryGitOpsPostTaskRecovery {
-		t.Fatalf("expected same GitOps recovery run to be claimed, got %+v", claimed.Run)
+	if queued.ID == "" {
+		t.Fatalf("expected replacement implementation run to be queued after dirty scope expansion, got runs %+v", store.runs)
+	}
+	if queued.SafeSummary != "dependency_ready_automation_queued" || queued.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected queued replacement run for ready task, got %+v", queued)
 	}
 }
 
