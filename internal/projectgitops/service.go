@@ -166,7 +166,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		}
 	}
 
-	allowedPathspecs := sanitizePathspecs(append(input.AllowedPathspecs, svc.generatedArtifactPathspecs()...))
+	allowedPathspecs := sanitizePathspecs(append(append(input.AllowedPathspecs, svc.options.DirtyScopeSupportPathspecs...), svc.generatedArtifactPathspecs()...))
 	if len(allowedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
 	}
@@ -222,6 +222,26 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		rendered, err = Render(input, svc.options.Conventions)
 		if err != nil {
 			return PostTaskResult{}, gitOpsStageFailure("render_after_postcommit_verification", err)
+		}
+		status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
+		if err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("git_status_after_postcommit_verification", err)
+		}
+		if strings.TrimSpace(status.Stdout) != "" {
+			if outside := changedPathspecsOutsideAllowedForWorkDir(workDir, status.Stdout, allowedPathspecs); len(outside) > 0 {
+				return PostTaskResult{}, dirtyWorktreeScopeError(outside)
+			}
+			changedAfterVerification := changedPathspecsWithinAllowedForWorkDir(workDir, status.Stdout, allowedPathspecs)
+			if len(changedAfterVerification) == 0 {
+				return PostTaskResult{}, fmt.Errorf("%w: no verifier autofix files matched safe task pathspecs", ErrInvalidInput)
+			}
+			addArgs := append([]string{"add", "--"}, changedAfterVerification...)
+			if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
+				return PostTaskResult{}, gitOpsStageFailure("git_add_after_postcommit_verification", err)
+			}
+			if _, err := svc.git(ctx, workDir, nil, "diff", "--cached", "--check"); err != nil {
+				return PostTaskResult{}, gitOpsStageFailure("git_diff_check_after_postcommit_verification", err)
+			}
 		}
 		amendArgs := svc.gitCommitArgs("commit", "--amend", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody)
 		if _, err := svc.git(ctx, workDir, env, amendArgs...); err != nil {
@@ -550,7 +570,29 @@ func (svc *Service) runVerifierCommand(ctx context.Context, workDir string, comm
 		return err
 	}
 	if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: env}); err != nil {
+		if len(svc.options.Verification.AutofixCommands) == 0 {
+			return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
+		}
+		if fixErr := svc.runVerifierAutofixCommands(ctx, workDir, env); fixErr != nil {
+			return fixErr
+		}
+		if _, retryErr := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: env}); retryErr == nil {
+			return nil
+		}
 		return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
+	}
+	return nil
+}
+
+func (svc *Service) runVerifierAutofixCommands(ctx context.Context, workDir string, env []string) error {
+	for _, command := range svc.options.Verification.AutofixCommands {
+		command = strings.TrimSpace(command)
+		if command == "" || strings.ContainsAny(command, "\x00\r\n") {
+			return fmt.Errorf("%w: unsafe verifier autofix command", ErrInvalidInput)
+		}
+		if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: env}); err != nil {
+			return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
+		}
 	}
 	return nil
 }

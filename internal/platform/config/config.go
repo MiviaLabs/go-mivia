@@ -162,6 +162,7 @@ type GitOpsConventions struct {
 type Verification struct {
 	BootstrapCommands  []string
 	AlwaysBeforePR     []string
+	AutofixCommands    []string
 	GeneratedArtifacts []GeneratedArtifactVerification
 	Env                map[string]string
 }
@@ -731,6 +732,11 @@ func (verification Verification) Validate(prefix string) error {
 	}
 	for i, command := range verification.AlwaysBeforePR {
 		if err := validateSafeVerifierCommand(fmt.Sprintf("%s_ALWAYS_BEFORE_PR[%d]", prefix, i), command); err != nil {
+			return err
+		}
+	}
+	for i, command := range verification.AutofixCommands {
+		if err := validateSafeVerifierCommand(fmt.Sprintf("%s_AUTOFIX_COMMANDS[%d]", prefix, i), command); err != nil {
 			return err
 		}
 	}

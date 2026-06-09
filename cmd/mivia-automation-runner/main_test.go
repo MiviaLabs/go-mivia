@@ -1265,11 +1265,18 @@ func TestGitOpsOptionsForProjectInheritsSparseOverride(t *testing.T) {
 			SSHKnownHostsPath:      "/keys/known_hosts",
 			GitHubTokenEnv:         "GH_TOKEN",
 			GitHubCLIPath:          "gh",
+			DirtyScopeRecovery: config.DirtyScopeRecovery{
+				AllowedSupportPathspecs: []string{"global/support"},
+			},
 			Conventions: config.GitOpsConventions{
 				CommitType:               "fix",
 				CommitSummaryTemplate:    "finish {{work_task_ref}}",
 				PullRequestTitleTemplate: "{{commit_subject}}",
 			},
+		},
+		Verification: config.Verification{
+			AlwaysBeforePR:  []string{"go test ./..."},
+			AutofixCommands: []string{"gofmt -w internal"},
 		},
 		Projects: []config.Project{{
 			ID:      "generic-monorepo",
@@ -1278,10 +1285,17 @@ func TestGitOpsOptionsForProjectInheritsSparseOverride(t *testing.T) {
 				BranchPrefix:      "",
 				BranchNamePattern: "^(feat|fix)-generic-[0-9]+(-[a-z0-9-]+)*$",
 				SignCommits:       true,
+				DirtyScopeRecovery: config.DirtyScopeRecovery{
+					AllowedSupportPathspecs: []string{"project/support"},
+				},
 				Conventions: config.GitOpsConventions{
 					CommitType:          "chore",
 					WhatChangedTemplate: "Project-specific summary",
 				},
+			},
+			Verification: &config.Verification{
+				AlwaysBeforePR:  []string{"pnpm lint"},
+				AutofixCommands: []string{"pnpm lint --fix"},
 			},
 		}},
 	}
@@ -1301,6 +1315,12 @@ func TestGitOpsOptionsForProjectInheritsSparseOverride(t *testing.T) {
 	}
 	if options.Conventions.CommitType != "chore" || options.Conventions.CommitSummaryTemplate == "" || options.Conventions.WhatChangedTemplate != "Project-specific summary" {
 		t.Fatalf("expected sparse conventions to merge, got %+v", options.Conventions)
+	}
+	if strings.Join(options.DirtyScopeSupportPathspecs, ",") != "global/support,project/support" {
+		t.Fatalf("expected global and project dirty-scope support pathspecs, got %+v", options.DirtyScopeSupportPathspecs)
+	}
+	if strings.Join(options.Verification.AlwaysBeforePR, ",") != "pnpm lint" || strings.Join(options.Verification.AutofixCommands, ",") != "pnpm lint --fix" {
+		t.Fatalf("expected project verification commands to map into GitOps options, got %+v", options.Verification)
 	}
 }
 

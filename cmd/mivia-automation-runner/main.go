@@ -863,9 +863,27 @@ func mergeGitOperations(base config.GitOperations, override config.GitOperations
 	}
 	merged.Conventions = mergeGitOpsConventions(merged.Conventions, override.Conventions)
 	if len(override.DirtyScopeRecovery.AllowedSupportPathspecs) > 0 {
-		merged.DirtyScopeRecovery.AllowedSupportPathspecs = append([]string(nil), override.DirtyScopeRecovery.AllowedSupportPathspecs...)
+		merged.DirtyScopeRecovery.AllowedSupportPathspecs = appendPathspecs(merged.DirtyScopeRecovery.AllowedSupportPathspecs, override.DirtyScopeRecovery.AllowedSupportPathspecs...)
 	}
 	return merged
+}
+
+func appendPathspecs(base []string, extra ...string) []string {
+	out := make([]string, 0, len(base)+len(extra))
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	for _, pathspec := range append(append([]string(nil), base...), extra...) {
+		pathspec = strings.TrimSpace(pathspec)
+		if pathspec == "" {
+			continue
+		}
+		key := strings.ToLower(pathspec)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, pathspec)
+	}
+	return out
 }
 
 func mergeGitOpsConventions(base config.GitOpsConventions, override config.GitOpsConventions) config.GitOpsConventions {
@@ -915,6 +933,7 @@ func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
 		GitHubTokenEnv:               cfg.GitHubTokenEnv,
 		GitHubTokenFile:              cfg.GitHubTokenFile,
 		GitHubCLIPath:                cfg.GitHubCLIPath,
+		DirtyScopeSupportPathspecs:   append([]string(nil), cfg.DirtyScopeRecovery.AllowedSupportPathspecs...),
 		Conventions: projectgitops.Conventions{
 			CommitType:               cfg.Conventions.CommitType,
 			CommitScope:              cfg.Conventions.CommitScope,
@@ -939,6 +958,7 @@ func gitOpsVerificationFromConfig(cfg config.Verification) projectgitops.Verific
 	return projectgitops.VerificationProfile{
 		BootstrapCommands:  append([]string(nil), cfg.BootstrapCommands...),
 		AlwaysBeforePR:     append([]string(nil), cfg.AlwaysBeforePR...),
+		AutofixCommands:    append([]string(nil), cfg.AutofixCommands...),
 		GeneratedArtifacts: generated,
 		Env:                cloneStringMap(cfg.Env),
 	}
@@ -983,6 +1003,12 @@ func verificationInstructionsForProject(cfg config.Config, projectID string) []s
 	if len(verification.AlwaysBeforePR) > 0 {
 		instructions = append(instructions, "Project verification before PR is enforced by the runner; keep changes compatible with these commands:")
 		for _, command := range verification.AlwaysBeforePR {
+			instructions = append(instructions, command)
+		}
+	}
+	if len(verification.AutofixCommands) > 0 {
+		instructions = append(instructions, "Runner autofix commands may run after verifier failure before GitOps reports failure:")
+		for _, command := range verification.AutofixCommands {
 			instructions = append(instructions, command)
 		}
 	}

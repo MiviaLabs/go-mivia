@@ -131,6 +131,46 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	}
 }
 
+func TestRunPostCommitVerificationRunsAutofixAndRetriesFailedVerifier(t *testing.T) {
+	runner := &recordingRunner{
+		errs: []error{
+			nil,
+			errors.New("lint failed"),
+			nil,
+			nil,
+		},
+	}
+	svc := NewWithRunner(Options{
+		Verification: VerificationProfile{
+			AlwaysBeforePR:  []string{"pnpm exec nx affected -t lint --max-warnings=0"},
+			AutofixCommands: []string{"pnpm exec nx affected -t lint --fix"},
+		},
+	}, runner)
+
+	refs, tests, err := svc.runPostCommitVerification(context.Background(), "/tmp/worktree")
+	if err != nil {
+		t.Fatalf("expected verifier retry to pass after autofix: %v", err)
+	}
+	if strings.Join(refs, ",") != "verify-project-"+safeHash("pnpm exec nx affected -t lint --max-warnings=0")+",project-verification-passed" {
+		t.Fatalf("unexpected verifier refs: %#v", refs)
+	}
+	if len(tests) != 1 || !strings.Contains(tests[0], "passed") {
+		t.Fatalf("unexpected test results: %#v", tests)
+	}
+	if len(runner.commands) != 4 {
+		t.Fatalf("expected safe-directory, verifier, autofix, verifier retry; got %#v", runner.commands)
+	}
+	if got := runner.commands[1].Args; strings.Join(got, " ") != "-lc pnpm exec nx affected -t lint --max-warnings=0" {
+		t.Fatalf("expected first verifier command, got %#v", got)
+	}
+	if got := runner.commands[2].Args; strings.Join(got, " ") != "-lc pnpm exec nx affected -t lint --fix" {
+		t.Fatalf("expected autofix command, got %#v", got)
+	}
+	if got := runner.commands[3].Args; strings.Join(got, " ") != "-lc pnpm exec nx affected -t lint --max-warnings=0" {
+		t.Fatalf("expected verifier retry command, got %#v", got)
+	}
+}
+
 func TestPostTaskSignsCommitWhenConfigured(t *testing.T) {
 	sshKey, _ := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{results: []CommandResult{
@@ -1519,6 +1559,54 @@ func TestPostTaskExpandsUntrackedDirectoryBeforeGitAdd(t *testing.T) {
 	}
 }
 
+func TestPostTaskAllowsConfiguredDirtyScopeSupportPathspec(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M internal/domain/service.go\n M internal/domain/config.go\n"},
+		{Stdout: "feature/generic-task\n"},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:                    true,
+		CommitAfterTask:            true,
+		CommitAuthorName:           "Mivia Automation",
+		CommitAuthorEmailEnv:       "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:                 "origin",
+		DirtyScopeSupportPathspecs: []string{"internal/domain/config.go"},
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	if _, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"internal/domain/service.go"},
+	}); err != nil {
+		t.Fatalf("expected configured support pathspec to be allowed: %v", err)
+	}
+	var addArgs []string
+	for _, command := range runner.commands {
+		for idx, arg := range command.Args {
+			if arg == "add" {
+				addArgs = command.Args[idx:]
+				break
+			}
+		}
+		if len(addArgs) > 0 {
+			break
+		}
+	}
+	if strings.Join(addArgs, ",") != "add,--,internal/domain/service.go,internal/domain/config.go" {
+		t.Fatalf("expected task and support files staged, got %+v", addArgs)
+	}
+}
+
 func TestFailureCategoryWithDetailReportsMissingSSHKeyBeforePush(t *testing.T) {
 	_, knownHosts := testGitOpsCredentialFiles(t)
 	svc := NewWithRunner(Options{
@@ -1739,6 +1827,7 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 		{},
 		{},
 		{},
+		{},
 		{Stdout: "abc123def456\n"},
 	}}
 	svc := NewWithRunner(Options{
@@ -1794,7 +1883,7 @@ func TestPostTaskRunsVerificationAndStagesGeneratedArtifacts(t *testing.T) {
 	if got := strings.Join(runner.commands[10].Env, "\n"); !strings.Contains(got, "XDG_CONFIG_HOME=") || !strings.Contains(got, "BFF_ADMIN_URL=http://localhost:3000") || !strings.Contains(got, "SESSION_PASSWORD=test-secret") {
 		t.Fatalf("expected sorted verifier env, got %q", got)
 	}
-	if got := strings.Join(runner.commands[11].Args, " "); !strings.Contains(got, "commit --amend") {
+	if got := strings.Join(runner.commands[12].Args, " "); !strings.Contains(got, "commit --amend") {
 		t.Fatalf("expected commit amended with post-commit verification results, got %q", got)
 	}
 }

@@ -22,6 +22,7 @@ type Options struct {
 	GitHubTokenEnv               string
 	GitHubTokenFile              string
 	GitHubCLIPath                string
+	DirtyScopeSupportPathspecs   []string
 	Conventions                  Conventions
 	Verification                 VerificationProfile
 }
@@ -39,6 +40,7 @@ type Conventions struct {
 type VerificationProfile struct {
 	BootstrapCommands  []string
 	AlwaysBeforePR     []string
+	AutofixCommands    []string
 	GeneratedArtifacts []GeneratedArtifactVerifier
 	Env                map[string]string
 }

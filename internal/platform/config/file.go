@@ -189,6 +189,7 @@ type fileGitOpsConventionsConfig struct {
 type fileVerificationConfig struct {
 	BootstrapCommands  []string                            `toml:"bootstrap_commands"`
 	AlwaysBeforePR     []string                            `toml:"always_before_pr"`
+	AutofixCommands    []string                            `toml:"autofix_commands"`
 	GeneratedArtifacts []fileGeneratedArtifactVerification `toml:"generated_artifacts"`
 	Env                map[string]string                   `toml:"env"`
 }
@@ -942,6 +943,7 @@ func (cfg fileVerificationConfig) toVerification() Verification {
 	return Verification{
 		BootstrapCommands:  trimStringSlice(cfg.BootstrapCommands),
 		AlwaysBeforePR:     trimStringSlice(cfg.AlwaysBeforePR),
+		AutofixCommands:    trimStringSlice(cfg.AutofixCommands),
 		GeneratedArtifacts: generated,
 		Env:                trimStringMap(cfg.Env),
 	}

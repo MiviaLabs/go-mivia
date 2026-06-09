@@ -1111,9 +1111,10 @@ func validatePlanTransition(from, to string) error {
 }
 
 func allowsGitOpsRecoveryRerun(task WorkTask, input WorkTaskActionInput, next string) bool {
+	safeNextAction := strings.TrimSpace(input.SafeNextAction)
 	return task.Status == WorkTaskStatusVerifying &&
 		next == WorkTaskStatusReady &&
-		strings.TrimSpace(input.SafeNextAction) == "gitops_recovery_failed_requeue_implementation" &&
+		(safeNextAction == "gitops_recovery_failed_requeue_implementation" || safeNextAction == "gitops_verification_repair") &&
 		strings.TrimSpace(input.RunID) != ""
 }
 

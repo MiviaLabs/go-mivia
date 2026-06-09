@@ -407,6 +407,7 @@ version = 1
 
 [verification]
 always_before_pr = ["go test ./..."]
+autofix_commands = ["gofmt -w internal"]
 
 [verification.env]
 GOFLAGS = "-count=1"
@@ -428,6 +429,9 @@ bootstrap_commands = ["pnpm install --frozen-lockfile --prefer-offline --ignore-
 always_before_pr = [
   "pnpm -s nx affected -t lint --base=origin/main --head=HEAD",
   "pnpm -s nx affected -t typecheck --base=origin/main --head=HEAD",
+]
+autofix_commands = [
+  "pnpm -s nx affected -t lint --base=origin/main --head=HEAD --fix",
 ]
 
 [projects.verification.env]
@@ -455,6 +459,9 @@ required_before_pr = true
 	if strings.Join(merged.Verification.AlwaysBeforePR, ",") != "go test ./..." {
 		t.Fatalf("expected global verification, got %+v", merged.Verification)
 	}
+	if strings.Join(merged.Verification.AutofixCommands, ",") != "gofmt -w internal" {
+		t.Fatalf("expected global autofix commands, got %+v", merged.Verification.AutofixCommands)
+	}
 	if merged.Verification.Env["GOFLAGS"] != "-count=1" {
 		t.Fatalf("expected global verification env, got %+v", merged.Verification.Env)
 	}
@@ -464,6 +471,9 @@ required_before_pr = true
 	projectVerification := merged.Projects[0].Verification
 	if len(projectVerification.AlwaysBeforePR) != 2 || !strings.Contains(projectVerification.AlwaysBeforePR[0], "lint") {
 		t.Fatalf("unexpected project always-before-pr commands: %+v", projectVerification.AlwaysBeforePR)
+	}
+	if len(projectVerification.AutofixCommands) != 1 || !strings.Contains(projectVerification.AutofixCommands[0], "--fix") {
+		t.Fatalf("unexpected project autofix commands: %+v", projectVerification.AutofixCommands)
 	}
 	if projectVerification.Env["BFF_ADMIN_URL"] != "http://localhost:3000" || projectVerification.Env["SESSION_PASSWORD"] == "" {
 		t.Fatalf("unexpected project verification env: %+v", projectVerification.Env)

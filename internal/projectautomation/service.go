@@ -2364,6 +2364,9 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 		return svc.blockTaskAfterGitOpsRecoveryBlocker(ctx, run, task, category)
 	}
 	dirtyPaths := dirtyPathsFromEvidenceRefs(evidenceRefs)
+	if isGitOpsVerificationFailure(category) {
+		return svc.requeueTaskAfterGitOpsVerificationFailure(ctx, updater, run, task, category, evidenceRefs)
+	}
 	if strings.TrimSpace(category) == "gitops_dirty_worktree_scope" && len(dirtyPaths) > 0 {
 		expandScopes, outsidePaths := svc.classifyDirtyScopePaths(run.ProjectID, task, dirtyPaths)
 		if len(outsidePaths) > 0 {
@@ -2383,6 +2386,21 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 					task = expanded
 				}
 			}
+			run.Status = RunStatusFailed
+			run.WorkTaskStatus = task.Status
+			run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
+			run.FailureCategory = "gitops_post_task_failed_runner_post_task"
+			run.AttemptCount = 0
+			run.ClaimID = ""
+			run.RunnerID = ""
+			run.LeaseExpiresAt = time.Time{}
+			run.StartedAt = time.Time{}
+			now := svc.now()
+			if run.FinishedAt.IsZero() {
+				run.FinishedAt = now
+			}
+			run.UpdatedAt = now
+			return svc.store.UpdateRun(ctx, run)
 		}
 	}
 	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
@@ -2404,6 +2422,45 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 	run.WorkTaskStatus = readyTask.Status
 	run.SafeSummary = gitOpsRecoveryRequeueSummary(category)
 	run.FailureCategory = gitOpsRecoveryImplementationFailureCategory(category)
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+		return updated, nil
+	}
+	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+		return updated, nil
+	}
+	return updated, nil
+}
+
+func (svc *Service) requeueTaskAfterGitOpsVerificationFailure(ctx context.Context, updater workTaskStatusUpdater, run AutomationRun, task projectworkplan.WorkTask, category string, evidenceRefs []string) (AutomationRun, error) {
+	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "gitops_verification_repair",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			ResumeInstructions: gitOpsVerificationRepairResumeInstructions(category),
+			EvidenceRefs:       appendGitOpsFailureEvidenceRef(evidenceRefs, category),
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = readyTask.Status
+	run.SafeSummary = gitOpsVerificationRepairRequeueSummary(category)
+	run.FailureCategory = gitOpsRecoveryVerificationRepairFailureCategory(category)
 	now := svc.now()
 	if run.FinishedAt.IsZero() {
 		run.FinishedAt = now
@@ -2472,6 +2529,15 @@ func gitOpsRecoveryImplementationFailureCategory(category string) string {
 	return "gitops_recovery_failed_requires_implementation"
 }
 
+func gitOpsRecoveryVerificationRepairFailureCategory(category string) string {
+	return "gitops_recovery_failed_requires_verification_repair"
+}
+
+func isGitOpsVerificationFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return category == "gitops_verification_failed" || strings.HasPrefix(category, "gitops_verification_failed_")
+}
+
 func isUnrecoverableGitOpsPostTaskExecutionFailure(category string) bool {
 	category = strings.TrimSpace(category)
 	return category == "gitops_post_task_failed" || strings.HasPrefix(category, "gitops_post_task_failed_")
@@ -2491,6 +2557,25 @@ func gitOpsRecoveryRequeueSummary(category string) string {
 		return RunSafeSummaryGitOpsRecoveryRequeuedImplementation
 	}
 	return RunSafeSummaryGitOpsRecoveryRequeuedImplementation + "_after_" + category
+}
+
+func gitOpsVerificationRepairRequeueSummary(category string) string {
+	category = safeFailure(category)
+	if category == "" {
+		return "gitops_recovery_requeued_verification_repair"
+	}
+	return "gitops_recovery_requeued_verification_repair_after_" + category
+}
+
+func appendGitOpsFailureEvidenceRef(evidenceRefs []string, category string) []string {
+	refs := append([]string(nil), evidenceRefs...)
+	failureRef := "gitops-failure:" + safeFailure(category)
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == failureRef {
+			return refs
+		}
+	}
+	return append(refs, failureRef)
 }
 
 func (svc *Service) blockTaskAfterOutOfScopeDirtyPaths(ctx context.Context, updater workTaskStatusUpdater, run AutomationRun, task projectworkplan.WorkTask, dirtyPaths []string) (AutomationRun, error) {
@@ -2566,6 +2651,10 @@ func gitOpsRecoveryResumeInstructions(category string, dirtyPaths []string) stri
 		return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; dirty paths: " + strings.Join(dirtyPaths, ", ") + ". Rerun implementation after files_to_edit scope is corrected.")
 	}
 	return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; rerun implementation to fix verification, generated artifacts, commit scope, or PR readiness before GitOps post-task is retried.")
+}
+
+func gitOpsVerificationRepairResumeInstructions(category string) string {
+	return recoveryResumeInstructions("GitOps verification failed with " + safeFailure(category) + ". This is a bounded verifier-repair run: fix only the failing configured verifier, such as lint, typecheck, semgrep, generated-artifact, or other validation command. Start from the verifier ladder or project verification config, run the narrow failing verifier when feasible, then close out for GitOps retry. Do not commit, push, open PRs, or add unrelated feature behavior.")
 }
 
 func preExecutionRecoveryRequeueSummary(category string) string {
@@ -3464,9 +3553,10 @@ func (svc *Service) ResetGitOpsRecovery(ctx context.Context, input ResetGitOpsRe
 	if err != nil {
 		return AutomationRun{}, err
 	}
-	requeuedRecovery := run.FailureCategory == "gitops_recovery_failed_requires_implementation" && strings.HasPrefix(strings.TrimSpace(run.SafeSummary), "gitops_recovery_requeued_implementation_after_")
+	requeuedRecovery := (run.FailureCategory == "gitops_recovery_failed_requires_implementation" && strings.HasPrefix(strings.TrimSpace(run.SafeSummary), "gitops_recovery_requeued_implementation_after_")) ||
+		(run.FailureCategory == "gitops_recovery_failed_requires_verification_repair" && strings.HasPrefix(strings.TrimSpace(run.SafeSummary), "gitops_recovery_requeued_verification_repair_after_"))
 	terminalPlanAfterRecovery := run.FailureCategory == "work_plan_terminal" && strings.TrimSpace(run.SafeSummary) == "work_plan_terminal"
-	if run.RunnerKind != RunnerKindCodexCLI || (!isRecoverableGitOpsPostTaskFailure(run.FailureCategory) && !requeuedRecovery && !terminalPlanAfterRecovery) {
+	if run.RunnerKind != RunnerKindCodexCLI || (!isResettableGitOpsRecoveryFailure(run.FailureCategory) && !requeuedRecovery && !terminalPlanAfterRecovery) {
 		return AutomationRun{}, fmt.Errorf("%w: run is not a GitOps post-task recovery blocker", ErrInvalidInput)
 	}
 	if run.Status != RunStatusBlocked && run.Status != RunStatusFailed {
@@ -4297,6 +4387,8 @@ func isRecoverableRecoveryFailure(category string) bool {
 	category = strings.TrimSpace(category)
 	return category == "gitops_recovery_failed_requires_implementation" ||
 		strings.HasPrefix(category, "gitops_recovery_failed_requires_implementation_after_") ||
+		category == "gitops_recovery_failed_requires_verification_repair" ||
+		strings.HasPrefix(category, "gitops_recovery_failed_requires_verification_repair_after_") ||
 		category == "pre_execution_recovery_failed_requires_implementation"
 }
 
@@ -4771,14 +4863,12 @@ func isDuplicateWorkTaskRefError(err error) bool {
 func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) (Automation, error) {
 	reviewTaskToken := safeAutomationRefToken(reviewTask.TaskRef)
 	parentToken := safeAutomationRefToken(firstNonEmpty(parent.PlanID, reviewTask.PlanID, parent.ID))
-	automationRef := "auto-review-" + reviewTaskToken + "-" + parentToken
-	if automationRef == "auto-review-" {
-		automationRef += reviewTask.ID
-	}
 	parentAutomation, err := svc.store.GetAutomation(ctx, parent.ProjectID, parent.AutomationID)
 	if err != nil {
 		return Automation{}, err
 	}
+	reviewAgentID := firstNonEmpty(reviewTask.OwnerAgent, "codex-reviewer")
+	permissionRef := inheritedPermissionRefForAgent(parentAutomation, reviewAgentID)
 	sourceKind := parentAutomation.SourceKind
 	if sourceKind == "" {
 		sourceKind = AutomationSourceManual
@@ -4787,24 +4877,55 @@ func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context
 		if err := validatePermissionSnapshotRef(parentAutomation.PermissionRef); err != nil {
 			return Automation{}, err
 		}
+		if permissionRef == "" {
+			sourceKind = AutomationSourceManual
+		}
 	}
-	reviewAgentID := firstNonEmpty(reviewTask.OwnerAgent, "codex-reviewer")
-	return svc.CreateAutomation(ctx, CreateAutomationInput{
-		ProjectID:       parent.ProjectID,
-		AutomationRef:   automationRef,
-		Title:           "Review remediation output",
-		Purpose:         "Independently review implementation output for the assigned task.",
-		Status:          AutomationStatusEnabled,
-		AgentID:         reviewAgentID,
-		PlanID:          parent.PlanID,
-		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
-		TriggerKind:     TriggerKindAutomatic,
-		SchedulePolicy:  "post_implementation_review",
-		PermissionRef:   inheritedPermissionRefForAgent(parentAutomation, reviewAgentID),
-		SourceKind:      sourceKind,
-		CreatedByRunID:  parent.ID,
-		TraceID:         firstNonEmpty(parent.TraceID, parent.ID),
-	})
+	var lastErr error
+	for _, automationRef := range svc.recoveryPostImplementationReviewAutomationRefs(parent, reviewTask, reviewTaskToken, parentToken) {
+		automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+			ProjectID:       parent.ProjectID,
+			AutomationRef:   automationRef,
+			Title:           "Review remediation output",
+			Purpose:         "Independently review implementation output for the assigned task.",
+			Status:          AutomationStatusEnabled,
+			AgentID:         reviewAgentID,
+			PlanID:          parent.PlanID,
+			AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+			TriggerKind:     TriggerKindAutomatic,
+			SchedulePolicy:  "post_implementation_review",
+			PermissionRef:   permissionRef,
+			SourceKind:      sourceKind,
+			CreatedByRunID:  parent.ID,
+			TraceID:         firstNonEmpty(parent.TraceID, parent.ID),
+		})
+		if err == nil || !isDuplicateAutomationRefError(err) {
+			return automation, err
+		}
+		lastErr = err
+	}
+	return Automation{}, lastErr
+}
+
+func (svc *Service) recoveryPostImplementationReviewAutomationRefs(parent AutomationRun, reviewTask projectworkplan.WorkTask, reviewTaskToken string, parentToken string) []string {
+	baseRef := "auto-review-" + reviewTaskToken + "-" + parentToken
+	if baseRef == "auto-review-" {
+		baseRef += reviewTask.ID
+	}
+	refs := []string{baseRef}
+	if parent.ID != "" {
+		refs = append(refs, baseRef+"-"+safeAutomationRefToken(parent.ID))
+	}
+	refs = append(refs, baseRef+"-"+safeAutomationRefToken(svc.newID("review_automation_ref")))
+	return uniqueRefs(refs)
+}
+
+func isDuplicateAutomationRefError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "already exists") || strings.Contains(text, "duplicate automation")
 }
 
 func inheritedPermissionRefForAgent(parent Automation, agentID string) string {
@@ -4813,9 +4934,6 @@ func inheritedPermissionRefForAgent(parent Automation, agentID string) string {
 		return ""
 	}
 	if strings.TrimSpace(parent.AgentID) == strings.TrimSpace(agentID) {
-		return permissionRef
-	}
-	if parent.SourceKind == AutomationSourceWorkflow {
 		return permissionRef
 	}
 	return ""
@@ -5382,6 +5500,14 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		"Use only the bounded task scope and likely affected files unless current source proves a narrower necessary change.",
 		"Do not run verifier commands unless this task explicitly allows worker verification.",
 	}
+	if isGitOpsVerificationRepairTask(run, task) {
+		instructions = append(instructions,
+			"This is a GitOps verifier-repair run. Fix only the failing configured verifier named in resume instructions or evidence refs.",
+			"For lint, formatting, typecheck, semgrep, generated-artifact, or other validation failures, make the smallest code or generated-artifact correction needed for that verifier.",
+			"Run the narrow failing verifier or the smallest target-specific equivalent when feasible, and record a safe verifier_result_ref or exact not-run reason in closeout.",
+			"Do not implement unrelated feature behavior. Do not commit, push, or create pull requests; runner GitOps retries after closeout.",
+		)
+	}
 	governedInstructions := GovernedWorkflowStepInstructions(task.TaskRef)
 	implementationCloseoutInstructions := ImplementationTaskCloseoutInstructions(task.TaskRef, task.FilesToEdit)
 	if strings.HasPrefix(task.TaskRef, "review-") && len(governedInstructions) == 0 {
@@ -5420,6 +5546,20 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		OutputContract:          task.OutputContract,
 		RunnerInstructions:      instructions,
 	}
+}
+
+func isGitOpsVerificationRepairTask(run AutomationRun, task projectworkplan.WorkTask) bool {
+	if strings.TrimSpace(run.FailureCategory) == gitOpsRecoveryVerificationRepairFailureCategory("") {
+		return true
+	}
+	text := strings.Join([]string{
+		run.SafeSummary,
+		run.FailureCategory,
+		task.ResumeInstructions,
+		strings.Join(task.EvidenceRefs, " "),
+	}, " ")
+	text = strings.ToLower(text)
+	return strings.Contains(text, "gitops_verification_failed") || strings.Contains(text, "gitops_verification_repair")
 }
 
 func GovernedWorkflowStepInstructions(taskRef string) []string {
@@ -5964,6 +6104,12 @@ func isRecoverableGitOpsPostTaskFailure(category string) bool {
 		category == "gitops_verification_failed" ||
 		strings.HasPrefix(category, "gitops_verification_failed_") ||
 		category == "gitops_invalid_input_no_changed_files_matched"
+}
+
+func isResettableGitOpsRecoveryFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return isRecoverableGitOpsPostTaskFailure(category) ||
+		category == "gitops_dirty_worktree_scope_requires_plan"
 }
 
 func isTerminalGitOpsPostTaskBlocker(category string) bool {
