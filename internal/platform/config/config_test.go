@@ -44,6 +44,34 @@ func TestConfigValidate_DefaultGitOperationsAllowsEmptyBranchPrefix(t *testing.T
 	}
 }
 
+func TestConfigValidate_GitOperationsPushDoesNotRequireSSHCredentials(t *testing.T) {
+	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
+	cfg.GitOperations.Enabled = true
+	cfg.GitOperations.CommitAfterTask = true
+	cfg.GitOperations.PushAfterTask = true
+	cfg.GitOperations.SSHPrivateKeyPath = ""
+	cfg.GitOperations.SSHKnownHostsPath = ""
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected push to allow repository remote credentials or local remotes without SSH path config: %v", err)
+	}
+}
+
+func TestConfigValidate_GitOperationsRejectsPartialSSHCredentials(t *testing.T) {
+	cfg := defaultConfig("test.toml")
+	cfg.resolveAutoSettings(runtime.NumCPU())
+	cfg.GitOperations.Enabled = true
+	cfg.GitOperations.CommitAfterTask = true
+	cfg.GitOperations.PushAfterTask = true
+	cfg.GitOperations.SSHPrivateKeyPath = filepath.Join(t.TempDir(), "id_ed25519")
+	cfg.GitOperations.SSHKnownHostsPath = ""
+
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "MIVIA_GIT_OPS_SSH_KNOWN_HOSTS_PATH") {
+		t.Fatalf("expected partial SSH config to fail closed, got %v", err)
+	}
+}
+
 func TestConfigValidate_LiveUpdatesRequireContentGraph(t *testing.T) {
 	cfg := defaultConfig("test.toml")
 	cfg.resolveAutoSettings(runtime.NumCPU())

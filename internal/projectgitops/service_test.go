@@ -113,6 +113,54 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	}
 }
 
+func TestPostTaskPushesWithoutExplicitSSHCredentials(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M .agentic/automation-smoke.md\n"},
+		{Stdout: "governed-smoke-gitops-live-smoke-run\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+		{},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		RemoteName:           "local-smoke",
+		BranchNamePattern:    "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$",
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "generic-monorepo",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		TaskRef:          "smoke-draft-pr",
+		TaskTitle:        "Smoke Draft PR",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "smoke-gitops-worker",
+		AllowedPathspecs: []string{".agentic/automation-smoke.md"},
+	})
+	if err != nil {
+		t.Fatalf("expected push to use repository remote credentials without explicit SSH config: %v", err)
+	}
+	if result.CommitRef != "git-commit-abc123def456" || result.PushRef == "" || !containsString(result.EvidenceRefs, "git-push-completed") {
+		t.Fatalf("expected commit and push refs, got %#v", result)
+	}
+	if got := strings.Join(runner.commands[7].Args, " "); got != "-c safe.directory=/tmp/worktree push --no-verify local-smoke HEAD:governed-smoke-gitops-live-smoke-run" {
+		t.Fatalf("expected push to configured remote branch without SSH env, got %q", got)
+	}
+	if len(runner.commands[7].Env) != 0 {
+		t.Fatalf("expected no injected SSH/GitHub env for repository-native push, got %+v", runner.commands[7].Env)
+	}
+}
+
 func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{
@@ -508,8 +556,15 @@ func TestPostTaskReturnsNoChanges(t *testing.T) {
 	}
 }
 
-func TestPostTaskPushRequiresSSHConfig(t *testing.T) {
-	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, PushAfterTask: true, RemoteName: "origin", GitHubCLIPath: "gh"}, &recordingRunner{})
+func TestPostTaskPushRejectsPartialSSHConfig(t *testing.T) {
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		RemoteName:        "origin",
+		GitHubCLIPath:     "gh",
+		SSHPrivateKeyPath: filepath.Join(t.TempDir(), "id_ed25519"),
+	}, &recordingRunner{})
 
 	_, err := svc.PostTask(context.Background(), PostTaskInput{
 		WorkDir:         "/tmp/worktree",
@@ -695,12 +750,17 @@ func TestGitOpsStageFailurePreservesKnownCommandFailure(t *testing.T) {
 }
 
 func TestFailureCategoryWithDetailPreservesInvalidGitOpsConfig(t *testing.T) {
-	svc := NewWithRunner(Options{Enabled: true, CommitAfterTask: true, PushAfterTask: true}, &recordingRunner{})
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		SSHPrivateKeyPath: filepath.Join(t.TempDir(), "id_ed25519"),
+	}, &recordingRunner{})
 	_, err := svc.PostTask(context.Background(), PostTaskInput{WorkDir: "/tmp/worktree"})
 	if err == nil {
 		t.Fatal("expected invalid push config")
 	}
-	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_push_auth_required" {
+	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_ssh_config_required" {
 		t.Fatalf("expected detailed invalid input category, got %q", got)
 	}
 }

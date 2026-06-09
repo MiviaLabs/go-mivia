@@ -955,13 +955,13 @@ func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool)
 			return err
 		}
 	}
-	if gitops.PushAfterTask {
-		if strings.TrimSpace(gitops.SSHPrivateKeyPath) == "" {
-			return fmt.Errorf("%s_SSH_PRIVATE_KEY_PATH is required when push after task is enabled", prefix)
+	hasSSHPrivateKey := strings.TrimSpace(gitops.SSHPrivateKeyPath) != ""
+	hasSSHKnownHosts := strings.TrimSpace(gitops.SSHKnownHostsPath) != ""
+	if hasSSHPrivateKey != hasSSHKnownHosts {
+		if !hasSSHPrivateKey {
+			return fmt.Errorf("%s_SSH_PRIVATE_KEY_PATH is required when SSH known_hosts is configured", prefix)
 		}
-		if strings.TrimSpace(gitops.SSHKnownHostsPath) == "" {
-			return fmt.Errorf("%s_SSH_KNOWN_HOSTS_PATH is required when push after task is enabled", prefix)
-		}
+		return fmt.Errorf("%s_SSH_KNOWN_HOSTS_PATH is required when SSH private key is configured", prefix)
 	}
 	if gitops.DraftPRAfterPush && strings.TrimSpace(gitops.GitHubTokenEnv) == "" && strings.TrimSpace(gitops.GitHubTokenFile) == "" && strings.TrimSpace(gitops.GitHubCLIPath) == "" {
 		return errors.New("draft PR creation requires GitHub CLI auth or a GitHub token env/file reference")

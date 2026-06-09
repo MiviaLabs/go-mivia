@@ -526,13 +526,12 @@ func (svc *Service) validatePushConfig() error {
 	if !svc.options.PushAfterTask {
 		return nil
 	}
-	hasSSH := strings.TrimSpace(svc.options.SSHPrivateKeyPath) != "" || strings.TrimSpace(svc.options.SSHKnownHostsPath) != ""
+	hasSSHKey := strings.TrimSpace(svc.options.SSHPrivateKeyPath) != ""
+	hasSSHKnownHosts := strings.TrimSpace(svc.options.SSHKnownHostsPath) != ""
+	hasSSH := hasSSHKey || hasSSHKnownHosts
 	hasGitHubTokenRef := strings.TrimSpace(svc.options.GitHubTokenEnv) != "" || strings.TrimSpace(svc.options.GitHubTokenFile) != ""
-	if !hasSSH && !hasGitHubTokenRef {
-		return fmt.Errorf("%w: push auth requires ssh key and known hosts or github token reference", ErrInvalidInput)
-	}
 	if hasSSH {
-		if strings.TrimSpace(svc.options.SSHPrivateKeyPath) == "" || strings.TrimSpace(svc.options.SSHKnownHostsPath) == "" {
+		if !hasSSHKey || !hasSSHKnownHosts {
 			return fmt.Errorf("%w: ssh key and known hosts are required for push", ErrInvalidInput)
 		}
 		for name, value := range map[string]string{
