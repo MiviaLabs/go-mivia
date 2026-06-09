@@ -11,6 +11,7 @@ Available skills:
 - `mivia-mcp`
 - `automation-bug-audit-planning`
 - `automated-workplan`
+- `jira-governed-ticket-delivery`
 
 Metadata:
 
