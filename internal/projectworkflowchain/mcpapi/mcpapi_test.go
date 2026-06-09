@@ -87,6 +87,57 @@ func TestCallToolRetryGitOpsUsesSafeRefsOnly(t *testing.T) {
 	}
 }
 
+func TestCallToolGetAndListPreserveWorkflowChainHandoffMetadata(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		tool      string
+		args      map[string]any
+		assertRun func(*testing.T, projectworkflowchain.ChainRun)
+	}{
+		{
+			name: "get",
+			tool: "projects.workflow_chains.get",
+			args: map[string]any{"id": "project-1", "chain_run_id": "workflow_chain_run_1"},
+			assertRun: func(t *testing.T, run projectworkflowchain.ChainRun) {
+				t.Helper()
+				assertCompletedChainHandoff(t, run)
+			},
+		},
+		{
+			name: "list",
+			tool: "projects.workflow_chains.list",
+			args: map[string]any{"id": "project-1", "status": projectworkflowchain.ChainStatusCompleted},
+			assertRun: func(t *testing.T, run projectworkflowchain.ChainRun) {
+				t.Helper()
+				assertCompletedChainHandoff(t, run)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := CallTool(ctx, fakeChainAPI{}, tc.tool, mustArgs(t, tc.args))
+			if err != nil {
+				t.Fatalf("%s: %v", tc.tool, err)
+			}
+			body := result["content"].([]map[string]string)[0]["text"]
+			if !strings.Contains(body, `"pull_request_ref":"pr/MASS-1044"`) || !strings.Contains(body, `"next_action":"workflow chain completed with draft PR GitOps output"`) {
+				t.Fatalf("tool content lost handoff refs/actions: %s", body)
+			}
+			switch structured := result["structuredContent"].(type) {
+			case projectworkflowchain.ChainRun:
+				tc.assertRun(t, structured)
+			case projectworkflowchain.ListResult:
+				if len(structured.Runs) != 1 {
+					t.Fatalf("expected one listed run, got %#v", structured)
+				}
+				tc.assertRun(t, structured.Runs[0])
+			default:
+				t.Fatalf("unexpected structuredContent type %T: %#v", structured, structured)
+			}
+		})
+	}
+}
+
 func TestCallToolStartReturnsSafeRefsOnly(t *testing.T) {
 	result, err := CallTool(context.Background(), fakeChainAPI{}, "projects.workflow_chains.start", mustArgs(t, map[string]any{
 		"id":         "project-1",
@@ -114,12 +165,50 @@ type fakeChainAPI struct{}
 
 func (fakeChainAPI) CallWorkflowChainTool(_ context.Context, name string, _ json.RawMessage) (any, error) {
 	if name == "projects.workflow_chains.retry_gitops" {
-		return projectworkflowchain.ChainRun{ID: "workflow_chain_run_1", ProjectID: "project-1", PullRequestRef: "pr/MASS-1044"}, nil
+		return completedChainRun(), nil
+	}
+	if name == "projects.workflow_chains.get" {
+		return completedChainRun(), nil
+	}
+	if name == "projects.workflow_chains.list" {
+		return projectworkflowchain.ListResult{Runs: []projectworkflowchain.ChainRun{completedChainRun()}}, nil
 	}
 	if name != "projects.workflow_chains.start" {
 		return nil, projectworkflowchain.ErrInvalidInput
 	}
 	return projectworkflowchain.StartResult{ProjectID: "project-1", ChainRef: "chain-1", InputRef: "jira:MASS-1044", Status: projectworkflowchain.ChainStatusPlanned, DryRun: true}, nil
+}
+
+func completedChainRun() projectworkflowchain.ChainRun {
+	return projectworkflowchain.ChainRun{
+		ID:             "workflow_chain_run_1",
+		ProjectID:      "project-1",
+		ChainRef:       "chain-1",
+		InputRef:       "jira:MASS-1044",
+		Status:         projectworkflowchain.ChainStatusCompleted,
+		AutomationIDs:  []string{"automation-decomposition", "automation-implementation", "automation-validation"},
+		GitOpsReady:    false,
+		PullRequestRef: "pr/MASS-1044",
+		NextAction:     "workflow chain completed with draft PR GitOps output",
+		StageRuns: []projectworkflowchain.StageRun{
+			{StageRef: "decomposition", WorkflowID: "workflow-decomposition", Status: projectworkflowchain.StageStatusCompleted, AutomationIDs: []string{"automation-decomposition"}},
+			{StageRef: "implementation", WorkflowID: "workflow-implementation", Status: projectworkflowchain.StageStatusCompleted, WorkPlanID: "plan-implementation", WorkTaskIDs: []string{"task-implementation"}, AutomationIDs: []string{"automation-implementation"}},
+			{StageRef: "post-validation", WorkflowID: "workflow-validation", Status: projectworkflowchain.StageStatusCompleted, WorkPlanID: "plan-post-validation", WorkTaskIDs: []string{"task-post-validation"}, AutomationIDs: []string{"automation-validation"}},
+		},
+	}
+}
+
+func assertCompletedChainHandoff(t *testing.T, run projectworkflowchain.ChainRun) {
+	t.Helper()
+	if run.Status != projectworkflowchain.ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/MASS-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+		t.Fatalf("chain handoff status/actions were not preserved: %#v", run)
+	}
+	if len(run.AutomationIDs) != 3 || len(run.StageRuns) != 3 {
+		t.Fatalf("chain handoff refs were not preserved: %#v", run)
+	}
+	if run.StageRuns[2].StageRef != "post-validation" || run.StageRuns[2].WorkflowID != "workflow-validation" || len(run.StageRuns[2].AutomationIDs) != 1 {
+		t.Fatalf("post-validation stage handoff metadata was not preserved: %#v", run.StageRuns[2])
+	}
 }
 
 func mustArgs(t *testing.T, value any) json.RawMessage {

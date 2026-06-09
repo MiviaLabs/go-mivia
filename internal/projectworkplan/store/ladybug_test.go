@@ -291,6 +291,17 @@ func TestLadybugStorePersistentReopenPlanTaskGraph(t *testing.T) {
 	if !containsString(gotTask.EvidenceRefs, "evidence/ref/reopen") || !containsString(gotTask.ReviewResultRefs, "review/ref/reopen") || !containsString(gotTask.VerifierResultRefs, "verifier/ref/reopen") {
 		t.Fatalf("reopened task lost evidence/review/verifier refs: %#v", gotTask)
 	}
+	listedTasks, err := reopenedStore.ListWorkTasks(ctx, model.WorkTaskFilter{ProjectID: task.ProjectID, PlanID: task.PlanID, Status: model.WorkTaskStatusVerifying})
+	if err != nil {
+		t.Fatalf("list reopened verifying tasks: %v", err)
+	}
+	if len(listedTasks) != 1 || listedTasks[0].ID != task.ID {
+		t.Fatalf("expected reopened verifying task in list, got %#v", listedTasks)
+	}
+	listedTask := listedTasks[0]
+	if !containsString(listedTask.EvidenceRefs, "evidence/ref/reopen") || !containsString(listedTask.ClaimRefs, "claim/ref/a") || !containsString(listedTask.ReviewResultRefs, "review/ref/reopen") || !containsString(listedTask.VerifierResultRefs, "verifier/ref/reopen") {
+		t.Fatalf("listed reopened task lost attachment-backed handoff refs: %#v", listedTask)
+	}
 }
 
 func TestLadybugStoreRejectsDuplicateRefsInScope(t *testing.T) {
