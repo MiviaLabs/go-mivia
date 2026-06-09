@@ -3,12 +3,18 @@ package projectworkflowchain
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
+	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
 )
 
 func TestValidateConfigRejectsUnsafeAndInvalidChains(t *testing.T) {
@@ -603,6 +609,128 @@ func TestGenericSafeRefChainPreservesCodexHandoffDataThroughDraftPR(t *testing.T
 	}
 }
 
+func TestGenericSafeRefChainWithRealWorkflowCompilerPreservesGeneratedTaskOutputsThroughGitOps(t *testing.T) {
+	ctx := context.Background()
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  projectautomation.RunnerExecutionExternal,
+		MaxParallelTasks: 2,
+		PermissionResolver: realChainPermissionResolver{
+			allowedRunnerKinds: []string{projectautomation.RunnerKindCodexCLI},
+		},
+		WorkPlanStatusTrigger: projectautomation.WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	workflows := projectworkflow.New(workflowstore.NewMemoryStore())
+	workflows.SetCompilerDependencies(workPlans, automations)
+	for _, path := range []string{
+		"configs/workflows/governed-decomposition-planning.toml",
+		"configs/workflows/governed-workplan-implementation.toml",
+		"configs/workflows/governed-post-implementation-validation.toml",
+	} {
+		data, err := os.ReadFile(filepath.Join("..", "..", path))
+		if err != nil {
+			t.Fatalf("read workflow %s: %v", path, err)
+		}
+		if _, err := workflows.ImportWorkflowTOML(ctx, projectworkflow.ImportWorkflowTOMLInput{
+			ProjectID:      "project-1",
+			Data:           data,
+			CreatedByRunID: "import-real-chain",
+			TraceID:        "trace-real-chain",
+		}); err != nil {
+			t.Fatalf("import workflow %s: %v", path, err)
+		}
+	}
+	store := newTestChainStore()
+	svc := New(store, workflows, workPlans, []Config{genericSafeRefTestConfig()})
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{
+		CommitRef:      "commit/generic-real-2044",
+		PushRef:        "push/generic-real-2044",
+		PullRequestRef: "pr/generic-real-2044",
+		EvidenceRefs:   []string{"gitops-evidence:generic-real-2044"},
+	}}
+	svc.SetGitOpsFinalizer(finalizer)
+	workPlans.SetStatusChangeHandler(realChainStatusFanout{handlers: []projectworkplan.WorkPlanStatusChangeHandler{automations, svc}})
+
+	result, err := svc.Start(ctx, StartInput{
+		ProjectID:      "project-1",
+		ChainRef:       "generic-chain",
+		InputText:      "ticket/GENERIC-2044",
+		CreatedByRunID: "codex-orchestrator-run-2044",
+		TraceID:        "trace-generic-real-2044",
+	})
+	if err != nil {
+		t.Fatalf("start generic real chain: %v", err)
+	}
+	if result.Status != ChainStatusQueued || len(result.WorkPlanIDs) != 1 || len(result.AutomationIDs) == 0 {
+		t.Fatalf("start lost generated first-stage refs: %#v", result)
+	}
+	for _, stage := range []string{"decomposition", "implementation", "post-validation"} {
+		run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+		if err != nil {
+			t.Fatalf("get chain before %s: %v", stage, err)
+		}
+		stageRun := chainStageRunByRef(t, run, stage)
+		if stageRun.WorkPlanID == "" || len(stageRun.WorkTaskIDs) == 0 || len(stageRun.AutomationIDs) == 0 {
+			t.Fatalf("stage %s missing generated handoff refs: %#v", stage, stageRun)
+		}
+		assertQueuedAutomationRunsForGeneratedStage(t, ctx, automations, "project-1", stageRun)
+		completeGeneratedStagePlan(t, ctx, workPlans, "project-1", stageRun.WorkPlanID, stage)
+	}
+
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get completed real chain: %v", err)
+	}
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/generic-real-2044" {
+		t.Fatalf("completed real chain lost final status or PR ref: %#v", run)
+	}
+	if run.InputRef != "input:ticket/GENERIC-2044" || run.CreatedByRunID != "codex-orchestrator-run-2044" || run.TraceID != "trace-generic-real-2044" {
+		t.Fatalf("completed real chain lost root handoff refs: %#v", run)
+	}
+	if len(run.WorkPlanIDs) != 3 || len(run.AutomationIDs) < 3 || len(run.StageRuns) != 3 {
+		t.Fatalf("completed real chain lost generated plan/automation/stage refs: %#v", run)
+	}
+	if len(finalizer.inputs) != 1 {
+		t.Fatalf("expected one GitOps finalization, got %#v", finalizer.inputs)
+	}
+	gitopsInput := finalizer.inputs[0]
+	if gitopsInput.ProjectID != "project-1" || gitopsInput.ChainRunID != result.ChainRunID || gitopsInput.ChainRef != "generic-chain" {
+		t.Fatalf("GitOps input lost chain refs: %#v", gitopsInput)
+	}
+	if gitopsInput.InputRef != "input:ticket/GENERIC-2044" || gitopsInput.CreatedByRunID != "codex-orchestrator-run-2044" || gitopsInput.TraceID != "trace-generic-real-2044" {
+		t.Fatalf("GitOps input lost root refs: %#v", gitopsInput)
+	}
+	for _, ref := range []string{
+		"review:generated-decomposition",
+		"review:generated-implementation",
+		"review:generated-post-validation",
+	} {
+		if !containsString(gitopsInput.ReviewRefs, ref) {
+			t.Fatalf("GitOps input missing generated review ref %q: %#v", ref, gitopsInput.ReviewRefs)
+		}
+	}
+	for _, ref := range []string{
+		"verifier:generated-decomposition",
+		"verifier:generated-implementation",
+		"verifier:generated-post-validation",
+	} {
+		if !containsString(gitopsInput.VerifierRefs, ref) {
+			t.Fatalf("GitOps input missing generated verifier ref %q: %#v", ref, gitopsInput.VerifierRefs)
+		}
+	}
+	if !containsString(gitopsInput.AllowedPathspecs, "internal/projectworkflowchain/service.go") || !containsString(gitopsInput.AllowedPathspecs, "cmd/mivia-automation-runner/main_test.go") || containsString(gitopsInput.AllowedPathspecs, ".ai") {
+		t.Fatalf("GitOps input must derive allowed pathspecs from generated implementation tasks only: %#v", gitopsInput.AllowedPathspecs)
+	}
+	if !containsString(gitopsInput.TestResults, "select-ready-tasks verified by verifier:generated-implementation") {
+		t.Fatalf("GitOps input missing generated implementation test result: %#v", gitopsInput.TestResults)
+	}
+}
+
 func TestHandleWorkPlanStatusChangedDoesNotActivateNextStageBeforeChainUpdatePersists(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
@@ -1018,6 +1146,104 @@ func (fake fakeLocalContextReader) ReadLocalContent(_ context.Context, _ project
 		return projectintegrations.RichContentReadResult{}, fake.err
 	}
 	return fake.result, nil
+}
+
+type realChainStatusFanout struct {
+	handlers []projectworkplan.WorkPlanStatusChangeHandler
+}
+
+func (fanout realChainStatusFanout) HandleWorkPlanStatusChanged(ctx context.Context, change projectworkplan.WorkPlanStatusChange) error {
+	for _, handler := range fanout.handlers {
+		if handler == nil {
+			continue
+		}
+		if err := handler.HandleWorkPlanStatusChanged(ctx, change); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type realChainPermissionResolver struct {
+	allowedRunnerKinds []string
+}
+
+func (resolver realChainPermissionResolver) CheckAutomationPermission(_ context.Context, input projectautomation.PermissionCheckInput) (projectautomation.PermissionSnapshotMetadata, error) {
+	return projectautomation.PermissionSnapshotMetadata{
+		PermissionRef:      input.PermissionRef,
+		AgentID:            input.AgentID,
+		AllowedRunnerKinds: append([]string(nil), resolver.allowedRunnerKinds...),
+	}, nil
+}
+
+func chainStageRunByRef(t *testing.T, run ChainRun, stageRef string) StageRun {
+	t.Helper()
+	for _, stageRun := range run.StageRuns {
+		if stageRun.StageRef == stageRef {
+			return stageRun
+		}
+	}
+	t.Fatalf("stage %q not found in %#v", stageRef, run.StageRuns)
+	return StageRun{}
+}
+
+func assertQueuedAutomationRunsForGeneratedStage(t *testing.T, ctx context.Context, svc *projectautomation.Service, projectID string, stageRun StageRun) {
+	t.Helper()
+	runs, err := svc.ListRuns(ctx, projectautomation.RunFilter{ProjectID: projectID, PlanID: stageRun.WorkPlanID, Status: projectautomation.RunStatusQueued})
+	if err != nil {
+		t.Fatalf("list queued runs for %s: %v", stageRun.StageRef, err)
+	}
+	if len(runs) == 0 {
+		t.Fatalf("stage %s did not queue any automation runs", stageRun.StageRef)
+	}
+	taskIDs := map[string]struct{}{}
+	for _, taskID := range stageRun.WorkTaskIDs {
+		taskIDs[taskID] = struct{}{}
+	}
+	for _, run := range runs {
+		if run.OrchestratorRunID == "" || run.TaskID == "" || run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+			t.Fatalf("queued automation run lost live refs/status for %s: %#v", stageRun.StageRef, run)
+		}
+		if _, ok := taskIDs[run.TaskID]; !ok {
+			t.Fatalf("queued automation run references task outside generated stage %s: %#v", stageRun.StageRef, run)
+		}
+	}
+}
+
+func completeGeneratedStagePlan(t *testing.T, ctx context.Context, svc *projectworkplan.Service, projectID string, planID string, stageRef string) {
+	t.Helper()
+	tasks, err := svc.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		t.Fatalf("list stage tasks for %s: %v", stageRef, err)
+	}
+	if len(tasks) == 0 {
+		t.Fatalf("stage %s has no generated tasks", stageRef)
+	}
+	for _, task := range tasks {
+		if stageRef == "implementation" && len(task.FilesToEdit) == 0 {
+			task.FilesToEdit = []string{"internal/projectworkflowchain/service.go", "cmd/mivia-automation-runner/main_test.go"}
+		}
+		task.Status = projectworkplan.WorkTaskStatusDone
+		task.Outcome = "generated " + stageRef + " task output accepted"
+		task.EvidenceRefs = appendUnique(task.EvidenceRefs, "evidence:generated-"+stageRef)
+		task.ReviewResultRefs = appendUnique(task.ReviewResultRefs, "review:generated-"+stageRef)
+		task.VerifierResultRefs = appendUnique(task.VerifierResultRefs, "verifier:generated-"+stageRef)
+		task.ClaimRefs = appendUnique(task.ClaimRefs, "claim:generated-"+stageRef)
+		if _, err := svc.UpdateWorkTask(ctx, task); err != nil {
+			t.Fatalf("complete generated task %s/%s: %v", stageRef, task.TaskRef, err)
+		}
+	}
+	if _, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      projectID,
+		PlanID:         planID,
+		Status:         projectworkplan.WorkPlanStatusDone,
+		Outcome:        "generated " + stageRef + " stage output accepted",
+		SafeNextAction: "advance generic chain after generated stage completion",
+		RunID:          "complete-" + stageRef,
+		TraceID:        "trace-generic-real-2044",
+	}); err != nil {
+		t.Fatalf("mark stage plan %s done: %v", stageRef, err)
+	}
 }
 
 func localJiraContext(issueKey string, includeScope bool) projectintegrations.RichContentReadResult {
