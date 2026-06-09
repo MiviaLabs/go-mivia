@@ -161,6 +161,7 @@ type fileGitOpsConfig struct {
 	CommitAuthorName             *string                      `toml:"commit_author_name"`
 	CommitAuthorEmailEnv         *string                      `toml:"commit_author_email_env"`
 	CommitAuthorEmailFile        *string                      `toml:"commit_author_email_file"`
+	SignCommits                  *bool                        `toml:"sign_commits"`
 	SSHPrivateKeyPath            *string                      `toml:"ssh_private_key_path"`
 	SSHPublicKeyPath             *string                      `toml:"ssh_public_key_path"`
 	SSHKnownHostsPath            *string                      `toml:"ssh_known_hosts_path"`
@@ -879,6 +880,9 @@ func applyFileGitOps(base *GitOperations, cfg *fileGitOpsConfig) {
 	}
 	if cfg.CommitAuthorEmailFile != nil {
 		base.CommitAuthorEmailFile = strings.TrimSpace(*cfg.CommitAuthorEmailFile)
+	}
+	if cfg.SignCommits != nil {
+		base.SignCommits = *cfg.SignCommits
 	}
 	if cfg.SSHPrivateKeyPath != nil {
 		base.SSHPrivateKeyPath = strings.TrimSpace(*cfg.SSHPrivateKeyPath)

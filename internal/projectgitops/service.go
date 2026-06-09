@@ -209,7 +209,8 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if email != "" {
 		env = append(env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
 	}
-	if _, err := svc.git(ctx, workDir, env, "commit", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
+	commitArgs := svc.gitCommitArgs("commit", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody)
+	if _, err := svc.git(ctx, workDir, env, commitArgs...); err != nil {
 		return PostTaskResult{}, gitOpsStageFailure("git_commit", err)
 	}
 	postCommitVerificationRefs, postCommitVerificationTests, err := svc.runPostCommitVerification(ctx, workDir)
@@ -222,7 +223,8 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		if err != nil {
 			return PostTaskResult{}, gitOpsStageFailure("render_after_postcommit_verification", err)
 		}
-		if _, err := svc.git(ctx, workDir, env, "commit", "--amend", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
+		amendArgs := svc.gitCommitArgs("commit", "--amend", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody)
+		if _, err := svc.git(ctx, workDir, env, amendArgs...); err != nil {
 			return PostTaskResult{}, gitOpsStageFailure("git_commit_amend", err)
 		}
 	}
@@ -233,6 +235,9 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	result := PostTaskResult{
 		CommitRef:    "git-commit-" + strings.TrimSpace(sha.Stdout),
 		EvidenceRefs: append(append([]string{"git-commit-created"}, preCommitVerificationRefs...), postCommitVerificationRefs...),
+	}
+	if svc.shouldSignCommits() {
+		result.EvidenceRefs = append(result.EvidenceRefs, "git-commit-signed")
 	}
 	if svc.options.PushAfterTask {
 		branch := strings.TrimSpace(input.BranchName)
@@ -293,10 +298,34 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 		input.TestResults = append(input.TestResults, preTests...)
 		input.TestResults = append(input.TestResults, postTests...)
 	}
+	generatedArtifactsStaged := false
 	if len(preRefs) > 0 || len(postRefs) > 0 {
 		status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
 		if err != nil {
 			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_status_after_verification", err)
+		}
+		generatedPathspecs := sanitizePathspecs(svc.generatedArtifactPathspecs())
+		if len(generatedPathspecs) > 0 {
+			changedGeneratedPathspecs := changedPathspecsWithinAllowedForWorkDir(workDir, status.Stdout, generatedPathspecs)
+			if len(changedGeneratedPathspecs) > 0 {
+				addArgs := append([]string{"add", "--"}, changedGeneratedPathspecs...)
+				if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
+					return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_add_generated_artifacts", err)
+				}
+				generatedArtifactsStaged = true
+				status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
+				if err != nil {
+					return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_status_after_generated_artifacts", err)
+				}
+			}
+		}
+		if strings.TrimSpace(status.Stdout) != "" {
+			if len(generatedPathspecs) > 0 {
+				if outside := changedPathspecsOutsideAllowedForWorkDir(workDir, status.Stdout, generatedPathspecs); len(outside) == 0 {
+					result.EvidenceRefs = append(result.EvidenceRefs, "git-generated-artifacts-staged")
+					status.Stdout = ""
+				}
+			}
 		}
 		if strings.TrimSpace(status.Stdout) != "" {
 			return PostTaskResult{}, fmt.Errorf("%w: verification dirtied clean-ahead branch", ErrDirtyWorktree)
@@ -307,6 +336,35 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 	rendered, err := Render(input, svc.options.Conventions)
 	if err != nil {
 		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_render", err)
+	}
+	if svc.shouldSignCommits() || generatedArtifactsStaged {
+		email, err := svc.authorEmail()
+		if err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_author_email", err)
+		}
+		env := []string{
+			"GIT_AUTHOR_NAME=" + svc.options.CommitAuthorName,
+			"GIT_COMMITTER_NAME=" + svc.options.CommitAuthorName,
+		}
+		if email != "" {
+			env = append(env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
+		}
+		if _, err := svc.git(ctx, workDir, nil, "reset", "--soft", svc.cleanAheadBaseRef(input.BaseRef)); err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_reset_soft", err)
+		}
+		commitArgs := svc.gitCommitArgs("commit", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody)
+		if _, err := svc.git(ctx, workDir, env, commitArgs...); err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_commit_signed_squash", err)
+		}
+		sha, err := svc.git(ctx, workDir, nil, "rev-parse", "--short=12", "HEAD")
+		if err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_rev_parse_head", err)
+		}
+		result.CommitRef = "git-commit-" + strings.TrimSpace(sha.Stdout)
+		result.EvidenceRefs = append(result.EvidenceRefs, "git-commit-created", "git-clean-ahead-squashed")
+		if svc.shouldSignCommits() {
+			result.EvidenceRefs = append(result.EvidenceRefs, "git-commit-signed")
+		}
 	}
 	if _, err := svc.gitPush(ctx, workDir, branch); err != nil {
 		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_push", err)
@@ -320,6 +378,21 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 	result.PullRequestRef = prRef
 	result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed", "draft-pr-ready")
 	return result, nil
+}
+
+func (svc *Service) cleanAheadBaseRef(baseRef string) string {
+	remote := strings.TrimSpace(svc.options.RemoteName)
+	if remote == "" {
+		remote = "origin"
+	}
+	base := strings.TrimSpace(baseRef)
+	if base == "" {
+		base = "main"
+	}
+	if strings.HasPrefix(base, remote+"/") {
+		return base
+	}
+	return remote + "/" + strings.TrimPrefix(base, "/")
 }
 
 func (svc *Service) branchHasCommitsAhead(ctx context.Context, workDir string, baseRef string) bool {
@@ -523,14 +596,26 @@ func safeTestResult(command string, status string) string {
 }
 
 func (svc *Service) validatePushConfig() error {
+	if svc.options.SignCommits {
+		keyPath := strings.TrimSpace(svc.options.SSHPrivateKeyPath)
+		if keyPath == "" {
+			return fmt.Errorf("%w: signed commits require ssh private key", ErrInvalidInput)
+		}
+		if !filepath.IsAbs(keyPath) || strings.ContainsAny(keyPath, "\x00\r\n") {
+			return fmt.Errorf("%w: signing key path must be absolute and safe", ErrInvalidInput)
+		}
+		if err := requireReadableFile(keyPath); err != nil {
+			return fmt.Errorf("%w: signing key file is unavailable", ErrInvalidInput)
+		}
+	}
 	if !svc.options.PushAfterTask {
 		return nil
 	}
 	hasSSHKey := strings.TrimSpace(svc.options.SSHPrivateKeyPath) != ""
 	hasSSHKnownHosts := strings.TrimSpace(svc.options.SSHKnownHostsPath) != ""
-	hasSSH := hasSSHKey || hasSSHKnownHosts
 	hasGitHubTokenRef := strings.TrimSpace(svc.options.GitHubTokenEnv) != "" || strings.TrimSpace(svc.options.GitHubTokenFile) != ""
-	if hasSSH {
+	requiresSSHPushConfig := hasSSHKnownHosts || (hasSSHKey && !svc.options.SignCommits && !hasGitHubTokenRef)
+	if requiresSSHPushConfig {
 		if !hasSSHKey || !hasSSHKnownHosts {
 			return fmt.Errorf("%w: ssh key and known hosts are required for push", ErrInvalidInput)
 		}
@@ -562,6 +647,26 @@ func (svc *Service) validatePushConfig() error {
 		}
 	}
 	return nil
+}
+
+func (svc *Service) gitCommitArgs(args ...string) []string {
+	if !svc.shouldSignCommits() {
+		return args
+	}
+	keyPath := strings.TrimSpace(svc.options.SSHPrivateKeyPath)
+	prefix := []string{
+		"-c", "gpg.format=ssh",
+		"-c", "user.signingkey=" + keyPath,
+	}
+	out := append(prefix, args...)
+	if len(args) > 0 && args[0] == "commit" {
+		out = append(out[:len(prefix)+1], append([]string{"-S"}, out[len(prefix)+1:]...)...)
+	}
+	return out
+}
+
+func (svc *Service) shouldSignCommits() bool {
+	return svc.options.SignCommits || strings.TrimSpace(svc.options.SSHPrivateKeyPath) != ""
 }
 func (svc *Service) validateDraftPRAuth(ctx context.Context, workDir string) error {
 	if !svc.options.PushAfterTask || !svc.options.DraftPRAfterPush {
@@ -754,11 +859,12 @@ func (svc *Service) git(ctx context.Context, dir string, env []string, args ...s
 func (svc *Service) gitPush(ctx context.Context, workDir string, branch string) (CommandResult, error) {
 	args := []string{"push", svc.options.RemoteName, "HEAD:" + branch}
 	env := svc.gitSSHEnv()
-	if githubEnv := svc.githubEnv(); len(githubEnv) > 0 {
-		args = append([]string{"-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"}, args...)
+	remoteURL, remotePath, _ := svc.remoteURLAndLocalPath(ctx, workDir)
+	if githubEnv := svc.githubEnv(); len(githubEnv) > 0 && remoteNeedsGitHubCredentialHelper(remoteURL) {
+		args = append([]string{"-c", "credential.helper=", "-c", "credential.helper=!f() { test \"$1\" = get && echo username=x-access-token && echo password=$GH_TOKEN; }; f"}, args...)
 		env = append(env, githubEnv...)
 	}
-	if remotePath, err := svc.localRemoteSafeDirectory(ctx, workDir); err == nil && remotePath != "" {
+	if remotePath != "" {
 		if _, err := svc.git(ctx, workDir, nil, "config", "--global", "--add", "safe.directory", remotePath); err != nil {
 			return CommandResult{}, err
 		}
@@ -767,16 +873,30 @@ func (svc *Service) gitPush(ctx context.Context, workDir string, branch string) 
 	return svc.git(ctx, workDir, env, args...)
 }
 
-func (svc *Service) localRemoteSafeDirectory(ctx context.Context, workDir string) (string, error) {
+func (svc *Service) remoteURLAndLocalPath(ctx context.Context, workDir string) (string, string, error) {
 	remote := strings.TrimSpace(svc.options.RemoteName)
 	if remote == "" {
 		remote = "origin"
 	}
 	result, err := svc.git(ctx, workDir, nil, "config", "--get", "remote."+remote+".url")
 	if err != nil {
+		return "", "", err
+	}
+	remoteURL := strings.TrimSpace(result.Stdout)
+	return remoteURL, safeLocalRemotePath(remoteURL), nil
+}
+
+func remoteNeedsGitHubCredentialHelper(remoteURL string) bool {
+	remoteURL = strings.ToLower(strings.TrimSpace(remoteURL))
+	return strings.HasPrefix(remoteURL, "https://") || strings.HasPrefix(remoteURL, "http://")
+}
+
+func (svc *Service) localRemoteSafeDirectory(ctx context.Context, workDir string) (string, error) {
+	_, remotePath, err := svc.remoteURLAndLocalPath(ctx, workDir)
+	if err != nil {
 		return "", err
 	}
-	return safeLocalRemotePath(strings.TrimSpace(result.Stdout)), nil
+	return remotePath, nil
 }
 
 func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) error {
@@ -852,9 +972,76 @@ func gitOpsStageFailure(stage string, err error) error {
 func (svc *Service) run(ctx context.Context, command Command) (CommandResult, error) {
 	result, err := svc.runner.Run(ctx, command)
 	if err != nil {
-		return result, fmt.Errorf("%w: %s", ErrCommandFailed, commandFailureDetail(command))
+		detail := commandFailureDetail(command)
+		output := safeCommandFailureOutput(result)
+		if output != "" {
+			detail += "_" + output
+		}
+		return result, fmt.Errorf("%w: %s", ErrCommandFailed, detail)
 	}
 	return result, nil
+}
+
+func safeCommandFailureOutput(result CommandResult) string {
+	output := strings.TrimSpace(result.Stderr)
+	if output == "" {
+		output = strings.TrimSpace(result.Stdout)
+	}
+	if output == "" {
+		return ""
+	}
+	output = redactCommandFailureOutput(output)
+	parts := make([]string, 0, 12)
+	for _, match := range regexp.MustCompile(`\b(400|401|403|404|408|409|429|500|502|503|504|128)\b`).FindAllString(output, -1) {
+		parts = append(parts, "status_"+match)
+		if len(parts) >= 3 {
+			break
+		}
+	}
+	for _, field := range strings.Fields(output) {
+		token := safeFailureToken(field)
+		if token == "" || isLowSignalFailureToken(token) {
+			continue
+		}
+		parts = append(parts, token)
+		if len(parts) >= 12 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	out := strings.Join(parts, "_")
+	if len(out) > 120 {
+		return strings.TrimRight(out[:120], "_")
+	}
+	return out
+}
+
+func redactCommandFailureOutput(output string) string {
+	replacers := []struct {
+		pattern *regexp.Regexp
+		value   string
+	}{
+		{regexp.MustCompile(`(?i)(gh[pousr]_[A-Za-z0-9_]{20,})`), "redacted"},
+		{regexp.MustCompile(`(?i)(github_pat_[A-Za-z0-9_]{20,})`), "redacted"},
+		{regexp.MustCompile(`(?i)(x-access-token:)[^@\s]+`), "${1}redacted"},
+		{regexp.MustCompile(`(?i)(password=)[^\s]+`), "${1}redacted"},
+		{regexp.MustCompile(`(?i)(token=)[^\s]+`), "${1}redacted"},
+	}
+	for _, replacer := range replacers {
+		output = replacer.pattern.ReplaceAllString(output, replacer.value)
+	}
+	return output
+}
+
+func isLowSignalFailureToken(token string) bool {
+	switch token {
+	case "fatal", "error", "remote", "origin", "https", "http", "github", "com", "git", "to", "from", "the", "a", "an", "and", "or", "for", "access", "token":
+		return true
+	default:
+		return token == "redacted" || len(token) < 3
+	}
 }
 
 func commandFailureDetail(command Command) string {
@@ -864,7 +1051,7 @@ func commandFailureDetail(command Command) string {
 		if arg == "" {
 			continue
 		}
-		if arg == "-c" && index+1 < len(command.Args) && strings.HasPrefix(command.Args[index+1], "safe.directory=") {
+		if arg == "-c" && index+1 < len(command.Args) {
 			index++
 			continue
 		}
@@ -961,6 +1148,9 @@ func invalidInputFailureDetail(message string) string {
 		{needle: "github token env is unavailable", detail: "github_token_unavailable"},
 		{needle: "github token file path must be absolute", detail: "github_token_file_invalid"},
 		{needle: "github token file is unavailable", detail: "github_token_unavailable"},
+		{needle: "signed commits require ssh private key", detail: "signing_key_required"},
+		{needle: "signing key path must be absolute", detail: "signing_key_invalid"},
+		{needle: "signing key file is unavailable", detail: "signing_key_unavailable"},
 		{needle: "github auth is unavailable", detail: "github_auth_unavailable"},
 		{needle: "no safe task pathspecs", detail: "no_safe_task_pathspecs"},
 		{needle: "no changed files matched safe task pathspecs", detail: "no_changed_files_matched"},
@@ -1211,6 +1401,9 @@ func pathMatchesAllowedPathspec(path, allow string) bool {
 	allow = strings.TrimSuffix(strings.TrimSpace(allow), "/")
 	if allow == "" {
 		return false
+	}
+	if allow == "." {
+		return true
 	}
 	return path == allow || strings.HasPrefix(path, allow+"/")
 }

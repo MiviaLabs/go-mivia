@@ -236,7 +236,7 @@ func run() error {
 	projectConfidenceService := projectconfidence.New(confidencestore.NewLadybugStore(projectGraph))
 	projectKnowledgeService := projectknowledge.New(knowledgestore.NewLadybugStore(projectGraph))
 	projectWorkPlanService := projectworkplan.New(workplanstore.NewLadybugStore(metadataPersistentGraph))
-	projectWorkflowService := projectworkflow.New(workflowstore.NewMemoryStore())
+	projectWorkflowService := projectworkflow.New(workflowstore.NewLadybugStore(metadataPersistentGraph))
 	projectAutomationService := projectautomation.New(automationstore.NewLadybugStore(metadataPersistentGraph), projectWorkPlanService, projectautomation.Options{
 		Enabled:                   cfg.Automation.Enabled,
 		RunnerEnabled:             cfg.Automation.RunnerEnabled,
@@ -273,6 +273,7 @@ func run() error {
 		return err
 	}
 	projectWorkflowChainService := projectworkflowchain.New(chainstore.NewLadybugStore(metadataPersistentGraph), projectWorkflowService, projectWorkPlanService, workflowChainConfigs(cfg))
+	projectWorkflowChainService.SetAutomationAPI(projectAutomationService)
 	projectWorkflowChainService.SetLocalContextReader(projectIntegrationService)
 	projectWorkPlanService.SetStatusChangeHandler(workPlanStatusFanout{handlers: []projectworkplan.WorkPlanStatusChangeHandler{projectAutomationService, projectWorkflowChainService}})
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
@@ -618,7 +619,7 @@ func firstChainTaskID(input projectworkflowchain.GitOpsFinalizeInput) string {
 func gitOpsOptionsForServerProject(cfg config.Config, projectID string) projectgitops.Options {
 	gitops := cfg.GitOperations
 	for _, project := range cfg.Projects {
-		if project.ID == projectID && project.GitOperations != nil {
+		if configProjectMatchesID(project, projectID) && project.GitOperations != nil {
 			gitops = mergeServerGitOps(gitops, *project.GitOperations)
 			break
 		}
@@ -636,6 +637,7 @@ func gitOpsOptionsForServerProject(cfg config.Config, projectID string) projectg
 		CommitAuthorName:             gitops.CommitAuthorName,
 		CommitAuthorEmailEnv:         gitops.CommitAuthorEmailEnv,
 		CommitAuthorEmailFile:        gitops.CommitAuthorEmailFile,
+		SignCommits:                  gitops.SignCommits,
 		SSHPrivateKeyPath:            gitops.SSHPrivateKeyPath,
 		SSHPublicKeyPath:             gitops.SSHPublicKeyPath,
 		SSHKnownHostsPath:            gitops.SSHKnownHostsPath,
@@ -692,6 +694,9 @@ func mergeServerGitOps(base config.GitOperations, override config.GitOperations)
 	if strings.TrimSpace(override.CommitAuthorEmailFile) != "" {
 		merged.CommitAuthorEmailFile = override.CommitAuthorEmailFile
 	}
+	if override.SignCommits {
+		merged.SignCommits = true
+	}
 	if strings.TrimSpace(override.SSHPrivateKeyPath) != "" {
 		merged.SSHPrivateKeyPath = override.SSHPrivateKeyPath
 	}
@@ -712,6 +717,22 @@ func mergeServerGitOps(base config.GitOperations, override config.GitOperations)
 	}
 	merged.Conventions = mergeServerGitOpsConventions(merged.Conventions, override.Conventions)
 	return merged
+}
+
+func configProjectMatchesID(project config.Project, projectID string) bool {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(project.ID), projectID) {
+		return true
+	}
+	for _, alias := range project.Aliases {
+		if strings.EqualFold(strings.TrimSpace(alias), projectID) {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeServerGitOpsConventions(base config.GitOpsConventions, override config.GitOpsConventions) config.GitOpsConventions {
@@ -743,7 +764,7 @@ func mergeServerGitOpsConventions(base config.GitOpsConventions, override config
 func gitOpsVerificationForServerProject(cfg config.Config, projectID string) projectgitops.VerificationProfile {
 	verification := cfg.Verification
 	for _, project := range cfg.Projects {
-		if project.ID == projectID && project.Verification != nil {
+		if configProjectMatchesID(project, projectID) && project.Verification != nil {
 			verification = *project.Verification
 			break
 		}

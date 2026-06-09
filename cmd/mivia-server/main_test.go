@@ -537,3 +537,16 @@ func containsServerString(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestConfigProjectMatchesIDAcceptsAliases(t *testing.T) {
+	project := config.Project{ID: "generic-monorepo", Aliases: []string{"external-monorepo"}}
+	if !configProjectMatchesID(project, "external-monorepo") {
+		t.Fatalf("expected alias to match project")
+	}
+	if !configProjectMatchesID(project, "GENERIC-MONOREPO") {
+		t.Fatalf("expected canonical id match to be case-insensitive")
+	}
+	if configProjectMatchesID(project, "other-monorepo") {
+		t.Fatalf("did not expect unrelated id to match")
+	}
+}

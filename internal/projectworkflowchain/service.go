@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
@@ -31,8 +32,14 @@ type WorkPlanAPI interface {
 	GetWorkPlan(context.Context, string, string) (projectworkplan.WorkPlan, error)
 	GetWorkTask(context.Context, string, string) (projectworkplan.WorkTask, error)
 	ListOpenWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error)
+	CreateWorkTask(context.Context, projectworkplan.CreateWorkTaskInput) (projectworkplan.WorkTask, error)
 	UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
 	UpdateWorkTaskStatus(context.Context, projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error)
+}
+
+type AutomationAPI interface {
+	CreateAutomation(context.Context, projectautomation.CreateAutomationInput) (projectautomation.Automation, error)
+	ListAutomations(context.Context, projectautomation.AutomationFilter) ([]projectautomation.Automation, error)
 }
 
 type GitOpsFinalizer interface {
@@ -72,6 +79,7 @@ type Service struct {
 	store           Store
 	workflows       WorkflowAPI
 	workPlans       WorkPlanAPI
+	automations     AutomationAPI
 	gitOpsFinalizer GitOpsFinalizer
 	localContexts   LocalContextReader
 	configs         []Config
@@ -85,6 +93,10 @@ func New(store Store, workflows WorkflowAPI, workPlans WorkPlanAPI, configs []Co
 
 func (svc *Service) SetGitOpsFinalizer(finalizer GitOpsFinalizer) {
 	svc.gitOpsFinalizer = finalizer
+}
+
+func (svc *Service) SetAutomationAPI(automations AutomationAPI) {
+	svc.automations = automations
 }
 
 func (svc *Service) SetLocalContextReader(reader LocalContextReader) {
@@ -689,6 +701,9 @@ func (svc *Service) compileStageMetadata(ctx context.Context, cfg Config, run Ch
 }
 
 func (svc *Service) activateCompiledStage(ctx context.Context, cfg Config, run ChainRun, compiled projectworkflow.WorkflowCompileResult) error {
+	if err := svc.carryForwardStageOutputTasks(ctx, cfg.ProjectID, run, compiled); err != nil {
+		return err
+	}
 	if err := svc.releaseCompiledTasks(ctx, cfg.ProjectID, compiled, run); err != nil {
 		return err
 	}
@@ -705,6 +720,201 @@ func (svc *Service) activateCompiledStage(ctx context.Context, cfg Config, run C
 		}
 	}
 	return nil
+}
+
+func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID string, run ChainRun, compiled projectworkflow.WorkflowCompileResult) error {
+	if svc.workPlans == nil || compiled.WorkPlanID == "" || len(run.StageRuns) == 0 {
+		return nil
+	}
+	var previous StageRun
+	for i := len(run.StageRuns) - 1; i >= 0; i-- {
+		if run.StageRuns[i].Status == StageStatusCompleted && run.StageRuns[i].WorkPlanID != "" {
+			previous = run.StageRuns[i]
+			break
+		}
+	}
+	if previous.WorkPlanID == "" {
+		return nil
+	}
+	sourceTasks, err := svc.workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: previous.WorkPlanID})
+	if err != nil {
+		return err
+	}
+	targetTasks, err := svc.workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: compiled.WorkPlanID})
+	if err != nil {
+		return err
+	}
+	existingTasksByRef := map[string]projectworkplan.WorkTask{}
+	for _, task := range targetTasks {
+		existingTasksByRef[task.TaskRef] = task
+	}
+	compiledTaskIDs := map[string]struct{}{}
+	for _, taskID := range previous.WorkTaskIDs {
+		compiledTaskIDs[taskID] = struct{}{}
+	}
+	carriedRefs := map[string]struct{}{}
+	for _, task := range sourceTasks {
+		if !chainStageOutputTask(task, compiledTaskIDs) {
+			continue
+		}
+		carriedRefs[task.TaskRef] = struct{}{}
+	}
+	for _, task := range sourceTasks {
+		if !chainStageOutputTask(task, compiledTaskIDs) {
+			continue
+		}
+		if existing, exists := existingTasksByRef[task.TaskRef]; exists {
+			if err := svc.ensureCarriedImplementationAutomation(ctx, projectID, compiled.WorkPlanID, run, existing); err != nil {
+				return err
+			}
+			continue
+		}
+		status := projectworkplan.WorkTaskStatusPlanned
+		if carriedTaskDependenciesReady(task, carriedRefs) {
+			status = projectworkplan.WorkTaskStatusReady
+		}
+		created, err := svc.workPlans.CreateWorkTask(ctx, carriedTaskCreateInput(projectID, compiled.WorkPlanID, run, task, status))
+		if err != nil {
+			return err
+		}
+		if err := svc.ensureCarriedImplementationAutomation(ctx, projectID, compiled.WorkPlanID, run, created); err != nil {
+			return err
+		}
+		existingTasksByRef[created.TaskRef] = created
+	}
+	return nil
+}
+
+func (svc *Service) ensureCarriedImplementationAutomation(ctx context.Context, projectID string, planID string, run ChainRun, task projectworkplan.WorkTask) error {
+	if svc == nil || svc.automations == nil || strings.TrimSpace(task.TaskRef) == "" {
+		return nil
+	}
+	automations, err := svc.automations.ListAutomations(ctx, projectautomation.AutomationFilter{ProjectID: projectID, Status: projectautomation.AutomationStatusEnabled, AgentID: "implementation-worker"})
+	if err != nil {
+		return err
+	}
+	for _, automation := range automations {
+		if automation.PlanID == planID && containsRefString(automation.AllowedTaskRefs, task.TaskRef) {
+			return nil
+		}
+	}
+	_, err = svc.automations.CreateAutomation(ctx, projectautomation.CreateAutomationInput{
+		ProjectID:       projectID,
+		AutomationRef:   carriedImplementationAutomationRef(run, task),
+		Title:           "Run Carried Implementation Task",
+		Purpose:         "Execute a carried implementation Work Task generated by a completed prior workflow stage.",
+		Status:          projectautomation.AutomationStatusEnabled,
+		AgentID:         "implementation-worker",
+		PlanID:          planID,
+		AllowedTaskRefs: []string{task.ID, task.TaskRef},
+		TriggerKind:     projectautomation.TriggerKindAutomatic,
+		SchedulePolicy:  "on-ready-task",
+		PermissionRef:   "permission_snapshot:permission-snapshot-workflow-workplan-implementation-implementation-worker",
+		SourceKind:      projectautomation.AutomationSourceWorkflow,
+		CreatedByRunID:  firstNonEmpty(run.CreatedByRunID, run.ID),
+		TraceID:         run.TraceID,
+	})
+	return err
+}
+
+func carriedImplementationAutomationRef(run ChainRun, task projectworkplan.WorkTask) string {
+	return "carried-implementation:" + safeAutomationToken(firstNonEmpty(run.ID, run.CreatedByRunID, "chain-run")) + ":" + safeAutomationToken(task.TaskRef)
+}
+
+func containsRefString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func safeAutomationToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.' || r == ':':
+			b.WriteRune(r)
+		case r == '/' || r == '\\' || r == ' ' || r == '\t' || r == '\n':
+			if b.Len() > 0 && !strings.HasSuffix(b.String(), "-") {
+				b.WriteByte('-')
+			}
+		}
+		if b.Len() >= 80 {
+			break
+		}
+	}
+	out := strings.Trim(b.String(), "-_.:")
+	if out == "" {
+		return "ref"
+	}
+	return out
+}
+
+func chainStageOutputTask(task projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}) bool {
+	if _, compiled := compiledTaskIDs[task.ID]; compiled {
+		return false
+	}
+	if task.Status == projectworkplan.WorkTaskStatusDone || task.Status == projectworkplan.WorkTaskStatusFailed || task.Status == projectworkplan.WorkTaskStatusCancelled || task.Status == projectworkplan.WorkTaskStatusSuperseded {
+		return false
+	}
+	if strings.TrimSpace(task.TaskRef) == "" || strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-") {
+		return false
+	}
+	return task.DecompositionQuality == projectworkplan.DecompositionReady && len(task.FilesToEdit) > 0
+}
+
+func carriedTaskDependenciesReady(task projectworkplan.WorkTask, carriedRefs map[string]struct{}) bool {
+	for _, dep := range task.DependencyTaskIDs {
+		if _, carried := carriedRefs[dep]; carried {
+			return false
+		}
+	}
+	return true
+}
+
+func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task projectworkplan.WorkTask, status string) projectworkplan.CreateWorkTaskInput {
+	return projectworkplan.CreateWorkTaskInput{
+		ProjectID:               projectID,
+		PlanID:                  planID,
+		TaskRef:                 task.TaskRef,
+		Title:                   task.Title,
+		Description:             task.Description,
+		Status:                  status,
+		OwnerAgent:              "implementation-worker",
+		RunID:                   firstNonEmpty(run.CreatedByRunID, run.ID),
+		TraceID:                 run.TraceID,
+		EvidenceNeeded:          append([]string(nil), task.EvidenceNeeded...),
+		ContextPackRefs:         append([]string(nil), task.ContextPackRefs...),
+		FilesToRead:             append([]string(nil), task.FilesToRead...),
+		FilesToEdit:             append([]string(nil), task.FilesToEdit...),
+		LikelyFilesAffected:     append([]string(nil), task.LikelyFilesAffected...),
+		DependencyTaskIDs:       append([]string(nil), task.DependencyTaskIDs...),
+		VerificationRequirement: task.VerificationRequirement,
+		GitOpsVerificationMode:  task.GitOpsVerificationMode,
+		ExpectedOutput:          task.ExpectedOutput,
+		FailureCriteria:         task.FailureCriteria,
+		ReviewGate:              task.ReviewGate,
+		ResumeInstructions:      task.ResumeInstructions,
+		EvidenceRefs:            append([]string(nil), task.EvidenceRefs...),
+		ClaimRefs:               append([]string(nil), task.ClaimRefs...),
+		VerifierResultRefs:      append([]string(nil), task.VerifierResultRefs...),
+		ReviewResultRefs:        append([]string(nil), task.ReviewResultRefs...),
+		ReviewExemptReason:      task.ReviewExemptReason,
+		ArtifactRefs:            append([]string(nil), task.ArtifactRefs...),
+		AgentRunIDs:             append([]string(nil), task.AgentRunIDs...),
+		DecompositionQuality:    task.DecompositionQuality,
+		AcceptanceCriteria:      append([]string(nil), task.AcceptanceCriteria...),
+		StopConditions:          append([]string(nil), task.StopConditions...),
+		VerifierLadder:          append([]string(nil), task.VerifierLadder...),
+		RegressionApplicability: task.RegressionApplicability,
+		DownstreamImpactRefs:    append([]string(nil), task.DownstreamImpactRefs...),
+		OutputContract:          task.OutputContract,
+	}
 }
 
 func (svc *Service) releaseCompiledTasks(ctx context.Context, projectID string, compiled projectworkflow.WorkflowCompileResult, run ChainRun) error {

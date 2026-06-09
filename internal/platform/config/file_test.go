@@ -327,6 +327,7 @@ workspace_mode = "edit"
 [projects.git_operations]
 branch_prefix = ""
 branch_name_pattern = "^(feat|fix|docs)-ABC-[0-9]+(-[a-z0-9-]+)*$"
+sign_commits = true
 
 [projects.git_operations.dirty_scope_recovery]
 allowed_support_pathspecs = [".codex", ".github"]
@@ -361,6 +362,9 @@ tests_template = "{{test_results}}"
 	}
 	if projectGitOps.BranchPrefix != "" || projectGitOps.BranchNamePattern == "" {
 		t.Fatalf("expected project branch policy override, got %+v", projectGitOps)
+	}
+	if !projectGitOps.SignCommits {
+		t.Fatalf("expected project signed commits override, got %+v", projectGitOps)
 	}
 	if projectGitOps.Conventions.CommitType != "docs" || !strings.Contains(projectGitOps.Conventions.WhatChangedTemplate, "Summary") {
 		t.Fatalf("expected project convention override, got %+v", projectGitOps.Conventions)

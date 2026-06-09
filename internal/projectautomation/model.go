@@ -260,6 +260,11 @@ type SubmitRunInput struct {
 	SafeNextAction    string   `json:"safe_next_action,omitempty"`
 }
 
+type ResetGitOpsRecoveryInput struct {
+	ProjectID string `json:"project_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+}
+
 type CreateRemediationFromFindingInput struct {
 	ProjectID               string   `json:"project_id,omitempty"`
 	FindingRef              string   `json:"finding_ref"`

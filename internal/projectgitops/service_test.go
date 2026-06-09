@@ -21,6 +21,9 @@ func (runner *recordingRunner) Run(_ context.Context, command Command) (CommandR
 	runner.commands = append(runner.commands, command)
 	idx := len(runner.commands) - 1
 	if idx < len(runner.errs) && runner.errs[idx] != nil {
+		if idx < len(runner.results) {
+			return runner.results[idx], runner.errs[idx]
+		}
 		return CommandResult{}, runner.errs[idx]
 	}
 	if idx < len(runner.results) {
@@ -41,6 +44,19 @@ func testGitOpsCredentialFiles(t *testing.T) (string, string) {
 		t.Fatalf("write test known hosts: %v", err)
 	}
 	return keyPath, knownHostsPath
+}
+
+func testGitOpsSigningKey(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skipf("ssh-keygen unavailable: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "id_ed25519")
+	cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-N", "", "-f", keyPath, "-C", "automation@example.test")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generate ssh signing key: %v\n%s", err, string(out))
+	}
+	return keyPath
 }
 
 func mustWriteGitOpsFixture(t *testing.T, root string, relativePath string, content string) {
@@ -115,6 +131,179 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	}
 }
 
+func TestPostTaskSignsCommitWhenConfigured(t *testing.T) {
+	sshKey, _ := testGitOpsCredentialFiles(t)
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M internal/projectgitops/service.go\n"},
+		{Stdout: "feature/any-valid-branch\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		SignCommits:          true,
+		SSHPrivateKeyPath:    sshKey,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+		GitHubCLIPath:        "gh",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"internal/projectgitops"},
+	})
+	if err != nil {
+		t.Fatalf("expected signed post task commit to succeed: %v", err)
+	}
+	commitArgs := strings.Join(runner.commands[5].Args, "\n")
+	for _, want := range []string{"gpg.format=ssh", "user.signingkey=" + sshKey, "commit", "-S", "-m"} {
+		if !strings.Contains(commitArgs, want) {
+			t.Fatalf("expected signed commit args to contain %q, got %#v", want, runner.commands[5].Args)
+		}
+	}
+}
+
+func TestPostTaskSignsCommitWhenSSHKeyConfigured(t *testing.T) {
+	sshKey, _ := testGitOpsCredentialFiles(t)
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M internal/projectgitops/service.go\n"},
+		{Stdout: "feature/any-valid-branch\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		SSHPrivateKeyPath:    sshKey,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	if _, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"internal/projectgitops"},
+	}); err != nil {
+		t.Fatalf("expected ssh-key-backed signed commit to succeed: %v", err)
+	}
+	if got := strings.Join(runner.commands[5].Args, "\n"); !strings.Contains(got, "-S") || !strings.Contains(got, "user.signingkey="+sshKey) {
+		t.Fatalf("expected signed commit args, got %#v", runner.commands[5].Args)
+	}
+}
+
+func TestPostTaskSigningRequiresPrivateKey(t *testing.T) {
+	svc := NewWithRunner(Options{
+		Enabled:         true,
+		CommitAfterTask: true,
+		SignCommits:     true,
+	}, &recordingRunner{})
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		AllowedPathspecs: []string{"."},
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected invalid input for missing signing key, got %v", err)
+	}
+	if got := FailureCategoryWithDetail(err); got != "gitops_invalid_input_signing_key_required" {
+		t.Fatalf("unexpected failure category: %q", got)
+	}
+}
+
+func TestPostTaskSignsAmendedCommitWhenVerificationAddsResults(t *testing.T) {
+	sshKey, _ := testGitOpsCredentialFiles(t)
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M internal/projectgitops/service.go\n"},
+		{Stdout: "feature/any-valid-branch\n"},
+		{},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		SignCommits:          true,
+		SSHPrivateKeyPath:    sshKey,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+		GitHubCLIPath:        "gh",
+		Verification: VerificationProfile{
+			AlwaysBeforePR: []string{"go test ./..."},
+		},
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"internal/projectgitops"},
+	})
+	if err != nil {
+		t.Fatalf("expected signed amend to succeed: %v", err)
+	}
+	amendArgs := ""
+	for _, command := range runner.commands {
+		joined := strings.Join(command.Args, "\n")
+		if strings.Contains(joined, "--amend") {
+			amendArgs = joined
+			break
+		}
+	}
+	if amendArgs == "" {
+		t.Fatalf("expected signed amend command, got %#v", runner.commands)
+	}
+	for _, want := range []string{"gpg.format=ssh", "user.signingkey=" + sshKey, "commit", "-S", "--amend"} {
+		if !strings.Contains(amendArgs, want) {
+			t.Fatalf("expected signed amend args to contain %q, got %q", want, amendArgs)
+		}
+	}
+}
+
+func TestWholeTreePathspecMatchesAllSafeChangedPaths(t *testing.T) {
+	changed := []string{
+		"apps/domain/src/service.ts",
+		"apps/domain/src/module.ts",
+		"packages/contracts/src/schema.ts",
+	}
+	if outside := changedPathspecsOutsideAllowedFromPaths(changed, []string{"."}); len(outside) != 0 {
+		t.Fatalf("expected whole-tree pathspec to allow all safe changed paths, got %#v", outside)
+	}
+	within := changedPathspecsWithinAllowedFromPaths(changed, []string{"."})
+	if strings.Join(within, ",") != strings.Join(changed, ",") {
+		t.Fatalf("expected whole-tree pathspec to include all safe changed paths, got %#v", within)
+	}
+}
+
 func TestPostTaskPushesWithoutExplicitSSHCredentials(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
@@ -180,11 +369,17 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 			{},
 			{},
 			{},
+			{},
 			{Stdout: "https://github.com/example/repo.git\n"},
 			{},
 			{Stdout: "https://github.com/example/repo/pull/123\n"},
 		},
 		errs: []error{
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -249,6 +444,149 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 	}
 }
 
+func TestPostTaskCleanAheadBranchSignsExistingCommitBeforePush(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{},
+			{Stdout: "1\n"},
+			{},
+			{},
+			{Stdout: "abc123def456\n"},
+			{Stdout: "https://github.com/example/repo.git\n"},
+			{},
+			{Stdout: "https://github.com/example/repo/pull/123\n"},
+		},
+		errs: []error{
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			errors.New("no existing pr"),
+		},
+	}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		DraftPRAfterPush:     true,
+		SignCommits:          true,
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
+		GitHubTokenEnv:       "GH_TOKEN",
+		GitHubCLIPath:        "gh",
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+	}, runner)
+	t.Setenv("GH_TOKEN", "token")
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:         "/tmp/worktree",
+		ProjectID:       "generic-monorepo",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "workflow-chain-finalize",
+		TaskTitle:       "jira:GENERIC-1044 final GitOps",
+		BranchName:      "chore-GENERIC-1044-governed-workplan-implementation",
+		AutomationID:    "workflow-chain-gitops",
+		AutomationRunID: "workflow_chain_run_1",
+		OperatorID:      "mivia-workflow-chain",
+		ReviewRefs:      []string{"review/ref"},
+		VerifierRefs:    []string{"verifier/ref"},
+		TestResults:     []string{"post-validation completed"},
+	})
+	if err != nil {
+		t.Fatalf("expected clean ahead signed push to succeed: %v", err)
+	}
+	if !containsString(result.EvidenceRefs, "git-commit-signed") {
+		t.Fatalf("expected signed commit evidence, got %#v", result.EvidenceRefs)
+	}
+	joined := commandArgs(runner.commands)
+	for _, want := range []string{"reset --soft origin/main", "commit -S -m", "gpg.format=ssh", "user.signingkey=" + sshKey, "rev-parse --short=12 HEAD", "push origin HEAD:chore-GENERIC-1044-governed-workplan-implementation"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected clean-ahead commands to contain %q, got %q", want, joined)
+		}
+	}
+}
+
+func TestPostTaskCleanAheadBranchStagesGeneratedArtifactsBeforePush(t *testing.T) {
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{},
+			{Stdout: "1\n"},
+			{},
+			{},
+			{Stdout: " M packages/contracts/dist/openapi.json\n M packages/contracts/dist/openapi.yaml\n"},
+			{},
+			{Stdout: "M  packages/contracts/dist/openapi.json\nM  packages/contracts/dist/openapi.yaml\n"},
+			{},
+			{},
+			{Stdout: "abc123def456\n"},
+			{Stdout: "https://github.com/example/repo.git\n"},
+			{Stdout: "https://github.com/example/repo/pull/123\n"},
+		},
+	}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		DraftPRAfterPush:     true,
+		RemoteName:           "origin",
+		BranchNamePattern:    "^(feat|fix|docs|chore)-GENERIC-[0-9]+(-[a-z0-9-]+)*$",
+		GitHubTokenEnv:       "GH_TOKEN",
+		GitHubCLIPath:        "gh",
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		Verification: VerificationProfile{
+			GeneratedArtifacts: []GeneratedArtifactVerifier{{
+				Paths:            []string{"packages/contracts/dist/openapi.json", "packages/contracts/dist/openapi.yaml"},
+				Command:          "pnpm -s nx run contracts:verify-openapi",
+				RequiredBeforePR: true,
+			}},
+		},
+	}, runner)
+	t.Setenv("GH_TOKEN", "token")
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:         "/tmp/worktree",
+		ProjectID:       "generic-monorepo",
+		PlanID:          "work_plan_1",
+		TaskID:          "work_task_1",
+		TaskRef:         "workflow-chain-finalize",
+		TaskTitle:       "jira:GENERIC-1044 final GitOps",
+		BranchName:      "chore-GENERIC-1044-governed-workplan-implementation",
+		AutomationID:    "workflow-chain-gitops",
+		AutomationRunID: "workflow_chain_run_1",
+		OperatorID:      "mivia-workflow-chain",
+	})
+	if err != nil {
+		t.Fatalf("expected clean ahead generated artifact finalization to succeed: %v; commands=%s", err, commandArgs(runner.commands))
+	}
+	joined := commandArgs(runner.commands)
+	for _, want := range []string{
+		"add -- packages/contracts/dist/openapi.json packages/contracts/dist/openapi.yaml",
+		"reset --soft origin/main",
+		"commit -m",
+		"push origin HEAD:chore-GENERIC-1044-governed-workplan-implementation",
+		"pr view",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected clean-ahead generated artifact commands to contain %q, got %q", want, joined)
+		}
+	}
+	if !containsString(result.EvidenceRefs, "git-generated-artifacts-staged") || !containsString(result.EvidenceRefs, "git-clean-ahead-squashed") {
+		t.Fatalf("expected generated artifact staging and squash evidence, got %#v", result.EvidenceRefs)
+	}
+}
+
 func TestPostTaskPushUsesGitHubTokenCredentialHelper(t *testing.T) {
 	runner := &recordingRunner{results: []CommandResult{
 		{},
@@ -289,16 +627,80 @@ func TestPostTaskPushUsesGitHubTokenCredentialHelper(t *testing.T) {
 	}
 	push := runner.commands[len(runner.commands)-1]
 	joinedArgs := strings.Join(push.Args, "\n")
-	for _, want := range []string{"credential.helper=", "credential.helper=!gh auth git-credential", "push", "HEAD:chore-GENERIC-0000-smoke"} {
+	for _, want := range []string{"credential.helper=", "credential.helper=!f()", "password=$GH_TOKEN", "push", "HEAD:chore-GENERIC-0000-smoke"} {
 		if !strings.Contains(joinedArgs, want) {
 			t.Fatalf("expected push args to contain %q, got %#v", want, push.Args)
 		}
+	}
+	if strings.Contains(joinedArgs, "gh auth git-credential") || strings.Contains(joinedArgs, "test-token") {
+		t.Fatalf("expected push args not to invoke gh helper or expose token, got %#v", push.Args)
 	}
 	if !containsEnv(push.Env, "GH_TOKEN=test-token") {
 		t.Fatalf("expected GH_TOKEN env on push command, got %+v", push.Env)
 	}
 	if hasEnvPrefix(push.Env, "GIT_SSH_COMMAND=") {
 		t.Fatalf("did not expect SSH env for token-only push, got %+v", push.Env)
+	}
+}
+
+func TestPostTaskPushFailureIncludesRedactedCommandOutputDetail(t *testing.T) {
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{Stdout: " M .agentic/automation-smoke.md\n"},
+			{Stdout: "chore-GENERIC-0000-smoke\n"},
+			{},
+			{},
+			{},
+			{Stdout: "abc123def456\n"},
+			{Stdout: "https://github.com/example/repo.git\n"},
+			{
+				Stderr: "remote: Permission to example/repo.git denied to x-access-token:ghp_SECRETSECRETSECRETSECRET.\nfatal: unable to access 'https://github.com/example/repo.git/': The requested URL returned error: 403\n",
+			},
+		},
+		errs: []error{
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			errors.New("exit status 128"),
+		},
+	}
+	t.Setenv("GH_TOKEN", "ghp_SECRETSECRETSECRETSECRET")
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		RemoteName:        "origin",
+		GitHubTokenEnv:    "GH_TOKEN",
+		BranchNamePattern: "^chore-GENERIC-[0-9]+(-[a-z0-9-]+)*$",
+	}, runner)
+
+	_, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{".agentic/automation-smoke.md"},
+	})
+	if !errors.Is(err, ErrCommandFailed) {
+		t.Fatalf("expected command failure, got %v", err)
+	}
+	if strings.Contains(err.Error(), "ghp_SECRET") || strings.Contains(FailureCategoryWithDetail(err), "ghp_secret") {
+		t.Fatalf("failure detail must not expose token: err=%q category=%q", err.Error(), FailureCategoryWithDetail(err))
+	}
+	category := FailureCategoryWithDetail(err)
+	for _, want := range []string{"gitops_command_failed_git_push_origin", "permission", "denied", "403"} {
+		if !strings.Contains(category, want) {
+			t.Fatalf("expected category to contain %q, got %q from err %q", want, category, err.Error())
+		}
 	}
 }
 
@@ -450,6 +852,84 @@ func TestPostTaskLiveLocalRemotePushAndDraftPRHandoff(t *testing.T) {
 	}
 }
 
+func TestPostTaskLiveLocalRemotePushEmbedsSSHCommitSignature(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o700); err != nil {
+		t.Fatalf("create temp git home: %v", err)
+	}
+	signingKey := testGitOpsSigningKey(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+
+	remoteDir := filepath.Join(root, "remote.git")
+	workDir := filepath.Join(root, "work")
+	runGitCommand(t, root, "init", "--bare", remoteDir)
+	runGitCommand(t, root, "init", "-b", "main", workDir)
+	runGitCommand(t, workDir, "config", "user.name", "Test User")
+	runGitCommand(t, workDir, "config", "user.email", "test@example.test")
+	mustWriteGitOpsFixture(t, workDir, "README.md", "seed\n")
+	runGitCommand(t, workDir, "add", "README.md")
+	runGitCommand(t, workDir, "commit", "-m", "chore: seed")
+	seedMain := strings.TrimSpace(runGitCommand(t, workDir, "rev-parse", "HEAD"))
+	runGitCommand(t, workDir, "remote", "add", "local-smoke", remoteDir)
+	runGitCommand(t, workDir, "push", "local-smoke", "main")
+	mustWriteGitOpsFixture(t, workDir, ".agentic/automation-smoke.md", "signed smoke input ref: input:live-generic-signature\n")
+
+	svc := New(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		RemoteName:           "local-smoke",
+		BranchNamePattern:    "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$",
+		SignCommits:          true,
+		SSHPrivateKeyPath:    signingKey,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		Conventions: Conventions{
+			CommitType:            "chore",
+			CommitScope:           "smoke",
+			CommitSummaryTemplate: "complete {{work_task_ref}}",
+		},
+	})
+
+	result, err := svc.PostTask(ctx, PostTaskInput{
+		WorkDir:          workDir,
+		ProjectID:        "generic-monorepo",
+		PlanID:           "work_plan_live",
+		TaskID:           "work_task_live",
+		TaskRef:          "smoke-signed-push",
+		TaskTitle:        "Smoke Signed Push",
+		BranchName:       "feature/live-generic-signature",
+		AutomationID:     "automation_live",
+		AutomationRunID:  "automation_run_live",
+		OperatorID:       "smoke-gitops-worker",
+		AllowedPathspecs: []string{".agentic/automation-smoke.md"},
+		ReviewRefs:       []string{"bounded-smoke-review-exempt"},
+		VerifierRefs:     []string{"bounded-smoke-verifier"},
+		TestResults:      []string{"bounded smoke output: passed"},
+	})
+	if err != nil {
+		t.Fatalf("expected signed live local GitOps push to succeed: %v", err)
+	}
+	if result.CommitRef == "" || result.PushRef == "" {
+		t.Fatalf("expected commit and push refs, got %#v", result)
+	}
+	if got := strings.TrimSpace(runGitCommand(t, root, "--git-dir", remoteDir, "rev-parse", "main")); got != seedMain {
+		t.Fatalf("remote main must remain unchanged, got %s want %s", got, seedMain)
+	}
+	branchCommit := strings.TrimSpace(runGitCommand(t, root, "--git-dir", remoteDir, "rev-parse", "feature/live-generic-signature"))
+	if branchCommit == "" || branchCommit == seedMain {
+		t.Fatalf("expected pushed feature branch to advance from seed, got %q seed %q", branchCommit, seedMain)
+	}
+	commitObject := runGitCommand(t, root, "--git-dir", remoteDir, "cat-file", "-p", branchCommit)
+	if !strings.Contains(commitObject, "gpgsig -----BEGIN SSH SIGNATURE-----") {
+		t.Fatalf("expected pushed commit %s to contain embedded SSH signature:\n%s", branchCommit, commitObject)
+	}
+}
+
 func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testing.T) {
 	sshKey, knownHosts := testGitOpsCredentialFiles(t)
 	runner := &recordingRunner{
@@ -462,9 +942,11 @@ func TestPostTaskCreatesDraftPRForCleanAheadBranchUsesConfiguredBaseRef(t *testi
 			{},
 			{},
 			{},
+			{},
 			{Stdout: "https://github.com/example/repo/pull/456\n"},
 		},
 		errs: []error{
+			nil,
 			nil,
 			nil,
 			nil,
@@ -1142,6 +1624,105 @@ func TestPostTaskAllowsMountedGitHubCLIAuthWhenTokenEnvUnconfigured(t *testing.T
 	}
 	if len(runner.commands) == 0 || strings.Join(runner.commands[0].Args, " ") != "auth status" {
 		t.Fatalf("expected gh auth status preflight before git mutation, got %+v", runner.commands)
+	}
+}
+
+func TestPostTaskPushWithSSHRemoteDoesNotInjectGitHubCredentialHelper(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M internal/generic/service.go\n"},
+		{Stdout: "chore-generic-task\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+		{Stdout: "git@github.com:example/project.git\n"},
+		{},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+		SSHPrivateKeyPath:    sshKey,
+		SSHKnownHostsPath:    knownHosts,
+		GitHubTokenEnv:       "GH_TOKEN",
+		GitHubCLIPath:        "gh",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	t.Setenv("GH_TOKEN", "test-token")
+
+	if _, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		TaskRef:          "generic-task",
+		TaskTitle:        "Generic task",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"internal/generic"},
+	}); err != nil {
+		t.Fatalf("expected ssh push with token env to succeed: %v", err)
+	}
+	pushArgs := strings.Join(runner.commands[len(runner.commands)-1].Args, " ")
+	if strings.Contains(pushArgs, "credential.helper") {
+		t.Fatalf("expected SSH remote push not to inject GitHub credential helper, got %q", pushArgs)
+	}
+	if !strings.Contains(pushArgs, "push origin HEAD:chore-generic-task") {
+		t.Fatalf("expected push to current branch, got %q", pushArgs)
+	}
+}
+
+func TestPostTaskPushWithHTTPSRemoteUsesEnvTokenCredentialHelper(t *testing.T) {
+	runner := &recordingRunner{results: []CommandResult{
+		{},
+		{Stdout: " M internal/generic/service.go\n"},
+		{Stdout: "chore-generic-task\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+		{Stdout: "https://github.com/example/project.git\n"},
+		{},
+	}}
+	svc := NewWithRunner(Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		PushAfterTask:        true,
+		CommitAuthorName:     "Mivia Automation",
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+		RemoteName:           "origin",
+		GitHubTokenEnv:       "GH_TOKEN",
+		GitHubCLIPath:        "gh",
+	}, runner)
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	t.Setenv("GH_TOKEN", "test-token")
+
+	if _, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		TaskRef:          "generic-task",
+		TaskTitle:        "Generic task",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"internal/generic"},
+	}); err != nil {
+		t.Fatalf("expected https push with token env to succeed: %v", err)
+	}
+	pushArgs := strings.Join(runner.commands[len(runner.commands)-1].Args, " ")
+	if !strings.Contains(pushArgs, "credential.helper=!f()") || !strings.Contains(pushArgs, "password=$GH_TOKEN") {
+		t.Fatalf("expected HTTPS push to use env token credential helper, got %q", pushArgs)
+	}
+	if strings.Contains(pushArgs, "gh auth git-credential") || strings.Contains(pushArgs, "test-token") {
+		t.Fatalf("expected push args not to invoke gh helper or expose token, got %q", pushArgs)
 	}
 }
 

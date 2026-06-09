@@ -15,6 +15,7 @@ type Options struct {
 	CommitAuthorName             string
 	CommitAuthorEmailEnv         string
 	CommitAuthorEmailFile        string
+	SignCommits                  bool
 	SSHPrivateKeyPath            string
 	SSHPublicKeyPath             string
 	SSHKnownHostsPath            string

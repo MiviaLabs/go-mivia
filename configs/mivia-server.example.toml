@@ -136,6 +136,8 @@ branch_prefix = ""
 branch_name_pattern = ""
 commit_author_name = "Mivia Automation"
 commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
+# Enable per project when the target repository requires signed commits.
+sign_commits = false
 # ssh_private_key_path = "/run/secrets/mivia_git_ssh_key"
 # ssh_public_key_path = "/run/secrets/mivia_git_ssh_key.pub"
 # ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
@@ -290,6 +292,7 @@ sensitive_marker_policy = "skip_file"
 # [projects.git_operations]
 # branch_prefix = ""
 # branch_name_pattern = "^(feat|fix|docs)-ABC-[0-9]+(-[a-z0-9-]+)*$"
+# sign_commits = true
 #
 # [projects.git_operations.dirty_scope_recovery]
 # allowed_support_pathspecs = [".claude", ".codex", ".github"]

@@ -161,6 +161,74 @@ func TestServiceUpdateWorkPlanStatusRejectsDoneWithOpenTasks(t *testing.T) {
 	}
 }
 
+func TestServiceCreateReadyWorkTaskAcceptsCompletedTaskRefDependency(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-task-ref-dependency-create")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	source, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "generic-source-task"))
+	if err != nil {
+		t.Fatalf("create source task: %v", err)
+	}
+	completeTask(ctx, t, svc, source.ID, "run-source-task")
+
+	dependentInput := readyTaskInput(plan.ID, "generic-dependent-task")
+	dependentInput.Status = projectworkplan.WorkTaskStatusReady
+	dependentInput.DependencyTaskIDs = []string{"generic-source-task"}
+	dependent, err := svc.CreateWorkTask(ctx, dependentInput)
+	if err != nil {
+		t.Fatalf("create ready dependent task with task-ref dependency: %v", err)
+	}
+	if dependent.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected ready dependent task, got %q", dependent.Status)
+	}
+}
+
+func TestServiceGetNextWorkTaskAcceptsCompletedTaskRefDependency(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := newService()
+	plan, err := createPlan(ctx, t, svc, "plan-task-ref-dependency-next")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	if _, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID: "project-1",
+		PlanID:    plan.ID,
+		Status:    projectworkplan.WorkPlanStatusActive,
+	}); err != nil {
+		t.Fatalf("activate plan: %v", err)
+	}
+
+	source, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "generic-source-task"))
+	if err != nil {
+		t.Fatalf("create source task: %v", err)
+	}
+	completeTask(ctx, t, svc, source.ID, "run-source-task")
+	dependentInput := readyTaskInput(plan.ID, "generic-dependent-task")
+	dependentInput.Status = projectworkplan.WorkTaskStatusReady
+	dependentInput.DependencyTaskIDs = []string{"generic-source-task"}
+	dependent, err := svc.CreateWorkTask(ctx, dependentInput)
+	if err != nil {
+		t.Fatalf("create dependent task: %v", err)
+	}
+
+	next, err := svc.GetNextWorkTask(ctx, projectworkplan.GetNextWorkTaskInput{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("get next work task: %v", err)
+	}
+	if !next.Found || next.Task.ID != dependent.ID {
+		t.Fatalf("expected dependent task selected, got %+v", next)
+	}
+	if len(next.DependencySummary) != 1 || !next.DependencySummary[0].Ready || next.DependencySummary[0].Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected ready dependency summary, got %+v", next.DependencySummary)
+	}
+}
+
 func TestServiceMCPInvalidArgumentDiagnostics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1114,6 +1182,131 @@ func createPlan(ctx context.Context, t *testing.T, svc *projectworkplan.Service,
 	})
 }
 
+func TestServiceReleaseReviewTaskAllowsNeedsReviewDependency(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mem := store.NewMemoryStore()
+	svc := projectworkplan.New(mem)
+	plan, err := createPlan(ctx, t, svc, "plan-review-ready")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	target, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "decompose-work-plan"))
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	target.Status = projectworkplan.WorkTaskStatusNeedsReview
+	target.ClaimedByRunID = "run-target"
+	if _, err := mem.UpdateWorkTask(ctx, target); err != nil {
+		t.Fatalf("mark target needs review: %v", err)
+	}
+	reviewInput := readyTaskInput(plan.ID, "review-decompose-work-plan-planning-readiness-review")
+	reviewInput.DependencyTaskIDs = []string{target.ID}
+	reviewTask, err := svc.CreateWorkTask(ctx, reviewInput)
+	if err != nil {
+		t.Fatalf("create review task: %v", err)
+	}
+	ready, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: reviewTask.ID})
+	if err != nil {
+		t.Fatalf("release review task: %v", err)
+	}
+	if ready.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected review task ready, got %#v", ready)
+	}
+	normalInput := readyTaskInput(plan.ID, "normal-dependent-task")
+	normalInput.DependencyTaskIDs = []string{target.ID}
+	normalTask, err := svc.CreateWorkTask(ctx, normalInput)
+	if err != nil {
+		t.Fatalf("create normal task: %v", err)
+	}
+	if _, err := svc.ReleaseWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: normalTask.ID}); err == nil || !strings.Contains(err.Error(), "completed dependencies") {
+		t.Fatalf("expected normal task release to require done dependency, got %v", err)
+	}
+}
+
+func TestServiceAllowsGovernedCloseoutRecoveryFromFailedPlanAndTask(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mem := store.NewMemoryStore()
+	svc := projectworkplan.New(mem)
+	plan, err := createPlan(ctx, t, svc, "plan-closeout-recovery")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "mark-ready-after-review"))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	plan.Status = projectworkplan.WorkPlanStatusFailed
+	plan.CurrentTaskID = task.ID
+	if _, err := mem.UpdateWorkPlan(ctx, plan); err != nil {
+		t.Fatalf("mark plan failed: %v", err)
+	}
+	task.Status = projectworkplan.WorkTaskStatusFailed
+	task.ClaimedByRunID = "run-closeout"
+	if _, err := mem.UpdateWorkTask(ctx, task); err != nil {
+		t.Fatalf("mark task failed: %v", err)
+	}
+	if _, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         plan.ID,
+		Status:         projectworkplan.WorkPlanStatusActive,
+		RunID:          "run-closeout",
+		SafeNextAction: "governed_closeout_failed_requeue_implementation",
+	}); err != nil {
+		t.Fatalf("recover plan: %v", err)
+	}
+	ready, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:      "project-1",
+			TaskID:         task.ID,
+			RunID:          "run-closeout",
+			SafeNextAction: "governed_closeout_failed_requeue_implementation",
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		t.Fatalf("recover task: %v", err)
+	}
+	if ready.Status != projectworkplan.WorkTaskStatusReady || ready.ClaimedByRunID != "" {
+		t.Fatalf("expected ready unclaimed task, got %#v", ready)
+	}
+}
+
+func TestServiceAllowsPlanningReadinessStageCompletionWithOpenGeneratedTasks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mem := store.NewMemoryStore()
+	svc := projectworkplan.New(mem)
+	plan, err := createPlan(ctx, t, svc, "plan-readiness-complete")
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, readyTaskInput(plan.ID, "generated-implementation-task"))
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	plan.Status = projectworkplan.WorkPlanStatusBlocked
+	plan.CurrentTaskID = task.ID
+	if _, err := mem.UpdateWorkPlan(ctx, plan); err != nil {
+		t.Fatalf("mark plan blocked: %v", err)
+	}
+	updated, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         plan.ID,
+		Status:         projectworkplan.WorkPlanStatusDone,
+		RunID:          "run-readiness",
+		SafeNextAction: "planning_readiness_review_completed_stage",
+		ResumeSummary:  "planning readiness review completed",
+	})
+	if err != nil {
+		t.Fatalf("complete planning stage: %v", err)
+	}
+	if updated.Status != projectworkplan.WorkPlanStatusDone {
+		t.Fatalf("expected done plan, got %#v", updated)
+	}
+}
+
 func readyTaskInput(planID, ref string) projectworkplan.CreateWorkTaskInput {
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               "project-1",
@@ -1129,6 +1322,47 @@ func readyTaskInput(planID, ref string) projectworkplan.CreateWorkTaskInput {
 		FailureCriteria:         "Stop if source scope changes.",
 		ResumeInstructions:      "Resume from the next failing assertion.",
 		KnowledgeCandidateRefs:  []string{"knowledge-candidate-1"},
+	}
+}
+
+func completeTask(ctx context.Context, t *testing.T, svc *projectworkplan.Service, taskID, runID string) {
+	t.Helper()
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID: "project-1",
+		TaskID:    taskID,
+		RunID:     runID,
+	}); err != nil {
+		t.Fatalf("claim task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID: "project-1",
+		TaskID:    taskID,
+		RunID:     runID,
+	}); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	if _, err := svc.AttachVerifierResult(ctx, projectworkplan.AttachInput{
+		ProjectID:       "project-1",
+		TaskID:          taskID,
+		Ref:             "verifier:focused-pass",
+		AttachedByRunID: runID,
+	}); err != nil {
+		t.Fatalf("attach verifier result: %v", err)
+	}
+	if _, err := svc.AttachReviewResult(ctx, projectworkplan.AttachInput{
+		ProjectID:       "project-1",
+		TaskID:          taskID,
+		Ref:             "review:approved",
+		AttachedByRunID: runID + "-review",
+	}); err != nil {
+		t.Fatalf("attach review result: %v", err)
+	}
+	if _, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID: "project-1",
+		TaskID:    taskID,
+		RunID:     runID,
+	}); err != nil {
+		t.Fatalf("complete task: %v", err)
 	}
 }
 

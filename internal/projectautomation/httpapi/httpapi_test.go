@@ -257,6 +257,10 @@ func (fake *fakeWorkTasks) ListOpenWorkTasks(context.Context, projectworkplan.Wo
 	return []projectworkplan.WorkTask{fake.task}, nil
 }
 
+func (fake *fakeWorkTasks) ListWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error) {
+	return []projectworkplan.WorkTask{fake.task}, nil
+}
+
 func (fake *fakeWorkTasks) ClaimWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error) {
 	claimed := fake.task
 	claimed.Status = projectworkplan.WorkTaskStatusClaimed

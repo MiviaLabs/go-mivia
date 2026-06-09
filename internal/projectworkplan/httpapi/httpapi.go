@@ -50,6 +50,7 @@ func RegisterRoutes(mux *http.ServeMux, svc *projectworkplan.Service) {
 	mux.Handle("GET /api/v1/projects/{id}/work-tasks/next", getNextWorkTaskHandler(svc))
 	mux.Handle("GET /api/v1/projects/{id}/work-tasks/{task_id}", getWorkTaskHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/status", updateWorkTaskStatusHandler(svc))
+	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/scope", expandWorkTaskScopeHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/claim", claimWorkTaskHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/release", releaseWorkTaskHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/start", startWorkTaskHandler(svc))
@@ -234,6 +235,18 @@ func updateWorkTaskStatusHandler(svc *projectworkplan.Service) http.Handler {
 		input.ProjectID = ctxInput.projectID
 		input.TaskID = ctxInput.taskID
 		return svc.UpdateWorkTaskStatus(r.Context(), input)
+	})
+}
+
+func expandWorkTaskScopeHandler(svc *projectworkplan.Service) http.Handler {
+	return actionHandler(func(ctxInput actionContext, r *http.Request) (any, error) {
+		var input projectworkplan.ExpandWorkTaskScopeInput
+		if err := decodeJSON(r, &input); err != nil {
+			return nil, err
+		}
+		input.ProjectID = ctxInput.projectID
+		input.TaskID = ctxInput.taskID
+		return svc.ExpandWorkTaskScope(r.Context(), input)
 	})
 }
 

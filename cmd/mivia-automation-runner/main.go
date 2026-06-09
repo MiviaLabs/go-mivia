@@ -23,6 +23,8 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 )
 
+const defaultRequestTimeout = 120 * time.Second
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -43,7 +45,7 @@ func run(args []string) int {
 	once := flags.Bool("once", true, "claim and run one queued task, then exit")
 	watch := flags.Bool("watch", false, "continuously claim queued tasks until interrupted")
 	pollInterval := flags.Duration("poll-interval", 5*time.Second, "poll interval when once is false")
-	requestTimeout := flags.Duration("request-timeout", 30*time.Second, "HTTP timeout for server discovery, claim, and report requests")
+	requestTimeout := flags.Duration("request-timeout", defaultRequestTimeout, "HTTP timeout for server discovery, claim, and report requests")
 	heartbeatInterval := flags.Duration("heartbeat-interval", 15*time.Second, "external run heartbeat interval")
 	idleExitAfter := flags.Duration("idle-exit-after", 0, "optional idle duration after which watch mode exits; 0 disables idle exit")
 	if err := flags.Parse(args); err != nil {
@@ -117,7 +119,7 @@ func run(args []string) int {
 
 func normalizedRequestTimeout(timeout time.Duration) time.Duration {
 	if timeout <= 0 {
-		return 30 * time.Second
+		return defaultRequestTimeout
 	}
 	if timeout < time.Second {
 		return time.Second
@@ -354,6 +356,9 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	if strings.TrimSpace(claimed.Run.TaskID) != "" {
 		taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
 	}
+	if taskMetadataErr == nil {
+		claimed.CodexInput.RunnerInstructions = appendMissingRunnerInstructions(claimed.CodexInput.RunnerInstructions, projectautomation.ImplementationTaskCloseoutInstructions(taskMetadata.TaskRef, taskMetadata.FilesToEdit)...)
+	}
 	runGitOps := !readOnlyReviewRun && (taskMetadataErr != nil || shouldRunGitOpsForTask(taskMetadata))
 	if isGitOpsPostTaskRecoveryRun(claimed.Run) {
 		status, failureCategory, durationMS, evidenceRefs := runGitOpsPostTaskRecovery(ctx, client, gitOpsOptions, projectID, runWorkDir, agentID, claimed)
@@ -557,6 +562,10 @@ func gitOpsTaskPathspecs(claimed projectautomation.ClaimedRun, task runnerWorkTa
 		return append([]string(nil), task.FilesToEdit...)
 	}
 	return append([]string(nil), claimed.CodexInput.LikelyFilesAffected...)
+}
+
+func gitOpsPostTaskPathspecs(claimed projectautomation.ClaimedRun, task runnerWorkTaskMetadata) []string {
+	return gitOpsTaskPathspecs(claimed, task)
 }
 
 func gitOpsDirtyScopeEvidenceRefs(err error) []string {
@@ -777,7 +786,7 @@ func gitOpsOptionsForProject(cfg config.Config, projectID string) projectgitops.
 	gitops := cfg.GitOperations
 	verification := cfg.Verification
 	for _, project := range cfg.Projects {
-		if project.ID != projectID {
+		if !configProjectMatchesID(project, projectID) {
 			continue
 		}
 		if project.GitOperations != nil {
@@ -830,6 +839,9 @@ func mergeGitOperations(base config.GitOperations, override config.GitOperations
 	}
 	if strings.TrimSpace(override.CommitAuthorEmailFile) != "" {
 		merged.CommitAuthorEmailFile = override.CommitAuthorEmailFile
+	}
+	if override.SignCommits {
+		merged.SignCommits = true
 	}
 	if strings.TrimSpace(override.SSHPrivateKeyPath) != "" {
 		merged.SSHPrivateKeyPath = override.SSHPrivateKeyPath
@@ -896,6 +908,7 @@ func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
 		CommitAuthorName:             cfg.CommitAuthorName,
 		CommitAuthorEmailEnv:         cfg.CommitAuthorEmailEnv,
 		CommitAuthorEmailFile:        cfg.CommitAuthorEmailFile,
+		SignCommits:                  cfg.SignCommits,
 		SSHPrivateKeyPath:            cfg.SSHPrivateKeyPath,
 		SSHPublicKeyPath:             cfg.SSHPublicKeyPath,
 		SSHKnownHostsPath:            cfg.SSHKnownHostsPath,
@@ -942,10 +955,26 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return out
 }
 
+func configProjectMatchesID(project config.Project, projectID string) bool {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(project.ID), projectID) {
+		return true
+	}
+	for _, alias := range project.Aliases {
+		if strings.EqualFold(strings.TrimSpace(alias), projectID) {
+			return true
+		}
+	}
+	return false
+}
+
 func verificationInstructionsForProject(cfg config.Config, projectID string) []string {
 	verification := cfg.Verification
 	for _, project := range cfg.Projects {
-		if project.ID == projectID && project.Verification != nil {
+		if configProjectMatchesID(project, projectID) && project.Verification != nil {
 			verification = *project.Verification
 			break
 		}
@@ -1000,7 +1029,7 @@ func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID st
 		AutomationID:     claimed.Run.AutomationID,
 		AutomationRunID:  firstNonEmpty(claimed.Run.ID, claimed.CodexInput.AutomationRunID),
 		OperatorID:       firstNonEmpty(claimed.Run.AgentID, fallbackOperatorID),
-		AllowedPathspecs: gitOpsTaskPathspecs(claimed, taskMetadata),
+		AllowedPathspecs: gitOpsPostTaskPathspecs(claimed, taskMetadata),
 		ReviewRefs:       reviewRefs,
 		VerifierRefs:     verifierRefs,
 		TestResults:      testResults,
@@ -1011,6 +1040,8 @@ func taskHasGovernedCloseout(task runnerWorkTaskMetadata) bool {
 	switch strings.TrimSpace(task.Status) {
 	case "needs_review", "verifying", "done", "blocked", "failed", "cancelled", "superseded":
 		return true
+	case "ready":
+		return len(task.EvidenceRefs) > 0 && len(task.VerifierResultRefs) > 0 && (len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "")
 	case "":
 		return len(task.EvidenceRefs) > 0 || len(task.ClaimRefs) > 0 || len(task.ReviewResultRefs) > 0 || len(task.VerifierResultRefs) > 0
 	default:
@@ -1785,6 +1816,9 @@ func shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun bool, task runnerWorkT
 }
 
 func taskRequiresExplicitGovernedCloseout(task runnerWorkTaskMetadata) bool {
+	if len(task.FilesToEdit) > 0 && len(projectautomation.GovernedWorkflowStepInstructions(task.TaskRef)) == 0 && !strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-") {
+		return true
+	}
 	switch strings.TrimSpace(task.TaskRef) {
 	case "decompose-work-plan",
 		"mark-ready-after-review",

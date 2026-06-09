@@ -134,6 +134,7 @@ type GitOperations struct {
 	CommitAuthorName             string
 	CommitAuthorEmailEnv         string
 	CommitAuthorEmailFile        string
+	SignCommits                  bool
 	SSHPrivateKeyPath            string
 	SSHPublicKeyPath             string
 	SSHKnownHostsPath            string
@@ -609,6 +610,9 @@ func applyEnvOverrides(cfg *Config) error {
 	cfg.GitOperations.CommitAuthorName = getenv("MIVIA_GIT_OPS_COMMIT_AUTHOR_NAME", cfg.GitOperations.CommitAuthorName)
 	cfg.GitOperations.CommitAuthorEmailEnv = getenv("MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_ENV", cfg.GitOperations.CommitAuthorEmailEnv)
 	cfg.GitOperations.CommitAuthorEmailFile = getenv("MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_FILE", cfg.GitOperations.CommitAuthorEmailFile)
+	if cfg.GitOperations.SignCommits, err = getenvBool("MIVIA_GIT_OPS_SIGN_COMMITS", cfg.GitOperations.SignCommits); err != nil {
+		return err
+	}
 	cfg.GitOperations.SSHPrivateKeyPath = getenv("MIVIA_GIT_OPS_SSH_PRIVATE_KEY_PATH", cfg.GitOperations.SSHPrivateKeyPath)
 	cfg.GitOperations.SSHPublicKeyPath = getenv("MIVIA_GIT_OPS_SSH_PUBLIC_KEY_PATH", cfg.GitOperations.SSHPublicKeyPath)
 	cfg.GitOperations.SSHKnownHostsPath = getenv("MIVIA_GIT_OPS_SSH_KNOWN_HOSTS_PATH", cfg.GitOperations.SSHKnownHostsPath)
@@ -957,6 +961,9 @@ func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool)
 	}
 	hasSSHPrivateKey := strings.TrimSpace(gitops.SSHPrivateKeyPath) != ""
 	hasSSHKnownHosts := strings.TrimSpace(gitops.SSHKnownHostsPath) != ""
+	if gitops.SignCommits && !hasSSHPrivateKey {
+		return fmt.Errorf("%s_SIGN_COMMITS requires %s_SSH_PRIVATE_KEY_PATH", prefix, prefix)
+	}
 	if hasSSHPrivateKey != hasSSHKnownHosts {
 		if !hasSSHPrivateKey {
 			return fmt.Errorf("%s_SSH_PRIVATE_KEY_PATH is required when SSH known_hosts is configured", prefix)

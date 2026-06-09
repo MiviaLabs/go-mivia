@@ -113,6 +113,8 @@ services:
       - "${MIVIA_AUTOMATION_RUNNER_POLL_INTERVAL:-5s}"
       - --heartbeat-interval
       - "${MIVIA_AUTOMATION_RUNNER_HEARTBEAT_INTERVAL:-15s}"
+      - --request-timeout
+      - "${MIVIA_AUTOMATION_RUNNER_REQUEST_TIMEOUT:-120s}"
       - --codex
       - "${MIVIA_AUTOMATION_CODEX_BINARY:-/usr/local/bin/codex}"
       - --codex-cd

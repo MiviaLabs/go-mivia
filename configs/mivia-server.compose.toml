@@ -9,7 +9,7 @@ version = 1
 http_addr = "127.0.0.1:8080"
 cpu_count = "auto"
 max_request_bytes = 1048576
-request_timeout = "10s"
+request_timeout = "120s"
 read_header_timeout = "5s"
 shutdown_timeout = "10s"
 
@@ -79,3 +79,7 @@ codex_binary_path = "codex"
 [automation.work_plan_status_trigger]
 enabled = true
 statuses = ["active"]
+
+[git_operations]
+# Enable in per-project config when a target repository requires signed commits.
+sign_commits = false

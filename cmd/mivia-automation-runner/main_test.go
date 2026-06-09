@@ -109,7 +109,22 @@ func TestComposeRunnerDefaultsToInImageCodexBinary(t *testing.T) {
 			if path == "../../docker-compose.yml" && !strings.Contains(text, "MIVIA_AUTOMATION_PROJECT_ID") {
 				t.Fatalf("runner compose config must expose project scoping: %s", path)
 			}
+			if path == "../../docker-compose.yml" && !strings.Contains(text, "${MIVIA_AUTOMATION_RUNNER_REQUEST_TIMEOUT:-120s}") {
+				t.Fatalf("runner compose config must expose request timeout override: %s", path)
+			}
 		})
+	}
+}
+
+func TestNormalizedRequestTimeoutDefaultsToRecoveryTolerantDuration(t *testing.T) {
+	if got := normalizedRequestTimeout(0); got != 120*time.Second {
+		t.Fatalf("default request timeout = %s, want 120s", got)
+	}
+	if got := normalizedRequestTimeout(500 * time.Millisecond); got != time.Second {
+		t.Fatalf("subsecond request timeout = %s, want 1s", got)
+	}
+	if got := normalizedRequestTimeout(45 * time.Second); got != 45*time.Second {
+		t.Fatalf("explicit request timeout = %s, want 45s", got)
 	}
 }
 
@@ -1174,11 +1189,23 @@ func TestGitOpsTaskPathspecsPreferFilesToEditOverBroadLikelyFiles(t *testing.T) 
 		FilesToEdit: []string{"apps/domain-inventory/src/trpc/trpc.router.ts"},
 	})
 	if strings.Join(got, ",") != "apps/domain-inventory/src/trpc/trpc.router.ts" {
-		t.Fatalf("expected files_to_edit to define write scope, got %+v", got)
+		t.Fatalf("expected files_to_edit to define pre-task write scope, got %+v", got)
 	}
 	got = gitOpsTaskPathspecs(claimed, runnerWorkTaskMetadata{})
 	if strings.Join(got, ",") != "apps" {
 		t.Fatalf("expected likely files fallback, got %+v", got)
+	}
+}
+
+func TestGitOpsPostTaskPathspecsUseTaskScopeForAgentChanges(t *testing.T) {
+	claimed := projectautomation.ClaimedRun{
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{"apps/domain-booking"}},
+	}
+	got := gitOpsPostTaskPathspecs(claimed, runnerWorkTaskMetadata{
+		FilesToEdit: []string{"apps/domain-booking/src/booking/booking-expiry.service.ts"},
+	})
+	if strings.Join(got, ",") != "apps/domain-booking/src/booking/booking-expiry.service.ts" {
+		t.Fatalf("expected post-task GitOps to use task files_to_edit scope, got %#v", got)
 	}
 }
 
@@ -1245,10 +1272,12 @@ func TestGitOpsOptionsForProjectInheritsSparseOverride(t *testing.T) {
 			},
 		},
 		Projects: []config.Project{{
-			ID: "generic-monorepo",
+			ID:      "generic-monorepo",
+			Aliases: []string{"external-monorepo"},
 			GitOperations: &config.GitOperations{
 				BranchPrefix:      "",
 				BranchNamePattern: "^(feat|fix)-generic-[0-9]+(-[a-z0-9-]+)*$",
+				SignCommits:       true,
 				Conventions: config.GitOpsConventions{
 					CommitType:          "chore",
 					WhatChangedTemplate: "Project-specific summary",
@@ -1257,9 +1286,12 @@ func TestGitOpsOptionsForProjectInheritsSparseOverride(t *testing.T) {
 		}},
 	}
 
-	options := gitOpsOptionsForProject(cfg, "generic-monorepo")
+	options := gitOpsOptionsForProject(cfg, "external-monorepo")
 	if !options.Enabled || !options.CommitAfterTask || !options.PushAfterTask || !options.DraftPRAfterPush || !options.RequireCleanBeforeTask {
 		t.Fatalf("expected sparse project override to inherit enabled GitOps booleans, got %+v", options)
+	}
+	if !options.SignCommits {
+		t.Fatalf("expected alias lookup to apply project signed-commit override, got %+v", options)
 	}
 	if options.BranchPrefix != "" || options.BranchNamePattern == "" {
 		t.Fatalf("expected project branch convention override, got prefix=%q pattern=%q", options.BranchPrefix, options.BranchNamePattern)
@@ -1333,6 +1365,79 @@ func TestRunGitOpsPostTaskRecoveryCommitsWithoutCodex(t *testing.T) {
 	}
 	if got := strings.Join(runner.commands[5].Args, " "); !strings.Contains(got, "commit -m") {
 		t.Fatalf("expected commit command, got %q", got)
+	}
+}
+
+func TestRunGitOpsPostTaskRecoverySignsCommitWhenConfigured(t *testing.T) {
+	sshKey, _ := testRunnerGitOpsCredentialFiles(t)
+	runner := &gitOpsRecordingRunner{results: []projectgitops.CommandResult{
+		{},
+		{Stdout: " M README.md\n"},
+		{Stdout: "feature/generic-recovery\n"},
+		{},
+		{},
+		{},
+		{Stdout: "abc123def456\n"},
+	}}
+	gitOpsOptions := projectgitops.Options{
+		Enabled:              true,
+		CommitAfterTask:      true,
+		SignCommits:          true,
+		SSHPrivateKeyPath:    sshKey,
+		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
+	}
+	oldNewGitOpsService := newGitOpsService
+	newGitOpsService = func(options projectgitops.Options) *projectgitops.Service {
+		if !options.SignCommits || strings.TrimSpace(options.SSHPrivateKeyPath) != sshKey {
+			t.Fatalf("expected recovery GitOps service to receive signing options, got %+v", options)
+		}
+		return projectgitops.NewWithRunner(options, runner)
+	}
+	defer func() { newGitOpsService = oldNewGitOpsService }()
+	t.Setenv("MIVIA_GIT_AUTHOR_EMAIL", "automation@example.test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/generic-monorepo/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{
+				ID:                 "task-1",
+				TaskRef:            "task/ref",
+				Title:              "Recover GitOps",
+				Status:             "needs_review",
+				FilesToEdit:        []string{"README.md"},
+				EvidenceRefs:       []string{"implementation/evidence"},
+				ReviewResultRefs:   []string{"review/approved"},
+				VerifierResultRefs: []string{"verifier/focused"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+
+	status, failure, _, evidenceRefs := runGitOpsPostTaskRecovery(t.Context(), client, gitOpsOptions, "generic-monorepo", "/tmp/worktree", "agent-1", projectautomation.ClaimedRun{
+		Run: projectautomation.AutomationRun{
+			ID:           "run-1",
+			ProjectID:    "generic-monorepo",
+			AutomationID: "automation-1",
+			AgentID:      "agent-1",
+			PlanID:       "plan-1",
+			TaskID:       "task-1",
+			SafeSummary:  projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+		},
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{"README.md"}},
+	})
+	if status != projectautomation.RunStatusCompleted || failure != "" {
+		t.Fatalf("expected signed recovery completion, got status=%q failure=%q", status, failure)
+	}
+	if !containsRunnerString(evidenceRefs, "git-commit-signed") {
+		t.Fatalf("expected signed commit evidence, got %+v", evidenceRefs)
+	}
+	commitArgs := strings.Join(runner.commands[5].Args, "\n")
+	for _, want := range []string{"gpg.format=ssh", "user.signingkey=" + sshKey, "commit", "-S", "-m"} {
+		if !strings.Contains(commitArgs, want) {
+			t.Fatalf("expected signed recovery commit args to contain %q, got %#v", want, runner.commands[5].Args)
+		}
 	}
 }
 
@@ -2315,7 +2420,7 @@ func TestRunOnceFailsCompletedAttemptWithoutGovernedCloseout(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				t.Fatalf("decode attempt: %v", err)
 			}
-			if input.Status != projectautomation.RunStatusFailed || input.FailureCategory != "automation_task_closeout_missing" {
+			if input.Status != projectautomation.RunStatusFailed || input.FailureCategory != "governed_closeout_output_missing_empty_codex_final_message" {
 				t.Fatalf("expected closeout failure, got %+v", input)
 			}
 			completed.Add(1)
@@ -2868,6 +2973,43 @@ func TestApplyGovernedCloseoutReusesMatchingExistingChildTaskAfterConflict(t *te
 	}
 	if childCreateAttempts.Load() != 1 || statusMoved.Load() != 1 {
 		t.Fatalf("expected one child create attempt and wrapper status move, got create=%d status=%d", childCreateAttempts.Load(), statusMoved.Load())
+	}
+}
+
+func TestApplyGovernedCloseoutDoesNotCreateChildTasksForNonDecompositionWrapper(t *testing.T) {
+	var childCreateAttempts atomic.Int32
+	var evidenceAttached atomic.Int32
+	var statusMoved atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects/project-1/work-plans/plan-1/tasks":
+			childCreateAttempts.Add(1)
+			http.Error(w, `{"error":{"code":"conflict","message":"project work plan resource already exists"}}`, http.StatusConflict)
+		case "/api/v1/projects/project-1/work-tasks/task-1/evidence":
+			evidenceAttached.Add(1)
+			writeJSON(t, w, map[string]string{"ref": "evidence.governed"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/verifier-results":
+			writeJSON(t, w, map[string]string{"ref": "verifier.governed"})
+		case "/api/v1/projects/project-1/work-tasks/task-1/status":
+			statusMoved.Add(1)
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "mark-ready-after-review", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}})
+		case "/api/v1/projects/project-1/work-tasks/task-1":
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "mark-ready-after-review", Status: "needs_review", EvidenceRefs: []string{"evidence.governed"}, VerifierResultRefs: []string{"verifier.governed"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	err := client.applyGovernedCloseoutFromOutput(t.Context(), "project-1", projectautomation.ClaimedRun{
+		Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", PlanID: "plan-1", TaskID: "task-1", TraceID: "trace-1"},
+		CodexInput: projectautomation.CodexTaskInput{PlanID: "plan-1", TaskID: "task-1"},
+	}, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "mark-ready-after-review", Status: "in_progress"}, governedCloseoutFixtureJSON())
+	if err != nil {
+		t.Fatalf("expected non-decomposition wrapper closeout to ignore child task creation, got %v", err)
+	}
+	if childCreateAttempts.Load() != 0 || evidenceAttached.Load() != 1 || statusMoved.Load() != 1 {
+		t.Fatalf("expected no child create and wrapper closeout, child=%d evidence=%d status=%d", childCreateAttempts.Load(), evidenceAttached.Load(), statusMoved.Load())
 	}
 }
 
@@ -3594,6 +3736,42 @@ func TestGovernedCloseoutTasksDoNotUseCodexOutputSchema(t *testing.T) {
 				t.Fatalf("%s must rely on runner closeout validation, not Codex output-schema", taskRef)
 			}
 		})
+	}
+}
+
+func TestConcreteImplementationTasksRequireExplicitGovernedCloseout(t *testing.T) {
+	task := runnerWorkTaskMetadata{
+		TaskRef:     "implement-generic-capability",
+		FilesToEdit: []string{"internal/example/service.go"},
+	}
+	if !taskRequiresExplicitGovernedCloseout(task) {
+		t.Fatal("concrete file-edit implementation task must require explicit governed closeout")
+	}
+	if shouldUseCodexOutputSchemaForGovernedCloseout(task) {
+		t.Fatal("concrete implementation closeout must rely on runner validation, not Codex output-schema")
+	}
+	instructions := appendMissingRunnerInstructions(nil, projectautomation.ImplementationTaskCloseoutInstructions(task.TaskRef, task.FilesToEdit)...)
+	prompt := strings.Join(instructions, "\n")
+	for _, want := range []string{
+		"concrete implementation task edits repository files",
+		"must end with governed closeout JSON",
+		"child_tasks must be empty",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("implementation closeout instructions missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestGovernedCloseoutRejectsInvalidChildTaskStatus(t *testing.T) {
+	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].Status = "needs_changes"
+	err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutValidationFailed) {
+		t.Fatalf("invalid child task status must fail governed validation, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "child task status must be planned, ready, or blocked") {
+		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
 
@@ -4414,6 +4592,32 @@ func testCodexInput(runID string) projectautomation.CodexTaskInput {
 		TaskRef:                 "task-1",
 		Title:                   "Task",
 		VerificationRequirement: "orchestrator verifies",
+	}
+}
+
+func TestGitOpsPostTaskPathspecsFallbackToLikelyFiles(t *testing.T) {
+	claimed := projectautomation.ClaimedRun{
+		CodexInput: projectautomation.CodexTaskInput{LikelyFilesAffected: []string{"apps/domain-booking"}},
+	}
+	got := gitOpsPostTaskPathspecs(claimed, runnerWorkTaskMetadata{})
+	if strings.Join(got, ",") != "apps/domain-booking" {
+		t.Fatalf("expected post-task GitOps to fall back to likely files, got %#v", got)
+	}
+}
+
+func TestTaskHasGovernedCloseoutAllowsReadyRecoveryWithReviewAndVerifierRefs(t *testing.T) {
+	task := runnerWorkTaskMetadata{
+		Status:             "ready",
+		EvidenceRefs:       []string{"implementation/evidence"},
+		VerifierResultRefs: []string{"verifier/focused"},
+		ReviewResultRefs:   []string{"review/approved"},
+	}
+	if !taskHasGovernedCloseout(task) {
+		t.Fatal("expected ready task with closeout refs to support GitOps recovery")
+	}
+	task.ReviewResultRefs = nil
+	if taskHasGovernedCloseout(task) {
+		t.Fatal("expected ready task without review refs to require implementation closeout")
 	}
 }
 

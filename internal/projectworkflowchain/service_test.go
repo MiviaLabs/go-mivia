@@ -223,6 +223,156 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	}
 }
 
+func TestAdvancingStageCarriesGeneratedImplementationTasksToNextPlan(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	generated := projectworkplan.WorkTask{
+		ID:                      "generated-task-1",
+		ProjectID:               "project-1",
+		PlanID:                  "plan-decomposition",
+		TaskRef:                 "implement-ticket-slice",
+		Title:                   "Implement Ticket Slice",
+		Description:             "generated implementation packet",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		OwnerAgent:              "developer",
+		EvidenceNeeded:          []string{"evidence-ref"},
+		ContextPackRefs:         []string{"context-ref"},
+		FilesToRead:             []string{"internal/input.go"},
+		FilesToEdit:             []string{"internal/output.go"},
+		LikelyFilesAffected:     []string{"internal/output.go"},
+		VerificationRequirement: "focused verifier",
+		ExpectedOutput:          "code diff",
+		FailureCriteria:         "stop on scope drift",
+		ReviewGate:              "independent-review",
+		ResumeInstructions:      "resume from packet",
+		EvidenceRefs:            []string{"evidence:planning-output"},
+		ClaimRefs:               []string{"claim:planning-worker"},
+		VerifierResultRefs:      []string{"verifier:planning-readiness"},
+		ReviewResultRefs:        []string{"review:planning-readiness-approved"},
+		ArtifactRefs:            []string{"artifact:decomposition-packet"},
+		AgentRunIDs:             []string{"automation_run_planning"},
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+		AcceptanceCriteria:      []string{"works"},
+		StopConditions:          []string{"blocked"},
+		VerifierLadder:          []string{"unit"},
+		RegressionApplicability: "required",
+		DownstreamImpactRefs:    []string{"impact-ref"},
+		OutputContract:          "diff plus evidence",
+	}
+	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
+		"plan-decomposition": {
+			{ID: "task-decomposition", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "decompose-work-plan", Status: projectworkplan.WorkTaskStatusDone},
+			generated,
+		},
+		"plan-implementation": {
+			{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
+		},
+	}}
+	automations := &fakeAutomationAPI{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.SetAutomationAPI(automations)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if len(workPlans.createdTasks) != 1 {
+		t.Fatalf("expected one carried implementation task, got %#v", workPlans.createdTasks)
+	}
+	carried := workPlans.createdTasks[0]
+	if carried.PlanID != "plan-implementation" || carried.TaskRef != generated.TaskRef || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
+		t.Fatalf("unexpected carried task: %#v", carried)
+	}
+	if !containsString(carried.FilesToEdit, "internal/output.go") || carried.VerificationRequirement != generated.VerificationRequirement {
+		t.Fatalf("carried task lost implementation metadata: %#v", carried)
+	}
+	if !containsString(carried.ReviewResultRefs, "review:planning-readiness-approved") || !containsString(carried.VerifierResultRefs, "verifier:planning-readiness") {
+		t.Fatalf("carried task lost planning review/verifier refs: %#v", carried)
+	}
+	if !containsString(carried.EvidenceRefs, "evidence:planning-output") || !containsString(carried.ClaimRefs, "claim:planning-worker") || !containsString(carried.ArtifactRefs, "artifact:decomposition-packet") || !containsString(carried.AgentRunIDs, "automation_run_planning") {
+		t.Fatalf("carried task lost planning handoff refs: %#v", carried)
+	}
+	if len(automations.created) != 1 {
+		t.Fatalf("expected carried implementation automation, got %#v", automations.created)
+	}
+	createdAutomation := automations.created[0]
+	if createdAutomation.PlanID != "plan-implementation" || createdAutomation.AgentID != "implementation-worker" || createdAutomation.Status != projectautomation.AutomationStatusEnabled || createdAutomation.TriggerKind != projectautomation.TriggerKindAutomatic || createdAutomation.SchedulePolicy != "on-ready-task" {
+		t.Fatalf("carried implementation automation lost live handoff metadata: %#v", createdAutomation)
+	}
+	if !containsString(createdAutomation.AllowedTaskRefs, "created-"+generated.TaskRef) || !containsString(createdAutomation.AllowedTaskRefs, generated.TaskRef) {
+		t.Fatalf("carried implementation automation must allow task id and ref, got %#v", createdAutomation.AllowedTaskRefs)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil || run.StageRuns[1].Status != StageStatusQueued {
+		t.Fatalf("expected queued implementation stage, run=%#v err=%v", run, err)
+	}
+}
+
+func TestAdvancingStageBackfillsAutomationForExistingCarriedImplementationTask(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	generated := projectworkplan.WorkTask{
+		ID:                      "generated-task-1",
+		ProjectID:               "project-1",
+		PlanID:                  "plan-decomposition",
+		TaskRef:                 "implement-ticket-slice",
+		Title:                   "Implement Ticket Slice",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		OwnerAgent:              "developer",
+		FilesToEdit:             []string{"internal/output.go"},
+		VerificationRequirement: "focused verifier",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+		AcceptanceCriteria:      []string{"works"},
+		StopConditions:          []string{"blocked"},
+		VerifierLadder:          []string{"unit"},
+	}
+	existing := generated
+	existing.ID = "existing-implementation-task"
+	existing.PlanID = "plan-implementation"
+	existing.Status = projectworkplan.WorkTaskStatusReady
+	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
+		"plan-decomposition": {
+			{ID: "task-decomposition", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "decompose-work-plan", Status: projectworkplan.WorkTaskStatusDone},
+			generated,
+		},
+		"plan-implementation": {
+			existing,
+		},
+	}}
+	automations := &fakeAutomationAPI{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.SetAutomationAPI(automations)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if len(workPlans.createdTasks) != 0 {
+		t.Fatalf("existing carried task should not be recreated, got %#v", workPlans.createdTasks)
+	}
+	if len(automations.created) != 1 {
+		t.Fatalf("expected backfilled carried implementation automation, got %#v", automations.created)
+	}
+	createdAutomation := automations.created[0]
+	if createdAutomation.PlanID != "plan-implementation" || createdAutomation.AgentID != "implementation-worker" || !containsString(createdAutomation.AllowedTaskRefs, existing.ID) || !containsString(createdAutomation.AllowedTaskRefs, existing.TaskRef) {
+		t.Fatalf("backfilled automation lost existing task refs: %#v", createdAutomation)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil || run.StageRuns[1].Status != StageStatusQueued {
+		t.Fatalf("expected queued implementation stage, run=%#v err=%v", run, err)
+	}
+}
+
 func TestStartWithSameCorrelationReturnsExistingActiveChainRun(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
@@ -1344,8 +1494,53 @@ type fakeWorkPlans struct {
 	events            []string
 	openTasksByPlan   map[string][]projectworkplan.WorkTask
 	tasksByID         map[string]projectworkplan.WorkTask
+	createdTasks      []projectworkplan.CreateWorkTaskInput
 	statusUpdates     []projectworkplan.UpdateWorkPlanStatusInput
 	taskStatusUpdates []projectworkplan.UpdateWorkTaskStatusInput
+}
+
+type fakeAutomationAPI struct {
+	existing []projectautomation.Automation
+	created  []projectautomation.Automation
+}
+
+func (fake *fakeAutomationAPI) CreateAutomation(_ context.Context, input projectautomation.CreateAutomationInput) (projectautomation.Automation, error) {
+	automation := projectautomation.Automation{
+		ID:              "automation-" + input.AutomationRef,
+		ProjectID:       input.ProjectID,
+		AutomationRef:   input.AutomationRef,
+		Title:           input.Title,
+		Purpose:         input.Purpose,
+		Status:          input.Status,
+		AgentID:         input.AgentID,
+		PlanID:          input.PlanID,
+		AllowedTaskRefs: append([]string(nil), input.AllowedTaskRefs...),
+		TriggerKind:     input.TriggerKind,
+		SourceKind:      input.SourceKind,
+		SchedulePolicy:  input.SchedulePolicy,
+		PermissionRef:   input.PermissionRef,
+		CreatedByRunID:  input.CreatedByRunID,
+		TraceID:         input.TraceID,
+	}
+	fake.created = append(fake.created, automation)
+	return automation, nil
+}
+
+func (fake *fakeAutomationAPI) ListAutomations(_ context.Context, filter projectautomation.AutomationFilter) ([]projectautomation.Automation, error) {
+	out := make([]projectautomation.Automation, 0, len(fake.existing))
+	for _, automation := range fake.existing {
+		if filter.ProjectID != "" && automation.ProjectID != filter.ProjectID {
+			continue
+		}
+		if filter.Status != "" && automation.Status != filter.Status {
+			continue
+		}
+		if filter.AgentID != "" && automation.AgentID != filter.AgentID {
+			continue
+		}
+		out = append(out, automation)
+	}
+	return out, nil
 }
 
 func (fake *fakeWorkPlans) GetWorkPlan(_ context.Context, projectID string, planID string) (projectworkplan.WorkPlan, error) {
@@ -1413,6 +1608,51 @@ func (fake *fakeWorkPlans) ListOpenWorkTasks(_ context.Context, filter projectwo
 		Status:               projectworkplan.WorkTaskStatusPlanned,
 		DecompositionQuality: projectworkplan.DecompositionReady,
 	}}, nil
+}
+
+func (fake *fakeWorkPlans) CreateWorkTask(_ context.Context, input projectworkplan.CreateWorkTaskInput) (projectworkplan.WorkTask, error) {
+	fake.createdTasks = append(fake.createdTasks, input)
+	task := projectworkplan.WorkTask{
+		ID:                      "created-" + input.TaskRef,
+		ProjectID:               input.ProjectID,
+		PlanID:                  input.PlanID,
+		TaskRef:                 input.TaskRef,
+		Title:                   input.Title,
+		Description:             input.Description,
+		Status:                  input.Status,
+		OwnerAgent:              input.OwnerAgent,
+		TraceID:                 input.TraceID,
+		EvidenceNeeded:          append([]string(nil), input.EvidenceNeeded...),
+		ContextPackRefs:         append([]string(nil), input.ContextPackRefs...),
+		FilesToRead:             append([]string(nil), input.FilesToRead...),
+		FilesToEdit:             append([]string(nil), input.FilesToEdit...),
+		LikelyFilesAffected:     append([]string(nil), input.LikelyFilesAffected...),
+		DependencyTaskIDs:       append([]string(nil), input.DependencyTaskIDs...),
+		VerificationRequirement: input.VerificationRequirement,
+		GitOpsVerificationMode:  input.GitOpsVerificationMode,
+		ExpectedOutput:          input.ExpectedOutput,
+		FailureCriteria:         input.FailureCriteria,
+		ReviewGate:              input.ReviewGate,
+		ResumeInstructions:      input.ResumeInstructions,
+		EvidenceRefs:            append([]string(nil), input.EvidenceRefs...),
+		ClaimRefs:               append([]string(nil), input.ClaimRefs...),
+		VerifierResultRefs:      append([]string(nil), input.VerifierResultRefs...),
+		ReviewResultRefs:        append([]string(nil), input.ReviewResultRefs...),
+		ReviewExemptReason:      input.ReviewExemptReason,
+		ArtifactRefs:            append([]string(nil), input.ArtifactRefs...),
+		AgentRunIDs:             append([]string(nil), input.AgentRunIDs...),
+		DecompositionQuality:    input.DecompositionQuality,
+		AcceptanceCriteria:      append([]string(nil), input.AcceptanceCriteria...),
+		StopConditions:          append([]string(nil), input.StopConditions...),
+		VerifierLadder:          append([]string(nil), input.VerifierLadder...),
+		RegressionApplicability: input.RegressionApplicability,
+		DownstreamImpactRefs:    append([]string(nil), input.DownstreamImpactRefs...),
+		OutputContract:          input.OutputContract,
+	}
+	if fake.openTasksByPlan != nil {
+		fake.openTasksByPlan[input.PlanID] = append(fake.openTasksByPlan[input.PlanID], task)
+	}
+	return task, nil
 }
 
 func (fake *fakeWorkPlans) UpdateWorkTaskStatus(_ context.Context, input projectworkplan.UpdateWorkTaskStatusInput) (projectworkplan.WorkTask, error) {

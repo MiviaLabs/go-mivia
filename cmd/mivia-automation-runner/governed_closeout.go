@@ -1089,7 +1089,7 @@ func (client *runnerClient) applyGovernedCloseoutFromOutput(ctx context.Context,
 	if err := validateGovernedCloseoutOutput(output, wrapper); err != nil {
 		return err
 	}
-	if err := client.applyGovernedCloseout(ctx, projectID, claimed, output); err != nil {
+	if err := client.applyGovernedCloseout(ctx, projectID, claimed, wrapper, output); err != nil {
 		return governedCloseoutError{category: governedCloseoutApplyFailed, err: err}
 	}
 	task, err := client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
@@ -1102,7 +1102,7 @@ func (client *runnerClient) applyGovernedCloseoutFromOutput(ctx context.Context,
 	return nil
 }
 
-func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID string, claimed projectautomation.ClaimedRun, output governedCloseoutOutput) error {
+func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID string, claimed projectautomation.ClaimedRun, wrapper runnerWorkTaskMetadata, output governedCloseoutOutput) error {
 	runID := strings.TrimSpace(claimed.Run.ID)
 	traceID := firstNonEmpty(claimed.Run.TraceID, runID)
 	planID := firstNonEmpty(claimed.Run.PlanID, claimed.CodexInput.PlanID)
@@ -1110,7 +1110,7 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 	if taskID == "" || runID == "" {
 		return fmt.Errorf("%w: governed closeout requires task and run ids", projectautomation.ErrInvalidInput)
 	}
-	if len(output.ChildTasks) > 0 {
+	if strings.TrimSpace(wrapper.TaskRef) == "decompose-work-plan" && len(output.ChildTasks) > 0 {
 		if planID == "" {
 			return fmt.Errorf("%w: child tasks require plan id", projectautomation.ErrInvalidInput)
 		}
