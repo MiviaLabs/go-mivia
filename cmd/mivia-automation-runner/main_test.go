@@ -1064,6 +1064,9 @@ func TestGitOpsPostTaskInputAddsBoundedSmokeCloseoutRefs(t *testing.T) {
 	if strings.Join(input.ReviewRefs, ",") != "bounded-smoke-review-exempt" || strings.Join(input.VerifierRefs, ",") != "bounded-smoke-verifier" {
 		t.Fatalf("expected synthetic bounded smoke refs, got %+v", input)
 	}
+	if strings.Join(input.TestResults, ",") != "bounded smoke output exact match: passed" {
+		t.Fatalf("expected bounded smoke test result, got %+v", input.TestResults)
+	}
 }
 
 func TestReadOnlyReviewRunSkipsGitOpsMutationGuards(t *testing.T) {
@@ -1493,6 +1496,9 @@ func TestRunGitOpsPostTaskRecoveryAllowsBoundedSmokeWithoutManualCloseoutRefs(t 
 	}
 	if !containsRunnerString(evidenceRefs, "git-commit-abc123def456") || !containsRunnerString(evidenceRefs, "draft-pr-ready") {
 		t.Fatalf("expected commit and draft PR evidence, got %+v", evidenceRefs)
+	}
+	if !runnerRecordedArg(runner.commands, "bounded smoke output exact match: passed") {
+		t.Fatalf("expected draft PR body to include bounded smoke test result, got %+v", runner.commands)
 	}
 }
 
@@ -3673,6 +3679,17 @@ func (runner *gitOpsRecordingRunner) Run(_ context.Context, command projectgitop
 		return runner.results[idx], nil
 	}
 	return projectgitops.CommandResult{}, nil
+}
+
+func runnerRecordedArg(commands []projectgitops.Command, expected string) bool {
+	for _, command := range commands {
+		for _, arg := range command.Args {
+			if strings.Contains(arg, expected) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func fakeCodex(t *testing.T, execStatus int) string {
