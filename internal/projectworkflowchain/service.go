@@ -684,6 +684,13 @@ func (svc *Service) releaseCompiledTasks(ctx context.Context, projectID string, 
 		if _, ok := compiledTasks[task.ID]; !ok || task.Status != projectworkplan.WorkTaskStatusPlanned {
 			continue
 		}
+		ready, err := svc.compiledTaskDependenciesDone(ctx, projectID, task)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			continue
+		}
 		if _, err := svc.workPlans.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
 			WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
 				ProjectID:      projectID,
@@ -698,6 +705,19 @@ func (svc *Service) releaseCompiledTasks(ctx context.Context, projectID string, 
 		}
 	}
 	return nil
+}
+
+func (svc *Service) compiledTaskDependenciesDone(ctx context.Context, projectID string, task projectworkplan.WorkTask) (bool, error) {
+	for _, depID := range task.DependencyTaskIDs {
+		dep, err := svc.workPlans.GetWorkTask(ctx, projectID, depID)
+		if err != nil {
+			return false, err
+		}
+		if dep.Status != projectworkplan.WorkTaskStatusDone {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (svc *Service) validateConfiguredWorkflows(ctx context.Context, cfg Config) error {

@@ -194,6 +194,45 @@ func TestStartCreatesFirstStageAndAdvancesAfterPlanDone(t *testing.T) {
 	}
 }
 
+func TestReleaseCompiledTasksDoesNotReleaseUnmetDependencies(t *testing.T) {
+	ctx := context.Background()
+	workPlans := &fakeWorkPlans{
+		openTasksByPlan: map[string][]projectworkplan.WorkTask{
+			"plan-decomposition": {
+				{
+					ID:                   "task-root",
+					ProjectID:            "project-1",
+					PlanID:               "plan-decomposition",
+					TaskRef:              "root",
+					Status:               projectworkplan.WorkTaskStatusPlanned,
+					DecompositionQuality: projectworkplan.DecompositionReady,
+				},
+				{
+					ID:                   "task-dependent",
+					ProjectID:            "project-1",
+					PlanID:               "plan-decomposition",
+					TaskRef:              "dependent",
+					Status:               projectworkplan.WorkTaskStatusPlanned,
+					DependencyTaskIDs:    []string{"task-root"},
+					DecompositionQuality: projectworkplan.DecompositionReady,
+				},
+			},
+		},
+	}
+	svc := New(newTestChainStore(), &fakeWorkflowAPI{}, workPlans, []Config{testConfig()})
+
+	err := svc.releaseCompiledTasks(ctx, "project-1", projectworkflow.WorkflowCompileResult{
+		WorkPlanID:  "plan-decomposition",
+		WorkTaskIDs: []string{"task-root", "task-dependent"},
+	}, ChainRun{ID: "chain-run-1"})
+	if err != nil {
+		t.Fatalf("release compiled tasks: %v", err)
+	}
+	if got, want := strings.Join(workPlans.released, ","), "task-root"; got != want {
+		t.Fatalf("expected only dependency-free task release, got %q", got)
+	}
+}
+
 func TestStartDoesNotActivateFirstStageBeforeChainRunPersists(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
@@ -713,9 +752,11 @@ func TestGitOpsFinalizeMetadataUsesExplicitEditScopeOnly(t *testing.T) {
 }
 
 type fakeWorkPlans struct {
-	activations []string
-	released    []string
-	events      []string
+	activations     []string
+	released        []string
+	events          []string
+	openTasksByPlan map[string][]projectworkplan.WorkTask
+	tasksByID       map[string]projectworkplan.WorkTask
 }
 
 func (fake *fakeWorkPlans) GetWorkPlan(_ context.Context, projectID string, planID string) (projectworkplan.WorkPlan, error) {
@@ -729,6 +770,20 @@ func (fake *fakeWorkPlans) UpdateWorkPlanStatus(_ context.Context, input project
 }
 
 func (fake *fakeWorkPlans) GetWorkTask(_ context.Context, projectID string, taskID string) (projectworkplan.WorkTask, error) {
+	if fake.tasksByID != nil {
+		if task, ok := fake.tasksByID[taskID]; ok {
+			return task, nil
+		}
+	}
+	if fake.openTasksByPlan != nil {
+		for _, tasks := range fake.openTasksByPlan {
+			for _, task := range tasks {
+				if task.ID == taskID {
+					return task, nil
+				}
+			}
+		}
+	}
 	stage := strings.TrimPrefix(taskID, "task-")
 	task := projectworkplan.WorkTask{
 		ID:                   taskID,
@@ -748,6 +803,9 @@ func (fake *fakeWorkPlans) GetWorkTask(_ context.Context, projectID string, task
 }
 
 func (fake *fakeWorkPlans) ListOpenWorkTasks(_ context.Context, filter projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error) {
+	if fake.openTasksByPlan != nil {
+		return append([]projectworkplan.WorkTask(nil), fake.openTasksByPlan[filter.PlanID]...), nil
+	}
 	stage := "unknown"
 	switch filter.PlanID {
 	case "plan-decomposition":
