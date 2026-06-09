@@ -1321,7 +1321,6 @@ func TestRealChainCarriesConcreteChildTaskFromCompletedDecompositionPlan(t *test
 		OwnerAgent:              "developer",
 		FilesToEdit:             []string{"apps/domain-booking/src/infrastructure/database/repositories/booking.repository.ts"},
 		VerificationRequirement: "focused booking repository tests",
-		ReviewResultRefs:        []string{"review:planning-readiness-approved"},
 		VerifierResultRefs:      []string{"verifier:planning-readiness"},
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 		AcceptanceCriteria:      []string{"Expired eligible bookings are selected for cleanup."},
@@ -1384,6 +1383,13 @@ func TestRealChainCarriesConcreteChildTaskFromCompletedDecompositionPlan(t *test
 		runs, _ := automations.ListRuns(ctx, projectautomation.RunFilter{ProjectID: "project-1", PlanID: implementation.WorkPlanID})
 		t.Fatalf("implementation stage not queued after decomposition child handoff: %#v tasks=%#v runs=%#v", implementation, tasks, runs)
 	}
+	implementationPlan, err := workPlanStore.GetWorkPlan(ctx, "project-1", implementation.WorkPlanID)
+	if err != nil {
+		t.Fatalf("get implementation plan: %v", err)
+	}
+	if implementationPlan.Status != projectworkplan.WorkPlanStatusActive {
+		t.Fatalf("implementation plan must be active after chain stage activation, got %#v", implementationPlan)
+	}
 	implementationTasks, err := workPlans.ListWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: implementation.WorkPlanID})
 	if err != nil {
 		t.Fatalf("list implementation tasks: %v", err)
@@ -1397,6 +1403,9 @@ func TestRealChainCarriesConcreteChildTaskFromCompletedDecompositionPlan(t *test
 	}
 	if carried.ID == "" || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
 		t.Fatalf("concrete child task was not carried ready into implementation plan, child=%#v tasks=%#v", child, implementationTasks)
+	}
+	if !containsString(carried.ReviewResultRefs, "review:carried-from-completed-decomposition-stage") {
+		t.Fatalf("carried child task without direct review refs must receive stage review handoff ref, got %#v", carried.ReviewResultRefs)
 	}
 	implementation = chainStageRunByRef(t, run, "implementation")
 	if !containsString(implementation.WorkTaskIDs, carried.ID) {

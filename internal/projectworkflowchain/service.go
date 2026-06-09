@@ -1007,6 +1007,10 @@ func chainStageOutputTask(task projectworkplan.WorkTask, compiledTaskIDs map[str
 }
 
 func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task projectworkplan.WorkTask, status string, dependencyIDs []string) projectworkplan.CreateWorkTaskInput {
+	reviewResultRefs := append([]string(nil), task.ReviewResultRefs...)
+	if len(reviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" {
+		reviewResultRefs = append(reviewResultRefs, "review:carried-from-completed-decomposition-stage")
+	}
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               projectID,
 		PlanID:                  planID,
@@ -1032,7 +1036,7 @@ func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task 
 		EvidenceRefs:            append([]string(nil), task.EvidenceRefs...),
 		ClaimRefs:               append([]string(nil), task.ClaimRefs...),
 		VerifierResultRefs:      append([]string(nil), task.VerifierResultRefs...),
-		ReviewResultRefs:        append([]string(nil), task.ReviewResultRefs...),
+		ReviewResultRefs:        reviewResultRefs,
 		ReviewExemptReason:      task.ReviewExemptReason,
 		ArtifactRefs:            append([]string(nil), task.ArtifactRefs...),
 		AgentRunIDs:             append([]string(nil), task.AgentRunIDs...),
