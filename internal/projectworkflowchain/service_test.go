@@ -377,6 +377,89 @@ func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *tes
 	}
 }
 
+func TestJiraTicketChainPreservesEveryAutomationHandoffThroughDraftPR(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{
+		CommitRef:      "commit/MASS-1044",
+		PushRef:        "push/MASS-1044",
+		PullRequestRef: "pr/MASS-1044",
+		EvidenceRefs:   []string{"gitops-evidence:MASS-1044"},
+	}}
+	svc.SetGitOpsFinalizer(finalizer)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "MASS-1044", CreatedByRunID: "orchestrator-run-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("start chain: %v", err)
+	}
+	assertChainStageHandoff(t, result.StageRuns[0], "decomposition", "workflow-decomposition", "plan-decomposition", "task-decomposition", "automation-decomposition", StageStatusQueued)
+	if result.InputRef != "jira:MASS-1044" || result.NextAction != "decomposition automation will run when planned tasks transition to ready" {
+		t.Fatalf("start result lost Jira input or next action: %#v", result)
+	}
+	if len(workflows.compileInputs) != 1 || workflows.compileInputs[0].CreatedByRunID != "orchestrator-run-1" || workflows.compileInputs[0].TraceID != "trace-1" {
+		t.Fatalf("first compile lost run/trace refs: %#v", workflows.compileInputs)
+	}
+	if got, want := strings.Join(workPlans.events[:2], ","), "release:task-decomposition,activate:plan-decomposition"; got != want {
+		t.Fatalf("decomposition activation handoff order mismatch: got %s want %s", got, want)
+	}
+
+	for _, planID := range []string{"plan-decomposition", "plan-implementation", "plan-post-validation"} {
+		if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get completed run: %v", err)
+	}
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/MASS-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+		t.Fatalf("completed chain lost final status/action/PR handoff: %#v", run)
+	}
+	if run.CreatedByRunID != "orchestrator-run-1" || run.TraceID != "trace-1" || run.InputRef != "jira:MASS-1044" {
+		t.Fatalf("completed chain lost root refs: %#v", run)
+	}
+	if len(run.WorkPlanIDs) != 3 || len(run.AutomationIDs) != 3 || len(run.StageRuns) != 3 {
+		t.Fatalf("completed chain lost plan or automation refs: %#v", run)
+	}
+	assertChainStageHandoff(t, run.StageRuns[0], "decomposition", "workflow-decomposition", "plan-decomposition", "task-decomposition", "automation-decomposition", StageStatusCompleted)
+	assertChainStageHandoff(t, run.StageRuns[1], "implementation", "workflow-implementation", "plan-implementation", "task-implementation", "automation-implementation", StageStatusCompleted)
+	assertChainStageHandoff(t, run.StageRuns[2], "post-validation", "workflow-validation", "plan-post-validation", "task-post-validation", "automation-post-validation", StageStatusCompleted)
+	if got, want := strings.Join(workPlans.events, ","), "release:task-decomposition,activate:plan-decomposition,release:task-implementation,activate:plan-implementation,release:task-post-validation,activate:plan-post-validation"; got != want {
+		t.Fatalf("stage activation handoff order mismatch:\n got: %s\nwant: %s", got, want)
+	}
+	if len(workflows.compileInputs) != 3 {
+		t.Fatalf("expected all three stages compiled, got %#v", workflows.compileInputs)
+	}
+	for i, input := range workflows.compileInputs {
+		if input.UserRequestRef != "jira:MASS-1044" || input.CreatedByRunID != "orchestrator-run-1" || input.TraceID != "trace-1" {
+			t.Fatalf("compile input %d lost Jira/run/trace refs: %#v", i, input)
+		}
+		if len(input.ContextPackRefs) == 0 || !containsString(input.ContextPackRefs, "jira:MASS-1044") {
+			t.Fatalf("compile input %d lost context refs: %#v", i, input)
+		}
+	}
+	if len(finalizer.inputs) != 1 {
+		t.Fatalf("expected exactly one GitOps finalization, got %#v", finalizer.inputs)
+	}
+	gitopsInput := finalizer.inputs[0]
+	if gitopsInput.InputRef != "jira:MASS-1044" || gitopsInput.CreatedByRunID != "orchestrator-run-1" || gitopsInput.TraceID != "trace-1" {
+		t.Fatalf("GitOps input lost Jira/run/trace refs: %#v", gitopsInput)
+	}
+	if len(gitopsInput.StageRuns) != 3 || len(gitopsInput.AutomationIDs) != 3 || gitopsInput.WorkPlan.ID != "plan-implementation" {
+		t.Fatalf("GitOps input lost stage/automation/implementation plan refs: %#v", gitopsInput)
+	}
+	if !containsString(gitopsInput.ReviewRefs, "review:task-post-validation") || !containsString(gitopsInput.VerifierRefs, "verifier:task-post-validation") || !containsString(gitopsInput.TestResults, "task-post-validation verified by verifier:task-post-validation") {
+		t.Fatalf("GitOps input lost validation review/verifier/test refs: %#v", gitopsInput)
+	}
+	if !containsString(gitopsInput.AllowedPathspecs, "internal/projectworkflowchain/service.go") || containsString(gitopsInput.AllowedPathspecs, "cmd/mivia-server") {
+		t.Fatalf("GitOps input must use explicit implementation edit scope only: %#v", gitopsInput.AllowedPathspecs)
+	}
+}
+
 func TestHandleWorkPlanStatusChangedDoesNotActivateNextStageBeforeChainUpdatePersists(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
@@ -825,6 +908,22 @@ func containsString(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func assertChainStageHandoff(t *testing.T, stage StageRun, stageRef string, workflowID string, planID string, taskID string, automationID string, status string) {
+	t.Helper()
+	if stage.StageRef != stageRef || stage.WorkflowID != workflowID || stage.WorkPlanID != planID || stage.Status != status {
+		t.Fatalf("stage %s lost refs/status: %#v", stageRef, stage)
+	}
+	if len(stage.WorkTaskIDs) != 1 || stage.WorkTaskIDs[0] != taskID {
+		t.Fatalf("stage %s lost work task refs: %#v", stageRef, stage)
+	}
+	if len(stage.AutomationIDs) != 1 || stage.AutomationIDs[0] != automationID {
+		t.Fatalf("stage %s lost automation refs: %#v", stageRef, stage)
+	}
+	if status == StageStatusCompleted && stage.CompletedAt.IsZero() {
+		t.Fatalf("stage %s completed without completed_at: %#v", stageRef, stage)
+	}
 }
 
 func TestGitOpsFinalizeMetadataUsesExplicitEditScopeOnly(t *testing.T) {
