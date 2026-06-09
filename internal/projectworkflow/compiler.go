@@ -153,6 +153,9 @@ func (svc *Service) CompileWorkflow(ctx context.Context, input WorkflowCompileIn
 	for _, item := range graph.tasks {
 		task := taskByStep[item.step.ID]
 		task.DependencyTaskIDs = compiledDependencyTaskIDs(item.step, graph.stepsByID, taskByStep, reviewTaskIDsByReviewedStep, reviewTaskIDsByAutomationStep)
+		if len(task.DependencyTaskIDs) > 0 && task.Status == projectworkplan.WorkTaskStatusReady {
+			task.Status = projectworkplan.WorkTaskStatusPlanned
+		}
 		updated, err := svc.workPlans.UpdateWorkTask(ctx, task)
 		if err != nil {
 			return result, fmt.Errorf("update compiled work task dependencies %s: %w", item.step.ID, err)

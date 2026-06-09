@@ -160,6 +160,15 @@ func TestMassGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.T) 
 	if len(compiledDecomposeTask.AcceptanceCriteria) == 0 || len(compiledDecomposeTask.StopConditions) == 0 || len(compiledDecomposeTask.VerifierLadder) == 0 || compiledDecomposeTask.RegressionApplicability == "" || len(compiledDecomposeTask.DownstreamImpactRefs) == 0 || compiledDecomposeTask.OutputContract == "" {
 		t.Fatalf("MASS decompose-work-plan must compile first-class governance fields, got %#v", compiledDecomposeTask)
 	}
+	if discover := compiledTaskByRef(t, decompositionTasks, "discover-planning-context"); discover.Status != projectworkplan.WorkTaskStatusReady || len(discover.DependencyTaskIDs) != 0 {
+		t.Fatalf("MASS root decomposition task must compile ready with no dependencies, got %#v", discover)
+	}
+	for _, ref := range []string{"map-downstream-impact", "decompose-work-plan", "mark-ready-after-review"} {
+		task := compiledTaskByRef(t, decompositionTasks, ref)
+		if task.Status != projectworkplan.WorkTaskStatusPlanned || len(task.DependencyTaskIDs) == 0 {
+			t.Fatalf("MASS dependent decomposition task %s must compile planned with dependencies, got %#v", ref, task)
+		}
+	}
 
 	smokeGitOps := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-smoke-gitops.toml"), "mass-monorepo")
 	smokeWorker := configAgentByID(t, smokeGitOps, "smoke-gitops-worker")
@@ -288,6 +297,60 @@ func TestMassGovernedDecompositionPlanningStageSequence(t *testing.T) {
 	for _, stepID := range expectedOrder {
 		if !containsConfigString(gate.AppliesTo, stepID) {
 			t.Fatalf("planning readiness review must apply to %q, applies_to=%#v", stepID, gate.AppliesTo)
+		}
+	}
+}
+
+func TestMassGovernedDecompositionQueuesOnlyRootTaskOnPlanActivation(t *testing.T) {
+	ctx := context.Background()
+	workPlans := projectworkplan.New(workplanstore.NewMemoryStore())
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  projectautomation.RunnerExecutionExternal,
+		MaxParallelTasks: 2,
+		PermissionResolver: workflowTestPermissionResolver{
+			allowedRunnerKinds: []string{projectautomation.RunnerKindCodexCLI},
+		},
+		WorkPlanStatusTrigger: projectautomation.WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	svc := projectworkflow.New(workflowstore.NewMemoryStore())
+	svc.SetCompilerDependencies(workPlans, automations)
+
+	decomposition := importConfigWorkflow(t, ctx, svc, filepath.Join("..", "..", "configs", "workflows", "mass", "governed-decomposition-planning.toml"), "mass-monorepo")
+	result, err := svc.CompileWorkflow(ctx, projectworkflow.WorkflowCompileInput{ProjectID: decomposition.ProjectID, WorkflowID: decomposition.ID, UserRequestRef: "jira:MASS-1044", CreatedByRunID: "mass-decomposition-activation-test"})
+	if err != nil {
+		t.Fatalf("compile MASS decomposition workflow: %v", err)
+	}
+	plan, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{ProjectID: decomposition.ProjectID, PlanID: result.WorkPlanID, Status: projectworkplan.WorkPlanStatusActive})
+	if err != nil {
+		t.Fatalf("activate compiled plan: %v", err)
+	}
+	if err := automations.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: decomposition.ProjectID, PlanID: plan.ID, NewStatus: projectworkplan.WorkPlanStatusActive}); err != nil {
+		t.Fatalf("handle active plan automation trigger: %v", err)
+	}
+	runs, err := automations.ListRuns(ctx, projectautomation.RunFilter{ProjectID: decomposition.ProjectID, PlanID: plan.ID})
+	if err != nil {
+		t.Fatalf("list automation runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected exactly one queued root automation run, got %#v", runs)
+	}
+	tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: decomposition.ProjectID, PlanID: plan.ID})
+	if err != nil {
+		t.Fatalf("list compiled tasks: %v", err)
+	}
+	discover := compiledTaskByRef(t, tasks, "discover-planning-context")
+	if runs[0].TaskID != discover.ID || runs[0].WorkTaskStatus != projectworkplan.WorkTaskStatusReady || runs[0].Status != projectautomation.RunStatusQueued {
+		t.Fatalf("expected queued run for ready root task, run=%#v root=%#v", runs[0], discover)
+	}
+	for _, ref := range []string{"map-downstream-impact", "decompose-work-plan", "mark-ready-after-review"} {
+		task := compiledTaskByRef(t, tasks, ref)
+		if task.Status != projectworkplan.WorkTaskStatusPlanned {
+			t.Fatalf("dependent task %s must remain planned after plan activation, got %#v", ref, task)
 		}
 	}
 }
@@ -568,6 +631,18 @@ func containsConfigString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type workflowTestPermissionResolver struct {
+	allowedRunnerKinds []string
+}
+
+func (resolver workflowTestPermissionResolver) CheckAutomationPermission(_ context.Context, input projectautomation.PermissionCheckInput) (projectautomation.PermissionSnapshotMetadata, error) {
+	return projectautomation.PermissionSnapshotMetadata{
+		PermissionRef:      input.PermissionRef,
+		AgentID:            input.AgentID,
+		AllowedRunnerKinds: resolver.allowedRunnerKinds,
+	}, nil
 }
 
 func TestConfigWorkflowDefinitionsCompileCreatesGovernedObjects(t *testing.T) {
