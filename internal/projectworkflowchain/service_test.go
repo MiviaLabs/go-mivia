@@ -291,6 +291,14 @@ func TestAdvancingStageCarriesGeneratedImplementationTasksToNextPlan(t *testing.
 	if !containsString(carried.FilesToEdit, "internal/output.go") || carried.VerificationRequirement != generated.VerificationRequirement {
 		t.Fatalf("carried task lost implementation metadata: %#v", carried)
 	}
+	if !containsString(carried.AcceptanceCriteria, "works") ||
+		!containsString(carried.StopConditions, "blocked") ||
+		!containsString(carried.VerifierLadder, "unit") ||
+		carried.RegressionApplicability != generated.RegressionApplicability ||
+		!containsString(carried.DownstreamImpactRefs, "impact-ref") ||
+		carried.OutputContract != generated.OutputContract {
+		t.Fatalf("carried task lost executable governance metadata: %#v", carried)
+	}
 	if !containsString(carried.ReviewResultRefs, "review:planning-readiness-approved") || !containsString(carried.VerifierResultRefs, "verifier:planning-readiness") {
 		t.Fatalf("carried task lost planning review/verifier refs: %#v", carried)
 	}
