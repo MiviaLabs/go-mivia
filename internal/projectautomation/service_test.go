@@ -956,6 +956,194 @@ func TestClaimNextRunClosesOutMetadataOnlyVerifyingTaskAndQueuesDependent(t *tes
 	}
 }
 
+func TestGenericWorkflowPipelineQueuesClaimsCompletesAndReviewsDependentHandoffs(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	discovery := readyTask("task-discovery", "discover-planning-context", nil)
+	discovery.OwnerAgent = "planning-worker"
+	implementation := readyTask("task-implementation", "implement-ticket-slice", []string{"internal/generic/feature.go"})
+	implementation.Status = projectworkplan.WorkTaskStatusPlanned
+	implementation.OwnerAgent = "implementation-worker"
+	implementation.DependencyTaskIDs = []string{discovery.ID}
+	implementation.FilesToEdit = []string{"internal/generic/feature.go"}
+	implementation.AcceptanceCriteria = []string{"generic behavior is implemented from source evidence"}
+	implementation.StopConditions = []string{"missing generic source evidence"}
+	implementation.VerifierLadder = []string{"focused generic regression test"}
+	implementation.RegressionApplicability = "required"
+	implementation.DownstreamImpactRefs = []string{"downstream.generic-impact"}
+	implementation.OutputContract = "bounded diff, evidence refs, verifier refs, and review refs"
+	review := readyTask("task-review", "review-implementation-output", nil)
+	review.Status = projectworkplan.WorkTaskStatusPlanned
+	review.OwnerAgent = "review-worker"
+	review.DependencyTaskIDs = []string{implementation.ID}
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusActive},
+		},
+		tasks: map[string]projectworkplan.WorkTask{
+			discovery.ID:       discovery,
+			implementation.ID:  implementation,
+			review.ID:          review,
+		},
+	}
+	svc := New(store, fake, Options{
+		Enabled:         true,
+		RunnerEnabled:   true,
+		RunnerExecution: RunnerExecutionExternal,
+		MaxParallelTasks: 1,
+		WorkPlanStatusTrigger: WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+		PermissionResolver: &fakePermissionResolver{metadata: PermissionSnapshotMetadata{
+			PermissionRef:      "permission_snapshot:generic",
+			AllowedRunnerKinds: []string{RunnerKindCodexCLI},
+		}},
+	})
+	svc.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	svc.newID = deterministicAutomationIDs(
+		"automation_discovery", "automation_implementation", "automation_review",
+		"automation_run_discovery", "claim_discovery",
+		"automation_attempt_discovery",
+		"automation_run_implementation", "claim_implementation",
+		"automation_attempt_implementation",
+		"automation_run_review", "claim_review",
+		"automation_attempt_review",
+	)
+	discoveryAutomation := createGenericWorkflowAutomation(t, ctx, svc, "automation/discovery", "Discover planning context", "planning-worker", []string{discovery.ID, discovery.TaskRef})
+	implementationAutomation := createGenericWorkflowAutomation(t, ctx, svc, "automation/implementation", "Implement ticket slice", "implementation-worker", []string{implementation.ID, implementation.TaskRef})
+	reviewAutomation := createGenericWorkflowAutomation(t, ctx, svc, "automation/review", "Review implementation output", "review-worker", []string{review.ID, review.TaskRef})
+
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID: "project-1",
+		PlanID:    "plan-1",
+		PlanRef:   "ticket/generic-1234",
+		OldStatus: projectworkplan.WorkPlanStatusPlanned,
+		NewStatus: projectworkplan.WorkPlanStatusActive,
+		ChangedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("HandleWorkPlanStatusChanged returned error: %v", err)
+	}
+	discoveryRuns, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: discoveryAutomation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns discovery returned error: %v", err)
+	}
+	if len(discoveryRuns) != 1 || discoveryRuns[0].TaskID != discovery.ID || discoveryRuns[0].Status != RunStatusQueued || discoveryRuns[0].OrchestratorRunID == "" {
+		t.Fatalf("expected one queued discovery run with idempotency ref, got %#v", discoveryRuns)
+	}
+	if runs, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: implementationAutomation.ID, PlanID: "plan-1"}); err != nil || len(runs) != 0 {
+		t.Fatalf("implementation must not queue before discovery completion, runs=%#v err=%v", runs, err)
+	}
+
+	claimedDiscovery, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-generic"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun discovery returned error: %v", err)
+	}
+	if claimedDiscovery.Run.ID != discoveryRuns[0].ID || claimedDiscovery.Run.Status != RunStatusRunning || claimedDiscovery.Run.ClaimID == "" || claimedDiscovery.Run.RunnerID != "runner-generic" || claimedDiscovery.Run.LastHeartbeatAt.IsZero() || claimedDiscovery.Run.LeaseExpiresAt.IsZero() {
+		t.Fatalf("discovery claim must persist live runner fields, got %#v", claimedDiscovery.Run)
+	}
+	if got := fake.tasks[discovery.ID]; got.Status != projectworkplan.WorkTaskStatusInProgress || got.ClaimedByRunID != claimedDiscovery.Run.ID {
+		t.Fatalf("discovery work task must be in progress and owned by run, got %#v", got)
+	}
+	fake.tasks[discovery.ID] = completedTaskForAutomationRun(fake.tasks[discovery.ID], claimedDiscovery.Run.ID, nil, []string{"evidence.discovery.context"}, []string{"claim.discovery.complete"}, nil, "metadata discovery completed")
+	completedDiscovery, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:          "project-1",
+		RunID:              claimedDiscovery.Run.ID,
+		ClaimID:            claimedDiscovery.Run.ClaimID,
+		RunnerID:           claimedDiscovery.Run.RunnerID,
+		Status:             RunStatusCompleted,
+		EvidenceRefs:       []string{"evidence.discovery.context"},
+		ClaimRefs:          []string{"claim.discovery.complete"},
+		VerifierResultRefs: []string{"verifier.discovery.context"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt discovery returned error: %v", err)
+	}
+	if completedDiscovery.Status != RunStatusCompleted || completedDiscovery.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("discovery completion must close run and task, got %#v task=%#v", completedDiscovery, fake.tasks[discovery.ID])
+	}
+	implementationRuns, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: implementationAutomation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns implementation returned error: %v", err)
+	}
+	if len(implementationRuns) != 1 || implementationRuns[0].TaskID != implementation.ID || implementationRuns[0].Status != RunStatusQueued || implementationRuns[0].SafeSummary != "dependency_ready_automation_queued" {
+		t.Fatalf("expected dependency-ready implementation handoff, got %#v", implementationRuns)
+	}
+	if got := fake.tasks[implementation.ID]; got.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("implementation task must move planned -> ready after dependency done, got %#v", got)
+	}
+
+	claimedImplementation, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-generic"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun implementation returned error: %v", err)
+	}
+	if claimedImplementation.Run.ID != implementationRuns[0].ID || claimedImplementation.Run.Status != RunStatusRunning || claimedImplementation.Run.ClaimID == "" {
+		t.Fatalf("implementation claim must be running with claim fields, got %#v", claimedImplementation.Run)
+	}
+	implementationEvidenceRefs := []string{
+		"evidence.implementation.diff",
+		"gitops-commit:generic-change",
+		"gitops-push:generic-branch",
+		"gitops-pr:generic-draft",
+	}
+	fake.tasks[implementation.ID] = completedTaskForAutomationRun(fake.tasks[implementation.ID], claimedImplementation.Run.ID, []string{"internal/generic/feature.go"}, implementationEvidenceRefs, []string{"claim.implementation.done"}, []string{"review.implementation.approved"}, "implementation output produced")
+	completedImplementation, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:          "project-1",
+		RunID:              claimedImplementation.Run.ID,
+		ClaimID:            claimedImplementation.Run.ClaimID,
+		RunnerID:           claimedImplementation.Run.RunnerID,
+		Status:             RunStatusCompleted,
+		EvidenceRefs:       implementationEvidenceRefs,
+		ClaimRefs:          []string{"claim.implementation.done"},
+		VerifierResultRefs: []string{"verifier.implementation.focused"},
+		ReviewRefs:         []string{"review.implementation.approved"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt implementation returned error: %v", err)
+	}
+	if completedImplementation.Status != RunStatusCompleted || completedImplementation.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("implementation completion must close run and task after review refs, got %#v task=%#v", completedImplementation, fake.tasks[implementation.ID])
+	}
+	reviewRuns, err := store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: reviewAutomation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns review returned error: %v", err)
+	}
+	if len(reviewRuns) != 1 || reviewRuns[0].TaskID != review.ID || reviewRuns[0].Status != RunStatusQueued {
+		t.Fatalf("expected downstream review handoff queued after implementation done, got %#v", reviewRuns)
+	}
+	if got := fake.tasks[review.ID]; got.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("review task must move planned -> ready after implementation done, got %#v", got)
+	}
+	claimedReview, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: "project-1", RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-review"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun review returned error: %v", err)
+	}
+	reviewTask := completedTaskForAutomationRun(fake.tasks[review.ID], claimedReview.Run.ID, nil, []string{"evidence.review.approval"}, []string{"claim.review.complete"}, nil, "independent review completed")
+	reviewTask.ReviewExemptReason = "review task is the independent review gate"
+	fake.tasks[review.ID] = reviewTask
+	completedReview, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:          "project-1",
+		RunID:              claimedReview.Run.ID,
+		ClaimID:            claimedReview.Run.ClaimID,
+		RunnerID:           claimedReview.Run.RunnerID,
+		Status:             RunStatusCompleted,
+		EvidenceRefs:       []string{"evidence.review.approval"},
+		ClaimRefs:          []string{"claim.review.complete"},
+		VerifierResultRefs: []string{"verifier.review.approved"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt review returned error: %v", err)
+	}
+	if completedReview.Status != RunStatusCompleted || fake.tasks[review.ID].Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("review completion must close final handoff, got %#v task=%#v", completedReview, fake.tasks[review.ID])
+	}
+	for _, task := range []projectworkplan.WorkTask{fake.tasks[discovery.ID], fake.tasks[implementation.ID], fake.tasks[review.ID]} {
+		if task.Status != projectworkplan.WorkTaskStatusDone || len(task.EvidenceRefs) == 0 || len(task.VerifierResultRefs) == 0 || len(task.ClaimRefs) == 0 {
+			t.Fatalf("task %s must preserve done status and live refs, got %#v", task.TaskRef, task)
+		}
+	}
+}
+
 func TestClaimNextRunDoesNotCloseOutEmptyMetadataOnlyVerifyingTask(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore()
@@ -9829,6 +10017,52 @@ func readyTask(id string, ref string, files []string) projectworkplan.WorkTask {
 		VerificationRequirement: "orchestrator runs focused verifier",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	}
+}
+
+func createGenericWorkflowAutomation(t *testing.T, ctx context.Context, svc *Service, automationRef string, title string, agentID string, allowedTaskRefs []string) Automation {
+	t.Helper()
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   automationRef,
+		Title:           title,
+		Purpose:         "Run a generic workflow handoff.",
+		Status:          AutomationStatusEnabled,
+		AgentID:         agentID,
+		PlanID:          "plan-1",
+		AllowedTaskRefs: allowedTaskRefs,
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission_snapshot:generic",
+		SourceKind:      AutomationSourceWorkflow,
+		TraceID:         "trace-generic-workflow",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation %s returned error: %v", automationRef, err)
+	}
+	return automation
+}
+
+func completedTaskForAutomationRun(task projectworkplan.WorkTask, runID string, filesToEdit []string, evidenceRefs []string, claimRefs []string, reviewRefs []string, outcome string) projectworkplan.WorkTask {
+	task.Status = projectworkplan.WorkTaskStatusNeedsReview
+	task.ClaimedByRunID = runID
+	task.AgentRunIDs = appendUniqueRefForTest(task.AgentRunIDs, runID)
+	task.FilesToEdit = append([]string(nil), filesToEdit...)
+	task.LikelyFilesAffected = append([]string(nil), filesToEdit...)
+	task.EvidenceRefs = append([]string(nil), evidenceRefs...)
+	task.ClaimRefs = append([]string(nil), claimRefs...)
+	task.VerifierResultRefs = []string{"verifier." + strings.ReplaceAll(task.TaskRef, "-", ".")}
+	task.ReviewResultRefs = append([]string(nil), reviewRefs...)
+	if len(reviewRefs) == 0 && len(filesToEdit) == 0 {
+		task.ReviewExemptReason = "metadata-only automation task; no repository writes require secondary review"
+	}
+	task.Outcome = outcome
+	return task
+}
+
+func appendUniqueRefForTest(values []string, ref string) []string {
+	if containsRef(values, ref) {
+		return values
+	}
+	return append(values, ref)
 }
 
 func TestValidateAllowedTaskRefAcceptsTaskIDOrTaskRef(t *testing.T) {
