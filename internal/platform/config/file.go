@@ -55,6 +55,7 @@ type fileConfig struct {
 	Ingestion    *fileIngestionConfig    `toml:"ingestion"`
 	Workspace    *fileWorkspaceConfig    `toml:"workspace"`
 	Workflows    *fileWorkflowConfig     `toml:"workflows"`
+	Durable      *fileDurableConfig      `toml:"durable_workflows"`
 	Automation   *fileAutomationConfig   `toml:"automation"`
 	GitOps       *fileGitOpsConfig       `toml:"git_operations"`
 	Verification *fileVerificationConfig `toml:"verification"`
@@ -101,6 +102,15 @@ type fileWorkspaceConfig struct {
 type fileWorkflowConfig struct {
 	Enabled         *bool    `toml:"enabled"`
 	DefinitionPaths []string `toml:"definition_paths"`
+}
+
+type fileDurableConfig struct {
+	Enabled         *bool   `toml:"enabled"`
+	ShadowMode      *bool   `toml:"shadow_mode"`
+	Backend         *string `toml:"backend"`
+	SQLitePath      *string `toml:"sqlite_path"`
+	WorkerEnabled   *bool   `toml:"worker_enabled"`
+	MaxParallelRuns *int    `toml:"max_parallel_runs"`
 }
 
 type fileAutomationConfig struct {
@@ -785,6 +795,27 @@ func (cfg fileConfig) applyTo(base Config) (Config, error) {
 		}
 		if cfg.Workflows.DefinitionPaths != nil {
 			base.Workflows.DefinitionPaths = append([]string(nil), cfg.Workflows.DefinitionPaths...)
+		}
+	}
+
+	if cfg.Durable != nil {
+		if cfg.Durable.Enabled != nil {
+			base.DurableWorkflows.Enabled = *cfg.Durable.Enabled
+		}
+		if cfg.Durable.ShadowMode != nil {
+			base.DurableWorkflows.ShadowMode = *cfg.Durable.ShadowMode
+		}
+		if cfg.Durable.Backend != nil {
+			base.DurableWorkflows.Backend = strings.TrimSpace(*cfg.Durable.Backend)
+		}
+		if cfg.Durable.SQLitePath != nil {
+			base.DurableWorkflows.SQLitePath = strings.TrimSpace(*cfg.Durable.SQLitePath)
+		}
+		if cfg.Durable.WorkerEnabled != nil {
+			base.DurableWorkflows.WorkerEnabled = *cfg.Durable.WorkerEnabled
+		}
+		if cfg.Durable.MaxParallelRuns != nil {
+			base.DurableWorkflows.MaxParallelRuns = *cfg.Durable.MaxParallelRuns
 		}
 	}
 

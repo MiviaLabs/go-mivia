@@ -29,6 +29,7 @@ type redactedConfigSummary struct {
 	Logging       redactedLoggingSummary    `json:"logging"`
 	Ingestion     redactedIngestionSummary  `json:"ingestion"`
 	Workspace     redactedWorkspaceSummary  `json:"workspace"`
+	Durable       redactedDurableSummary    `json:"durable_workflows"`
 	AgentActivity redactedActivitySummary   `json:"agent_activity"`
 	Automation    redactedAutomationSummary `json:"automation"`
 	Projects      []redactedProjectSummary  `json:"projects"`
@@ -56,6 +57,15 @@ type redactedIngestionSummary struct {
 
 type redactedWorkspaceSummary struct {
 	Enabled bool `json:"enabled"`
+}
+
+type redactedDurableSummary struct {
+	Enabled         bool          `json:"enabled"`
+	ShadowMode      bool          `json:"shadow_mode"`
+	Backend         string        `json:"backend"`
+	SQLitePath      redactedValue `json:"sqlite_path"`
+	WorkerEnabled   bool          `json:"worker_enabled"`
+	MaxParallelRuns int           `json:"max_parallel_runs"`
 }
 
 type redactedActivitySummary struct {
@@ -204,7 +214,15 @@ func redactedSummary(cfg config.Config) *redactedConfigSummary {
 			InitialScanOnStart:       cfg.Ingestion.InitialScanOnStart,
 			SensitiveMarkerPolicy:    cfg.Ingestion.SensitiveMarkerPolicy,
 		},
-		Workspace:     redactedWorkspaceSummary{Enabled: cfg.Workspace.Enabled},
+		Workspace: redactedWorkspaceSummary{Enabled: cfg.Workspace.Enabled},
+		Durable: redactedDurableSummary{
+			Enabled:         cfg.DurableWorkflows.Enabled,
+			ShadowMode:      cfg.DurableWorkflows.ShadowMode,
+			Backend:         cfg.DurableWorkflows.Backend,
+			SQLitePath:      redactPath(cfg.DurableWorkflows.SQLitePath),
+			WorkerEnabled:   cfg.DurableWorkflows.WorkerEnabled,
+			MaxParallelRuns: cfg.DurableWorkflows.MaxParallelRuns,
+		},
 		AgentActivity: redactedActivitySummary{RetainRawPayloads: cfg.AgentActivity.RetainRawPayloads},
 		Automation: redactedAutomationSummary{
 			Enabled:                   cfg.Automation.Enabled,
@@ -304,6 +322,8 @@ func configErrorCategory(err error) string {
 		return "invalid_ingestion"
 	case strings.Contains(err.Error(), "MIVIA_AUTOMATION_"), strings.Contains(err.Error(), "automation"):
 		return "invalid_automation"
+	case strings.Contains(err.Error(), "MIVIA_DURABLE_WORKFLOWS_"), strings.Contains(err.Error(), "durable_workflows"):
+		return "invalid_durable_workflows"
 	case strings.Contains(err.Error(), "workspace_mode"), strings.Contains(err.Error(), "MIVIA_WORKSPACE_"):
 		return "invalid_workspace"
 	case strings.Contains(err.Error(), "missing config file"):
@@ -321,6 +341,8 @@ func configErrorMessage(err error) string {
 		return "Ingestion settings failed validation."
 	case "invalid_automation":
 		return "Automation settings failed validation."
+	case "invalid_durable_workflows":
+		return "Durable workflow settings failed validation."
 	case "invalid_workspace":
 		return "Workspace settings failed validation."
 	case "missing_config":

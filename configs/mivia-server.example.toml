@@ -90,6 +90,15 @@ definition_paths = [
   "configs/workflows/generic/governed-post-implementation-validation.toml",
 ]
 
+[durable_workflows]
+# Enabled for shadow construction only. No durable runtime wiring is started from config alone.
+enabled = true
+shadow_mode = true
+backend = "memory"
+sqlite_path = "data/durable-workflows.sqlite"
+worker_enabled = true
+max_parallel_runs = 1
+
 [automation]
 # Disabled by default. Runner execution must be explicitly enabled after review.
 enabled = false

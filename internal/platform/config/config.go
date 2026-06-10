@@ -19,6 +19,7 @@ const (
 	defaultHTTPAddr                   = "127.0.0.1:8080"
 	defaultLadybugPath                = "data/mivialabs.lbug"
 	defaultSQLitePath                 = "data/mivialabs-config.sqlite"
+	defaultDurableWorkflowSQLitePath  = "data/durable-workflows.sqlite"
 	defaultMaxRequestBytes            = int64(1 << 20)
 	defaultRequestTimeout             = 10 * time.Second
 	defaultReadHeaderTimeout          = 5 * time.Second
@@ -44,6 +45,8 @@ const (
 	defaultSQLiteSynchronous          = "NORMAL"
 	defaultSensitiveMarkerPolicy      = "skip_file"
 	sensitiveMarkerPolicySkipFile     = "skip_file"
+	durableWorkflowBackendMemory      = "memory"
+	durableWorkflowBackendSQLite      = "sqlite"
 )
 
 var ErrNonLoopbackBind = errors.New("non_loopback_bind_attempt")
@@ -64,6 +67,7 @@ type Config struct {
 	Ingestion         Ingestion
 	Workspace         Workspace
 	Workflows         Workflows
+	DurableWorkflows  DurableWorkflows
 	AgentActivity     AgentActivity
 	Automation        Automation
 	GitOperations     GitOperations
@@ -97,6 +101,15 @@ type Workspace struct {
 type Workflows struct {
 	Enabled         bool
 	DefinitionPaths []string
+}
+
+type DurableWorkflows struct {
+	Enabled         bool
+	ShadowMode      bool
+	Backend         string
+	SQLitePath      string
+	WorkerEnabled   bool
+	MaxParallelRuns int
 }
 
 type AgentActivity struct {
@@ -409,10 +422,18 @@ func defaultConfig(configPath string) Config {
 		Ingestion:         defaultIngestion(),
 		Workspace:         Workspace{Enabled: false},
 		Workflows:         Workflows{Enabled: false},
-		Automation:        defaultAutomation(),
-		GitOperations:     defaultGitOperations(),
-		Verification:      Verification{},
-		Projects:          nil,
+		DurableWorkflows: DurableWorkflows{
+			Enabled:         true,
+			ShadowMode:      true,
+			Backend:         durableWorkflowBackendMemory,
+			SQLitePath:      defaultDurableWorkflowSQLitePath,
+			WorkerEnabled:   true,
+			MaxParallelRuns: 1,
+		},
+		Automation:    defaultAutomation(),
+		GitOperations: defaultGitOperations(),
+		Verification:  Verification{},
+		Projects:      nil,
 	}
 }
 
@@ -596,6 +617,20 @@ func applyEnvOverrides(cfg *Config) error {
 	if cfg.Workspace.Enabled, err = getenvBool("MIVIA_WORKSPACE_ENABLED", cfg.Workspace.Enabled); err != nil {
 		return err
 	}
+	if cfg.DurableWorkflows.Enabled, err = getenvBool("MIVIA_DURABLE_WORKFLOWS_ENABLED", cfg.DurableWorkflows.Enabled); err != nil {
+		return err
+	}
+	if cfg.DurableWorkflows.ShadowMode, err = getenvBool("MIVIA_DURABLE_WORKFLOWS_SHADOW_MODE", cfg.DurableWorkflows.ShadowMode); err != nil {
+		return err
+	}
+	cfg.DurableWorkflows.Backend = getenv("MIVIA_DURABLE_WORKFLOWS_BACKEND", cfg.DurableWorkflows.Backend)
+	cfg.DurableWorkflows.SQLitePath = getenv("MIVIA_DURABLE_WORKFLOWS_SQLITE_PATH", cfg.DurableWorkflows.SQLitePath)
+	if cfg.DurableWorkflows.WorkerEnabled, err = getenvBool("MIVIA_DURABLE_WORKFLOWS_WORKER_ENABLED", cfg.DurableWorkflows.WorkerEnabled); err != nil {
+		return err
+	}
+	if cfg.DurableWorkflows.MaxParallelRuns, err = getenvInt("MIVIA_DURABLE_WORKFLOWS_MAX_PARALLEL_RUNS", cfg.DurableWorkflows.MaxParallelRuns); err != nil {
+		return err
+	}
 	if cfg.Automation.Enabled, err = getenvBool("MIVIA_AUTOMATION_ENABLED", cfg.Automation.Enabled); err != nil {
 		return err
 	}
@@ -729,6 +764,9 @@ func (cfg Config) Validate() error {
 		return err
 	}
 	if err := cfg.Workflows.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.DurableWorkflows.Validate(); err != nil {
 		return err
 	}
 	if cfg.AgentActivity.RetainRawPayloads && !cfg.Debug.Enabled {
@@ -1281,6 +1319,42 @@ func (workflows Workflows) Validate() error {
 		if strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "\\") || strings.Contains(trimmed, ":") || strings.Contains(trimmed, "//") || strings.Contains(trimmed, "..") {
 			return errors.New("MIVIA_WORKFLOWS_DEFINITION_PATHS must contain safe relative paths")
 		}
+	}
+	return nil
+}
+
+func (durable DurableWorkflows) Validate() error {
+	switch strings.TrimSpace(durable.Backend) {
+	case durableWorkflowBackendMemory, durableWorkflowBackendSQLite:
+	default:
+		return errors.New("MIVIA_DURABLE_WORKFLOWS_BACKEND must be memory or sqlite")
+	}
+	if err := validateDurableWorkflowSQLitePath(durable.SQLitePath); err != nil {
+		return err
+	}
+	if durable.WorkerEnabled && !durable.Enabled {
+		return errors.New("MIVIA_DURABLE_WORKFLOWS_WORKER_ENABLED requires MIVIA_DURABLE_WORKFLOWS_ENABLED")
+	}
+	if durable.MaxParallelRuns <= 0 {
+		return errors.New("MIVIA_DURABLE_WORKFLOWS_MAX_PARALLEL_RUNS must be positive")
+	}
+	return nil
+}
+
+func validateDurableWorkflowSQLitePath(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return errors.New("MIVIA_DURABLE_WORKFLOWS_SQLITE_PATH must not be empty")
+	}
+	if filepath.IsAbs(trimmed) || strings.Contains(trimmed, "\\") || strings.Contains(trimmed, ":") || strings.ContainsAny(trimmed, "\x00\r\n") {
+		return errors.New("MIVIA_DURABLE_WORKFLOWS_SQLITE_PATH must be a safe data/ relative SQLite path")
+	}
+	clean := filepath.ToSlash(filepath.Clean(trimmed))
+	if clean == "." || clean != trimmed || clean == "data" || !strings.HasPrefix(clean, "data/") || strings.Contains(clean, "../") || strings.HasPrefix(clean, "../") {
+		return errors.New("MIVIA_DURABLE_WORKFLOWS_SQLITE_PATH must be a safe data/ relative SQLite path")
+	}
+	if filepath.Ext(clean) != ".sqlite" {
+		return errors.New("MIVIA_DURABLE_WORKFLOWS_SQLITE_PATH must end with .sqlite")
 	}
 	return nil
 }

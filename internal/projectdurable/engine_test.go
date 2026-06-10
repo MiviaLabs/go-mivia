@@ -3,6 +3,8 @@ package projectdurable
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -139,5 +141,60 @@ func TestMemoryEngineWorkflowResultIsSafeSerializableMetadata(t *testing.T) {
 	}
 	if len(result) > 256 {
 		t.Fatalf("workflow result is not a bounded safe ref: %d bytes", len(result))
+	}
+}
+
+func TestSQLiteEngineConstructorCreatesLocalBackendWithoutUnsafeFixtures(t *testing.T) {
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	engine, err := NewSQLiteEngine("data/durable-workflows.sqlite")
+	if err != nil {
+		t.Fatalf("open sqlite engine: %v", err)
+	}
+	if engine.Backend == nil || engine.Orchestrator == nil {
+		t.Fatalf("expected backend and orchestrator")
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("close engine: %v", err)
+	}
+
+	dbPath := filepath.Join(dir, "data", "durable-workflows.sqlite")
+	raw, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read sqlite backend file: %v", err)
+	}
+	for _, forbidden := range []string{"raw_prompt", "raw_completion", "raw_stderr", "api_key", "secret", "person@example.test", "/home/mac"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("sqlite backend contains forbidden fixture marker %q", forbidden)
+		}
+	}
+}
+
+func TestSQLiteEngineConstructorRejectsUnsafePaths(t *testing.T) {
+	for _, path := range []string{
+		"data/../durable-workflows.sqlite",
+		"/tmp/durable-workflows.sqlite",
+		"tmp/durable-workflows.sqlite",
+		"data/durable-workflows.db",
+		`data\durable-workflows.sqlite`,
+	} {
+		t.Run(path, func(t *testing.T) {
+			if engine, err := NewSQLiteEngine(path); err == nil {
+				_ = engine.Close()
+				t.Fatalf("expected unsafe path %q to be rejected", path)
+			}
+		})
 	}
 }

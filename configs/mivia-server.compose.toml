@@ -61,6 +61,14 @@ sensitive_marker_policy = "skip_file"
 [workspace]
 enabled = true
 
+[durable_workflows]
+enabled = true
+shadow_mode = true
+backend = "memory"
+sqlite_path = "data/durable-workflows.sqlite"
+worker_enabled = true
+max_parallel_runs = 1
+
 [automation]
 enabled = true
 runner_enabled = true

@@ -11,6 +11,8 @@ import (
 	"github.com/cschleiden/go-workflows/backend"
 	"github.com/cschleiden/go-workflows/backend/sqlite"
 	"github.com/cschleiden/go-workflows/worker"
+
+	durablestore "github.com/MiviaLabs/go-mivia/internal/projectdurable/store"
 )
 
 // Engine is a minimal wrapper around a go-workflows orchestrator. It exists
@@ -33,6 +35,19 @@ func NewMemoryEngine() *Engine {
 		Backend:      b,
 		Orchestrator: worker.NewWorkflowOrchestrator(b, nil),
 	}
+}
+
+// NewSQLiteEngine returns an Engine backed by a safe repo-local SQLite file.
+// It does not start workers; callers must explicitly start the orchestrator.
+func NewSQLiteEngine(sqlitePath string) (*Engine, error) {
+	b, err := durablestore.NewSQLiteBackend(sqlitePath)
+	if err != nil {
+		return nil, err
+	}
+	return &Engine{
+		Backend:      b,
+		Orchestrator: worker.NewWorkflowOrchestrator(b, nil),
+	}, nil
 }
 
 // Close releases the backend. The engine is unusable afterwards.

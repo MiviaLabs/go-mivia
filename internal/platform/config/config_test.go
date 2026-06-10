@@ -176,6 +176,15 @@ func TestLoad_DefaultConfigMissing_UsesEnvOnlyDefaults(t *testing.T) {
 		cfg.Ingestion.PerProjectWorkerLimit != defaultIngestionPerProjectLimit {
 		t.Fatalf("expected default scheduler worker settings, got %+v", cfg.Ingestion)
 	}
+	if !cfg.DurableWorkflows.Enabled || !cfg.DurableWorkflows.ShadowMode || cfg.DurableWorkflows.Backend != durableWorkflowBackendMemory {
+		t.Fatalf("expected durable workflows enabled in shadow memory mode by default, got %+v", cfg.DurableWorkflows)
+	}
+	if !cfg.DurableWorkflows.WorkerEnabled {
+		t.Fatalf("expected durable workflow worker flag enabled by default: %+v", cfg.DurableWorkflows)
+	}
+	if cfg.DurableWorkflows.SQLitePath != defaultDurableWorkflowSQLitePath {
+		t.Fatalf("expected default durable sqlite path %q, got %q", defaultDurableWorkflowSQLitePath, cfg.DurableWorkflows.SQLitePath)
+	}
 }
 
 func TestLoad_ExplicitConfigMissing_ReturnsError(t *testing.T) {
@@ -640,6 +649,12 @@ func clearConfigEnv(t *testing.T) {
 		"MIVIA_INGESTION_FULL_SCAN_BATCH_SIZE",
 		"MIVIA_INGESTION_INITIAL_SCAN_ON_START",
 		"MIVIA_INGESTION_SENSITIVE_MARKER_POLICY",
+		"MIVIA_DURABLE_WORKFLOWS_ENABLED",
+		"MIVIA_DURABLE_WORKFLOWS_SHADOW_MODE",
+		"MIVIA_DURABLE_WORKFLOWS_BACKEND",
+		"MIVIA_DURABLE_WORKFLOWS_SQLITE_PATH",
+		"MIVIA_DURABLE_WORKFLOWS_WORKER_ENABLED",
+		"MIVIA_DURABLE_WORKFLOWS_MAX_PARALLEL_RUNS",
 		"MIVIA_GIT_OPS_ENABLED",
 		"MIVIA_GIT_OPS_COMMIT_AFTER_TASK",
 		"MIVIA_GIT_OPS_PUSH_AFTER_TASK",

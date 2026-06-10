@@ -142,6 +142,94 @@ statuses = ["active"]
 	}
 }
 
+func TestLoadFileConfig_AcceptsDisabledDurableSQLiteConfig(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[durable_workflows]
+enabled = false
+shadow_mode = true
+backend = "sqlite"
+sqlite_path = "data/durable-workflows.sqlite"
+worker_enabled = false
+max_parallel_runs = 1
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected durable workflow config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected durable workflow config to apply: %v", err)
+	}
+	merged.resolveAutoSettings(1)
+	if err := merged.Validate(); err != nil {
+		t.Fatalf("expected durable workflow config to validate: %v", err)
+	}
+	if merged.DurableWorkflows.Enabled || merged.DurableWorkflows.WorkerEnabled {
+		t.Fatalf("expected durable workflow workers disabled, got %+v", merged.DurableWorkflows)
+	}
+	if !merged.DurableWorkflows.ShadowMode || merged.DurableWorkflows.Backend != durableWorkflowBackendSQLite || merged.DurableWorkflows.SQLitePath != "data/durable-workflows.sqlite" {
+		t.Fatalf("unexpected durable workflow config: %+v", merged.DurableWorkflows)
+	}
+}
+
+func TestLoadFileConfig_RejectsInvalidDurableWorkflowSettings(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown_backend": `
+version = 1
+
+[durable_workflows]
+backend = "postgres"
+`,
+		"unsafe_parent_path": `
+version = 1
+
+[durable_workflows]
+backend = "sqlite"
+sqlite_path = "data/../durable-workflows.sqlite"
+`,
+		"unsafe_absolute_path": `
+version = 1
+
+[durable_workflows]
+backend = "sqlite"
+sqlite_path = "/tmp/durable-workflows.sqlite"
+`,
+		"unsafe_outside_data": `
+version = 1
+
+[durable_workflows]
+backend = "sqlite"
+sqlite_path = "tmp/durable-workflows.sqlite"
+`,
+		"worker_without_enabled": `
+version = 1
+
+[durable_workflows]
+enabled = false
+worker_enabled = true
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeTempConfig(t, body)
+			cfg, err := loadFileConfig(path)
+			if err != nil {
+				t.Fatalf("expected TOML decode to succeed before validation: %v", err)
+			}
+			merged, err := cfg.applyTo(defaultConfig(path))
+			if err != nil {
+				t.Fatalf("expected TOML apply to succeed before validation: %v", err)
+			}
+			merged.resolveAutoSettings(1)
+			if err := merged.Validate(); err == nil {
+				t.Fatal("expected invalid durable workflow settings to fail validation")
+			}
+		})
+	}
+}
+
 func TestLoadFileConfig_AcceptsProjectWorkflowChains(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1
