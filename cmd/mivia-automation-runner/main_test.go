@@ -1289,6 +1289,11 @@ func TestGitOpsOptionsFromConfigCarriesTicketAwareConventions(t *testing.T) {
 	if options.Conventions.TicketRefPattern != "^MASS-[0-9]+$" || options.Conventions.TicketURLTemplate != "https://tracker.example.test/browse/{{ticket_ref}}" {
 		t.Fatalf("expected ticket URL conventions to map, got %+v", options.Conventions)
 	}
+	if options.Conventions.CommitSummaryTemplate != "complete {{work_task_ref}}" ||
+		options.Conventions.PullRequestTitleTemplate != "{{change_type}}({{ticket_ref}}): complete {{work_task_ref}}" ||
+		options.Conventions.PullRequestBodyTemplate != "Ticket: {{ticket_url}}" {
+		t.Fatalf("expected PR/commit template conventions to map, got %+v", options.Conventions)
+	}
 }
 
 func TestPreTaskWithinScopeReportsDirtyPathEvidence(t *testing.T) {
