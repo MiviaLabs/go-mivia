@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
@@ -383,6 +384,85 @@ func TestBaselineAutomationRunMissingRunnerIDCurrentBehavior(t *testing.T) {
 	}
 	if completed.Status != RunStatusVerifying || completed.RunnerID != "" {
 		t.Fatalf("complete without runner_id changed current behavior: %#v", completed)
+	}
+}
+
+func TestClaimNextRunReclaimsExpiredLeaseAndRejectsStaleCompletion(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	task := readyTask("task-lease-expiry", "lease-expiry-task", []string{"internal/foo.go"})
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{task.ID: task}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	// Anchor the injected clock after svc.startedAt so only lease expiry (not
+	// the started-before-service reclamation path) drives the behavior.
+	now := svc.startedAt.Add(time.Minute)
+	svc.now = func() time.Time { return now }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	queued, err := svc.SubmitRun(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: task.ID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("SubmitRun returned error: %v", err)
+	}
+
+	claimedA, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-a"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun runner-a returned error: %v", err)
+	}
+	if claimedA.Run.ID != queued.ID || claimedA.Run.Status != RunStatusRunning || claimedA.Run.RunnerID != "runner-a" || claimedA.Run.ClaimID == "" || claimedA.Run.LeaseExpiresAt.IsZero() {
+		t.Fatalf("expected runner-a to claim queued run with lease, got %#v", claimedA.Run)
+	}
+
+	// While runner-a's lease is still active, another runner gets nothing.
+	now = claimedA.Run.LeaseExpiresAt.Add(-time.Second)
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-b"}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no claimable run while runner-a lease is active, got %v", err)
+	}
+
+	// Advance the injected clock past runner-a's lease expiry.
+	now = claimedA.Run.LeaseExpiresAt.Add(time.Second)
+
+	claimedB, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-b"})
+	if err != nil {
+		t.Fatalf("ClaimNextRun runner-b returned error: %v", err)
+	}
+	if claimedB.Run.ID == claimedA.Run.ID {
+		t.Fatalf("current behavior queues a replacement run for the abandoned task instead of re-claiming run %q, got %#v", claimedA.Run.ID, claimedB.Run)
+	}
+	if claimedB.Run.TaskID != task.ID || claimedB.Run.Status != RunStatusRunning || claimedB.Run.RunnerID != "runner-b" || claimedB.Run.ClaimID == "" || claimedB.Run.ClaimID == claimedA.Run.ClaimID {
+		t.Fatalf("expected runner-b to hold a fresh claim on the same task, got %#v", claimedB.Run)
+	}
+	abandoned, err := store.GetRun(ctx, automation.ProjectID, claimedA.Run.ID)
+	if err != nil {
+		t.Fatalf("GetRun abandoned returned error: %v", err)
+	}
+	if abandoned.Status != RunStatusTimeout || abandoned.FailureCategory != "external_runner_interrupted" {
+		t.Fatalf("expected abandoned run to time out as interrupted, got %#v", abandoned)
+	}
+	if got := fake.tasks[task.ID].ClaimedByRunID; got != claimedB.Run.ID {
+		t.Fatalf("expected task to be owned by runner-b's run, got claimed_by=%q", got)
+	}
+
+	// Runner-a's late heartbeat with the stale claim token fails safely.
+	if _, err := svc.HeartbeatRun(ctx, HeartbeatRunInput{ProjectID: automation.ProjectID, RunID: claimedA.Run.ID, ClaimID: claimedA.Run.ClaimID, RunnerID: "runner-a"}); err == nil || !strings.Contains(err.Error(), "automation run is not active") {
+		t.Fatalf("expected stale heartbeat to be rejected, got %v", err)
+	}
+	// Runner-a's late CompleteAttempt with the stale claim token is rejected.
+	if _, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{ProjectID: automation.ProjectID, RunID: claimedA.Run.ID, Status: RunStatusFailed, FailureCategory: "external_runner_interrupted", ClaimID: claimedA.Run.ClaimID, RunnerID: "runner-a"}); err == nil || !strings.Contains(err.Error(), "automation run is not externally claimed") {
+		t.Fatalf("expected stale completion to be rejected, got %v", err)
+	}
+
+	// The expired lease is reclaimed exactly once: a third claim while
+	// runner-b's fresh lease is active finds nothing.
+	if claimedC, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI, RunnerID: "runner-c"}); err == nil || !strings.Contains(err.Error(), "no queued automation run") {
+		t.Fatalf("expected no claimable run for runner-c while runner-b lease is active, got run=%#v err=%v", claimedC.Run, err)
+	}
+
+	// No attempt records exist: claims do not record attempts and the stale
+	// completion was rejected before recording one.
+	if len(store.attempts) != 0 {
+		t.Fatalf("expected no attempt records after rejected stale completion, got %#v", store.attempts)
+	}
+	if len(store.runs) != 2 {
+		t.Fatalf("expected exactly the abandoned run and its replacement, got %#v", store.runs)
 	}
 }
 

@@ -307,6 +307,273 @@ func TestBaselineWorkflowChainGitOpsRequiresPostValidationReviewAndVerifierRefs(
 	}
 }
 
+func TestBaselineChainRecordsCompiledStageWithPlannedPlanAndNoQueuedRuns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{
+		allTasksByPlan: map[string][]projectworkplan.WorkTask{
+			"plan-decomposition": {
+				{ID: "task-decomposition", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "decompose-work-plan", Status: projectworkplan.WorkTaskStatusDone, DecompositionQuality: projectworkplan.DecompositionReady},
+			},
+		},
+		openTasksByPlan: map[string][]projectworkplan.WorkTask{
+			"plan-decomposition": {},
+			"plan-implementation": {
+				{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
+			},
+		},
+	}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-phase0", TraceID: "trace-phase0"})
+	if err != nil {
+		t.Fatalf("start chain: %v", err)
+	}
+	err = svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone})
+	if err == nil || !strings.Contains(err.Error(), "missing_carried_implementation_tasks") {
+		t.Fatalf("expected next-stage activation failure after compile, got %v", err)
+	}
+	run, getErr := svc.Get(ctx, "project-1", result.ChainRunID)
+	if getErr != nil {
+		t.Fatalf("get orphan chain: %v", getErr)
+	}
+	implementation := chainStageRunByRef(t, run, "implementation")
+	if implementation.WorkPlanID != "plan-implementation" || !containsString(implementation.WorkTaskIDs, "task-implementation") || !containsString(implementation.AutomationIDs, "automation-implementation") {
+		t.Fatalf("orphan compiled stage must keep compiled plan/task/automation refs: %#v", implementation)
+	}
+	if !containsString(run.WorkPlanIDs, "plan-implementation") || !containsString(run.AutomationIDs, "automation-implementation") {
+		t.Fatalf("orphan chain run must keep compiled plan/automation refs: %#v", run)
+	}
+	// Old-system gap: V2 must persist exact checkpoint metadata instead. See parity row "Stage activation reliability".
+	// The persisted blocked_reason is the generic "activate_next_stage_failed"; the real root cause
+	// (missing_carried_implementation_tasks) only travels in the returned error and is never persisted.
+	if run.Status != ChainStatusBlocked || implementation.Status != StageStatusBlocked || implementation.BlockedReason != "activate_next_stage_failed" {
+		t.Fatalf("orphan compiled stage lost exact blocked status/reason: %#v", run)
+	}
+	if run.NextAction != "chain blocked while activating next stage" {
+		t.Fatalf("orphan compiled stage lost exact next action: %q", run.NextAction)
+	}
+	if run.GitOpsReady || run.GitOpsAttemptCount != 0 || run.GitOpsFailureCategory != "" || run.GitOpsRecoveryStatus != "" || len(run.GitOpsFailureEvidenceRefs) != 0 || run.PullRequestRef != "" {
+		t.Fatalf("orphan compiled stage must keep zero-value GitOps fields: %#v", run)
+	}
+	if len(workPlans.activations) != 1 || workPlans.activations[0] != "plan-decomposition" {
+		t.Fatalf("implementation Work Plan must stay planned (never activated), got activations %#v", workPlans.activations)
+	}
+	if len(workPlans.released) != 0 {
+		t.Fatalf("no tasks may be released for the orphan stage (zero queued/running automation runs), got %#v", workPlans.released)
+	}
+}
+
+func TestBaselineChainStartFailsClosedForDisabledChainAndUnknownWorkflowRef(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name               string
+		disabled           bool
+		unknownWorkflowRef bool
+		want               string
+	}{
+		{name: "disabled chain", disabled: true, want: "workflow chain config not found"},
+		{name: "unknown workflow ref", unknownWorkflowRef: true, want: "must resolve to exactly one enabled workflow"},
+	} {
+		for _, mode := range []struct {
+			name   string
+			dryRun bool
+		}{
+			{name: "real", dryRun: false},
+			{name: "dry-run", dryRun: true},
+		} {
+			t.Run(tc.name+"/"+mode.name, func(t *testing.T) {
+				cfg := testConfig()
+				if tc.disabled {
+					cfg.Enabled = false
+				}
+				definitions := enabledWorkflows()
+				if tc.unknownWorkflowRef {
+					definitions = definitions[:1]
+				}
+				store := newTestChainStore()
+				workflows := &fakeWorkflowAPI{workflows: definitions}
+				workPlans := &fakeWorkPlans{}
+				svc := New(store, workflows, workPlans, []Config{cfg})
+
+				_, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", DryRun: mode.dryRun})
+				if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("expected fail-closed %q rejection, got %v", tc.want, err)
+				}
+				if len(store.runs) != 0 {
+					t.Fatalf("fail-closed start must not persist chain runs: %#v", store.runs)
+				}
+				if len(workflows.compileInputs) != 0 {
+					t.Fatalf("fail-closed start must not compile workflows: %#v", workflows.compileInputs)
+				}
+				if len(workPlans.activations) != 0 || len(workPlans.released) != 0 {
+					t.Fatalf("fail-closed start must not activate plans or release tasks, activations=%#v released=%#v", workPlans.activations, workPlans.released)
+				}
+			})
+		}
+	}
+}
+
+func TestBaselineGovernedDeliveryJourneyPinsEveryBoundaryJira(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{localIngestedTestConfig()})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContext("GENERIC-1044", true)})
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{
+		CommitRef:      "commit/GENERIC-1044",
+		PushRef:        "push/GENERIC-1044",
+		PullRequestRef: "github-pr-1044",
+		EvidenceRefs:   []string{"gitops-evidence:GENERIC-1044"},
+	}}
+	svc.SetGitOpsFinalizer(finalizer)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	// Boundary: chain start from local-ingested Jira context.
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "orchestrator-run-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("start chain: %v", err)
+	}
+	if result.Status != ChainStatusQueued || result.InputRef != "jira:GENERIC-1044" || result.NextAction != "decomposition automation will run when planned tasks transition to ready" {
+		t.Fatalf("start lost Jira input/status/next action: %#v", result)
+	}
+	for _, ref := range []string{
+		"jira:GENERIC-1044",
+		"jira-context:GENERIC-1044:summary",
+		"jira-context:GENERIC-1044:scope",
+		"jira-context:GENERIC-1044:implementation-evidence",
+		"jira-context:GENERIC-1044:source-anchors",
+		"jira-context:GENERIC-1044:verifier-scope",
+	} {
+		if !containsString(result.ContextRefs, ref) {
+			t.Fatalf("start lost local-ingested context ref %q: %#v", ref, result.ContextRefs)
+		}
+	}
+	assertChainStageHandoff(t, result.StageRuns[0], "decomposition", "workflow-decomposition", "plan-decomposition", "task-decomposition", "automation-decomposition", StageStatusQueued)
+	if got, want := strings.Join(workPlans.events[:2], ","), "release:task-decomposition,activate:plan-decomposition"; got != want {
+		t.Fatalf("decomposition activation handoff order mismatch: got %s want %s", got, want)
+	}
+
+	// Boundary: decomposition compile/activate completes and implementation queues.
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance after decomposition done: %v", err)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get chain after decomposition: %v", err)
+	}
+	assertChainStageHandoff(t, run.StageRuns[0], "decomposition", "workflow-decomposition", "plan-decomposition", "task-decomposition", "automation-decomposition", StageStatusCompleted)
+	assertChainStageHandoff(t, run.StageRuns[1], "implementation", "workflow-implementation", "plan-implementation", "task-implementation", "automation-implementation", StageStatusQueued)
+	if got, want := strings.Join(workPlans.events[2:4], ","), "release:task-implementation,activate:plan-implementation"; got != want {
+		t.Fatalf("implementation activation handoff order mismatch: got %s want %s", got, want)
+	}
+
+	// Boundary: implementation execute/closeout hands off to post-validation.
+	// (The runner-level claim/execute/closeout state machine is pinned in
+	// projectautomation's TestGenericWorkflowPipelineQueuesClaimsCompletesAndReviewsDependentHandoffs.)
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-implementation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance after implementation done: %v", err)
+	}
+	run, err = svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get chain after implementation: %v", err)
+	}
+	assertChainStageHandoff(t, run.StageRuns[1], "implementation", "workflow-implementation", "plan-implementation", "task-implementation", "automation-implementation", StageStatusCompleted)
+	assertChainStageHandoff(t, run.StageRuns[2], "post-validation", "workflow-validation", "plan-post-validation", "task-post-validation", "automation-post-validation", StageStatusQueued)
+	if got, want := strings.Join(workPlans.events[4:6], ","), "release:task-post-validation,activate:plan-post-validation"; got != want {
+		t.Fatalf("post-validation activation handoff order mismatch: got %s want %s", got, want)
+	}
+
+	// Boundary: post-validation -> GitOps finalization -> persisted draft PR ref.
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("advance after post-validation done: %v", err)
+	}
+	run, err = svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get completed chain: %v", err)
+	}
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "github-pr-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+		t.Fatalf("completed chain lost final status/action/PR handoff: %#v", run)
+	}
+	if run.InputRef != "jira:GENERIC-1044" || run.CreatedByRunID != "orchestrator-run-1" || run.TraceID != "trace-1" {
+		t.Fatalf("completed chain lost root refs: %#v", run)
+	}
+	if len(run.WorkPlanIDs) != 3 || len(run.AutomationIDs) != 3 || len(run.StageRuns) != 3 {
+		t.Fatalf("completed chain lost plan/automation/stage refs: %#v", run)
+	}
+	assertChainStageHandoff(t, run.StageRuns[2], "post-validation", "workflow-validation", "plan-post-validation", "task-post-validation", "automation-post-validation", StageStatusCompleted)
+	for _, ref := range []string{
+		"jira-context:GENERIC-1044:summary",
+		"jira-context:GENERIC-1044:scope",
+		"jira-context:GENERIC-1044:implementation-evidence",
+	} {
+		if !containsString(run.ContextRefs, ref) {
+			t.Fatalf("completed chain lost persisted Jira context ref %q: %#v", ref, run.ContextRefs)
+		}
+	}
+
+	// Boundary: every stage compile preserved the local-ingested Jira handoff.
+	if len(workflows.compileInputs) != 3 {
+		t.Fatalf("expected all three stages compiled, got %#v", workflows.compileInputs)
+	}
+	for i, input := range workflows.compileInputs {
+		if input.UserRequestRef != "jira:GENERIC-1044" || input.CreatedByRunID != "orchestrator-run-1" || input.TraceID != "trace-1" {
+			t.Fatalf("compile input %d lost Jira/run/trace refs: %#v", i, input)
+		}
+		if !containsString(input.ContextPackRefs, "jira-context:GENERIC-1044:scope") || !containsString(input.ContextPackRefs, "jira-context:GENERIC-1044:implementation-evidence") {
+			t.Fatalf("compile input %d lost local-ingested context refs: %#v", i, input.ContextPackRefs)
+		}
+	}
+
+	// Boundary: Work Plan activation and Work Task release carried run/trace/safe-action metadata.
+	if len(workPlans.statusUpdates) != 3 || len(workPlans.taskStatusUpdates) != 3 {
+		t.Fatalf("expected one plan activation and one task release per stage, got plans=%#v tasks=%#v", workPlans.statusUpdates, workPlans.taskStatusUpdates)
+	}
+	for i := range workPlans.statusUpdates {
+		if workPlans.statusUpdates[i].Status != projectworkplan.WorkPlanStatusActive || workPlans.statusUpdates[i].RunID != "orchestrator-run-1" || workPlans.statusUpdates[i].TraceID != "trace-1" || workPlans.statusUpdates[i].SafeNextAction == "" {
+			t.Fatalf("plan activation %d lost run/trace/action metadata: %#v", i, workPlans.statusUpdates[i])
+		}
+		if workPlans.taskStatusUpdates[i].Status != projectworkplan.WorkTaskStatusReady || workPlans.taskStatusUpdates[i].RunID != "orchestrator-run-1" || workPlans.taskStatusUpdates[i].TraceID != "trace-1" || workPlans.taskStatusUpdates[i].SafeNextAction == "" {
+			t.Fatalf("task release %d lost run/trace/action metadata: %#v", i, workPlans.taskStatusUpdates[i])
+		}
+	}
+
+	// Boundary: GitOps finalization carried review/verifier refs and explicit edit scope.
+	if len(finalizer.inputs) != 1 {
+		t.Fatalf("expected exactly one GitOps finalization, got %#v", finalizer.inputs)
+	}
+	gitopsInput := finalizer.inputs[0]
+	if gitopsInput.InputRef != "jira:GENERIC-1044" || gitopsInput.CreatedByRunID != "orchestrator-run-1" || gitopsInput.TraceID != "trace-1" {
+		t.Fatalf("GitOps input lost Jira/run/trace refs: %#v", gitopsInput)
+	}
+	if gitopsInput.WorkPlan.ID != "plan-implementation" || len(gitopsInput.StageRuns) != 3 || len(gitopsInput.AutomationIDs) != 3 {
+		t.Fatalf("GitOps input lost implementation plan or stage/automation refs: %#v", gitopsInput)
+	}
+	if !containsString(gitopsInput.ReviewRefs, "review:task-post-validation") || !containsString(gitopsInput.VerifierRefs, "verifier:task-post-validation") || !containsString(gitopsInput.TestResults, "task-post-validation verified by verifier:task-post-validation") {
+		t.Fatalf("GitOps input lost validation review/verifier/test refs: %#v", gitopsInput)
+	}
+	if !containsString(gitopsInput.AllowedPathspecs, "internal/projectworkflowchain/service.go") || containsString(gitopsInput.AllowedPathspecs, "cmd/mivia-server") {
+		t.Fatalf("GitOps input must use explicit implementation edit scope only: %#v", gitopsInput.AllowedPathspecs)
+	}
+
+	// Boundary: duplicate post-validation events stay idempotent.
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+		t.Fatalf("idempotent post-validation event: %v", err)
+	}
+	if len(finalizer.inputs) != 1 {
+		t.Fatalf("expected no duplicate GitOps finalization, got %d", len(finalizer.inputs))
+	}
+}
+
 func assertExactSet(t *testing.T, name string, got []string, want []string) {
 	t.Helper()
 	if len(got) != len(want) {

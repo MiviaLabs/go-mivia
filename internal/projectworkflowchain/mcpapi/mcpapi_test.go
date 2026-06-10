@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -288,6 +289,181 @@ func TestCallToolGenericChainUsesRealCompilerAndPreservesGeneratedHandoffs(t *te
 	listResult := listed["structuredContent"].(projectworkflowchain.ListResult)
 	if len(listResult.Runs) != 1 || listResult.Runs[0].PullRequestRef != "github-pr-2044" {
 		t.Fatalf("MCP list lost completed chain refs: %#v", listResult)
+	}
+}
+
+func TestBaselineChainMcpReadModelMatchesStoreAfterBlockedActivation(t *testing.T) {
+	ctx := context.Background()
+	workPlanStore := workplanstore.NewMemoryStore()
+	workPlans := projectworkplan.New(workPlanStore)
+	automations := projectautomation.New(automationstore.NewMemoryStore(), workPlans, projectautomation.Options{
+		Enabled:          true,
+		RunnerEnabled:    true,
+		RunnerExecution:  projectautomation.RunnerExecutionExternal,
+		MaxParallelTasks: 2,
+		PermissionResolver: mcpRealPermissionResolver{
+			allowedRunnerKinds: []string{projectautomation.RunnerKindCodexCLI},
+		},
+		WorkPlanStatusTrigger: projectautomation.WorkPlanStatusTriggerOptions{
+			Enabled:  true,
+			Statuses: []string{projectworkplan.WorkPlanStatusActive},
+		},
+	})
+	workflows := projectworkflow.New(workflowstore.NewMemoryStore())
+	workflows.SetCompilerDependencies(workPlans, automations)
+	for _, path := range []string{
+		"configs/workflows/governed-decomposition-planning.toml",
+		"configs/workflows/governed-workplan-implementation.toml",
+		"configs/workflows/governed-post-implementation-validation.toml",
+	} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "..", path))
+		if err != nil {
+			t.Fatalf("read workflow %s: %v", path, err)
+		}
+		if _, err := workflows.ImportWorkflowTOML(ctx, projectworkflow.ImportWorkflowTOMLInput{ProjectID: "project-1", Data: data, CreatedByRunID: "mcp-import", TraceID: "trace-mcp-blocked"}); err != nil {
+			t.Fatalf("import workflow %s: %v", path, err)
+		}
+	}
+	chainStore := chainstore.NewMemoryStore()
+	chainSvc := projectworkflowchain.New(chainStore, workflows, workPlans, []projectworkflowchain.Config{mcpGenericChainConfig()})
+	finalizer := &mcpGitOpsFinalizer{err: errors.New("git push failed")}
+	chainSvc.SetGitOpsFinalizer(finalizer)
+	chainSvc.SetAutomationAPI(automations)
+	workPlans.SetStatusChangeHandler(mcpStatusFanout{handlers: []projectworkplan.WorkPlanStatusChangeHandler{automations, chainSvc}})
+
+	started, err := CallTool(ctx, chainSvc, "projects.workflow_chains.start", mustArgs(t, map[string]any{
+		"id":                "project-1",
+		"chain_ref":         "generic-chain",
+		"input_text":        "ticket/GENERIC-2044",
+		"created_by_run_id": "codex-mcp-run-blocked-2044",
+		"trace_id":          "trace-generic-mcp-blocked-2044",
+	}))
+	if err != nil {
+		t.Fatalf("real MCP start: %v", err)
+	}
+	startResult := started["structuredContent"].(projectworkflowchain.StartResult)
+
+	run, err := chainSvc.Get(ctx, "project-1", startResult.ChainRunID)
+	if err != nil {
+		t.Fatalf("get chain before decomposition: %v", err)
+	}
+	decomposition := mcpStageRunByRef(t, run, "decomposition")
+	if _, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  decomposition.WorkPlanID,
+		TaskRef:                 "generic-2044-mcp-blocked-implementation-slice",
+		Title:                   "Implement GENERIC-2044 Blocked Slice",
+		Status:                  projectworkplan.WorkTaskStatusPlanned,
+		OwnerAgent:              "developer",
+		FilesToEdit:             []string{"internal/projectworkflowchain/service.go"},
+		VerificationRequirement: "focused workflow-chain MCP tests",
+		ReviewResultRefs:        []string{"review:mcp-planning-readiness-approved"},
+		VerifierResultRefs:      []string{"verifier:mcp-planning-readiness"},
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+		AcceptanceCriteria:      []string{"MCP implementation slice is executable from task metadata."},
+		StopConditions:          []string{"Stop if MCP workflow-chain scope changes."},
+		VerifierLadder:          []string{"focused workflow-chain MCP tests"},
+		RegressionApplicability: "required for MCP workflow-chain behavior",
+		DownstreamImpactRefs:    []string{"workflow-chain-mcp-impact-ref"},
+		OutputContract:          "bounded diff refs and verifier refs",
+	}); err != nil {
+		t.Fatalf("create MCP implementation child: %v", err)
+	}
+	mcpCompleteGeneratedPlanWithOpenChildren(t, ctx, workPlans, workPlanStore, chainSvc, "project-1", decomposition.WorkPlanID, "decomposition")
+
+	run, err = chainSvc.Get(ctx, "project-1", startResult.ChainRunID)
+	if err != nil {
+		t.Fatalf("get chain before implementation: %v", err)
+	}
+	implementation := mcpStageRunByRef(t, run, "implementation")
+	mcpCompleteGeneratedPlan(t, ctx, workPlans, "project-1", implementation.WorkPlanID, "implementation")
+
+	run, err = chainSvc.Get(ctx, "project-1", startResult.ChainRunID)
+	if err != nil {
+		t.Fatalf("get chain before post-validation: %v", err)
+	}
+	postValidation := mcpStageRunByRef(t, run, "post-validation")
+	tasks, err := workPlans.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: postValidation.WorkPlanID})
+	if err != nil {
+		t.Fatalf("list post-validation tasks: %v", err)
+	}
+	for _, task := range tasks {
+		task.Status = projectworkplan.WorkTaskStatusDone
+		task.Outcome = "MCP generated post-validation output accepted"
+		task.EvidenceRefs = appendUniqueString(task.EvidenceRefs, "evidence:mcp-generated-post-validation")
+		task.ReviewResultRefs = appendUniqueString(task.ReviewResultRefs, "review:mcp-generated-post-validation")
+		task.VerifierResultRefs = appendUniqueString(task.VerifierResultRefs, "verifier:mcp-generated-post-validation")
+		if _, err := workPlans.UpdateWorkTask(ctx, task); err != nil {
+			t.Fatalf("update post-validation task %s: %v", task.TaskRef, err)
+		}
+	}
+	plan, err := workPlanStore.GetWorkPlan(ctx, "project-1", postValidation.WorkPlanID)
+	if err != nil {
+		t.Fatalf("get post-validation plan: %v", err)
+	}
+	oldStatus := plan.Status
+	plan.Status = projectworkplan.WorkPlanStatusDone
+	plan.Outcome = "MCP generated post-validation stage completed"
+	plan.ResumeSummary = "finalize MCP generic chain GitOps"
+	updated, err := workPlanStore.UpdateWorkPlan(ctx, plan)
+	if err != nil {
+		t.Fatalf("mark post-validation plan done in store: %v", err)
+	}
+	if err := chainSvc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{
+		ProjectID:  "project-1",
+		PlanID:     postValidation.WorkPlanID,
+		PlanRef:    updated.PlanRef,
+		OldStatus:  oldStatus,
+		NewStatus:  updated.Status,
+		OwnerAgent: updated.OwnerAgent,
+		ChangedAt:  updated.UpdatedAt,
+	}); err == nil {
+		t.Fatalf("expected GitOps finalization failure to block chain")
+	}
+
+	storeRun, err := chainStore.GetChainRun(ctx, "project-1", startResult.ChainRunID)
+	if err != nil {
+		t.Fatalf("store read of blocked chain: %v", err)
+	}
+	if storeRun.Status != projectworkflowchain.ChainStatusBlocked || !storeRun.GitOpsReady || storeRun.GitOpsAttemptCount != 1 || storeRun.GitOpsFailureCategory == "" || storeRun.GitOpsRecoveryStatus == "" {
+		t.Fatalf("store must hold blocked GitOps-ready chain before MCP read comparison: %#v", storeRun)
+	}
+	got, err := CallTool(ctx, chainSvc, "projects.workflow_chains.get", mustArgs(t, map[string]any{
+		"id":           "project-1",
+		"chain_run_id": startResult.ChainRunID,
+	}))
+	if err != nil {
+		t.Fatalf("MCP get of blocked chain: %v", err)
+	}
+	mcpRun := got["structuredContent"].(projectworkflowchain.ChainRun)
+	if mcpRun.Status != storeRun.Status || mcpRun.NextAction != storeRun.NextAction || mcpRun.PullRequestRef != storeRun.PullRequestRef {
+		t.Fatalf("MCP read model diverged from store status/next_action/pr:\n mcp=%#v\nstore=%#v", mcpRun, storeRun)
+	}
+	if mcpRun.GitOpsReady != storeRun.GitOpsReady || mcpRun.GitOpsAttemptCount != storeRun.GitOpsAttemptCount || mcpRun.GitOpsFailureCategory != storeRun.GitOpsFailureCategory || mcpRun.GitOpsRecoveryStatus != storeRun.GitOpsRecoveryStatus {
+		t.Fatalf("MCP read model diverged from store GitOps recovery fields:\n mcp=%#v\nstore=%#v", mcpRun, storeRun)
+	}
+	if !reflect.DeepEqual(mcpRun.GitOpsFailureEvidenceRefs, storeRun.GitOpsFailureEvidenceRefs) {
+		t.Fatalf("MCP read model diverged from store GitOps evidence refs: mcp=%#v store=%#v", mcpRun.GitOpsFailureEvidenceRefs, storeRun.GitOpsFailureEvidenceRefs)
+	}
+	if len(mcpRun.StageRuns) != len(storeRun.StageRuns) {
+		t.Fatalf("MCP read model diverged on stage count: mcp=%#v store=%#v", mcpRun.StageRuns, storeRun.StageRuns)
+	}
+	for i := range storeRun.StageRuns {
+		if mcpRun.StageRuns[i].StageRef != storeRun.StageRuns[i].StageRef || mcpRun.StageRuns[i].Status != storeRun.StageRuns[i].Status || mcpRun.StageRuns[i].BlockedReason != storeRun.StageRuns[i].BlockedReason {
+			t.Fatalf("MCP read model diverged on stage %d:\n mcp=%#v\nstore=%#v", i, mcpRun.StageRuns[i], storeRun.StageRuns[i])
+		}
+	}
+	listed, err := CallTool(ctx, chainSvc, "projects.workflow_chains.list", mustArgs(t, map[string]any{"id": "project-1", "status": projectworkflowchain.ChainStatusBlocked}))
+	if err != nil {
+		t.Fatalf("MCP list of blocked chain: %v", err)
+	}
+	listResult := listed["structuredContent"].(projectworkflowchain.ListResult)
+	if len(listResult.Runs) != 1 {
+		t.Fatalf("expected one blocked run from MCP list, got %#v", listResult)
+	}
+	listedRun := listResult.Runs[0]
+	if listedRun.Status != storeRun.Status || listedRun.GitOpsReady != storeRun.GitOpsReady || listedRun.GitOpsAttemptCount != storeRun.GitOpsAttemptCount || listedRun.GitOpsFailureCategory != storeRun.GitOpsFailureCategory || listedRun.GitOpsRecoveryStatus != storeRun.GitOpsRecoveryStatus || listedRun.NextAction != storeRun.NextAction {
+		t.Fatalf("MCP list read model diverged from store:\n mcp=%#v\nstore=%#v", listedRun, storeRun)
 	}
 }
 

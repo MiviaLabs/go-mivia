@@ -521,6 +521,232 @@ func TestBaselineWorkTaskStatusTransitionBehavior(t *testing.T) {
 	})
 }
 
+func TestBaselineWorkTaskResumeUsesOnlyPersistedMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc := projectworkplan.New(workplanstore.NewMemoryStore())
+
+	// Build and block a task mid-flight, then keep ONLY the storage keys.
+	// Every in-memory handle from the first flight stays scoped inside the
+	// setup helper so the resume path below cannot use it.
+	projectID, taskID := blockBaselineTaskMidFlight(t, ctx, svc)
+
+	// Re-hydrate purely from the store with a fresh Get.
+	rehydrated, err := svc.GetWorkTask(ctx, projectID, taskID)
+	if err != nil {
+		t.Fatalf("re-read blocked task from store: %v", err)
+	}
+	if rehydrated.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected blocked task after re-read, got %#v", rehydrated)
+	}
+	if rehydrated.ResumeInstructions == "" || len(rehydrated.ContextPackRefs) == 0 ||
+		len(rehydrated.VerifierLadder) == 0 || len(rehydrated.AcceptanceCriteria) == 0 ||
+		len(rehydrated.EvidenceRefs) == 0 || len(rehydrated.ClaimRefs) == 0 ||
+		len(rehydrated.VerifierResultRefs) == 0 || len(rehydrated.ReviewResultRefs) == 0 ||
+		len(rehydrated.KnowledgeCandidateRefs) == 0 || len(rehydrated.ArtifactRefs) == 0 {
+		t.Fatalf("persisted task lost resume metadata needed by a fresh agent: %#v", rehydrated)
+	}
+
+	completed := resumeBaselineTaskFromPersistedMetadataOnly(t, ctx, svc, rehydrated)
+
+	if completed.Status != projectworkplan.WorkTaskStatusDone || completed.CompletedAt.IsZero() {
+		t.Fatalf("resumed task did not complete: %#v", completed)
+	}
+	for name, check := range map[string]struct {
+		refs []string
+		want string
+	}{
+		"evidence":     {completed.EvidenceRefs, "evidence:objective-resume"},
+		"claim":        {completed.ClaimRefs, "claim:objective-resume"},
+		"verifier":     {completed.VerifierResultRefs, "verifier:objective-resume"},
+		"review":       {completed.ReviewResultRefs, "review:objective-resume"},
+		"context pack": {completed.ContextPackRefs, "context_pack:objective-resume"},
+		"knowledge":    {completed.KnowledgeCandidateRefs, "knowledge:objective-resume"},
+		"artifact":     {completed.ArtifactRefs, "artifact:objective-resume"},
+	} {
+		if !containsBaselineString(check.refs, check.want) {
+			t.Fatalf("completed task lost upstream %s ref %q: %#v", name, check.want, completed)
+		}
+	}
+	if !containsBaselineString(completed.ContextPackRefs, "context_pack:objective-seed") {
+		t.Fatalf("completed task lost seed context pack ref: %#v", completed)
+	}
+	if len(completed.AcceptanceCriteria) == 0 || len(completed.VerifierLadder) == 0 || completed.ResumeInstructions == "" {
+		t.Fatalf("completed task lost planning metadata: %#v", completed)
+	}
+	if !containsBaselineString(completed.AgentRunIDs, "run-firstflight") ||
+		!containsBaselineString(completed.AgentRunIDs, "run-resume-"+completed.TaskRef) {
+		t.Fatalf("completed task lost run lineage across resume: %#v", completed)
+	}
+}
+
+// blockBaselineTaskMidFlight drives a work task through claim -> start ->
+// attachments -> block and returns only the storage keys, dropping every
+// in-memory handle from the first flight.
+func blockBaselineTaskMidFlight(t *testing.T, ctx context.Context, svc *projectworkplan.Service) (string, string) {
+	t.Helper()
+	plan, err := svc.CreateWorkPlan(ctx, projectworkplan.CreateWorkPlanInput{
+		ProjectID:   "project-1",
+		PlanRef:     "objective-resume-pilot",
+		Title:       "Resume pilot plan",
+		GoalSummary: "Lock resume-from-persisted-metadata behavior",
+		OwnerAgent:  "orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	if _, err := svc.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      "project-1",
+		PlanID:         plan.ID,
+		Status:         projectworkplan.WorkPlanStatusActive,
+		SafeNextAction: "claim ready task",
+	}); err != nil {
+		t.Fatalf("activate plan: %v", err)
+	}
+	task, err := svc.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+		ProjectID:               "project-1",
+		PlanID:                  plan.ID,
+		TaskRef:                 "task-objective-resume",
+		Title:                   "Resume pilot task",
+		Description:             "metadata-only resume pilot task",
+		Status:                  projectworkplan.WorkTaskStatusReady,
+		OwnerAgent:              "worker",
+		ContextPackRefs:         []string{"context_pack:objective-seed"},
+		VerificationRequirement: "go test ./internal/projectworkplan",
+		ExpectedOutput:          "task completes from persisted metadata only",
+		OutputContract:          "metadata-only closeout",
+		ResumeInstructions:      "resume purely from persisted task metadata",
+		ArtifactRefs:            []string{"artifact:objective-resume"},
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+		AcceptanceCriteria:      []string{"acceptance:objective-resume"},
+		StopConditions:          []string{"stop on unsafe metadata"},
+		VerifierLadder:          []string{"go test ./internal/projectworkplan"},
+		RegressionApplicability: "required",
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, OwnerAgent: "worker", RunID: "run-firstflight"}); err != nil {
+		t.Fatalf("claim task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: "project-1", TaskID: task.ID, RunID: "run-firstflight"}); err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	if _, err := svc.AttachEvidence(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "evidence:objective-resume", AttachedByRunID: "run-firstflight"}); err != nil {
+		t.Fatalf("attach evidence: %v", err)
+	}
+	if _, err := svc.AttachClaim(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "claim:objective-resume", AttachedByRunID: "run-firstflight"}); err != nil {
+		t.Fatalf("attach claim: %v", err)
+	}
+	if _, err := svc.AttachContextPack(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "context_pack:objective-resume", AttachedByRunID: "run-firstflight"}); err != nil {
+		t.Fatalf("attach context pack: %v", err)
+	}
+	if _, err := svc.AttachKnowledgeCandidate(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "knowledge:objective-resume", AttachedByRunID: "run-firstflight"}); err != nil {
+		t.Fatalf("attach knowledge candidate: %v", err)
+	}
+	// Attaching a verifier result while in_progress flips the task to
+	// verifying (current behavior in addAttachmentRef).
+	if _, err := svc.AttachVerifierResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "verifier:objective-resume", AttachedByRunID: "run-firstflight"}); err != nil {
+		t.Fatalf("attach verifier result: %v", err)
+	}
+	if _, err := svc.AttachReviewResult(ctx, projectworkplan.AttachInput{ProjectID: "project-1", TaskID: task.ID, Ref: "review:objective-resume", AttachedByRunID: "run-reviewer-1"}); err != nil {
+		t.Fatalf("attach review result: %v", err)
+	}
+	blocked, err := svc.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          "project-1",
+		TaskID:             task.ID,
+		BlockedReason:      "agent session ended mid-flight",
+		ResumeInstructions: "resume blocked task using only fields re-read from the store",
+		SafeNextAction:     "re-read task from store and resume",
+	})
+	if err != nil {
+		t.Fatalf("block task mid-flight: %v", err)
+	}
+	return blocked.ProjectID, blocked.ID
+}
+
+// resumeBaselineTaskFromPersistedMetadataOnly drives resume -> claim ->
+// start -> verify -> complete constructing every action input exclusively
+// from the re-read task struct (and fresh Get calls between steps), never
+// from variables captured during the first flight.
+func resumeBaselineTaskFromPersistedMetadataOnly(t *testing.T, ctx context.Context, svc *projectworkplan.Service, persisted projectworkplan.WorkTask) projectworkplan.WorkTask {
+	t.Helper()
+	resumeRunID := "run-resume-" + persisted.TaskRef
+
+	if _, err := svc.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:      persisted.ProjectID,
+			TaskID:         persisted.ID,
+			SafeNextAction: persisted.ResumeInstructions,
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	}); err != nil {
+		t.Fatalf("resume blocked task to ready: %v", err)
+	}
+	ready, err := svc.GetWorkTask(ctx, persisted.ProjectID, persisted.ID)
+	if err != nil {
+		t.Fatalf("re-read ready task: %v", err)
+	}
+	if ready.Status != projectworkplan.WorkTaskStatusReady || ready.ClaimedByRunID != "" {
+		t.Fatalf("resume did not return task to unclaimed ready state: %#v", ready)
+	}
+	if _, err := svc.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:  ready.ProjectID,
+		TaskID:     ready.ID,
+		OwnerAgent: ready.OwnerAgent,
+		RunID:      resumeRunID,
+	}); err != nil {
+		t.Fatalf("claim resumed task: %v", err)
+	}
+	claimed, err := svc.GetWorkTask(ctx, ready.ProjectID, ready.ID)
+	if err != nil {
+		t.Fatalf("re-read claimed task: %v", err)
+	}
+	if _, err := svc.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID: claimed.ProjectID,
+		TaskID:    claimed.ID,
+		RunID:     claimed.ClaimedByRunID,
+	}); err != nil {
+		t.Fatalf("start resumed task: %v", err)
+	}
+	started, err := svc.GetWorkTask(ctx, claimed.ProjectID, claimed.ID)
+	if err != nil {
+		t.Fatalf("re-read started task: %v", err)
+	}
+	// Re-attach the persisted verifier ref so the task reaches verifying;
+	// done is not reachable directly from in_progress in current behavior.
+	if _, err := svc.AttachVerifierResult(ctx, projectworkplan.AttachInput{
+		ProjectID:       started.ProjectID,
+		TaskID:          started.ID,
+		Ref:             started.VerifierResultRefs[0],
+		AttachedByRunID: started.ClaimedByRunID,
+	}); err != nil {
+		t.Fatalf("re-attach persisted verifier ref: %v", err)
+	}
+	verifying, err := svc.GetWorkTask(ctx, started.ProjectID, started.ID)
+	if err != nil {
+		t.Fatalf("re-read verifying task: %v", err)
+	}
+	completed, err := svc.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          verifying.ProjectID,
+		TaskID:             verifying.ID,
+		RunID:              verifying.ClaimedByRunID,
+		Outcome:            verifying.OutputContract,
+		SafeNextAction:     verifying.VerifierLadder[0],
+		ContextPackRefs:    verifying.ContextPackRefs,
+		EvidenceRefs:       verifying.EvidenceRefs,
+		ClaimRefs:          verifying.ClaimRefs,
+		VerifierResultRefs: verifying.VerifierResultRefs,
+		ReviewResultRefs:   verifying.ReviewResultRefs,
+		KnowledgeRefs:      verifying.KnowledgeCandidateRefs,
+	})
+	if err != nil {
+		t.Fatalf("complete resumed task: %v", err)
+	}
+	return completed
+}
+
 func createBaselineReadyTask(t *testing.T, ctx context.Context, svc *projectworkplan.Service, planID string, taskRef string) projectworkplan.WorkTask {
 	t.Helper()
 	task, err := svc.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
