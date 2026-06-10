@@ -6539,6 +6539,90 @@ func TestCompleteAttemptQueuesPostImplementationReview(t *testing.T) {
 	}
 }
 
+func TestCompleteAttemptIgnoresImplementationSuppliedReviewRefsBeforeIndependentReview(t *testing.T) {
+	ctx := context.Background()
+	implementationTask := readyTask("task-a", "fix-finding-a", []string{"internal/foo.go"})
+	implementationTask.FilesToEdit = []string{"internal/foo.go"}
+	reviewTask := readyTask("review-task-a", "review-fix-finding-a", []string{"internal/foo.go"})
+	reviewTask.Status = projectworkplan.WorkTaskStatusPlanned
+	reviewTask.OwnerAgent = "codex-reviewer"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		implementationTask.ID: implementationTask,
+		reviewTask.ID:         reviewTask,
+	}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	implementationAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/remediate",
+		Title:           "Remediate",
+		Purpose:         "Run implementation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{implementationTask.ID, implementationTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation implementation returned error: %v", err)
+	}
+	reviewAutomation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/review-remediation",
+		Title:           "Review remediation",
+		Purpose:         "Review implementation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-reviewer",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		SchedulePolicy:  "post_implementation_review",
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation review returned error: %v", err)
+	}
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: implementationAutomation.ProjectID, AutomationID: implementationAutomation.ID, TaskID: implementationTask.ID})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: implementationAutomation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	implementationTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	fake.tasks[implementationTask.ID] = implementationTask
+
+	done, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:          implementationAutomation.ProjectID,
+		RunID:              queued.ID,
+		Status:             RunStatusCompleted,
+		EvidenceRefs:       []string{"evidence.implementation.diff", "gitops-commit:abc", "gitops-push:branch", "gitops-pr:draft"},
+		VerifierResultRefs: []string{"verifier.implementation.focused"},
+		ReviewRefs:         []string{"review.self-supplied.approved"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if done.Status != RunStatusVerifying {
+		t.Fatalf("expected implementation run verifying, got %#v", done)
+	}
+	updatedImplementation := fake.tasks[implementationTask.ID]
+	if containsRef(updatedImplementation.ReviewResultRefs, "review.self-supplied.approved") {
+		t.Fatalf("implementation-supplied review ref must not attach before independent review, got %#v", updatedImplementation.ReviewResultRefs)
+	}
+	if updatedImplementation.Status == projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("implementation task must not complete from its own review ref, got %#v", updatedImplementation)
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: "project-1", AutomationID: reviewAutomation.ID, PlanID: "plan-1"})
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != RunStatusQueued || runs[0].TaskID != reviewTask.ID || runs[0].ParentRunID != queued.ID {
+		t.Fatalf("expected queued independent review run, got %#v", runs)
+	}
+}
+
 func TestReviewAutomationDoesNotInheritDifferentAgentPermissionSnapshot(t *testing.T) {
 	parent := Automation{
 		AgentID:       "implementation-worker",

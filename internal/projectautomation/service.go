@@ -1994,6 +1994,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	if err != nil {
 		return AutomationRun{}, err
 	}
+	if len(reviewRefs) > 0 && svc.attemptCannotSelfAttachReviewRefs(ctx, run) {
+		reviewRefs = nil
+	}
 	knowledgeRefs, err := safeRefList(input.KnowledgeRefs, "knowledge_candidate_refs")
 	if err != nil {
 		return AutomationRun{}, err
@@ -2177,6 +2180,20 @@ func (svc *Service) postImplementationReviewCompletionBlocker(ctx context.Contex
 		return "post_implementation_review_self_review"
 	}
 	return ""
+}
+
+func (svc *Service) attemptCannotSelfAttachReviewRefs(ctx context.Context, run AutomationRun) bool {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return false
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil || isReviewTask(task) || isReadOnlyScannerTask(task) || taskUsesBoundedSmokeGitOpsVerification(task) {
+		return false
+	}
+	if len(task.FilesToEdit) == 0 && strings.TrimSpace(task.ReviewGate) == "" {
+		return false
+	}
+	return true
 }
 
 func (svc *Service) failTaskAfterTerminalAttempt(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
