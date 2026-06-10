@@ -25,6 +25,7 @@ type Options struct {
 	DirtyScopeSupportPathspecs   []string
 	Conventions                  Conventions
 	Verification                 VerificationProfile
+	PostPRChecks                 PostPRChecks
 }
 
 type Conventions struct {
@@ -56,6 +57,14 @@ type GeneratedArtifactVerifier struct {
 	Paths            []string
 	Command          string
 	RequiredBeforePR bool
+}
+
+type PostPRChecks struct {
+	Enabled         bool
+	RequiredOnly    bool
+	Watch           bool
+	FailFast        bool
+	IntervalSeconds int
 }
 
 type Command struct {

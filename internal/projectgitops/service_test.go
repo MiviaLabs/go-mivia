@@ -2653,6 +2653,174 @@ func TestPostTaskCreatesDraftPRWithRenderedMetadata(t *testing.T) {
 	}
 }
 
+func TestPostTaskRunsConfiguredPostPRChecksBeforeDraftPRReady(t *testing.T) {
+	sshKey, knownHosts := testGitOpsCredentialFiles(t)
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{Stdout: " M internal/projectgitops/service.go\n"},
+			{Stdout: "mivia/generic-gitops-conventions\n"},
+			{},
+			{},
+			{},
+			{Stdout: "abc123def456\n"},
+			{Stdout: "https://github.com/example/repo.git\n"},
+			{},
+			{Stdout: "https://github.example/pull/1\n"},
+			{Stdout: "https://github.example/pull/1\n"},
+			{Stdout: `[{"name":"affected lint","bucket":"pass","state":"SUCCESS"},{"name":"optional docs","bucket":"skipping","state":"SKIPPED"}]`},
+		},
+		errs: []error{
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			errors.New("no pull request"),
+			nil,
+			nil,
+		},
+	}
+	t.Setenv("GH_TOKEN", "test-token")
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		DraftPRAfterPush:  true,
+		RemoteName:        "origin",
+		SSHPrivateKeyPath: sshKey,
+		SSHKnownHostsPath: knownHosts,
+		GitHubTokenEnv:    "GH_TOKEN",
+		GitHubCLIPath:     "gh",
+		PostPRChecks: PostPRChecks{
+			Enabled:         true,
+			RequiredOnly:    true,
+			Watch:           true,
+			FailFast:        true,
+			IntervalSeconds: 15,
+		},
+		Conventions: Conventions{CommitType: "feat", CommitScope: "gitops"},
+	}, runner)
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/worktree",
+		ProjectID:        "project-1",
+		PlanID:           "work_plan_1",
+		TaskID:           "work_task_1",
+		AutomationID:     "automation_1",
+		AutomationRunID:  "automation_run_1",
+		OperatorID:       "operator_1",
+		AllowedPathspecs: []string{"internal/projectgitops"},
+		ReviewRefs:       []string{"review:ready"},
+		VerifierRefs:     []string{"verifier:focused"},
+	})
+	if err != nil {
+		t.Fatalf("expected post task to pass downstream checks: %v", err)
+	}
+	if !containsString(result.EvidenceRefs, "post-pr-checks-passed") || !containsString(result.EvidenceRefs, "draft-pr-ready") {
+		t.Fatalf("expected post PR checks and draft PR evidence, got %+v", result.EvidenceRefs)
+	}
+	checks := runner.commands[len(runner.commands)-1]
+	wantArgs := []string{"pr", "checks", "--json", "name,bucket,state,workflow", "--required", "--watch", "--fail-fast", "--interval", "15"}
+	if got := strings.Join(checks.Args, "\x00"); got != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("unexpected post PR checks command: %#v", checks.Args)
+	}
+}
+
+func TestPostTaskBlocksFailedOrPendingPostPRChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		checkOutput  string
+		wantCategory string
+	}{
+		{
+			name:         "failed check",
+			checkOutput:  `[{"name":"affected lint","bucket":"fail","state":"FAILURE"}]`,
+			wantCategory: "gitops_downstream_checks_failed_fail_affected_lint",
+		},
+		{
+			name:         "pending check",
+			checkOutput:  `[{"name":"CI Success","bucket":"pending","state":"PENDING"}]`,
+			wantCategory: "gitops_downstream_checks_failed_pending_ci_success",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sshKey, knownHosts := testGitOpsCredentialFiles(t)
+			runner := &recordingRunner{
+				results: []CommandResult{
+					{},
+					{Stdout: " M internal/projectgitops/service.go\n"},
+					{Stdout: "mivia/generic-gitops-conventions\n"},
+					{},
+					{},
+					{},
+					{Stdout: "abc123def456\n"},
+					{Stdout: "https://github.com/example/repo.git\n"},
+					{},
+					{Stdout: "https://github.example/pull/1\n"},
+					{Stdout: "https://github.example/pull/1\n"},
+					{Stdout: tc.checkOutput},
+				},
+				errs: []error{
+					nil,
+					nil,
+					nil,
+					nil,
+					nil,
+					nil,
+					nil,
+					nil,
+					nil,
+					errors.New("no pull request"),
+					nil,
+					nil,
+				},
+			}
+			t.Setenv("GH_TOKEN", "test-token")
+			svc := NewWithRunner(Options{
+				Enabled:           true,
+				CommitAfterTask:   true,
+				PushAfterTask:     true,
+				DraftPRAfterPush:  true,
+				RemoteName:        "origin",
+				SSHPrivateKeyPath: sshKey,
+				SSHKnownHostsPath: knownHosts,
+				GitHubTokenEnv:    "GH_TOKEN",
+				GitHubCLIPath:     "gh",
+				PostPRChecks:      PostPRChecks{Enabled: true},
+				Conventions:       Conventions{CommitType: "feat", CommitScope: "gitops"},
+			}, runner)
+
+			result, err := svc.PostTask(context.Background(), PostTaskInput{
+				WorkDir:          "/tmp/worktree",
+				ProjectID:        "project-1",
+				PlanID:           "work_plan_1",
+				TaskID:           "work_task_1",
+				AutomationID:     "automation_1",
+				AutomationRunID:  "automation_run_1",
+				OperatorID:       "operator_1",
+				AllowedPathspecs: []string{"internal/projectgitops"},
+				ReviewRefs:       []string{"review:ready"},
+				VerifierRefs:     []string{"verifier:focused"},
+			})
+			if err == nil {
+				t.Fatalf("expected downstream checks to block, got result %+v", result)
+			}
+			if got := FailureCategoryWithDetail(err); got != tc.wantCategory {
+				t.Fatalf("unexpected failure category: got %q want %q from %v", got, tc.wantCategory, err)
+			}
+			checks := runner.commands[len(runner.commands)-1]
+			if got := strings.Join(checks.Args[:3], " "); got != "pr checks --json" {
+				t.Fatalf("expected post PR checks command before block, got %#v", checks.Args)
+			}
+		})
+	}
+}
+
 func containsEnv(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {

@@ -866,6 +866,27 @@ func mergeGitOperations(base config.GitOperations, override config.GitOperations
 	if len(override.DirtyScopeRecovery.AllowedSupportPathspecs) > 0 {
 		merged.DirtyScopeRecovery.AllowedSupportPathspecs = appendPathspecs(merged.DirtyScopeRecovery.AllowedSupportPathspecs, override.DirtyScopeRecovery.AllowedSupportPathspecs...)
 	}
+	merged.PostPRChecks = mergePostPRChecks(merged.PostPRChecks, override.PostPRChecks)
+	return merged
+}
+
+func mergePostPRChecks(base config.PostPRChecks, override config.PostPRChecks) config.PostPRChecks {
+	merged := base
+	if override.Enabled {
+		merged.Enabled = true
+	}
+	if override.RequiredOnly {
+		merged.RequiredOnly = true
+	}
+	if override.Watch {
+		merged.Watch = true
+	}
+	if override.FailFast {
+		merged.FailFast = true
+	}
+	if override.IntervalSeconds > 0 {
+		merged.IntervalSeconds = override.IntervalSeconds
+	}
 	return merged
 }
 
@@ -956,6 +977,13 @@ func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
 		GitHubTokenFile:              cfg.GitHubTokenFile,
 		GitHubCLIPath:                cfg.GitHubCLIPath,
 		DirtyScopeSupportPathspecs:   append([]string(nil), cfg.DirtyScopeRecovery.AllowedSupportPathspecs...),
+		PostPRChecks: projectgitops.PostPRChecks{
+			Enabled:         cfg.PostPRChecks.Enabled,
+			RequiredOnly:    cfg.PostPRChecks.RequiredOnly,
+			Watch:           cfg.PostPRChecks.Watch,
+			FailFast:        cfg.PostPRChecks.FailFast,
+			IntervalSeconds: cfg.PostPRChecks.IntervalSeconds,
+		},
 		Conventions: projectgitops.Conventions{
 			CommitType:               cfg.Conventions.CommitType,
 			CommitScope:              cfg.Conventions.CommitScope,

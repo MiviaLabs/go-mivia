@@ -143,10 +143,19 @@ type GitOperations struct {
 	GitHubCLIPath                string
 	Conventions                  GitOpsConventions
 	DirtyScopeRecovery           DirtyScopeRecovery
+	PostPRChecks                 PostPRChecks
 }
 
 type DirtyScopeRecovery struct {
 	AllowedSupportPathspecs []string
+}
+
+type PostPRChecks struct {
+	Enabled         bool
+	RequiredOnly    bool
+	Watch           bool
+	FailFast        bool
+	IntervalSeconds int
 }
 
 type GitOpsConventions struct {
@@ -951,6 +960,12 @@ func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool)
 	}
 	if gitops.DraftPRAfterPush && !gitops.PushAfterTask {
 		return fmt.Errorf("%s_DRAFT_PR_AFTER_PUSH requires %s_PUSH_AFTER_TASK", prefix, prefix)
+	}
+	if gitops.PostPRChecks.Enabled && !gitops.DraftPRAfterPush {
+		return fmt.Errorf("%s_POST_PR_CHECKS_ENABLED requires %s_DRAFT_PR_AFTER_PUSH", prefix, prefix)
+	}
+	if gitops.PostPRChecks.IntervalSeconds < 0 {
+		return fmt.Errorf("%s_POST_PR_CHECKS_INTERVAL_SECONDS must be non-negative", prefix)
 	}
 	if err := validateSafeGitToken(prefix+"_REMOTE_NAME", gitops.RemoteName); err != nil {
 		return err

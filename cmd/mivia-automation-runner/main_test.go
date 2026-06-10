@@ -84,6 +84,21 @@ func TestResolveRunWorkDirUsesDedicatedWorktreePlan(t *testing.T) {
 	}
 }
 
+func TestGitOpsOptionsFromConfigMapsPostPRChecks(t *testing.T) {
+	options := gitOpsOptionsFromConfig(config.GitOperations{
+		PostPRChecks: config.PostPRChecks{
+			Enabled:         true,
+			RequiredOnly:    true,
+			Watch:           true,
+			FailFast:        true,
+			IntervalSeconds: 30,
+		},
+	})
+	if !options.PostPRChecks.Enabled || !options.PostPRChecks.RequiredOnly || !options.PostPRChecks.Watch || !options.PostPRChecks.FailFast || options.PostPRChecks.IntervalSeconds != 30 {
+		t.Fatalf("expected post PR checks options to map from config, got %+v", options.PostPRChecks)
+	}
+}
+
 func TestComposeRunnerDefaultsToInImageCodexBinary(t *testing.T) {
 	for _, path := range []string{"../../docker-compose.yml", "../../.docker-compose.local.yml"} {
 		t.Run(filepath.Base(path), func(t *testing.T) {

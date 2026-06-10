@@ -247,6 +247,13 @@ github_cli_path = "gh"
 [git_operations.dirty_scope_recovery]
 allowed_support_pathspecs = [".codex", ".claude", ".github", ".ai/skills", ".ai/rules"]
 
+[git_operations.post_pr_checks]
+enabled = true
+required_only = true
+watch = true
+fail_fast = true
+interval_seconds = 15
+
 [git_operations.conventions]
 commit_type = "feat"
 commit_scope = "gitops"
@@ -296,6 +303,9 @@ tests_template = "{{test_results}}"
 	}
 	if strings.Join(merged.GitOperations.DirtyScopeRecovery.AllowedSupportPathspecs, ",") != ".codex,.claude,.github,.ai/skills,.ai/rules" {
 		t.Fatalf("unexpected dirty scope recovery config: %+v", merged.GitOperations.DirtyScopeRecovery)
+	}
+	if !merged.GitOperations.PostPRChecks.Enabled || !merged.GitOperations.PostPRChecks.RequiredOnly || !merged.GitOperations.PostPRChecks.Watch || !merged.GitOperations.PostPRChecks.FailFast || merged.GitOperations.PostPRChecks.IntervalSeconds != 15 {
+		t.Fatalf("unexpected post PR checks config: %+v", merged.GitOperations.PostPRChecks)
 	}
 
 	t.Setenv("MIVIA_GIT_OPS_REMOTE_NAME", "origin")
@@ -348,6 +358,12 @@ sign_commits = true
 [projects.git_operations.dirty_scope_recovery]
 allowed_support_pathspecs = [".codex", ".github"]
 
+[projects.git_operations.post_pr_checks]
+enabled = true
+required_only = true
+watch = true
+interval_seconds = 20
+
 [projects.git_operations.conventions]
 commit_type = "docs"
 allowed_types = ["docs", "chore"]
@@ -390,6 +406,9 @@ tests_template = "{{test_results}}"
 	}
 	if strings.Join(projectGitOps.DirtyScopeRecovery.AllowedSupportPathspecs, ",") != ".codex,.github" {
 		t.Fatalf("expected project dirty scope support path override, got %+v", projectGitOps.DirtyScopeRecovery)
+	}
+	if !projectGitOps.PostPRChecks.Enabled || !projectGitOps.PostPRChecks.RequiredOnly || !projectGitOps.PostPRChecks.Watch || projectGitOps.PostPRChecks.IntervalSeconds != 20 {
+		t.Fatalf("expected project post PR checks override, got %+v", projectGitOps.PostPRChecks)
 	}
 }
 

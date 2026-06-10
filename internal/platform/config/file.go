@@ -170,10 +170,19 @@ type fileGitOpsConfig struct {
 	GitHubCLIPath                *string                      `toml:"github_cli_path"`
 	Conventions                  *fileGitOpsConventionsConfig `toml:"conventions"`
 	DirtyScopeRecovery           *fileDirtyScopeRecovery      `toml:"dirty_scope_recovery"`
+	PostPRChecks                 *filePostPRChecksConfig      `toml:"post_pr_checks"`
 }
 
 type fileDirtyScopeRecovery struct {
 	AllowedSupportPathspecs []string `toml:"allowed_support_pathspecs"`
+}
+
+type filePostPRChecksConfig struct {
+	Enabled         *bool `toml:"enabled"`
+	RequiredOnly    *bool `toml:"required_only"`
+	Watch           *bool `toml:"watch"`
+	FailFast        *bool `toml:"fail_fast"`
+	IntervalSeconds *int  `toml:"interval_seconds"`
 }
 
 type fileGitOpsConventionsConfig struct {
@@ -912,6 +921,23 @@ func applyFileGitOps(base *GitOperations, cfg *fileGitOpsConfig) {
 	}
 	if cfg.DirtyScopeRecovery != nil {
 		base.DirtyScopeRecovery.AllowedSupportPathspecs = trimStringSlice(cfg.DirtyScopeRecovery.AllowedSupportPathspecs)
+	}
+	if cfg.PostPRChecks != nil {
+		if cfg.PostPRChecks.Enabled != nil {
+			base.PostPRChecks.Enabled = *cfg.PostPRChecks.Enabled
+		}
+		if cfg.PostPRChecks.RequiredOnly != nil {
+			base.PostPRChecks.RequiredOnly = *cfg.PostPRChecks.RequiredOnly
+		}
+		if cfg.PostPRChecks.Watch != nil {
+			base.PostPRChecks.Watch = *cfg.PostPRChecks.Watch
+		}
+		if cfg.PostPRChecks.FailFast != nil {
+			base.PostPRChecks.FailFast = *cfg.PostPRChecks.FailFast
+		}
+		if cfg.PostPRChecks.IntervalSeconds != nil {
+			base.PostPRChecks.IntervalSeconds = *cfg.PostPRChecks.IntervalSeconds
+		}
 	}
 	if cfg.Conventions != nil {
 		if cfg.Conventions.CommitType != nil {

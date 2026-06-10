@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -23,6 +24,7 @@ var (
 	ErrDirtyWorktreeScope = errors.New("git operations dirty worktree outside task scope")
 	ErrRuntimeFailure     = errors.New("git operations runtime setup failed")
 	ErrVerificationFailed = errors.New("git operations verification failed")
+	ErrDownstreamChecks   = errors.New("git operations downstream checks failed")
 )
 
 type DirtyWorktreeScopeError struct {
@@ -281,7 +283,12 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 			if err != nil {
 				return PostTaskResult{}, gitOpsStageFailure("draft_pr", err)
 			}
+			checkRefs, err := svc.verifyPostPRChecks(ctx, workDir)
+			if err != nil {
+				return PostTaskResult{}, gitOpsStageFailure("post_pr_checks", err)
+			}
 			result.PullRequestRef = prRef
+			result.EvidenceRefs = append(result.EvidenceRefs, checkRefs...)
 			result.EvidenceRefs = append(result.EvidenceRefs, "draft-pr-ready")
 		}
 	}
@@ -393,10 +400,16 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 	if err != nil {
 		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_draft_pr", err)
 	}
+	checkRefs, err := svc.verifyPostPRChecks(ctx, workDir)
+	if err != nil {
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_post_pr_checks", err)
+	}
 	result.NoChanges = false
 	result.PushRef = "git-push-" + safeHash(branch)
 	result.PullRequestRef = prRef
-	result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed", "draft-pr-ready")
+	result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed")
+	result.EvidenceRefs = append(result.EvidenceRefs, checkRefs...)
+	result.EvidenceRefs = append(result.EvidenceRefs, "draft-pr-ready")
 	return result, nil
 }
 
@@ -445,6 +458,8 @@ func FailureCategory(err error) string {
 		return "gitops_dirty_worktree_scope"
 	case errors.Is(err, ErrVerificationFailed):
 		return "gitops_verification_failed"
+	case errors.Is(err, ErrDownstreamChecks):
+		return "gitops_downstream_checks_failed"
 	case errors.Is(err, ErrBranchPolicy):
 		return "gitops_branch_policy_failed"
 	case errors.Is(err, ErrInvalidInput):
@@ -487,6 +502,11 @@ func FailureCategoryWithDetail(err error) string {
 		}
 		return category
 	case "gitops_dirty_worktree", "gitops_dirty_worktree_scope", "gitops_branch_policy_failed":
+		return category
+	case "gitops_downstream_checks_failed":
+		if detail := downstreamChecksFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
 		return category
 	default:
 		if detail := genericGitOpsFailureDetail(err.Error()); detail != "" {
@@ -901,6 +921,70 @@ func (svc *Service) ensureDraftPR(ctx context.Context, workDir string, rendered 
 	return "github-pr-" + safeHash(create.Stdout), nil
 }
 
+func (svc *Service) verifyPostPRChecks(ctx context.Context, workDir string) ([]string, error) {
+	checks := svc.options.PostPRChecks
+	if !checks.Enabled {
+		return nil, nil
+	}
+	args := []string{"pr", "checks", "--json", "name,bucket,state,workflow"}
+	if checks.RequiredOnly {
+		args = append(args, "--required")
+	}
+	if checks.Watch {
+		args = append(args, "--watch")
+		if checks.FailFast {
+			args = append(args, "--fail-fast")
+		}
+		if checks.IntervalSeconds > 0 {
+			args = append(args, "--interval", strconv.Itoa(checks.IntervalSeconds))
+		}
+	}
+	result, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: args, Dir: workDir, Env: svc.githubEnv()})
+	if parseErr := postPRChecksFailure(result.Stdout); parseErr != nil {
+		return nil, parseErr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []string{"post-pr-checks-passed"}, nil
+}
+
+type postPRCheckStatus struct {
+	Name   string `json:"name"`
+	Bucket string `json:"bucket"`
+	State  string `json:"state"`
+}
+
+func postPRChecksFailure(stdout string) error {
+	stdout = strings.TrimSpace(stdout)
+	if stdout == "" {
+		return nil
+	}
+	var statuses []postPRCheckStatus
+	if err := json.Unmarshal([]byte(stdout), &statuses); err != nil {
+		return runtimeFailure("post_pr_checks_parse", err)
+	}
+	blocked := make([]string, 0)
+	for _, status := range statuses {
+		bucket := strings.ToLower(strings.TrimSpace(status.Bucket))
+		switch bucket {
+		case "", "pass", "skipping":
+			continue
+		case "pending":
+			blocked = append(blocked, "pending:"+safeFailureToken(status.Name))
+		case "fail", "cancel":
+			blocked = append(blocked, bucket+":"+safeFailureToken(status.Name))
+		default:
+			blocked = append(blocked, "unknown:"+safeFailureToken(status.Name))
+		}
+	}
+	if len(blocked) == 0 {
+		return nil
+	}
+	sort.Strings(blocked)
+	return fmt.Errorf("%w: %s", ErrDownstreamChecks, strings.Join(blocked, ","))
+}
+
 func (svc *Service) git(ctx context.Context, dir string, env []string, args ...string) (CommandResult, error) {
 	if safeDir := safeGitDirectoryArg(dir); safeDir != "" {
 		args = append([]string{"-c", "safe.directory=" + safeDir}, args...)
@@ -1013,6 +1097,7 @@ func gitOpsStageFailure(stage string, err error) error {
 		ErrDirtyWorktreeScope,
 		ErrRuntimeFailure,
 		ErrVerificationFailed,
+		ErrDownstreamChecks,
 	} {
 		if errors.Is(err, sentinel) {
 			return err
@@ -1157,6 +1242,26 @@ func genericGitOpsFailureDetail(message string) string {
 		}
 	}
 	return "unclassified"
+}
+
+func downstreamChecksFailureDetail(message string) string {
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, prefix := range []string{"fail:", "pending:", "cancel:", "unknown:"} {
+		index := strings.Index(message, prefix)
+		if index < 0 {
+			continue
+		}
+		fields := strings.FieldsFunc(message[index+len(prefix):], func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\n' || r == '\t'
+		})
+		if len(fields) == 0 {
+			continue
+		}
+		if detail := safeFailureToken(prefix[:len(prefix)-1] + "_" + fields[0]); detail != "" {
+			return detail
+		}
+	}
+	return genericGitOpsFailureDetail(message)
 }
 
 func runtimeFailureDetail(message string) string {
