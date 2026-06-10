@@ -2484,6 +2484,9 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 	run.WorkTaskStatus = readyTask.Status
 	run.SafeSummary = gitOpsRecoveryRequeueSummary(category)
 	run.FailureCategory = gitOpsRecoveryImplementationFailureCategory(category)
+	if isGitOpsDownstreamChecksFailure(category) {
+		run.FailureCategory = "gitops_recovery_failed_requires_downstream_checks"
+	}
 	now := svc.now()
 	if run.FinishedAt.IsZero() {
 		run.FinishedAt = now
@@ -2610,6 +2613,11 @@ func isGitOpsVerificationFailure(category string) bool {
 	return category == "gitops_verification_failed" || strings.HasPrefix(category, "gitops_verification_failed_")
 }
 
+func isGitOpsDownstreamChecksFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return category == "gitops_downstream_checks_failed" || strings.HasPrefix(category, "gitops_downstream_checks_failed_")
+}
+
 func isUnrecoverableGitOpsPostTaskExecutionFailure(category string) bool {
 	category = strings.TrimSpace(category)
 	return category == "gitops_post_task_failed" || strings.HasPrefix(category, "gitops_post_task_failed_")
@@ -2721,6 +2729,9 @@ func dirtyPathsBlockedReason(dirtyPaths []string) string {
 func gitOpsRecoveryResumeInstructions(category string, dirtyPaths []string) string {
 	if len(dirtyPaths) > 0 {
 		return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; dirty paths: " + strings.Join(dirtyPaths, ", ") + ". Rerun implementation after files_to_edit scope is corrected.")
+	}
+	if isGitOpsDownstreamChecksFailure(category) {
+		return recoveryResumeInstructions("GitOps post-PR checks failed with " + safeFailure(category) + ". This is a bounded downstream-check repair run: inspect the failed GitHub check, CI status, configured post_pr_checks policy, and PR evidence; fix only the issue required for those checks to pass, then close out for GitOps retry. Do not commit, push, open PRs, or add unrelated feature behavior.")
 	}
 	return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; rerun implementation to fix verification, generated artifacts, commit scope, or PR readiness before GitOps post-task is retried.")
 }
@@ -4634,6 +4645,11 @@ func (svc *Service) shouldQueueReplacementRunForTask(ctx context.Context, automa
 	if run.Status == RunStatusFailed &&
 		task.Status == projectworkplan.WorkTaskStatusReady &&
 		strings.TrimSpace(run.FailureCategory) == "gitops_dirty_worktree_scope_requires_plan" {
+		return true
+	}
+	if run.Status == RunStatusFailed &&
+		task.Status == projectworkplan.WorkTaskStatusReady &&
+		strings.TrimSpace(run.FailureCategory) == "gitops_recovery_failed_requires_downstream_checks" {
 		return true
 	}
 	if run.Status == RunStatusBlocked &&

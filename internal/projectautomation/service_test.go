@@ -10490,6 +10490,100 @@ func TestCompleteAttemptRequeuesVerifierRepairForDetailedGitOpsVerifierFailures(
 	}
 }
 
+func TestCompleteAttemptRequeuesDownstreamCheckRepairForPostPRCheckFailure(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.EvidenceRefs = []string{"implementation/evidence", "github-pr-123"}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-a",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         task.PlanID,
+		TaskID:         task.ID,
+		WorkTaskStatus: task.Status,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		AttemptCount:   2,
+		SafeSummary:    RunSafeSummaryGitOpsPostTaskRecovery,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+	failureCategory := "gitops_downstream_checks_failed_fail_affected_lint"
+
+	run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       automation.ProjectID,
+		RunID:           "run-a",
+		Status:          RunStatusFailed,
+		FailureCategory: failureCategory,
+		EvidenceRefs:    []string{"gitops-failure:" + failureCategory, "github-pr-123"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if run.Status != RunStatusFailed || run.FailureCategory != "gitops_recovery_failed_requires_downstream_checks" || !strings.Contains(run.SafeSummary, failureCategory) {
+		t.Fatalf("expected downstream-check failure to reroute to bounded repair, got %+v", run)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusReady || requeuedTask.ClaimedByRunID != "" {
+		t.Fatalf("expected task ready for downstream-check repair, got %+v", requeuedTask)
+	}
+	for _, want := range []string{
+		"bounded downstream-check repair run",
+		"GitHub check",
+		"CI status",
+		"post_pr_checks",
+		failureCategory,
+		"Do not commit, push, open PRs",
+		"unrelated feature behavior",
+	} {
+		if !strings.Contains(requeuedTask.ResumeInstructions, want) {
+			t.Fatalf("expected downstream-check resume instructions to contain %q, got %q", want, requeuedTask.ResumeInstructions)
+		}
+	}
+	if !contains(requeuedTask.EvidenceRefs, "gitops-failure:"+failureCategory) || !contains(requeuedTask.EvidenceRefs, "github-pr-123") {
+		t.Fatalf("expected requeued task to retain post-PR failure evidence, got %+v", requeuedTask.EvidenceRefs)
+	}
+	var replacement AutomationRun
+	for _, candidate := range store.runs {
+		if candidate.ID != "run-a" && candidate.TaskID == task.ID && candidate.Status == RunStatusQueued {
+			replacement = candidate
+		}
+	}
+	if replacement.ID == "" {
+		t.Fatalf("expected one replacement downstream-check repair run, runs=%+v", store.runs)
+	}
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil || claimed.Run.ID != replacement.ID {
+		t.Fatalf("expected replacement run to be claimed, got run=%+v err=%v", claimed.Run, err)
+	}
+	prompt := RenderCodexTaskPrompt(claimed.CodexInput)
+	for _, want := range []string{
+		"bounded downstream-check repair run",
+		"failed GitHub check",
+		"CI status",
+		"post_pr_checks",
+		failureCategory,
+		"unrelated feature behavior",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected downstream-check prompt to contain %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestCompleteAttemptBlocksAfterDetailedGitOpsPostTaskRecoveryFailure(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
