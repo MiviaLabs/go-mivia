@@ -6532,9 +6532,6 @@ func automationCloseoutVerifierRefs(task projectworkplan.WorkTask) []string {
 	if len(refs) == 0 && !isReadOnlyScannerTask(task) && len(task.FilesToEdit) == 0 && metadataOnlyTaskHasCloseoutEvidence(task) {
 		refs = append(refs, "verifier.automation.metadata-only-output")
 	}
-	if len(refs) == 0 && len(task.FilesToEdit) > 0 && gitOpsTaskHasCloseoutEvidence(task) {
-		refs = append(refs, "verifier.automation.gitops-output")
-	}
 	return refs
 }
 

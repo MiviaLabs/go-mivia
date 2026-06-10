@@ -283,12 +283,13 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 		t.Fatalf("UpdateWorkTaskStatus returned error: %v", err)
 	}
 	completed, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
-		ProjectID:    "project-1",
-		RunID:        claimed.Run.ID,
-		ClaimID:      claimed.Run.ClaimID,
-		RunnerID:     claimed.Run.RunnerID,
-		Status:       RunStatusCompleted,
-		EvidenceRefs: []string{"gitops-commit:abc", "gitops-push:abc", "gitops-pr:draft"},
+		ProjectID:          "project-1",
+		RunID:              claimed.Run.ID,
+		ClaimID:            claimed.Run.ClaimID,
+		RunnerID:           claimed.Run.RunnerID,
+		Status:             RunStatusCompleted,
+		EvidenceRefs:       []string{"gitops-commit:abc", "gitops-push:abc", "gitops-pr:draft"},
+		VerifierResultRefs: []string{"verifier.smoke.bounded-diff"},
 	})
 	if err != nil {
 		t.Fatalf("CompleteAttempt returned error: %v", err)
@@ -365,11 +366,12 @@ func TestCompleteAttemptQueuesRecoveryPostImplementationReviewAutomation(t *test
 		t.Fatalf("CompleteWorkTask review returned error: %v", err)
 	}
 	completedReview, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
-		ProjectID: "project-1",
-		RunID:     claimedReview.Run.ID,
-		ClaimID:   claimedReview.Run.ClaimID,
-		RunnerID:  claimedReview.Run.RunnerID,
-		Status:    RunStatusCompleted,
+		ProjectID:          "project-1",
+		RunID:              claimedReview.Run.ID,
+		ClaimID:            claimedReview.Run.ClaimID,
+		RunnerID:           claimedReview.Run.RunnerID,
+		Status:             RunStatusCompleted,
+		VerifierResultRefs: []string{"verifier.review.approved"},
 	})
 	if err != nil {
 		t.Fatalf("CompleteAttempt review returned error: %v", err)
@@ -6620,6 +6622,61 @@ func TestCompleteAttemptIgnoresImplementationSuppliedReviewRefsBeforeIndependent
 	}
 	if len(runs) != 1 || runs[0].Status != RunStatusQueued || runs[0].TaskID != reviewTask.ID || runs[0].ParentRunID != queued.ID {
 		t.Fatalf("expected queued independent review run, got %#v", runs)
+	}
+}
+
+func TestCompleteAttemptRequiresVerifierRefsForReviewedGitOpsImplementation(t *testing.T) {
+	ctx := context.Background()
+	implementationTask := readyTask("task-a", "fix-finding-a", []string{"internal/foo.go"})
+	implementationTask.FilesToEdit = []string{"internal/foo.go"}
+	implementationTask.ReviewResultRefs = []string{"review.independent.approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		implementationTask.ID: implementationTask,
+	}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/remediate",
+		Title:           "Remediate",
+		Purpose:         "Run implementation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{implementationTask.ID, implementationTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: implementationTask.ID})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	implementationTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	implementationTask.ClaimedByRunID = queued.ID
+	implementationTask.AgentRunIDs = []string{queued.ID}
+	implementationTask.EvidenceRefs = []string{"gitops-commit:abc", "gitops-push:branch", "gitops-pr:draft"}
+	fake.tasks[implementationTask.ID] = implementationTask
+
+	done, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:    automation.ProjectID,
+		RunID:        queued.ID,
+		Status:       RunStatusCompleted,
+		EvidenceRefs: []string{"gitops-commit:abc", "gitops-push:branch", "gitops-pr:draft"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if done.Status == RunStatusCompleted || fake.tasks[implementationTask.ID].Status == projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("GitOps output without verifier refs must not complete implementation, run=%#v task=%#v", done, fake.tasks[implementationTask.ID])
+	}
+	if containsRef(fake.tasks[implementationTask.ID].VerifierResultRefs, "verifier.automation.gitops-output") {
+		t.Fatalf("GitOps evidence must not synthesize verifier refs for write tasks, got %#v", fake.tasks[implementationTask.ID].VerifierResultRefs)
 	}
 }
 
