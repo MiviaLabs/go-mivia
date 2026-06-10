@@ -2810,6 +2810,11 @@ func TestPostTaskBlocksFailedOrPendingPostPRChecks(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected downstream checks to block, got result %+v", result)
 			}
+			for _, forbidden := range []string{"post-pr-checks-passed", "draft-pr-ready"} {
+				if containsString(result.EvidenceRefs, forbidden) {
+					t.Fatalf("blocked downstream checks must not return ready evidence %q, got %+v", forbidden, result.EvidenceRefs)
+				}
+			}
 			if got := FailureCategoryWithDetail(err); got != tc.wantCategory {
 				t.Fatalf("unexpected failure category: got %q want %q from %v", got, tc.wantCategory, err)
 			}
