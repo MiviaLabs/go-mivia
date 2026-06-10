@@ -6680,6 +6680,63 @@ func TestCompleteAttemptRequiresVerifierRefsForReviewedGitOpsImplementation(t *t
 	}
 }
 
+func TestCompleteAttemptRejectsArbitraryReviewExemptionForGitOpsImplementation(t *testing.T) {
+	ctx := context.Background()
+	implementationTask := readyTask("task-a", "fix-finding-a", []string{"internal/foo.go"})
+	implementationTask.FilesToEdit = []string{"internal/foo.go"}
+	implementationTask.ReviewExemptReason = "operator says review is not needed"
+	implementationTask.VerifierResultRefs = []string{"verifier.implementation.focused"}
+	implementationTask.EvidenceRefs = []string{"gitops-commit:abc", "gitops-push:branch", "gitops-pr:draft"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		implementationTask.ID: implementationTask,
+	}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+		ProjectID:       "project-1",
+		AutomationRef:   "auto/remediate",
+		Title:           "Remediate",
+		Purpose:         "Run implementation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "codex-worker",
+		PlanID:          "plan-1",
+		AllowedTaskRefs: []string{implementationTask.ID, implementationTask.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+		PermissionRef:   "permission/default",
+	})
+	if err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	queued, err := svc.RunNow(ctx, SubmitRunInput{ProjectID: automation.ProjectID, AutomationID: automation.ID, TaskID: implementationTask.ID})
+	if err != nil {
+		t.Fatalf("RunNow returned error: %v", err)
+	}
+	if _, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI}); err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	implementationTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	implementationTask.ClaimedByRunID = queued.ID
+	implementationTask.AgentRunIDs = []string{queued.ID}
+	fake.tasks[implementationTask.ID] = implementationTask
+
+	done, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:          automation.ProjectID,
+		RunID:              queued.ID,
+		Status:             RunStatusCompleted,
+		EvidenceRefs:       []string{"gitops-commit:abc", "gitops-push:branch", "gitops-pr:draft"},
+		VerifierResultRefs: []string{"verifier.implementation.focused"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if done.Status == RunStatusCompleted || fake.tasks[implementationTask.ID].Status == projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("arbitrary review exemption must not complete GitOps implementation, run=%#v task=%#v", done, fake.tasks[implementationTask.ID])
+	}
+	if len(fake.tasks[implementationTask.ID].ReviewResultRefs) != 0 {
+		t.Fatalf("arbitrary review exemption must not synthesize review refs, got %#v", fake.tasks[implementationTask.ID].ReviewResultRefs)
+	}
+}
+
 func TestReviewAutomationDoesNotInheritDifferentAgentPermissionSnapshot(t *testing.T) {
 	parent := Automation{
 		AgentID:       "implementation-worker",
