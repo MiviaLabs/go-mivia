@@ -17,14 +17,17 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	"github.com/MiviaLabs/go-mivia/internal/projectdurable"
 	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 )
 
 const defaultRequestTimeout = 120 * time.Second
+const runnerShadowRecordTimeout = 50 * time.Millisecond
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -82,7 +85,14 @@ func run(args []string) int {
 		return 1
 	}
 	runnerID := defaultRunnerID()
-	client := &runnerClient{baseURL: strings.TrimRight(strings.TrimSpace(*server), "/"), http: &http.Client{Timeout: normalizedRequestTimeout(*requestTimeout)}, runnerID: runnerID, heartbeatInterval: normalizedHeartbeatInterval(*heartbeatInterval), projectCleanupInterval: defaultProjectCleanupInterval}
+	client := &runnerClient{
+		baseURL:                strings.TrimRight(strings.TrimSpace(*server), "/"),
+		http:                   &http.Client{Timeout: normalizedRequestTimeout(*requestTimeout)},
+		runnerID:               runnerID,
+		heartbeatInterval:      normalizedHeartbeatInterval(*heartbeatInterval),
+		runnerShadowRecorder:   newRunnerShadowRecorderState(newDurableRunnerShadowRecorder(cfg.DurableWorkflows)),
+		projectCleanupInterval: defaultProjectCleanupInterval,
+	}
 	var idleSince time.Time
 	for {
 		projectIDs, err := runnerProjectIDs(context.Background(), client, strings.TrimSpace(*projectID))
@@ -310,12 +320,28 @@ type codexLaunchOptions struct {
 	OutputSchemaPath          string
 }
 
+var newDurableRunnerShadowRecorder = func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+	if !durable.Enabled || !durable.WorkerEnabled {
+		return nil
+	}
+	if !durable.ShadowMode {
+		fmt.Fprintln(os.Stderr, "durable runner worker startup skipped: authoritative durable execution is not approved")
+		return nil
+	}
+	return projectdurable.NewInMemoryRunnerShadowRecorder()
+}
+
 func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg config.Config, projectID string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
+	shadowRecorder := client.runnerShadowRecorder
+	if shadowRecorder == nil {
+		shadowRecorder = newRunnerShadowRecorderState(newDurableRunnerShadowRecorder(cfg.DurableWorkflows))
+	}
 	gitOpsOptions := gitOpsOptionsForProject(cfg, projectID)
 	if client.shouldRunProjectCleanup(projectID, strings.TrimSpace(codexOptions.WorkDir)) {
 		cleanupTerminalProjectWorktrees(ctx, client, gitOpsOptions, projectID, strings.TrimSpace(codexOptions.WorkDir))
 	}
 
+	recordRunnerShadowEvent(ctx, shadowRecorder, runnerShadowEventFromProject(projectdurable.RunnerShadowBoundaryClaimStarted, projectID))
 	claimed, ok, err := client.claimNext(ctx, projectID, agentID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "claim failed: %v\n", err)
@@ -325,7 +351,9 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		fmt.Fprintf(os.Stdout, "no queued automation run for project %s\n", projectID)
 		return 0, true, false
 	}
+	recordRunnerShadowEvent(ctx, shadowRecorder, runnerShadowEventFromRun(projectdurable.RunnerShadowBoundaryClaimed, projectID, claimed.Run, nil))
 	stopHeartbeat := client.startHeartbeat(ctx, projectID, claimed.Run)
+	recordRunnerShadowEvent(ctx, shadowRecorder, runnerShadowEventFromRun(projectdurable.RunnerShadowBoundaryHeartbeatStarted, projectID, claimed.Run, nil))
 	defer stopHeartbeat()
 	runWorkDir, err := client.resolveRunWorkDir(ctx, projectID, claimed.Run.PlanID, strings.TrimSpace(codexOptions.WorkDir))
 	if err != nil {
@@ -333,7 +361,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			Status:          projectautomation.RunStatusFailed,
 			FailureCategory: "worktree_resolve_failed",
 		}
-		completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run, result)
+		completedRun, reportErr := completeAttemptAndRecordShadow(ctx, client, shadowRecorder, projectID, claimed.Run, result)
 		if reportErr != nil {
 			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
 			return 1, false, true
@@ -376,7 +404,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		if status != projectautomation.RunStatusCompleted && strings.TrimSpace(failureCategory) != "" {
 			fmt.Fprintf(os.Stdout, "automation run %s reporting %s failure_category=%s\n", claimed.Run.ID, status, failureCategory)
 		}
-		completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run, result)
+		completedRun, err := completeAttemptAndRecordShadow(ctx, client, shadowRecorder, projectID, claimed.Run, result)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
 			return 1, false, true
@@ -420,7 +448,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			case errors.Is(preTaskErr, projectgitops.ErrDirtyWorktree):
 				result.FailureCategory = "gitops_dirty_worktree"
 			}
-			completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run, result)
+			completedRun, reportErr := completeAttemptAndRecordShadow(ctx, client, shadowRecorder, projectID, claimed.Run, result)
 			if reportErr != nil {
 				fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
 				return 1, false, true
@@ -436,7 +464,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 				Status:          projectautomation.RunStatusFailed,
 				FailureCategory: "governed_closeout_schema_create_failed",
 			}
-			completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run, result)
+			completedRun, reportErr := completeAttemptAndRecordShadow(ctx, client, shadowRecorder, projectID, claimed.Run, result)
 			if reportErr != nil {
 				fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
 				return 1, false, true
@@ -447,7 +475,13 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		defer cleanupSchema()
 		runCodexOptions.OutputSchemaPath = schemaPath
 	}
+	recordRunnerShadowEvent(ctx, shadowRecorder, runnerShadowEventFromRun(projectdurable.RunnerShadowBoundaryExecuteStarted, projectID, claimed.Run, nil))
 	codexResult := runCodex(ctx, claimed, runCodexOptions)
+	recordRunnerShadowEvent(ctx, shadowRecorder, runnerShadowEventFromRun(projectdurable.RunnerShadowBoundaryExecuteFinished, projectID, claimed.Run, &projectautomation.CompleteAttemptInput{
+		Status:          codexResult.Status,
+		FailureCategory: codexResult.FailureCategory,
+		DurationMS:      codexResult.DurationMS,
+	}))
 	status, failureCategory, durationMS := codexResult.Status, codexResult.FailureCategory, codexResult.DurationMS
 	var evidenceRefs []string
 	if status == projectautomation.RunStatusCompleted {
@@ -495,10 +529,11 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		DurationMS:      durationMS,
 		EvidenceRefs:    evidenceRefs,
 	}
+	recordRunnerShadowEvent(ctx, shadowRecorder, runnerShadowEventFromRun(projectdurable.RunnerShadowBoundaryCloseoutFinished, projectID, claimed.Run, &result))
 	if status != projectautomation.RunStatusCompleted && strings.TrimSpace(failureCategory) != "" {
 		fmt.Fprintf(os.Stdout, "automation run %s reporting %s failure_category=%s\n", claimed.Run.ID, status, failureCategory)
 	}
-	completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run, result)
+	completedRun, err := completeAttemptAndRecordShadow(ctx, client, shadowRecorder, projectID, claimed.Run, result)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, err)
 		return 1, false, true
@@ -509,6 +544,106 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		return 0, true, true
 	}
 	return 1, true, true
+}
+
+func completeAttemptAndRecordShadow(ctx context.Context, client *runnerClient, recorder *runnerShadowRecorderState, projectID string, claimed projectautomation.AutomationRun, input projectautomation.CompleteAttemptInput) (projectautomation.AutomationRun, error) {
+	completedRun, err := client.completeAttempt(ctx, projectID, claimed, input)
+	if err != nil {
+		return completedRun, err
+	}
+	recordRunnerShadowEvent(ctx, recorder, runnerShadowEventFromRun(projectdurable.RunnerShadowBoundaryReported, projectID, completedRun, &input))
+	return completedRun, nil
+}
+
+type runnerShadowRecorderState struct {
+	recorder projectdurable.RunnerShadowRecorder
+	slot     chan struct{}
+	disabled atomic.Bool
+}
+
+func newRunnerShadowRecorderState(recorder projectdurable.RunnerShadowRecorder) *runnerShadowRecorderState {
+	if recorder == nil {
+		return nil
+	}
+	return &runnerShadowRecorderState{recorder: recorder, slot: make(chan struct{}, 1)}
+}
+
+func recordRunnerShadowEvent(ctx context.Context, state *runnerShadowRecorderState, event projectdurable.RunnerShadowEvent) {
+	if state == nil || state.recorder == nil {
+		return
+	}
+	if state.disabled.Load() {
+		fmt.Fprintf(os.Stderr, "durable shadow record skipped boundary=%s: recorder disabled after timeout\n", event.Boundary)
+		return
+	}
+	select {
+	case state.slot <- struct{}{}:
+	default:
+		fmt.Fprintf(os.Stderr, "durable shadow record skipped boundary=%s: recorder already in flight\n", event.Boundary)
+		return
+	}
+	recordCtx, cancel := context.WithTimeout(ctx, runnerShadowRecordTimeout)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- state.recorder.RecordRunnerShadowEvent(recordCtx, event)
+	}()
+	select {
+	case err := <-errCh:
+		<-state.slot
+		if err == nil {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "durable shadow record skipped boundary=%s: %v\n", event.Boundary, err)
+	case <-recordCtx.Done():
+		state.disabled.Store(true)
+		<-state.slot
+		fmt.Fprintf(os.Stderr, "durable shadow recorder disabled boundary=%s: %v\n", event.Boundary, recordCtx.Err())
+	}
+}
+
+func runnerShadowEventFromProject(boundary string, projectID string) projectdurable.RunnerShadowEvent {
+	return projectdurable.RunnerShadowEvent{
+		Boundary:   boundary,
+		ProjectID:  projectID,
+		ObservedAt: time.Now().UTC(),
+	}
+}
+
+func runnerShadowEventFromRun(boundary string, projectID string, run projectautomation.AutomationRun, result *projectautomation.CompleteAttemptInput) projectdurable.RunnerShadowEvent {
+	event := projectdurable.RunnerShadowEvent{
+		Boundary:     boundary,
+		Run:          runnerSafeAutomationRunRef(projectID, run),
+		Status:       run.Status,
+		SafeSummary:  run.SafeSummary,
+		AttemptCount: run.AttemptCount,
+		ClaimID:      run.ClaimID,
+		RunnerID:     run.RunnerID,
+		ObservedAt:   time.Now().UTC(),
+	}
+	if strings.TrimSpace(run.FailureCategory) != "" {
+		event.FailureCategory = strings.TrimSpace(run.FailureCategory)
+	}
+	if result != nil {
+		if strings.TrimSpace(result.Status) != "" {
+			event.Status = strings.TrimSpace(result.Status)
+		}
+		if strings.TrimSpace(result.FailureCategory) != "" {
+			event.FailureCategory = strings.TrimSpace(result.FailureCategory)
+		}
+		event.EvidenceRefs = append([]string(nil), result.EvidenceRefs...)
+	}
+	return event
+}
+
+func runnerSafeAutomationRunRef(projectID string, run projectautomation.AutomationRun) projectdurable.SafeAutomationRunRef {
+	return projectdurable.SafeAutomationRunRef{
+		ProjectID:    firstNonEmpty(run.ProjectID, projectID),
+		AutomationID: run.AutomationID,
+		RunID:        run.ID,
+		TaskID:       run.TaskID,
+		TraceID:      run.TraceID,
+	}
 }
 
 const defaultProjectCleanupInterval = 5 * time.Minute
@@ -1351,6 +1486,7 @@ type runnerClient struct {
 	http                   *http.Client
 	runnerID               string
 	heartbeatInterval      time.Duration
+	runnerShadowRecorder   *runnerShadowRecorderState
 	projectCleanupInterval time.Duration
 	projectCleanupMu       sync.Mutex
 	projectCleanupLast     map[string]time.Time

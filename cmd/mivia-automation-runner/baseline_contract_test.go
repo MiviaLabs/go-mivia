@@ -1,16 +1,22 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	"github.com/MiviaLabs/go-mivia/internal/projectdurable"
 )
 
 func TestBaselineGovernedCloseoutMetadataOnlySafety(t *testing.T) {
@@ -206,5 +212,661 @@ func TestBaselineRunnerClientCarriesRunnerIDOnClaimHeartbeatAndComplete(t *testi
 	}
 	if completeInput.ClaimID != "claim-1" || completeInput.RunnerID != "runner-baseline" {
 		t.Fatalf("complete did not carry claim and runner identity: %#v", completeInput)
+	}
+}
+
+func TestPhase7RunnerShadowHooksPreserveAuthoritativeOrderAndSafeRefs(t *testing.T) {
+	recorder := projectdurable.NewInMemoryRunnerShadowRecorder()
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return recorder
+	})
+	defer restore()
+
+	var calls []string
+	var completeInput projectautomation.CompleteAttemptInput
+	completed := projectautomation.AutomationRun{
+		ID:           "run-1",
+		ProjectID:    "project-1",
+		AutomationID: "automation-1",
+		Status:       projectautomation.RunStatusCompleted,
+		ClaimID:      "claim-1",
+		RunnerID:     "runner-phase7",
+		AttemptCount: 1,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			calls = append(calls, "claim")
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				Status:       projectautomation.RunStatusRunning,
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+				AttemptCount: 1,
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			calls = append(calls, "report")
+			if err := json.NewDecoder(r.Body).Decode(&completeInput); err != nil {
+				t.Fatalf("decode complete input: %v", err)
+			}
+			writeJSON(t, w, completed)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			calls = append(calls, "readback")
+			writeJSON(t, w, completed)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	status, keepWatching, claimed := claimRunExecuteAndReport(t.Context(), client, config.Config{DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: true}}, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct"})
+	if status != 0 || !keepWatching || !claimed {
+		t.Fatalf("runner result mismatch: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+	if want := []string{"claim", "report", "readback"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("authoritative call order changed: got %#v want %#v", calls, want)
+	}
+	if completeInput.ClaimID != "claim-1" || completeInput.RunnerID != "runner-phase7" || completeInput.Status != projectautomation.RunStatusCompleted {
+		t.Fatalf("authoritative complete input changed: %#v", completeInput)
+	}
+
+	var boundaries []string
+	for _, event := range recorder.Events() {
+		if err := event.Validate(); err != nil {
+			t.Fatalf("shadow event failed safe metadata validation: %#v err=%v", event, err)
+		}
+		boundaries = append(boundaries, event.Boundary)
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("marshal event: %v", err)
+		}
+		for _, forbidden := range []string{"raw_prompt", "raw_completion", "raw_stderr", "provider_payload", "/home/", "https://"} {
+			if strings.Contains(string(encoded), forbidden) {
+				t.Fatalf("shadow event leaked forbidden material %q in %s", forbidden, encoded)
+			}
+		}
+	}
+	wantBoundaries := []string{
+		projectdurable.RunnerShadowBoundaryClaimStarted,
+		projectdurable.RunnerShadowBoundaryClaimed,
+		projectdurable.RunnerShadowBoundaryHeartbeatStarted,
+		projectdurable.RunnerShadowBoundaryExecuteStarted,
+		projectdurable.RunnerShadowBoundaryExecuteFinished,
+		projectdurable.RunnerShadowBoundaryCloseoutFinished,
+		projectdurable.RunnerShadowBoundaryReported,
+	}
+	if !reflect.DeepEqual(boundaries, wantBoundaries) {
+		t.Fatalf("shadow boundaries mismatch: got %#v want %#v", boundaries, wantBoundaries)
+	}
+}
+
+func TestPhase7RunnerShadowFailureIsNonFatalInShadowMode(t *testing.T) {
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return failingRunnerShadowRecorder{}
+	})
+	defer restore()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				Status:       projectautomation.RunStatusRunning,
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	status, keepWatching, claimed := claimRunExecuteAndReport(t.Context(), client, config.Config{DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: true}}, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct"})
+	if status != 0 || !keepWatching || !claimed {
+		t.Fatalf("shadow recorder failure must not fail authoritative run: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+}
+
+func TestPhase7BlockingShadowRecorderDoesNotHangAuthoritativeRun(t *testing.T) {
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return blockingRunnerShadowRecorder{}
+	})
+	defer restore()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				Status:       projectautomation.RunStatusRunning,
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	done := make(chan struct{})
+	var status int
+	var keepWatching bool
+	var claimed bool
+	go func() {
+		defer close(done)
+		status, keepWatching, claimed = claimRunExecuteAndReport(t.Context(), client, config.Config{DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: true}}, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct"})
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("blocking shadow recorder hung authoritative runner")
+	}
+	if status != 0 || !keepWatching || !claimed {
+		t.Fatalf("blocking shadow recorder must not fail authoritative run: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+}
+
+func TestPhase7ContextIgnoringShadowRecorderIsBounded(t *testing.T) {
+	var started int32
+	recorder := contextIgnoringRunnerShadowRecorder{started: &started}
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return recorder
+	})
+	defer restore()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				Status:       projectautomation.RunStatusRunning,
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	done := make(chan struct{})
+	var status int
+	var keepWatching bool
+	var claimed bool
+	go func() {
+		defer close(done)
+		status, keepWatching, claimed = claimRunExecuteAndReport(t.Context(), client, config.Config{DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: true}}, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct"})
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("context-ignoring shadow recorder hung authoritative runner")
+	}
+	if status != 0 || !keepWatching || !claimed {
+		t.Fatalf("context-ignoring shadow recorder must not fail authoritative run: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+	if got := atomic.LoadInt32(&started); got != 1 {
+		t.Fatalf("context-ignoring recorder should start at most one shadow call, got %d", got)
+	}
+	healthy := projectdurable.NewInMemoryRunnerShadowRecorder()
+	recordRunnerShadowEvent(t.Context(), newRunnerShadowRecorderState(healthy), projectdurable.RunnerShadowEvent{
+		Boundary:   projectdurable.RunnerShadowBoundaryClaimStarted,
+		ProjectID:  "project-1",
+		ObservedAt: time.Now().UTC(),
+	})
+	if got := len(healthy.Events()); got != 1 {
+		t.Fatalf("context-ignoring recorder timeout should not disable later healthy recorders, got %d events", got)
+	}
+}
+
+func TestPhase7WorktreeResolveFailureRecordsReportShadowWithoutExecuting(t *testing.T) {
+	recorder := projectdurable.NewInMemoryRunnerShadowRecorder()
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return recorder
+	})
+	defer restore()
+
+	var calls []string
+	var completeInput projectautomation.CompleteAttemptInput
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			calls = append(calls, "claim")
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				PlanID:       "plan-1",
+				Status:       projectautomation.RunStatusRunning,
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/work-plans/plan-1":
+			calls = append(calls, "workplan")
+			http.Error(w, "work plan unavailable", http.StatusInternalServerError)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			calls = append(calls, "report")
+			if err := json.NewDecoder(r.Body).Decode(&completeInput); err != nil {
+				t.Fatalf("decode complete input: %v", err)
+			}
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", PlanID: "plan-1", Status: projectautomation.RunStatusFailed, FailureCategory: "worktree_resolve_failed", ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			calls = append(calls, "readback")
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", PlanID: "plan-1", Status: projectautomation.RunStatusFailed, FailureCategory: "worktree_resolve_failed", ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	status, keepWatching, claimed := claimRunExecuteAndReport(t.Context(), client, config.Config{DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: true}}, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct"})
+	if status != 1 || !keepWatching || !claimed {
+		t.Fatalf("worktree resolve failure result mismatch: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+	if want := []string{"claim", "workplan", "report", "readback"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("worktree resolve authoritative order changed: got %#v want %#v", calls, want)
+	}
+	if completeInput.Status != projectautomation.RunStatusFailed || completeInput.FailureCategory != "worktree_resolve_failed" || completeInput.ClaimID != "claim-1" || completeInput.RunnerID != "runner-phase7" {
+		t.Fatalf("worktree resolve complete input mismatch: %#v", completeInput)
+	}
+	boundaries := runnerShadowBoundaries(recorder.Events())
+	wantBoundaries := []string{
+		projectdurable.RunnerShadowBoundaryClaimStarted,
+		projectdurable.RunnerShadowBoundaryClaimed,
+		projectdurable.RunnerShadowBoundaryHeartbeatStarted,
+		projectdurable.RunnerShadowBoundaryReported,
+	}
+	if !reflect.DeepEqual(boundaries, wantBoundaries) {
+		t.Fatalf("worktree resolve shadow boundaries mismatch: got %#v want %#v", boundaries, wantBoundaries)
+	}
+}
+
+func TestPhase7GitOpsPreTaskFailureRecordsReportShadowWithoutExecuting(t *testing.T) {
+	recorder := projectdurable.NewInMemoryRunnerShadowRecorder()
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return recorder
+	})
+	defer restore()
+
+	var calls []string
+	var completeInput projectautomation.CompleteAttemptInput
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			calls = append(calls, "claim")
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				TaskID:       "task-1",
+				Status:       projectautomation.RunStatusRunning,
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/work-tasks/task-1":
+			calls = append(calls, "task")
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "implement-task", Status: "claimed", FilesToEdit: []string{"README.md"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			calls = append(calls, "report")
+			if err := json.NewDecoder(r.Body).Decode(&completeInput); err != nil {
+				t.Fatalf("decode complete input: %v", err)
+			}
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", TaskID: "task-1", Status: projectautomation.RunStatusFailed, FailureCategory: completeInput.FailureCategory, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			calls = append(calls, "readback")
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", TaskID: "task-1", Status: projectautomation.RunStatusFailed, FailureCategory: completeInput.FailureCategory, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	cfg := config.Config{
+		DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: true},
+		GitOperations: config.GitOperations{
+			Enabled:                true,
+			CommitAfterTask:        true,
+			RequireCleanBeforeTask: true,
+		},
+	}
+	status, keepWatching, claimed := claimRunExecuteAndReport(t.Context(), client, cfg, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct", WorkDir: t.TempDir()})
+	if status != 1 || !keepWatching || !claimed {
+		t.Fatalf("gitops pre-task failure result mismatch: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+	if want := []string{"claim", "task", "report", "readback"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("gitops pre-task authoritative order changed: got %#v want %#v", calls, want)
+	}
+	if completeInput.Status != projectautomation.RunStatusFailed || completeInput.FailureCategory == "" || completeInput.ClaimID != "claim-1" || completeInput.RunnerID != "runner-phase7" {
+		t.Fatalf("gitops pre-task complete input mismatch: %#v", completeInput)
+	}
+	boundaries := runnerShadowBoundaries(recorder.Events())
+	wantBoundaries := []string{
+		projectdurable.RunnerShadowBoundaryClaimStarted,
+		projectdurable.RunnerShadowBoundaryClaimed,
+		projectdurable.RunnerShadowBoundaryHeartbeatStarted,
+		projectdurable.RunnerShadowBoundaryReported,
+	}
+	if !reflect.DeepEqual(boundaries, wantBoundaries) {
+		t.Fatalf("gitops pre-task shadow boundaries mismatch: got %#v want %#v", boundaries, wantBoundaries)
+	}
+}
+
+func TestPhase7GitOpsPostTaskRecoveryFailureRecordsReportShadowWithoutExecuting(t *testing.T) {
+	recorder := projectdurable.NewInMemoryRunnerShadowRecorder()
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return recorder
+	})
+	defer restore()
+
+	var calls []string
+	var completeInput projectautomation.CompleteAttemptInput
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			calls = append(calls, "claim")
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				TaskID:       "task-1",
+				Status:       projectautomation.RunStatusRunning,
+				SafeSummary:  projectautomation.RunSafeSummaryGitOpsPostTaskRecovery,
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/work-tasks/task-1":
+			calls = append(calls, "task")
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "task-1", TaskRef: "implement-task", Status: "done", FilesToEdit: []string{"README.md"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			calls = append(calls, "report")
+			if err := json.NewDecoder(r.Body).Decode(&completeInput); err != nil {
+				t.Fatalf("decode complete input: %v", err)
+			}
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", TaskID: "task-1", Status: projectautomation.RunStatusFailed, FailureCategory: completeInput.FailureCategory, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			calls = append(calls, "readback")
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", TaskID: "task-1", Status: projectautomation.RunStatusFailed, FailureCategory: completeInput.FailureCategory, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	status, keepWatching, claimed := claimRunExecuteAndReport(t.Context(), client, config.Config{DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: true}}, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct", WorkDir: t.TempDir()})
+	if status != 1 || !keepWatching || !claimed {
+		t.Fatalf("gitops recovery failure result mismatch: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+	if want := []string{"claim", "task", "task", "report", "readback"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("gitops recovery authoritative order changed: got %#v want %#v", calls, want)
+	}
+	if completeInput.Status != projectautomation.RunStatusFailed || completeInput.FailureCategory != "automation_task_closeout_missing_verifier_refs" || completeInput.ClaimID != "claim-1" || completeInput.RunnerID != "runner-phase7" {
+		t.Fatalf("gitops recovery complete input mismatch: %#v", completeInput)
+	}
+	boundaries := runnerShadowBoundaries(recorder.Events())
+	wantBoundaries := []string{
+		projectdurable.RunnerShadowBoundaryClaimStarted,
+		projectdurable.RunnerShadowBoundaryClaimed,
+		projectdurable.RunnerShadowBoundaryHeartbeatStarted,
+		projectdurable.RunnerShadowBoundaryReported,
+	}
+	if !reflect.DeepEqual(boundaries, wantBoundaries) {
+		t.Fatalf("gitops recovery shadow boundaries mismatch: got %#v want %#v", boundaries, wantBoundaries)
+	}
+}
+
+func TestPhase7RunnerReportFailureRemainsAuthoritativeWhenShadowEnabled(t *testing.T) {
+	recorder := projectdurable.NewInMemoryRunnerShadowRecorder()
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return recorder
+	})
+	defer restore()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				Status:       projectautomation.RunStatusRunning,
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			http.Error(w, "report failed", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	status, keepWatching, claimed := claimRunExecuteAndReport(t.Context(), client, config.Config{DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: true}}, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct"})
+	if status != 1 || keepWatching || !claimed {
+		t.Fatalf("report failure contract changed: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+	for _, event := range recorder.Events() {
+		if event.Boundary == projectdurable.RunnerShadowBoundaryReported {
+			t.Fatalf("reported shadow event must not be written after authoritative report failure: %#v", event)
+		}
+	}
+}
+
+func TestPhase7WorkerDisabledDoesNotRecordShadowEvents(t *testing.T) {
+	recorder := projectdurable.NewInMemoryRunnerShadowRecorder()
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return recorder
+	})
+	defer restore()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				Status:       projectautomation.RunStatusRunning,
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	status, keepWatching, claimed := claimRunExecuteAndReport(t.Context(), client, config.Config{DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: false}}, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct"})
+	if status != 0 || !keepWatching || !claimed {
+		t.Fatalf("worker-disabled runner result mismatch: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+	if events := recorder.Events(); len(events) != 0 {
+		t.Fatalf("worker_disabled must not record shadow events: %#v", events)
+	}
+}
+
+func TestPhase7UnsafeRunMetadataSkipsShadowButNotAuthoritativeRun(t *testing.T) {
+	recorder := projectdurable.NewInMemoryRunnerShadowRecorder()
+	restore := replaceDurableRunnerShadowRecorder(func(durable config.DurableWorkflows) projectdurable.RunnerShadowRecorder {
+		if !durable.Enabled || !durable.WorkerEnabled || !durable.ShadowMode {
+			return nil
+		}
+		return recorder
+	})
+	defer restore()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/claim-next":
+			writeJSON(t, w, projectautomation.ClaimedRun{Run: projectautomation.AutomationRun{
+				ID:           "run-1",
+				ProjectID:    "project-1",
+				AutomationID: "automation-1",
+				Status:       projectautomation.RunStatusRunning,
+				SafeSummary:  "raw_prompt leaked from upstream",
+				ClaimID:      "claim-1",
+				RunnerID:     "runner-phase7",
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusCompleted, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	status, keepWatching, claimed := claimRunExecuteAndReport(t.Context(), client, config.Config{DurableWorkflows: config.DurableWorkflows{Enabled: true, ShadowMode: true, WorkerEnabled: true}}, "project-1", "", codexLaunchOptions{Path: "/bin/true", Launcher: "direct"})
+	if status != 0 || !keepWatching || !claimed {
+		t.Fatalf("unsafe shadow metadata must not fail authoritative run: status=%d keepWatching=%v claimed=%v", status, keepWatching, claimed)
+	}
+	for _, event := range recorder.Events() {
+		switch event.Boundary {
+		case projectdurable.RunnerShadowBoundaryClaimStarted, projectdurable.RunnerShadowBoundaryReported:
+		default:
+			t.Fatalf("unsafe pre-report metadata should be skipped, got event %#v", event)
+		}
+		if event.SafeSummary != "" {
+			t.Fatalf("unsafe summary should not be stored in shadow event: %#v", event)
+		}
+	}
+}
+
+func TestPhase7UnsafeReportEvidenceRefsSkipShadowButNotAuthoritativeReport(t *testing.T) {
+	recorder := projectdurable.NewInMemoryRunnerShadowRecorder()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1/attempt-result":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusFailed, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/automation-runs/run-1":
+			writeJSON(t, w, projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusFailed, ClaimID: "claim-1", RunnerID: "runner-phase7"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &runnerClient{baseURL: server.URL, http: server.Client(), runnerID: "runner-phase7", heartbeatInterval: time.Hour}
+	run := projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", AutomationID: "automation-1", Status: projectautomation.RunStatusRunning, ClaimID: "claim-1", RunnerID: "runner-phase7"}
+	completedRun, err := completeAttemptAndRecordShadow(t.Context(), client, newRunnerShadowRecorderState(recorder), "project-1", run, projectautomation.CompleteAttemptInput{
+		Status:       projectautomation.RunStatusFailed,
+		EvidenceRefs: []string{"https://example.invalid/raw_prompt"},
+	})
+	if err != nil {
+		t.Fatalf("authoritative report should still succeed when shadow evidence ref is unsafe: %v", err)
+	}
+	if completedRun.Status != projectautomation.RunStatusFailed {
+		t.Fatalf("authoritative completed status mismatch: %#v", completedRun)
+	}
+	if events := recorder.Events(); len(events) != 0 {
+		t.Fatalf("unsafe report evidence ref must not be stored in shadow events: %#v", events)
+	}
+}
+
+func TestPhase7WorkerEnabledPermitsOnlyShadowRunnerRecorder(t *testing.T) {
+	if recorder := newDurableRunnerShadowRecorder(config.DurableWorkflows{Enabled: true, WorkerEnabled: true, ShadowMode: false}); recorder != nil {
+		t.Fatalf("worker_enabled without shadow_mode must not construct authoritative durable runner recorder: %#v", recorder)
+	}
+	if recorder := newDurableRunnerShadowRecorder(config.DurableWorkflows{Enabled: true, WorkerEnabled: true, ShadowMode: true}); recorder == nil {
+		t.Fatal("worker_enabled with shadow_mode should construct optional shadow recorder")
+	}
+}
+
+type failingRunnerShadowRecorder struct{}
+
+func (failingRunnerShadowRecorder) RecordRunnerShadowEvent(context.Context, projectdurable.RunnerShadowEvent) error {
+	return fmt.Errorf("shadow recorder unavailable")
+}
+
+type blockingRunnerShadowRecorder struct{}
+
+func (blockingRunnerShadowRecorder) RecordRunnerShadowEvent(ctx context.Context, _ projectdurable.RunnerShadowEvent) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type contextIgnoringRunnerShadowRecorder struct {
+	started *int32
+}
+
+func (r contextIgnoringRunnerShadowRecorder) RecordRunnerShadowEvent(context.Context, projectdurable.RunnerShadowEvent) error {
+	atomic.AddInt32(r.started, 1)
+	select {}
+}
+
+func runnerShadowBoundaries(events []projectdurable.RunnerShadowEvent) []string {
+	out := make([]string, 0, len(events))
+	for _, event := range events {
+		out = append(out, event.Boundary)
+	}
+	return out
+}
+
+func replaceDurableRunnerShadowRecorder(replacement func(config.DurableWorkflows) projectdurable.RunnerShadowRecorder) func() {
+	previous := newDurableRunnerShadowRecorder
+	newDurableRunnerShadowRecorder = replacement
+	return func() {
+		newDurableRunnerShadowRecorder = previous
 	}
 }
