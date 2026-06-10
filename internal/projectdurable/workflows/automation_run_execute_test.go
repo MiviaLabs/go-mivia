@@ -352,14 +352,8 @@ func runExecutionWorkflow(t *testing.T, h *executionHarness, ports *serviceExecu
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	engine := projectdurable.NewMemoryEngine()
-	defer func() {
-		if err := engine.Close(); err != nil {
-			t.Fatalf("close engine: %v", err)
-		}
-	}()
+	defer cleanupMemoryEngine(t, engine, cancel)
 
 	if err := engine.Orchestrator.RegisterWorkflow(MiviaAutomationRunTestExecutionWorkflow); err != nil {
 		t.Fatalf("register workflow: %v", err)

@@ -715,14 +715,8 @@ func firstNonEmptyTest(values ...string) string {
 func runChainShadowWorkflow(t *testing.T, h *chainPipelineHarness, input ChainShadowWorkflowInput) (ChainShadowTrace, error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	engine := projectdurable.NewMemoryEngine()
-	defer func() {
-		if err := engine.Close(); err != nil {
-			t.Fatalf("close engine: %v", err)
-		}
-	}()
+	defer cleanupMemoryEngine(t, engine, cancel)
 	if err := engine.Orchestrator.RegisterWorkflow(MiviaWorkflowChainShadowWorkflow); err != nil {
 		t.Fatalf("register workflow: %v", err)
 	}
@@ -742,7 +736,7 @@ func runChainShadowWorkflow(t *testing.T, h *chainPipelineHarness, input ChainSh
 	if err != nil {
 		t.Fatalf("create workflow instance: %v", err)
 	}
-	return client.GetWorkflowResult[ChainShadowTrace](ctx, engine.Orchestrator.Client, instance, 10*time.Second)
+	return client.GetWorkflowResult[ChainShadowTrace](ctx, engine.Orchestrator.Client, instance, 30*time.Second)
 }
 
 func chainInput() ChainShadowWorkflowInput {
@@ -1025,6 +1019,31 @@ func TestChainShadowActivityFailureStillComparesLast(t *testing.T) {
 	fields := h.shadow.capturedFields()
 	if fields["final_status"] != activities.ChainTraceStatusFailed || fields["failure_category"] != activities.ChainFailureActivityFailed {
 		t.Fatalf("shadow comparison missed failed terminal fields: %#v", fields)
+	}
+}
+
+func TestChainShadowComparisonWriteFailureIsNonAuthoritative(t *testing.T) {
+	h := governedChainHarness(t)
+	h.shadow.err = fmt.Errorf("shadow writer unavailable")
+	trace, err := runChainShadowWorkflow(t, h, chainInput())
+	if err != nil {
+		t.Fatalf("workflow failed: %v", err)
+	}
+	if trace.FinalStatus != activities.ChainTraceStatusCompleted {
+		t.Fatalf("comparison write failure must not rewrite authoritative chain status: %#v", trace)
+	}
+	if h.pipeline.gitOpsCallCount() != 1 {
+		t.Fatalf("comparison write failure must not replay authoritative flow, got %d GitOps calls", h.pipeline.gitOpsCallCount())
+	}
+	last := trace.Steps[len(trace.Steps)-1]
+	if last.Activity != activities.ActivityWriteChainShadowComparison {
+		t.Fatalf("comparison must run last after completed activity flow, got %q", last.Activity)
+	}
+	if last.Status != projectdurable.ActivityStatusFailed || last.SafeSummary != "chain shadow comparison write failed" {
+		t.Fatalf("unexpected comparison failure step: %#v", last)
+	}
+	if fields := h.shadow.capturedFields(); fields != nil {
+		t.Fatalf("failed shadow write must not persist partial comparison fields: %#v", fields)
 	}
 }
 

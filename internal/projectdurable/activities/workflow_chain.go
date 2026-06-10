@@ -265,7 +265,7 @@ func (a *WorkflowChainActivities) WriteChainShadowComparison(ctx context.Context
 		}
 	}
 	if err := a.Shadow.WriteShadowComparison(ctx, runRef, fields); err != nil {
-		return projectdurable.DurableActivityResult{}, fmt.Errorf("write chain shadow comparison failed")
+		return newResult(ActivityWriteChainShadowComparison, projectdurable.ActivityStatusFailed, projectdurable.FailureCategoryNone, "chain shadow comparison write failed", nil)
 	}
 	return newResult(ActivityWriteChainShadowComparison, projectdurable.ActivityStatusOK, projectdurable.FailureCategoryNone, "chain shadow comparison written", []string{"shadow-fields:" + strconv.Itoa(len(fields))})
 }

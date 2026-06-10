@@ -59,11 +59,15 @@ type fakeShadowWriter struct {
 	calls   int
 	lastRef projectdurable.SafeAutomationRunRef
 	fields  map[string]string
+	err     error
 }
 
 func (f *fakeShadowWriter) WriteShadowComparison(_ context.Context, runRef projectdurable.SafeAutomationRunRef, fields map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
 	f.calls++
 	f.lastRef = runRef
 	copied := make(map[string]string, len(fields))
@@ -151,14 +155,8 @@ func runShadowWorkflow(t *testing.T, input AutomationRunWorkflowInput, runs *fak
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	engine := projectdurable.NewMemoryEngine()
-	defer func() {
-		if err := engine.Close(); err != nil {
-			t.Fatalf("close engine: %v", err)
-		}
-	}()
+	defer cleanupMemoryEngine(t, engine, cancel)
 
 	if err := engine.Orchestrator.RegisterWorkflow(MiviaAutomationRunShadowWorkflow); err != nil {
 		t.Fatalf("register workflow: %v", err)
@@ -182,6 +180,17 @@ func runShadowWorkflow(t *testing.T, input AutomationRunWorkflowInput, runs *fak
 	}
 
 	return client.GetWorkflowResult[ShadowRunTrace](ctx, engine.Orchestrator.Client, instance, 10*time.Second)
+}
+
+func cleanupMemoryEngine(t *testing.T, engine *projectdurable.Engine, cancel context.CancelFunc) {
+	t.Helper()
+	cancel()
+	if err := engine.Orchestrator.WaitForCompletion(); err != nil {
+		t.Fatalf("wait for orchestrator completion: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("close engine: %v", err)
+	}
 }
 
 func findStep(t *testing.T, trace ShadowRunTrace, activity string) projectdurable.DurableActivityResult {

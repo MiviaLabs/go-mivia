@@ -116,14 +116,8 @@ func scenarioDurable(t *testing.T) parityOutcome {
 	shadow := &parityShadowWriter{}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	engine := projectdurable.NewMemoryEngine()
-	defer func() {
-		if err := engine.Close(); err != nil {
-			t.Fatalf("close engine: %v", err)
-		}
-	}()
+	defer cleanupMemoryEngine(t, engine, cancel)
 	if err := engine.Orchestrator.RegisterWorkflow(workflows.MiviaAutomationRunTestExecutionWorkflow); err != nil {
 		t.Fatalf("register workflow: %v", err)
 	}
@@ -157,6 +151,17 @@ func scenarioDurable(t *testing.T) parityOutcome {
 		t.Fatalf("durable trace final status = %q, want verifying", trace.FinalStatus)
 	}
 	return h.observe(t)
+}
+
+func cleanupMemoryEngine(t *testing.T, engine *projectdurable.Engine, cancel context.CancelFunc) {
+	t.Helper()
+	cancel()
+	if err := engine.Orchestrator.WaitForCompletion(); err != nil {
+		t.Fatalf("wait for orchestrator completion: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("close engine: %v", err)
+	}
 }
 
 // parityCompletionInput is the shared neutral completion report both paths
