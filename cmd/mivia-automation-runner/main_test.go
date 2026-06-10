@@ -239,6 +239,17 @@ func TestGitOpsFailureEvidenceRefsAlwaysNameClassifiedFailure(t *testing.T) {
 	}
 }
 
+func TestGitOpsFailureEvidenceRefsPreserveDownstreamCheckDetail(t *testing.T) {
+	err := fmt.Errorf("%w: fail:affected_lint", projectgitops.ErrDownstreamChecks)
+	if got := gitOpsFailureCategoryForRunner(err); got != "gitops_downstream_checks_failed_fail_affected_lint" {
+		t.Fatalf("expected downstream check category detail, got %q", got)
+	}
+	refs := gitOpsFailureEvidenceRefs(err)
+	if strings.Join(refs, ",") != "gitops-failure:gitops_downstream_checks_failed_fail_affected_lint" {
+		t.Fatalf("expected downstream check failure evidence ref, got %+v", refs)
+	}
+}
+
 func TestGitOpsFailureCategoryForRunnerDoesNotExposeUnclassifiedPostTask(t *testing.T) {
 	for name, err := range map[string]error{
 		"bare":         errors.New(""),
