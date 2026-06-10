@@ -11108,6 +11108,75 @@ func TestClaimNextRunRequeuesExhaustedGitOpsVerificationFailureAfterRestart(t *t
 	}
 }
 
+func TestClaimNextRunRequeuesExhaustedGitOpsDownstreamCheckFailureAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	failureCategory := "gitops_downstream_checks_failed_fail_affected_lint"
+	task := readyTask("task-a", "a", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.EvidenceRefs = []string{"implementation/evidence", "github-pr-123", "gitops-failure:" + failureCategory}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:              "run-a",
+		ProjectID:       automation.ProjectID,
+		AutomationID:    automation.ID,
+		AgentID:         automation.AgentID,
+		PlanID:          task.PlanID,
+		TaskID:          task.ID,
+		WorkTaskStatus:  task.Status,
+		Status:          RunStatusFailed,
+		RunnerKind:      RunnerKindCodexCLI,
+		AttemptCount:    defaultAutomationMaxRetries,
+		SafeSummary:     RunSafeSummaryGitOpsPostTaskRecovery,
+		FailureCategory: "gitops_post_task_failed_runner_post_task",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	claimed, err := svc.ClaimNextRun(ctx, ClaimNextRunInput{ProjectID: automation.ProjectID, RunnerKind: RunnerKindCodexCLI})
+	if err != nil {
+		t.Fatalf("ClaimNextRun returned error: %v", err)
+	}
+	if claimed.Run.ID == "run-a" || claimed.Run.TaskID != task.ID || claimed.Run.Status != RunStatusRunning {
+		t.Fatalf("expected downstream-check repair replacement run, got %+v", claimed.Run)
+	}
+	exhausted, err := store.GetRun(ctx, automation.ProjectID, "run-a")
+	if err != nil {
+		t.Fatalf("GetRun returned error: %v", err)
+	}
+	if exhausted.Status != RunStatusFailed || exhausted.FailureCategory != "gitops_recovery_failed_requires_downstream_checks" || !strings.Contains(exhausted.SafeSummary, failureCategory) {
+		t.Fatalf("expected exhausted run to preserve downstream check failure for repair, got %+v", exhausted)
+	}
+	requeuedTask := fake.tasks[task.ID]
+	if requeuedTask.Status != projectworkplan.WorkTaskStatusInProgress || requeuedTask.ClaimedByRunID != claimed.Run.ID {
+		t.Fatalf("expected downstream-check repair run to claim task, task=%+v run=%+v", requeuedTask, claimed.Run)
+	}
+	if !contains(requeuedTask.EvidenceRefs, "gitops-failure:"+failureCategory) || !contains(requeuedTask.EvidenceRefs, "github-pr-123") {
+		t.Fatalf("expected downstream-check repair task to retain PR and failure evidence, got %+v", requeuedTask.EvidenceRefs)
+	}
+	prompt := RenderCodexTaskPrompt(claimed.CodexInput)
+	for _, want := range []string{
+		"bounded downstream-check repair run",
+		"failed GitHub check",
+		"post_pr_checks",
+		failureCategory,
+		"unrelated feature behavior",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected downstream-check prompt to contain %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestResetGitOpsRecoveryReopensBlockedRecoveryRun(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
