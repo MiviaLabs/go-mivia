@@ -898,7 +898,7 @@ func (svc *Service) CarryForwardStageOutputTasksForShadow(ctx context.Context, p
 	if err != nil {
 		return err
 	}
-	return svc.carryForwardStageOutputTasks(ctx, cfg.ProjectID, run, compiled)
+	return svc.carryForwardStageOutputTasksWithOptions(ctx, cfg.ProjectID, run, compiled, carryForwardOptions{allowDoneSourceTasks: true})
 }
 
 // ReleaseCompiledTasksForShadow exposes the current release helper for the
@@ -1072,7 +1072,15 @@ func (svc *Service) activateCompiledStage(ctx context.Context, cfg Config, run C
 	return nil
 }
 
+type carryForwardOptions struct {
+	allowDoneSourceTasks bool
+}
+
 func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID string, run ChainRun, compiled projectworkflow.WorkflowCompileResult) error {
+	return svc.carryForwardStageOutputTasksWithOptions(ctx, projectID, run, compiled, carryForwardOptions{})
+}
+
+func (svc *Service) carryForwardStageOutputTasksWithOptions(ctx context.Context, projectID string, run ChainRun, compiled projectworkflow.WorkflowCompileResult, opts carryForwardOptions) error {
 	if svc.workPlans == nil || compiled.WorkPlanID == "" || len(run.StageRuns) == 0 {
 		return nil
 	}
@@ -1114,19 +1122,19 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 		if strings.TrimSpace(task.TaskRef) != "" {
 			sourceRefs[task.TaskRef] = struct{}{}
 		}
-		if chainStageOutputTaskCandidate(task, compiledTaskIDs) &&
+		if chainStageOutputTaskCandidate(task, compiledTaskIDs, opts) &&
 			task.Status != projectworkplan.WorkTaskStatusPlanned &&
 			task.Status != projectworkplan.WorkTaskStatusReady &&
-			task.Status != projectworkplan.WorkTaskStatusDone {
+			!(opts.allowDoneSourceTasks && task.Status == projectworkplan.WorkTaskStatusDone) {
 			return fmt.Errorf("%w: non_ready_carried_implementation_task_%s", ErrInvalidInput, safeAutomationToken(task.Status))
 		}
-		if chainStageOutputTaskCandidate(task, compiledTaskIDs) && !chainStageOutputTaskHasReviewProof(task) {
+		if chainStageOutputTaskCandidate(task, compiledTaskIDs, opts) && !chainStageOutputTaskHasReviewProof(task) {
 			return fmt.Errorf("%w: unreviewed_carried_implementation_task", ErrInvalidInput)
 		}
 	}
 	carriedCount := 0
 	carriedBySourceRef := map[string]string{}
-	carriedSourceTasks := chainStageOutputTasksInDependencyOrder(sourceTasks, compiledTaskIDs)
+	carriedSourceTasks := chainStageOutputTasksInDependencyOrder(sourceTasks, compiledTaskIDs, opts)
 	for _, task := range carriedSourceTasks {
 		carriedCount++
 		if existing, exists := existingTasksByRef[task.TaskRef]; exists {
@@ -1167,10 +1175,10 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 	return nil
 }
 
-func chainStageOutputTasksInDependencyOrder(tasks []projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}) []projectworkplan.WorkTask {
+func chainStageOutputTasksInDependencyOrder(tasks []projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}, opts carryForwardOptions) []projectworkplan.WorkTask {
 	eligibleByRef := map[string]projectworkplan.WorkTask{}
 	for _, task := range tasks {
-		if !chainStageOutputTask(task, compiledTaskIDs) {
+		if !chainStageOutputTask(task, compiledTaskIDs, opts) {
 			continue
 		}
 		if strings.TrimSpace(task.ID) != "" {
@@ -1200,7 +1208,7 @@ func chainStageOutputTasksInDependencyOrder(tasks []projectworkplan.WorkTask, co
 		ordered = append(ordered, task)
 	}
 	for _, task := range tasks {
-		if chainStageOutputTask(task, compiledTaskIDs) {
+		if chainStageOutputTask(task, compiledTaskIDs, opts) {
 			visit(task)
 		}
 	}
@@ -1328,21 +1336,21 @@ func safeAutomationToken(value string) string {
 	return out
 }
 
-func chainStageOutputTask(task projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}) bool {
-	if !chainStageOutputTaskCandidate(task, compiledTaskIDs) {
+func chainStageOutputTask(task projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}, opts carryForwardOptions) bool {
+	if !chainStageOutputTaskCandidate(task, compiledTaskIDs, opts) {
 		return false
 	}
 	return (task.Status == projectworkplan.WorkTaskStatusPlanned ||
 		task.Status == projectworkplan.WorkTaskStatusReady ||
-		task.Status == projectworkplan.WorkTaskStatusDone) &&
+		(opts.allowDoneSourceTasks && task.Status == projectworkplan.WorkTaskStatusDone)) &&
 		chainStageOutputTaskHasReviewProof(task)
 }
 
-func chainStageOutputTaskCandidate(task projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}) bool {
+func chainStageOutputTaskCandidate(task projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}, opts carryForwardOptions) bool {
 	if _, compiled := compiledTaskIDs[task.ID]; compiled {
 		return false
 	}
-	if task.Status == projectworkplan.WorkTaskStatusFailed || task.Status == projectworkplan.WorkTaskStatusCancelled || task.Status == projectworkplan.WorkTaskStatusSuperseded {
+	if (!opts.allowDoneSourceTasks && task.Status == projectworkplan.WorkTaskStatusDone) || task.Status == projectworkplan.WorkTaskStatusFailed || task.Status == projectworkplan.WorkTaskStatusCancelled || task.Status == projectworkplan.WorkTaskStatusSuperseded {
 		return false
 	}
 	if strings.TrimSpace(task.TaskRef) == "" || strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-") {

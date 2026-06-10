@@ -568,11 +568,11 @@ func TestChainStageOutputTaskRejectsUnreviewedDecompositionChild(t *testing.T) {
 		FilesToEdit:          []string{"internal/projectworkflowchain/service.go"},
 		DecompositionQuality: projectworkplan.DecompositionReady,
 	}
-	if chainStageOutputTask(task, map[string]struct{}{}) {
+	if chainStageOutputTask(task, map[string]struct{}{}, carryForwardOptions{}) {
 		t.Fatal("unreviewed decomposition child must not be eligible for implementation carry-forward")
 	}
 	task.ReviewResultRefs = []string{"review:planning-readiness-approved"}
-	if !chainStageOutputTask(task, map[string]struct{}{}) {
+	if !chainStageOutputTask(task, map[string]struct{}{}, carryForwardOptions{}) {
 		t.Fatal("reviewed decomposition child should be eligible for implementation carry-forward")
 	}
 }
@@ -794,6 +794,60 @@ func TestAdvancingStageBackfillsAutomationForExistingCarriedImplementationTask(t
 	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
 	if err != nil || run.StageRuns[1].Status != StageStatusQueued {
 		t.Fatalf("expected queued implementation stage, run=%#v err=%v", run, err)
+	}
+}
+
+func TestProductionCarryForwardIgnoresDoneSourceOutputTasks(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	doneOutput := projectworkplan.WorkTask{
+		ID:                      "done-output-task",
+		ProjectID:               "project-1",
+		PlanID:                  "plan-decomposition",
+		TaskRef:                 "implementation-output",
+		Title:                   "Implementation Output",
+		Status:                  projectworkplan.WorkTaskStatusDone,
+		OwnerAgent:              "developer",
+		FilesToEdit:             []string{"internal/output.go"},
+		VerificationRequirement: "focused verifier",
+		DecompositionQuality:    projectworkplan.DecompositionReady,
+		ReviewResultRefs:        []string{"review:done-output"},
+		VerifierResultRefs:      []string{"verifier:done-output"},
+		EvidenceRefs:            []string{"evidence:done-output"},
+	}
+	workPlans := &fakeWorkPlans{
+		openTasksByPlan: map[string][]projectworkplan.WorkTask{
+			"plan-decomposition": {
+				{ID: "task-decomposition", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "decompose-work-plan", Status: projectworkplan.WorkTaskStatusDone},
+				doneOutput,
+			},
+			"plan-implementation": {
+				{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
+			},
+		},
+	}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	err = svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone})
+	if err == nil || !strings.Contains(err.Error(), "missing_carried_implementation_tasks") {
+		t.Fatalf("expected production path to ignore done source output tasks, got %v", err)
+	}
+	if len(workPlans.createdTasks) != 0 {
+		t.Fatalf("production path must not carry done source output tasks, got %#v", workPlans.createdTasks)
+	}
+	run, getErr := svc.Get(ctx, "project-1", result.ChainRunID)
+	if getErr != nil {
+		t.Fatalf("get chain: %v", getErr)
+	}
+	implementation := chainStageRunByRef(t, run, "implementation")
+	if implementation.Status != StageStatusBlocked || implementation.BlockedReason != "activate_next_stage_failed" {
+		t.Fatalf("implementation stage should block without carrying done source tasks: %#v", implementation)
 	}
 }
 
