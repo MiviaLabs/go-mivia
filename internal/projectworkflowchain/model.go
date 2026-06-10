@@ -30,8 +30,9 @@ const (
 )
 
 const (
-	InputKindJiraIssueKey = "jira_issue_key"
-	InputKindSafeRef      = "safe_ref"
+	InputKindJiraIssueKey  = "jira_issue_key"
+	InputKindObjectiveText = "objective_text"
+	InputKindSafeRef       = "safe_ref"
 
 	ContextProviderJira        = "jira"
 	ContextProviderConfluence  = "confluence"

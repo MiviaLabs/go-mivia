@@ -25,9 +25,9 @@ func validateConfig(cfg Config) error {
 	}
 	inputKind := firstNonEmpty(cfg.InputKind, InputKindSafeRef)
 	switch inputKind {
-	case InputKindJiraIssueKey, InputKindSafeRef:
+	case InputKindJiraIssueKey, InputKindObjectiveText, InputKindSafeRef:
 	default:
-		return fmt.Errorf("%w: input_kind must be %q or %q", ErrInvalidInput, InputKindJiraIssueKey, InputKindSafeRef)
+		return fmt.Errorf("%w: input_kind must be %q, %q, or %q", ErrInvalidInput, InputKindJiraIssueKey, InputKindObjectiveText, InputKindSafeRef)
 	}
 	if err := validateInputPattern(cfg.InputPattern); err != nil {
 		return err
@@ -200,6 +200,15 @@ func normalizeInputRef(cfg Config, inputText string) (string, error) {
 			return "", err
 		}
 		return "input:" + ref, nil
+	case InputKindObjectiveText:
+		ref, err := safeRef(value, "input_text")
+		if err != nil {
+			return "", err
+		}
+		if !strings.HasPrefix(ref, "objective:") {
+			return "", fmt.Errorf("%w: input_text must be a normalized objective ref", ErrInvalidInput)
+		}
+		return ref, nil
 	default:
 		return "", fmt.Errorf("%w: unsupported input_kind", ErrInvalidInput)
 	}

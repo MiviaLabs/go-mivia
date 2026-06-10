@@ -34,6 +34,9 @@ Logging:
 Testing:
 
 - Unit tests first for config, health checks, redaction, state transitions, and migration runners.
+- New or changed service behavior must include tests in the same change. Default expectation: table-driven unit tests for local logic plus handler/store/contract/integration-style tests for the production boundary that exposes or persists the behavior.
+- Public APIs, MCP tools, config parsing, stores, migrations, background jobs, automation runners, redaction paths, and state machines must cover happy path, invalid input, missing input, permission/privacy negative cases when applicable, persistence side effects, idempotency/retry behavior when applicable, and stable error/category shape.
+- Boundary-crossing behavior must not be accepted with helper-only tests. If the behavior crosses HTTP, MCP, database, filesystem, queue, config, process, generated artifact, or external-provider adapter boundaries, add an opt-in integration or contract test using approved local fakes or local services.
 - Bug fixes must add the narrowest focused regression test first when feasible, naming the failing behavior instead of only covering the patched helper.
 - Regression tests must exercise the public boundary or smallest stable internal contract that proves the bug, not a mocked path that can pass while the bug remains.
 - Automation, workflow, GitOps, verifier, runner, and closeout packages require broad contract tests for any changed behavior. Cover valid flow, invalid input, retry/recovery, terminal failure, stale state, dirty worktree, generated-artifact drift, concurrent or out-of-order completion, and downstream handoff shape before accepting the implementation.

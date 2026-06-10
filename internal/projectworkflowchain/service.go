@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	"github.com/MiviaLabs/go-mivia/internal/projectdurable"
 	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
@@ -108,6 +109,19 @@ func (svc *Service) SetAutomationAPI(automations AutomationAPI) {
 
 func (svc *Service) SetLocalContextReader(reader LocalContextReader) {
 	svc.localContexts = reader
+}
+
+func (svc *Service) StartGovernedIntake(ctx context.Context, req projectdurable.DurableIntakeRequest, input StartInput) (StartResult, error) {
+	intake, err := projectdurable.NormalizeIntake(req)
+	if err != nil {
+		return StartResult{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if strings.TrimSpace(input.ProjectID) != "" && strings.TrimSpace(input.ProjectID) != intake.ProjectID {
+		return StartResult{}, fmt.Errorf("%w: project_id mismatch", ErrInvalidInput)
+	}
+	input.ProjectID = intake.ProjectID
+	input.InputText = intake.InputRef
+	return svc.Start(ctx, input)
 }
 
 func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, error) {
@@ -213,7 +227,7 @@ func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, e
 		run.NextAction = "chain blocked while activating first stage"
 		if len(run.StageRuns) > 0 {
 			run.StageRuns[0].Status = StageStatusBlocked
-			run.StageRuns[0].BlockedReason = "activate_first_stage_failed"
+			run.StageRuns[0].BlockedReason = activationBlockedReason("activate_first_stage_failed", err)
 		}
 		run.UpdatedAt = svc.now()
 		_, _ = svc.store.UpdateChainRun(ctx, run)
@@ -399,7 +413,7 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 			for i := range run.StageRuns {
 				if run.StageRuns[i].StageRef == next.StageRef {
 					run.StageRuns[i].Status = StageStatusBlocked
-					run.StageRuns[i].BlockedReason = "activate_next_stage_failed"
+					run.StageRuns[i].BlockedReason = activationBlockedReason("activate_next_stage_failed", err)
 				}
 			}
 			run.UpdatedAt = svc.now()
@@ -1607,10 +1621,33 @@ func contextRefsForInput(cfg Config, inputRef string) []string {
 	case ContextProviderConfluence:
 		return []string{"confluence:" + strings.TrimPrefix(inputRef, "input:")}
 	case ContextProviderIndexedRepo:
+		if strings.HasPrefix(inputRef, "objective:") {
+			objectiveRef := strings.TrimPrefix(inputRef, "objective:")
+			return []string{"objective-context:" + objectiveRef, "repo-context:" + objectiveRef}
+		}
 		return []string{"repo:" + strings.TrimPrefix(inputRef, "input:")}
 	default:
 		return nil
 	}
+}
+
+func activationBlockedReason(prefix string, err error) string {
+	prefix = safeAutomationToken(prefix)
+	if prefix == "" {
+		prefix = "activation_failed"
+	}
+	if err == nil {
+		return prefix
+	}
+	reason := strings.TrimSpace(err.Error())
+	if idx := strings.LastIndex(reason, ":"); idx >= 0 {
+		reason = strings.TrimSpace(reason[idx+1:])
+	}
+	reason = safeAutomationToken(reason)
+	if reason == "" {
+		return prefix
+	}
+	return prefix + "_" + reason
 }
 
 func validateJiraTicketContext(issueKey string, result projectintegrations.RichContentReadResult) error {

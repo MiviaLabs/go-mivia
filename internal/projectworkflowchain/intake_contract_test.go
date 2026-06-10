@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MiviaLabs/go-mivia/internal/projectdurable"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 )
 
@@ -97,6 +98,116 @@ func TestPhase0BGovernedJiraIntakeCreatesRealRunWithLocalContextRefs(t *testing.
 	}
 	if len(workPlans.activations) != 1 || workPlans.activations[0] != "plan-decomposition" {
 		t.Fatalf("expected first stage activation, got %#v", workPlans.activations)
+	}
+}
+
+func TestPhase8BV2JiraGovernedIntakeCreatesRealRunWithLocalContextRefs(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	reader := &phase0BLocalContextReader{result: localJiraContext("PROJ-1044", true)}
+	svc := New(store, workflows, workPlans, []Config{phase0BJiraIntakeConfig()})
+	svc.SetLocalContextReader(reader)
+	svc.newID = deterministicIDs("workflow_chain_run_phase8b_jira")
+
+	result, err := svc.StartGovernedIntake(ctx, projectdurable.DurableIntakeRequest{
+		ProjectID: "project-1",
+		Kind:      projectdurable.IntakeKindJiraIssueKey,
+		TicketKey: "jira:PROJ-1044",
+	}, StartInput{
+		ChainRef:       "phase0b-PROJ-chain",
+		CreatedByRunID: "phase8b-jira-run",
+		TraceID:        "phase8b-jira-trace",
+	})
+	if err != nil {
+		t.Fatalf("start governed Jira intake: %v", err)
+	}
+	if result.ChainRunID == "" || result.Status != ChainStatusQueued || result.InputRef != "jira:PROJ-1044" {
+		t.Fatalf("unexpected governed Jira start result: %#v", result)
+	}
+	for _, ref := range phase0BJiraContextRefs("PROJ-1044") {
+		if !containsString(result.ContextRefs, ref) {
+			t.Fatalf("governed Jira start missing context ref %q: %#v", ref, result.ContextRefs)
+		}
+	}
+	if len(reader.reads) != 1 || reader.reads[0].Provider != projectintegrations.ProviderJira || reader.reads[0].ItemIDOrKey != "PROJ-1044" {
+		t.Fatalf("expected exactly one local Jira read, got %#v", reader.reads)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get governed Jira chain run: %v", err)
+	}
+	if run.InputRef != "jira:PROJ-1044" || run.CreatedByRunID != "phase8b-jira-run" || run.TraceID != "phase8b-jira-trace" {
+		t.Fatalf("governed Jira run lost intake metadata: %#v", run)
+	}
+	if len(workPlans.activations) != 1 || workPlans.activations[0] != "plan-decomposition" {
+		t.Fatalf("expected first stage activation, got %#v", workPlans.activations)
+	}
+}
+
+func TestPhase8BV2ObjectiveTextIntakeCreatesRealRunWithoutPersistingRawObjective(t *testing.T) {
+	ctx := context.Background()
+	rawObjective := "Create one bounded objective intake smoke note."
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{phase8BObjectiveIntakeConfig()})
+	svc.newID = deterministicIDs("workflow_chain_run_phase8b")
+
+	result, err := svc.StartGovernedIntake(ctx, projectdurable.DurableIntakeRequest{
+		ProjectID:          "project-1",
+		Kind:               projectdurable.IntakeKindObjectiveText,
+		ObjectiveText:      rawObjective,
+		ObjectiveTitleHint: "objective smoke intake",
+	}, StartInput{
+		ChainRef:       "phase8b-objective-chain",
+		CreatedByRunID: "phase8b-run",
+		TraceID:        "phase8b-trace",
+	})
+	if err != nil {
+		t.Fatalf("start governed objective intake: %v", err)
+	}
+	if !strings.HasPrefix(result.InputRef, "objective:") || result.Status != ChainStatusQueued {
+		t.Fatalf("unexpected governed objective start result: %#v", result)
+	}
+	objectiveRef := strings.TrimPrefix(result.InputRef, "objective:")
+	for _, ref := range []string{"objective-context:" + objectiveRef, "repo-context:" + objectiveRef} {
+		if !containsString(result.ContextRefs, ref) {
+			t.Fatalf("governed objective start missing context ref %q: %#v", ref, result.ContextRefs)
+		}
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get governed objective chain run: %v", err)
+	}
+	if run.InputRef != result.InputRef || strings.Contains(run.InputRef, rawObjective) || strings.Contains(run.NextAction, rawObjective) {
+		t.Fatalf("governed objective run persisted raw objective or lost deterministic ref: %#v", run)
+	}
+	for _, compileInput := range workflows.compileInputs {
+		if compileInput.UserRequestRef != result.InputRef {
+			t.Fatalf("compile input lost objective ref: %#v", compileInput)
+		}
+		if strings.Contains(compileInput.TitleOverride, rawObjective) {
+			t.Fatalf("compile title persisted raw objective: %#v", compileInput)
+		}
+	}
+
+	duplicate, err := svc.StartGovernedIntake(ctx, projectdurable.DurableIntakeRequest{
+		ProjectID:          "project-1",
+		Kind:               projectdurable.IntakeKindObjectiveText,
+		ObjectiveText:      rawObjective,
+		ObjectiveTitleHint: "objective smoke intake",
+	}, StartInput{
+		ChainRef:       "phase8b-objective-chain",
+		CreatedByRunID: "phase8b-run",
+		TraceID:        "phase8b-trace",
+	})
+	if err != nil {
+		t.Fatalf("duplicate governed objective intake: %v", err)
+	}
+	if duplicate.ChainRunID != result.ChainRunID {
+		t.Fatalf("duplicate governed objective start created a second run: first=%#v duplicate=%#v", result, duplicate)
 	}
 }
 
@@ -280,6 +391,17 @@ func phase0BJiraIntakeConfig() Config {
 	cfg := localIngestedTestConfig()
 	cfg.ChainRef = "phase0b-PROJ-chain"
 	cfg.InputPattern = "^PROJ-[0-9]+$"
+	cfg.DefaultTitleTemplate = "{{input_ref}} governed delivery"
+	return cfg
+}
+
+func phase8BObjectiveIntakeConfig() Config {
+	cfg := testConfig()
+	cfg.ChainRef = "phase8b-objective-chain"
+	cfg.InputKind = InputKindObjectiveText
+	cfg.InputPattern = ""
+	cfg.ContextProvider = ContextProviderIndexedRepo
+	cfg.ContextMode = ContextModeIndexed
 	cfg.DefaultTitleTemplate = "{{input_ref}} governed delivery"
 	return cfg
 }

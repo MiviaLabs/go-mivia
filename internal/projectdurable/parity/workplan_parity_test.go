@@ -66,6 +66,22 @@ func TestPhase8WorkPlanParityScenarios(t *testing.T) {
 				requireRefs(t, s.WorkTasks[0].ArtifactRefs, "parallel:conflict", "verifier:missing-ladder")
 			},
 		},
+		{
+			name: "parallel-batch-non-disjoint-promotion-blocked",
+			mutate: func(s *Snapshot) {
+				s.KnownRefs = append(s.KnownRefs, "parallel:non-disjoint-promotion", "knowledge:shared-candidate")
+				s.Automation.Status = "blocked"
+				s.WorkPlan.Status = "blocked"
+				s.WorkPlan.SafeNextAction = "split non disjoint knowledge promotion before retry"
+				s.WorkTasks[0].Status = "blocked"
+				s.WorkTasks[0].ArtifactRefs = append(s.WorkTasks[0].ArtifactRefs, "parallel:non-disjoint-promotion")
+				s.Knowledge.Refs = []string{"knowledge:shared-candidate"}
+			},
+			assert: func(t *testing.T, s Snapshot) {
+				requireRefs(t, s.WorkTasks[0].ArtifactRefs, "parallel:non-disjoint-promotion")
+				requireRefs(t, s.Knowledge.Refs, "knowledge:shared-candidate")
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

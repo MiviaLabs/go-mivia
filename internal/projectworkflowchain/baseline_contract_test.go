@@ -44,8 +44,9 @@ func TestBaselineWorkflowChainContract(t *testing.T) {
 
 	assertExactSet(t, "input kinds", []string{
 		InputKindJiraIssueKey,
+		InputKindObjectiveText,
 		InputKindSafeRef,
-	}, []string{"jira_issue_key", "safe_ref"})
+	}, []string{"jira_issue_key", "objective_text", "safe_ref"})
 
 	assertExactSet(t, "context providers", []string{
 		ContextProviderJira,
@@ -348,10 +349,7 @@ func TestBaselineChainRecordsCompiledStageWithPlannedPlanAndNoQueuedRuns(t *test
 	if !containsString(run.WorkPlanIDs, "plan-implementation") || !containsString(run.AutomationIDs, "automation-implementation") {
 		t.Fatalf("orphan chain run must keep compiled plan/automation refs: %#v", run)
 	}
-	// Old-system gap: V2 must persist exact checkpoint metadata instead. See parity row "Stage activation reliability".
-	// The persisted blocked_reason is the generic "activate_next_stage_failed"; the real root cause
-	// (missing_carried_implementation_tasks) only travels in the returned error and is never persisted.
-	if run.Status != ChainStatusBlocked || implementation.Status != StageStatusBlocked || implementation.BlockedReason != "activate_next_stage_failed" {
+	if run.Status != ChainStatusBlocked || implementation.Status != StageStatusBlocked || implementation.BlockedReason != "activate_next_stage_failed_missing_carried_implementation_tasks" {
 		t.Fatalf("orphan compiled stage lost exact blocked status/reason: %#v", run)
 	}
 	if run.NextAction != "chain blocked while activating next stage" {

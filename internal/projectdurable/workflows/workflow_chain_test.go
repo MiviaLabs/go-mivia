@@ -867,8 +867,11 @@ func TestChainShadowWholePipelineObjectiveRefJourney(t *testing.T) {
 	}
 	assertWholeChainShadowJourney(t, h, trace, intake.InputRef)
 	contextRefs := h.pipeline.compiled["decomposition"].ContextRefs
-	if !containsStringTest(contextRefs, "repo:"+intake.InputRef) {
-		t.Fatalf("objective shadow compile missing hashed repo context ref: %#v", contextRefs)
+	objectiveRef := strings.TrimPrefix(intake.InputRef, "objective:")
+	for _, ref := range []string{"objective-context:" + objectiveRef, "repo-context:" + objectiveRef} {
+		if !containsStringTest(contextRefs, ref) {
+			t.Fatalf("objective shadow compile missing context ref %q: %#v", ref, contextRefs)
+		}
 	}
 	fields := h.shadow.capturedFields()
 	for key, value := range fields {

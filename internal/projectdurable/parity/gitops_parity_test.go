@@ -65,6 +65,77 @@ func TestPhase8GitOpsParityScenarios(t *testing.T) {
 			},
 		},
 		{
+			name: "bootstrap-autofix-and-before-pr-refs-precede-draft-pr-handoff",
+			mutate: func(s *Snapshot) {
+				s.KnownRefs = append(s.KnownRefs,
+					"gitops:bootstrap",
+					"gitops:autofix",
+					"gitops:always-before-pr",
+					"verifier:bootstrap",
+					"evidence:bootstrap",
+				)
+				s.WorkTasks[0].VerifierRefs = append(s.WorkTasks[0].VerifierRefs, "verifier:bootstrap")
+				s.WorkTasks[0].EvidenceRefs = append(s.WorkTasks[0].EvidenceRefs, "evidence:bootstrap")
+				s.WorkTasks[0].ArtifactRefs = append(s.WorkTasks[0].ArtifactRefs,
+					"gitops:bootstrap",
+					"gitops:autofix",
+					"gitops:always-before-pr",
+				)
+				s.GitOps.Refs = []string{
+					"gitops:bootstrap",
+					"gitops:autofix",
+					"gitops:always-before-pr",
+					"gitops:commit",
+					"gitops:push",
+					"gitops:pr",
+				}
+				s.Chain.PullRequestRefs = []string{"pr:draft-1"}
+			},
+			assert: func(t *testing.T, s Snapshot) {
+				requireRefs(t, s.WorkTasks[0].VerifierRefs, "verifier:bootstrap")
+				requireRefs(t, s.WorkTasks[0].EvidenceRefs, "evidence:bootstrap")
+				requireRefs(t, s.WorkTasks[0].ArtifactRefs,
+					"gitops:bootstrap",
+					"gitops:autofix",
+					"gitops:always-before-pr",
+				)
+				requireRefs(t, s.GitOps.Refs,
+					"gitops:bootstrap",
+					"gitops:autofix",
+					"gitops:always-before-pr",
+					"gitops:commit",
+					"gitops:push",
+					"gitops:pr",
+				)
+				requireRefs(t, s.Chain.PullRequestRefs, "pr:draft-1")
+			},
+		},
+		{
+			name: "generated-artifact-drift-blocks-before-pr",
+			mutate: func(s *Snapshot) {
+				s.KnownRefs = append(s.KnownRefs, "gitops:generated-artifact-drift", "artifact:generated-check")
+				s.Automation.Status = "blocked"
+				s.WorkPlan.Status = "blocked"
+				s.WorkPlan.SafeNextAction = "repair generated artifact drift before draft pr"
+				s.WorkTasks[0].Status = "blocked"
+				s.WorkTasks[0].ArtifactRefs = append(s.WorkTasks[0].ArtifactRefs, "artifact:generated-check")
+				s.GitOps.Refs = nil
+				s.GitOps.FailureCategories = []string{"gitops:generated-artifact-drift"}
+				s.Chain.GitOpsReady = false
+				s.Chain.PullRequestRefs = nil
+			},
+			assert: func(t *testing.T, s Snapshot) {
+				requireRefs(t, s.WorkTasks[0].ArtifactRefs, "artifact:generated-check")
+				requireRefs(t, s.GitOps.FailureCategories, "gitops:generated-artifact-drift")
+				if len(s.GitOps.Refs) != 0 {
+					t.Fatalf("generated-artifact drift scenario must not expose GitOps refs: %v", s.GitOps.Refs)
+				}
+				if len(s.Chain.PullRequestRefs) != 0 {
+					t.Fatalf("generated-artifact drift scenario must not expose PR refs: %v", s.Chain.PullRequestRefs)
+				}
+			},
+		},
+		{
 			name: "commit-push-pr-retry-exhaustion-is-terminal-and-metadata-only",
 			mutate: func(s *Snapshot) {
 				s.KnownRefs = append(s.KnownRefs, "gitops:retry-exhausted")
