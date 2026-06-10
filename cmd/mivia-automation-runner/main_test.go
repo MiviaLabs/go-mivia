@@ -100,13 +100,10 @@ func TestGitOpsOptionsFromConfigMapsPostPRChecks(t *testing.T) {
 }
 
 func TestComposeRunnerDefaultsToInImageCodexBinary(t *testing.T) {
-	for _, path := range []string{"../../docker-compose.yml", "../../.docker-compose.local.yml"} {
+	for _, path := range []string{"../../docker-compose.yml"} {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			data, err := os.ReadFile(path)
 			if err != nil {
-				if os.IsNotExist(err) && strings.HasPrefix(filepath.Base(path), ".") {
-					t.Skipf("local compose override is optional: %s", path)
-				}
 				t.Fatalf("read compose file: %v", err)
 			}
 			text := string(data)
@@ -342,6 +339,65 @@ func TestRunnerClientCompleteAttemptCarriesClaimRunnerAndFailureRefs(t *testing.
 	}
 	if run.Status != projectautomation.RunStatusFailed || run.ClaimID != "claim-1" || run.RunnerID != "runner-live-1" {
 		t.Fatalf("completeAttempt did not return durable handoff state: %+v", run)
+	}
+}
+
+func TestCloseoutMetadataOnlyTaskReportsStepFailureCategory(t *testing.T) {
+	tests := []struct {
+		name         string
+		failPath     string
+		wantCategory string
+	}{
+		{
+			name:         "verifier attach",
+			failPath:     "/api/v1/projects/project-1/work-tasks/task-1/verifier-results",
+			wantCategory: "automation_task_closeout_failed_verifier_attach",
+		},
+		{
+			name:         "status update",
+			failPath:     "/api/v1/projects/project-1/work-tasks/task-1/status",
+			wantCategory: "automation_task_closeout_failed_status_update",
+		},
+		{
+			name:         "complete",
+			failPath:     "/api/v1/projects/project-1/work-tasks/task-1/complete",
+			wantCategory: "automation_task_closeout_failed_complete",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var postedPaths []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Fatalf("unexpected method %s for %s", r.Method, r.URL.Path)
+				}
+				postedPaths = append(postedPaths, r.URL.Path)
+				if r.URL.Path == tt.failPath {
+					http.Error(w, `{"error":{"code":"invalid_input","message":"rejected"}}`, http.StatusBadRequest)
+					return
+				}
+				writeJSON(t, w, map[string]any{"ok": true})
+			}))
+			defer server.Close()
+
+			client := &runnerClient{baseURL: server.URL, http: server.Client()}
+			err := client.closeoutMetadataOnlyTask(t.Context(), "project-1", projectautomation.ClaimedRun{
+				Run: projectautomation.AutomationRun{
+					ID:      "run-1",
+					TaskID:  "task-1",
+					TraceID: "trace-1",
+				},
+			}, false)
+			if err == nil {
+				t.Fatal("expected metadata-only closeout error")
+			}
+			if got := metadataOnlyCloseoutFailureCategory(err); got != tt.wantCategory {
+				t.Fatalf("expected category %q, got %q err=%v", tt.wantCategory, got, err)
+			}
+			if len(postedPaths) == 0 || postedPaths[len(postedPaths)-1] != tt.failPath {
+				t.Fatalf("expected failure at %s, posted paths=%v", tt.failPath, postedPaths)
+			}
+		})
 	}
 }
 
@@ -4825,6 +4881,67 @@ func TestValidateGovernedCloseoutRejectsServerInvalidChildTaskLists(t *testing.T
 	}
 }
 
+func TestGovernedCloseoutNormalizesFormattedChildTaskRefs(t *testing.T) {
+	task := validGovernedCloseoutChildTaskForTest()
+	task.TaskRef = "Implement Generic Expiry\nSelector"
+	task.ContextPackRefs = []string{"jira context:GENERIC-1044 summary"}
+	task.DependencyTaskIDs = []string{"Discover Planning Context\n", "review gate planning readiness"}
+	task.DownstreamImpactRefs = []string{"downstream impact generic expiry"}
+	output := governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		Outcome:        "created child tasks",
+		SafeNextAction: "review generated child tasks",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		VerifierRefs:   []string{"verifier:decomposition"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal closeout: %v", err)
+	}
+	parsed, err := parseGovernedCloseoutOutput(string(data))
+	if err != nil {
+		t.Fatalf("parse closeout: %v", err)
+	}
+	if err := validateGovernedCloseoutOutput(parsed, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("formatted child refs must normalize instead of blocking: %v; parsed=%#v", err, parsed.ChildTasks[0])
+	}
+	child := parsed.ChildTasks[0]
+	if child.TaskRef != "Implement-Generic-Expiry-Selector" {
+		t.Fatalf("task_ref did not normalize safely: %q", child.TaskRef)
+	}
+	for _, ref := range append(append([]string{}, child.ContextPackRefs...), append(child.DependencyTaskIDs, child.DownstreamImpactRefs...)...) {
+		if !safeCloseoutRef(ref) {
+			t.Fatalf("normalized child ref is still unsafe: %q in %#v", ref, child)
+		}
+	}
+}
+
+func TestGovernedCloseoutStillRejectsToxicChildTaskRefs(t *testing.T) {
+	task := validGovernedCloseoutChildTaskForTest()
+	task.DependencyTaskIDs = []string{"raw source"}
+	output := governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		Outcome:        "created child tasks",
+		SafeNextAction: "review generated child tasks",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		VerifierRefs:   []string{"verifier:decomposition"},
+		ChildTasks:     []governedCloseoutWorkTask{task},
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal closeout: %v", err)
+	}
+	parsed, err := parseGovernedCloseoutOutput(string(data))
+	if err != nil {
+		t.Fatalf("parse closeout: %v", err)
+	}
+	err = validateGovernedCloseoutOutput(parsed, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"})
+	if err == nil || !strings.Contains(err.Error(), "unsafe child task ref") {
+		t.Fatalf("expected toxic child ref to remain blocked, got %v", err)
+	}
+}
+
 func TestGovernedChildTaskRunnerAcceptedPayloadsMatchWorkTaskService(t *testing.T) {
 	cases := map[string]func(*governedCloseoutWorkTask){
 		"baseline": func(*governedCloseoutWorkTask) {},
@@ -4882,6 +4999,157 @@ func TestGovernedChildTaskRunnerAcceptedPayloadsMatchWorkTaskService(t *testing.
 				t.Fatalf("runner-accepted child task must satisfy Work Task service: %v\ninput=%+v", err, input)
 			}
 		})
+	}
+}
+
+func TestGovernedCloseoutResolvesChildTaskRefDependenciesToConcreteIDs(t *testing.T) {
+	parent := validGovernedCloseoutChildTaskForTest()
+	parent.TaskRef = "mass-1044-expired-booking-selector"
+	parent.Title = "Select expired booking candidates"
+	child := validGovernedCloseoutChildTaskForTest()
+	child.TaskRef = "mass-1044-expire-booking-processor"
+	child.Title = "Process expired bookings"
+	child.DependencyTaskIDs = []string{parent.TaskRef}
+	output := governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		Outcome:        "decomposed",
+		SafeNextAction: "review generated child tasks",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		VerifierRefs:   []string{"verifier.decomposition"},
+		ChildTasks:     []governedCloseoutWorkTask{child, parent},
+	}
+	var created []projectworkplan.CreateWorkTaskInput
+	tasksByID := map[string]runnerWorkTaskMetadata{}
+	tasksByRef := map[string]runnerWorkTaskMetadata{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/work-plans/plan-1/tasks":
+			var input projectworkplan.CreateWorkTaskInput
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatalf("decode child task create input: %v", err)
+			}
+			created = append(created, input)
+			id := "work_task_parent"
+			if input.TaskRef == child.TaskRef {
+				id = "work_task_child"
+			}
+			task := runnerWorkTaskMetadata{
+				ID:                      id,
+				TaskRef:                 input.TaskRef,
+				Title:                   input.Title,
+				Description:             input.Description,
+				Status:                  input.Status,
+				OwnerAgent:              input.OwnerAgent,
+				EvidenceNeeded:          input.EvidenceNeeded,
+				ContextPackRefs:         input.ContextPackRefs,
+				FilesToRead:             input.FilesToRead,
+				FilesToEdit:             input.FilesToEdit,
+				LikelyFilesAffected:     input.LikelyFilesAffected,
+				DependencyTaskIDs:       input.DependencyTaskIDs,
+				VerificationRequirement: input.VerificationRequirement,
+				ExpectedOutput:          input.ExpectedOutput,
+				FailureCriteria:         input.FailureCriteria,
+				ReviewGate:              input.ReviewGate,
+				ResumeInstructions:      input.ResumeInstructions,
+				DecompositionQuality:    input.DecompositionQuality,
+				AcceptanceCriteria:      input.AcceptanceCriteria,
+				StopConditions:          input.StopConditions,
+				VerifierLadder:          input.VerifierLadder,
+				RegressionApplicability: input.RegressionApplicability,
+				DownstreamImpactRefs:    input.DownstreamImpactRefs,
+				OutputContract:          input.OutputContract,
+			}
+			tasksByID[id] = task
+			tasksByRef[input.TaskRef] = task
+			writeJSON(t, w, task)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/work-tasks":
+			var tasks []runnerWorkTaskMetadata
+			for _, task := range tasksByID {
+				tasks = append(tasks, task)
+			}
+			writeJSON(t, w, map[string]any{"work_tasks": tasks})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/projects/project-1/work-tasks/"):
+			id := strings.TrimPrefix(r.URL.Path, "/api/v1/projects/project-1/work-tasks/")
+			task, ok := tasksByID[id]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			writeJSON(t, w, task)
+		case r.Method == http.MethodPost && (r.URL.Path == "/api/v1/projects/project-1/work-tasks/task-wrapper/evidence" ||
+			r.URL.Path == "/api/v1/projects/project-1/work-tasks/task-wrapper/verifier-results" ||
+			r.URL.Path == "/api/v1/projects/project-1/work-tasks/task-wrapper/status"):
+			writeJSON(t, w, map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	claimed := projectautomation.ClaimedRun{
+		Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", PlanID: "plan-1", TaskID: "task-wrapper", TraceID: "trace-1"},
+		CodexInput: projectautomation.CodexTaskInput{PlanID: "plan-1", TaskID: "task-wrapper"},
+	}
+	if err := client.applyGovernedCloseout(t.Context(), "project-1", claimed, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}, output); err != nil {
+		t.Fatalf("apply governed closeout returned error: %v", err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("expected two created child tasks, got %#v", created)
+	}
+	if created[0].TaskRef != parent.TaskRef {
+		t.Fatalf("expected parent to be created before dependent child, got %#v", created)
+	}
+	if got, want := created[1].DependencyTaskIDs, []string{"work_task_parent"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected dependency refs to resolve to concrete Work Task IDs, got %#v want %#v", got, want)
+	}
+	if persisted := tasksByRef[child.TaskRef]; !reflect.DeepEqual(persisted.DependencyTaskIDs, []string{"work_task_parent"}) {
+		t.Fatalf("persisted child kept unresolved dependency refs: %#v", persisted.DependencyTaskIDs)
+	}
+}
+
+func TestGovernedCloseoutRejectsUnresolvedChildTaskDependenciesBeforeWrapperAdvance(t *testing.T) {
+	child := validGovernedCloseoutChildTaskForTest()
+	child.TaskRef = "mass-1044-expire-booking-processor"
+	child.DependencyTaskIDs = []string{"mass-1044-missing-selector"}
+	output := governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		Outcome:        "decomposed",
+		SafeNextAction: "review generated child tasks",
+		EvidenceRefs:   []string{"task-decomposition-ref"},
+		VerifierRefs:   []string{"verifier.decomposition"},
+		ChildTasks:     []governedCloseoutWorkTask{child},
+	}
+	var createCalls atomic.Int32
+	var wrapperAdvanced atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/project-1/work-tasks":
+			writeJSON(t, w, map[string]any{"work_tasks": []runnerWorkTaskMetadata{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/projects/project-1/work-plans/plan-1/tasks":
+			createCalls.Add(1)
+			writeJSON(t, w, runnerWorkTaskMetadata{ID: "work_task_child", TaskRef: child.TaskRef})
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/projects/project-1/work-tasks/task-wrapper/"):
+			wrapperAdvanced.Add(1)
+			writeJSON(t, w, map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &runnerClient{baseURL: server.URL, http: server.Client()}
+	claimed := projectautomation.ClaimedRun{
+		Run:        projectautomation.AutomationRun{ID: "run-1", ProjectID: "project-1", PlanID: "plan-1", TaskID: "task-wrapper", TraceID: "trace-1"},
+		CodexInput: projectautomation.CodexTaskInput{PlanID: "plan-1", TaskID: "task-wrapper"},
+	}
+	err := client.applyGovernedCloseout(t.Context(), "project-1", claimed, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}, output)
+	if err == nil || !strings.Contains(err.Error(), "unresolved child dependency") {
+		t.Fatalf("expected unresolved dependency error, got %v", err)
+	}
+	if createCalls.Load() != 0 {
+		t.Fatalf("unresolved dependency must fail before child creation, got %d creates", createCalls.Load())
+	}
+	if wrapperAdvanced.Load() != 0 {
+		t.Fatalf("unresolved dependency must fail before wrapper lifecycle mutation, got %d wrapper calls", wrapperAdvanced.Load())
 	}
 }
 

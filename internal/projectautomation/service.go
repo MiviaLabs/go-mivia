@@ -3888,17 +3888,11 @@ func (svc *Service) releaseImplementationTasksAfterPlanningReadinessReview(ctx c
 	if !ok {
 		return nil
 	}
-	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: task.ProjectID, PlanID: task.PlanID})
+	candidates, err := svc.planningReadinessApprovedReleaseCandidates(ctx, task)
 	if err != nil {
 		return err
 	}
-	for _, candidate := range tasks {
-		if !planningReadinessApprovedImplementationTask(candidate) {
-			continue
-		}
-		if !svc.hasEnabledAutomationForTask(ctx, candidate) {
-			continue
-		}
+	for _, candidate := range candidates {
 		if _, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
 			WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
 				ProjectID:      candidate.ProjectID,
@@ -3914,6 +3908,27 @@ func (svc *Service) releaseImplementationTasksAfterPlanningReadinessReview(ctx c
 		}
 	}
 	return nil
+}
+
+func (svc *Service) planningReadinessApprovedReleaseCandidates(ctx context.Context, task projectworkplan.WorkTask) ([]projectworkplan.WorkTask, error) {
+	if svc == nil || svc.workTasks == nil {
+		return nil, nil
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: task.ProjectID, PlanID: task.PlanID})
+	if err != nil {
+		return nil, err
+	}
+	var candidates []projectworkplan.WorkTask
+	for _, candidate := range tasks {
+		if !planningReadinessApprovedImplementationTask(candidate) {
+			continue
+		}
+		if !svc.hasEnabledAutomationForTask(ctx, candidate) {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
 }
 
 func (svc *Service) hasEnabledAutomationForTask(ctx context.Context, task projectworkplan.WorkTask) bool {
@@ -3942,7 +3957,52 @@ func planningReadinessApprovedImplementationTask(task projectworkplan.WorkTask) 
 	if strings.TrimSpace(task.TaskRef) == "" || strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-") {
 		return false
 	}
+	if !planningReadinessTaskHasApprovedReview(task) {
+		return false
+	}
 	return len(task.FilesToEdit) > 0
+}
+
+func planningReadinessTaskHasApprovedReview(task projectworkplan.WorkTask) bool {
+	if len(task.ReviewResultRefs) == 0 {
+		return false
+	}
+	approved := false
+	for _, ref := range task.ReviewResultRefs {
+		decision := planningReadinessReviewDecision(ref)
+		if decision == "rejected" {
+			return false
+		}
+		if decision == "approved" {
+			approved = true
+		}
+	}
+	return approved
+}
+
+func planningReadinessReviewDecision(ref string) string {
+	value := strings.ToLower(strings.TrimSpace(ref))
+	if value == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+	for _, part := range parts {
+		switch part {
+		case "reject", "rejected", "blocked", "pending", "unapproved", "not":
+			return "rejected"
+		case "needs":
+			return "rejected"
+		}
+	}
+	for _, part := range parts {
+		switch part {
+		case "approved", "passed":
+			return "approved"
+		}
+	}
+	return ""
 }
 
 func (svc *Service) reconcilePostImplementationReviewParent(ctx context.Context, reviewRun AutomationRun) error {
@@ -3999,6 +4059,11 @@ func parentFailedOnlyBecauseReviewQueueFailed(run AutomationRun) bool {
 }
 
 func (svc *Service) finishRunAfterTaskTerminal(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
+	if task.Status == projectworkplan.WorkTaskStatusBlocked {
+		if recovered, ok, err := svc.completeBlockedPlanningReadinessReviewWhenApproved(ctx, run, task); ok || err != nil {
+			return recovered, err
+		}
+	}
 	run.WorkTaskStatus = task.Status
 	run.SafeSummary = "external_codex_cli_task_terminal"
 	switch task.Status {
@@ -4027,6 +4092,100 @@ func (svc *Service) finishRunAfterTaskTerminal(ctx context.Context, run Automati
 		return AutomationRun{}, err
 	}
 	return updated, svc.updatePlanAfterTerminalTask(ctx, task)
+}
+
+func (svc *Service) completeBlockedPlanningReadinessReviewWhenApproved(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, bool, error) {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(task.TaskRef) != "mark-ready-after-review" || task.Status != projectworkplan.WorkTaskStatusBlocked {
+		return AutomationRun{}, false, nil
+	}
+	candidates, err := svc.planningReadinessApprovedReleaseCandidates(ctx, task)
+	if err != nil {
+		return AutomationRun{}, false, err
+	}
+	if len(candidates) == 0 {
+		return AutomationRun{}, false, nil
+	}
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil {
+		return AutomationRun{}, false, nil
+	}
+	runID := firstNonEmpty(run.ID, task.ClaimedByRunID, task.ID)
+	traceID := firstNonEmpty(run.TraceID, task.TraceID, runID)
+	ready, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			RunID:              firstNonEmpty(task.ClaimedByRunID, runID),
+			TraceID:            traceID,
+			SafeNextAction:     "planning_readiness_recovered_after_approved_child_reviews",
+			ResumeInstructions: "Planning readiness was deterministically recovered because reviewed implementation tasks are ready for release.",
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, true, err
+	}
+	claimed, err := svc.workTasks.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:      ready.ProjectID,
+		TaskID:         ready.ID,
+		RunID:          runID,
+		TraceID:        traceID,
+		SafeNextAction: "planning_readiness_recovery_claim",
+	})
+	if err != nil {
+		return AutomationRun{}, true, err
+	}
+	started, err := svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:      claimed.ProjectID,
+		TaskID:         claimed.ID,
+		RunID:          runID,
+		TraceID:        traceID,
+		SafeNextAction: "planning_readiness_recovery_start",
+	})
+	if err != nil {
+		return AutomationRun{}, true, err
+	}
+	reviewRef := "review_result_" + safeBranchToken(started.ID) + "_planning_readiness_recovery_approved"
+	if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+		ProjectID:       started.ProjectID,
+		TaskID:          started.ID,
+		Ref:             reviewRef,
+		AttachedByRunID: "planning-readiness-review",
+		TraceID:         traceID,
+		Note:            "deterministic recovery based on approved child implementation review refs",
+	}); err != nil {
+		return AutomationRun{}, true, err
+	}
+	verifierRefs := automationCloseoutVerifierRefs(started)
+	if len(verifierRefs) == 0 {
+		verifierRefs = []string{"verifier.automation.planning-readiness-recovery"}
+		if _, err := svc.workTasks.AttachVerifierResult(ctx, projectworkplan.AttachInput{
+			ProjectID:       started.ProjectID,
+			TaskID:          started.ID,
+			Ref:             verifierRefs[0],
+			AttachedByRunID: runID,
+			TraceID:         traceID,
+			Note:            "deterministic planning-readiness recovery verifier",
+		}); err != nil {
+			return AutomationRun{}, true, err
+		}
+	}
+	completed, err := svc.workTasks.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          started.ProjectID,
+		TaskID:             started.ID,
+		RunID:              runID,
+		TraceID:            traceID,
+		SafeNextAction:     "planning_readiness_recovered_release_approved_children",
+		Outcome:            "planning readiness recovered after approved child implementation review refs",
+		VerifierResultRefs: verifierRefs,
+		ReviewResultRefs:   []string{reviewRef},
+		EvidenceRefs:       append([]string{"planning-readiness-recovery-approved-children"}, task.EvidenceRefs...),
+	})
+	if err != nil {
+		return AutomationRun{}, true, err
+	}
+	recovered, err := svc.completeRunAfterTaskDone(ctx, run, completed)
+	return recovered, true, err
 }
 
 func (svc *Service) blockRunFromTerminalPlan(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {

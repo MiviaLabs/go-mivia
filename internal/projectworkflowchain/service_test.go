@@ -3,6 +3,7 @@ package projectworkflowchain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
 	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
+	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
@@ -268,6 +270,7 @@ func TestAdvancingStageCarriesGeneratedImplementationTasksToNextPlan(t *testing.
 		ClaimRefs:               []string{"claim:planning-worker"},
 		VerifierResultRefs:      []string{"verifier:planning-readiness"},
 		ReviewResultRefs:        []string{"review:planning-readiness-approved"},
+		ReviewExemptReason:      "planning stage exemption must not carry",
 		ArtifactRefs:            []string{"artifact:decomposition-packet"},
 		AgentRunIDs:             []string{"automation_run_planning"},
 		DecompositionQuality:    projectworkplan.DecompositionReady,
@@ -303,7 +306,7 @@ func TestAdvancingStageCarriesGeneratedImplementationTasksToNextPlan(t *testing.
 		t.Fatalf("expected one carried implementation task, got %#v", workPlans.createdTasks)
 	}
 	carried := workPlans.createdTasks[0]
-	if carried.PlanID != "plan-implementation" || carried.TaskRef != generated.TaskRef || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
+	if carried.PlanID != "plan-implementation" || carried.TaskRef != generated.TaskRef || carried.Status != projectworkplan.WorkTaskStatusPlanned || carried.OwnerAgent != "implementation-worker" {
 		t.Fatalf("unexpected carried task: %#v", carried)
 	}
 	if !containsString(carried.FilesToEdit, "internal/output.go") || carried.VerificationRequirement != generated.VerificationRequirement {
@@ -317,10 +320,10 @@ func TestAdvancingStageCarriesGeneratedImplementationTasksToNextPlan(t *testing.
 		carried.OutputContract != generated.OutputContract {
 		t.Fatalf("carried task lost executable governance metadata: %#v", carried)
 	}
-	if !containsString(carried.ReviewResultRefs, "review:planning-readiness-approved") || !containsString(carried.VerifierResultRefs, "verifier:planning-readiness") {
-		t.Fatalf("carried task lost planning review/verifier refs: %#v", carried)
+	if len(carried.ReviewResultRefs) != 0 || len(carried.VerifierResultRefs) != 0 || carried.ReviewExemptReason != "" {
+		t.Fatalf("carried executable task must not inherit planning review/verifier refs: %#v", carried)
 	}
-	if !containsString(carried.EvidenceRefs, "evidence:planning-output") || !containsString(carried.ClaimRefs, "claim:planning-worker") || !containsString(carried.ArtifactRefs, "artifact:decomposition-packet") || !containsString(carried.AgentRunIDs, "automation_run_planning") {
+	if !containsString(carried.EvidenceRefs, "evidence:planning-output") || !containsString(carried.EvidenceRefs, "review:planning-readiness-approved") || !containsString(carried.EvidenceRefs, "verifier:planning-readiness") || !containsString(carried.ClaimRefs, "claim:planning-worker") || !containsString(carried.ArtifactRefs, "artifact:decomposition-packet") || !containsString(carried.AgentRunIDs, "automation_run_planning") {
 		t.Fatalf("carried task lost planning handoff refs: %#v", carried)
 	}
 	if len(automations.created) != 1 {
@@ -390,7 +393,7 @@ func TestAdvancingStageCarriesGeneratedTasksFromCompletedPriorPlan(t *testing.T)
 		t.Fatalf("expected generated implementation task to be carried from completed prior plan, got %#v", workPlans.createdTasks)
 	}
 	carried := workPlans.createdTasks[0]
-	if carried.PlanID != "plan-implementation" || carried.TaskRef != generated.TaskRef || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
+	if carried.PlanID != "plan-implementation" || carried.TaskRef != generated.TaskRef || carried.Status != projectworkplan.WorkTaskStatusPlanned || carried.OwnerAgent != "implementation-worker" {
 		t.Fatalf("unexpected carried implementation task: %#v", carried)
 	}
 	if len(automations.created) != 1 || automations.created[0].PlanID != "plan-implementation" || !containsString(automations.created[0].AllowedTaskRefs, generated.TaskRef) {
@@ -488,8 +491,8 @@ func TestAdvancingStageStripsWrapperDependenciesFromCarriedImplementationTasks(t
 		t.Fatalf("expected one carried implementation task, got %#v", workPlans.createdTasks)
 	}
 	carried := workPlans.createdTasks[0]
-	if carried.TaskRef != generated.TaskRef || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
-		t.Fatalf("carried task must be ready for implementation worker, got %#v", carried)
+	if carried.TaskRef != generated.TaskRef || carried.Status != projectworkplan.WorkTaskStatusPlanned || carried.OwnerAgent != "implementation-worker" {
+		t.Fatalf("carried task must wait for implementation selector release, got %#v", carried)
 	}
 	if containsString(carried.DependencyTaskIDs, "select-ready-tasks") {
 		t.Fatalf("carried implementation task must not depend on source-stage wrapper refs: %#v", carried.DependencyTaskIDs)
@@ -650,8 +653,8 @@ func TestAdvancingStageNormalizesCarriedTaskRefDependenciesToCreatedTaskIDs(t *t
 	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
 		"plan-decomposition": {
 			{ID: "select-ready-tasks", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusReady, DecompositionQuality: projectworkplan.DecompositionReady},
-			queryTask,
 			triggerTask,
+			queryTask,
 		},
 		"plan-implementation": {
 			{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
@@ -673,8 +676,8 @@ func TestAdvancingStageNormalizesCarriedTaskRefDependenciesToCreatedTaskIDs(t *t
 	}
 	query := workPlans.createdTasks[0]
 	trigger := workPlans.createdTasks[1]
-	if query.TaskRef != queryTask.TaskRef || query.Status != projectworkplan.WorkTaskStatusReady {
-		t.Fatalf("query task should be first and ready, got %#v", query)
+	if query.TaskRef != queryTask.TaskRef || query.Status != projectworkplan.WorkTaskStatusPlanned {
+		t.Fatalf("query task should be first and planned until selector release, got %#v", query)
 	}
 	if trigger.TaskRef != triggerTask.TaskRef {
 		t.Fatalf("trigger task should be second, got %#v", trigger)
@@ -940,7 +943,7 @@ func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *tes
 	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
 	workPlans := &fakeWorkPlans{}
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
-	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}}
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "github-pr-1044"}}
 	svc.SetGitOpsFinalizer(finalizer)
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
@@ -957,7 +960,7 @@ func TestHandleWorkPlanStatusChangedCreatesDraftPRAfterPostValidationDone(t *tes
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
-	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/GENERIC-1044" {
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "github-pr-1044" {
 		t.Fatalf("expected completed chain with draft PR ref, got %#v", run)
 	}
 	if run.StageRuns[2].Status != StageStatusCompleted || run.NextAction == "" {
@@ -994,7 +997,7 @@ func TestJiraTicketChainPreservesEveryAutomationHandoffThroughDraftPR(t *testing
 	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{
 		CommitRef:      "commit/GENERIC-1044",
 		PushRef:        "push/GENERIC-1044",
-		PullRequestRef: "pr/GENERIC-1044",
+		PullRequestRef: "github-pr-1044",
 		EvidenceRefs:   []string{"gitops-evidence:GENERIC-1044"},
 	}}
 	svc.SetGitOpsFinalizer(finalizer)
@@ -1024,7 +1027,7 @@ func TestJiraTicketChainPreservesEveryAutomationHandoffThroughDraftPR(t *testing
 	if err != nil {
 		t.Fatalf("get completed run: %v", err)
 	}
-	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/GENERIC-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "github-pr-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
 		t.Fatalf("completed chain lost final status/action/PR handoff: %#v", run)
 	}
 	if run.CreatedByRunID != "orchestrator-run-1" || run.TraceID != "trace-1" || run.InputRef != "jira:GENERIC-1044" {
@@ -1077,7 +1080,7 @@ func TestGenericSafeRefChainPreservesCodexHandoffDataThroughDraftPR(t *testing.T
 	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{
 		CommitRef:      "commit/generic-1044",
 		PushRef:        "push/generic-1044",
-		PullRequestRef: "pr/generic-1044",
+		PullRequestRef: "github-pr-1044",
 		EvidenceRefs:   []string{"gitops-evidence:generic-1044"},
 	}}
 	svc.SetGitOpsFinalizer(finalizer)
@@ -1114,7 +1117,7 @@ func TestGenericSafeRefChainPreservesCodexHandoffDataThroughDraftPR(t *testing.T
 	if err != nil {
 		t.Fatalf("get completed run: %v", err)
 	}
-	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/generic-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "github-pr-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
 		t.Fatalf("completed chain lost final status/action/PR handoff: %#v", run)
 	}
 	if run.CreatedByRunID != "codex-orchestrator-run-1" || run.TraceID != "trace-generic-1044" || run.InputRef != "input:ticket/GENERIC-1044" {
@@ -1222,7 +1225,7 @@ func TestGenericSafeRefChainWithRealWorkflowCompilerPreservesGeneratedTaskOutput
 	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{
 		CommitRef:      "commit/generic-real-2044",
 		PushRef:        "push/generic-real-2044",
-		PullRequestRef: "pr/generic-real-2044",
+		PullRequestRef: "github-pr-2044",
 		EvidenceRefs:   []string{"gitops-evidence:generic-real-2044"},
 	}}
 	svc.SetGitOpsFinalizer(finalizer)
@@ -1283,7 +1286,7 @@ func TestGenericSafeRefChainWithRealWorkflowCompilerPreservesGeneratedTaskOutput
 	if err != nil {
 		t.Fatalf("get completed real chain: %v", err)
 	}
-	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/generic-real-2044" {
+	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "github-pr-2044" {
 		t.Fatalf("completed real chain lost final status or PR ref: %#v", run)
 	}
 	if run.InputRef != "input:ticket/GENERIC-2044" || run.CreatedByRunID != "codex-orchestrator-run-2044" || run.TraceID != "trace-generic-real-2044" {
@@ -1474,11 +1477,14 @@ func TestRealChainCarriesConcreteChildTaskFromCompletedDecompositionPlan(t *test
 			break
 		}
 	}
-	if carried.ID == "" || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
-		t.Fatalf("concrete child task was not carried ready into implementation plan, child=%#v tasks=%#v", child, implementationTasks)
+	if carried.ID == "" || carried.Status != projectworkplan.WorkTaskStatusPlanned || carried.OwnerAgent != "implementation-worker" {
+		t.Fatalf("concrete child task was not carried as planned into implementation plan, child=%#v tasks=%#v", child, implementationTasks)
 	}
-	if !containsString(carried.ReviewResultRefs, "review:planning-readiness-approved") {
-		t.Fatalf("carried child task must preserve direct review refs, got %#v", carried.ReviewResultRefs)
+	if len(carried.ReviewResultRefs) != 0 || len(carried.VerifierResultRefs) != 0 {
+		t.Fatalf("carried child task must not inherit planning review/verifier refs, got reviews=%#v verifiers=%#v", carried.ReviewResultRefs, carried.VerifierResultRefs)
+	}
+	if !containsString(carried.EvidenceRefs, "review:planning-readiness-approved") {
+		t.Fatalf("carried child task must preserve planning review as handoff evidence, got %#v", carried.EvidenceRefs)
 	}
 	implementation = chainStageRunByRef(t, run, "implementation")
 	if !containsString(implementation.WorkTaskIDs, carried.ID) {
@@ -1488,15 +1494,15 @@ func TestRealChainCarriesConcreteChildTaskFromCompletedDecompositionPlan(t *test
 	if err != nil {
 		t.Fatalf("list queued implementation runs: %v", err)
 	}
-	foundWorkerRun := false
+	foundPrematureWorkerRun := false
 	for _, automationRun := range runs {
 		if automationRun.TaskID == carried.ID && automationRun.WorkTaskStatus == projectworkplan.WorkTaskStatusReady {
-			foundWorkerRun = true
+			foundPrematureWorkerRun = true
 			break
 		}
 	}
-	if !foundWorkerRun {
-		t.Fatalf("implementation worker run was not queued for carried concrete task %#v; runs=%#v", carried, runs)
+	if foundPrematureWorkerRun {
+		t.Fatalf("implementation worker run must not queue before selector releases carried task %#v; runs=%#v", carried, runs)
 	}
 }
 
@@ -1531,7 +1537,7 @@ func TestHandleWorkPlanStatusChangedDoesNotFinalizeGitOpsBeforeCheckpointPersist
 	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
 	workPlans := &fakeWorkPlans{}
 	svc := New(store, workflows, workPlans, []Config{testConfig()})
-	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}}
+	finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "github-pr-1044"}}
 	svc.SetGitOpsFinalizer(finalizer)
 	svc.newID = deterministicIDs("workflow_chain_run_1")
 
@@ -1700,6 +1706,97 @@ func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizationFails(t *testin
 	}
 }
 
+func TestHandleWorkPlanStatusChangedRecordsRepairableGitOpsVerificationFailure(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	finalizer := &fakeGitOpsFinalizer{err: fmt.Errorf("%w: abcdef123456", projectgitops.ErrVerificationFailed)}
+	svc.SetGitOpsFinalizer(finalizer)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, planID := range []string{"plan-decomposition", "plan-implementation", "plan-post-validation"} {
+		err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone})
+		if planID == "plan-post-validation" {
+			if err == nil {
+				t.Fatalf("expected GitOps verification failure")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != ChainStatusBlocked || !run.GitOpsReady || run.GitOpsAttemptCount != 1 {
+		t.Fatalf("expected first blocked GitOps recovery attempt, got %#v", run)
+	}
+	if run.GitOpsFailureCategory != "gitops_verification_failed_abcdef123456" || run.GitOpsRecoveryStatus != GitOpsRecoveryStatusRepairable {
+		t.Fatalf("expected repairable verifier category, got category=%q status=%q", run.GitOpsFailureCategory, run.GitOpsRecoveryStatus)
+	}
+	if !containsString(run.GitOpsFailureEvidenceRefs, "gitops-failure:gitops_verification_failed_abcdef123456") || !containsString(run.GitOpsFailureEvidenceRefs, "gitops-attempt:1") {
+		t.Fatalf("expected safe verifier failure evidence refs, got %#v", run.GitOpsFailureEvidenceRefs)
+	}
+	if !strings.HasPrefix(run.StageRuns[2].BlockedReason, "gitops_verification_failed_abcdef123456_repairable_attempt_1") {
+		t.Fatalf("expected structured blocked reason, got %q", run.StageRuns[2].BlockedReason)
+	}
+}
+
+func TestHandleWorkPlanStatusChangedRecordsDirtyScopeGitOpsRecoveryEvidence(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	finalizer := &fakeGitOpsFinalizer{err: projectgitops.DirtyWorktreeScopeError{Paths: []string{"outside/generated.pb.go"}}}
+	svc.SetGitOpsFinalizer(finalizer)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, planID := range []string{"plan-decomposition", "plan-implementation", "plan-post-validation"} {
+		err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone})
+		if planID == "plan-post-validation" {
+			if err == nil {
+				t.Fatalf("expected GitOps dirty-scope failure")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.GitOpsFailureCategory != "gitops_dirty_worktree_scope" || run.GitOpsRecoveryStatus != GitOpsRecoveryStatusRepairable {
+		t.Fatalf("expected repairable dirty-scope category, got category=%q status=%q", run.GitOpsFailureCategory, run.GitOpsRecoveryStatus)
+	}
+	var dirtyScopeRef string
+	for _, ref := range run.GitOpsFailureEvidenceRefs {
+		if strings.HasPrefix(ref, "gitops-dirty-scope:") {
+			dirtyScopeRef = ref
+		}
+		if strings.Contains(ref, "outside/generated.pb.go") {
+			t.Fatalf("dirty-scope evidence ref must not leak raw path, got %#v", run.GitOpsFailureEvidenceRefs)
+		}
+	}
+	if dirtyScopeRef == "" || !containsString(run.GitOpsFailureEvidenceRefs, "gitops-failure:gitops_dirty_worktree_scope") {
+		t.Fatalf("expected hashed dirty-scope evidence refs, got %#v", run.GitOpsFailureEvidenceRefs)
+	}
+}
+
 func TestHandleWorkPlanStatusChangedBlocksGitOpsWhenPostValidationLacksReviewOrVerifierRefs(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -1737,7 +1834,7 @@ func TestHandleWorkPlanStatusChangedBlocksGitOpsWhenPostValidationLacksReviewOrV
 					"task-post-validation": tc.task,
 				},
 			}
-			finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}}
+			finalizer := &fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "github-pr-1044"}}
 			svc := New(store, workflows, workPlans, []Config{testConfig()})
 			svc.SetGitOpsFinalizer(finalizer)
 			svc.newID = deterministicIDs("workflow_chain_run_1")
@@ -1809,7 +1906,37 @@ func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizerCreatesNoOutput(t 
 	}
 }
 
-func TestHandleWorkPlanStatusChangedRetriesBlockedDraftPRFinalization(t *testing.T) {
+func TestHandleWorkPlanStatusChangedBlocksWhenDraftPRFinalizerReturnsNonActionablePRRef(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.SetGitOpsFinalizer(&fakeGitOpsFinalizer{result: GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}})
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, planID := range []string{"plan-decomposition", "plan-implementation"} {
+		if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected non-actionable PR ref to block, got %v", err)
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get blocked run: %v", err)
+	}
+	if run.Status != ChainStatusBlocked || !run.GitOpsReady || run.PullRequestRef != "" || !strings.HasPrefix(run.StageRuns[2].BlockedReason, "gitops_finalize_failed_invalid_project_workflow_chain_input") {
+		t.Fatalf("non-actionable PR ref must block without publishing PullRequestRef, got %#v", run)
+	}
+}
+
+func TestHandleWorkPlanStatusChangedDoesNotImplicitlyRetryBlockedDraftPRFinalization(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
 	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
@@ -1840,19 +1967,30 @@ func TestHandleWorkPlanStatusChangedRetriesBlockedDraftPRFinalization(t *testing
 	}
 
 	finalizer.err = nil
-	finalizer.result = GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}
+	finalizer.result = GitOpsFinalizeResult{PullRequestRef: "github-pr-1044"}
 	if err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-post-validation", NewStatus: projectworkplan.WorkPlanStatusDone}); err != nil {
-		t.Fatalf("retry GitOps finalization: %v", err)
+		t.Fatalf("duplicate post-validation event: %v", err)
 	}
 	run, err = svc.Get(ctx, "project-1", result.ChainRunID)
 	if err != nil {
-		t.Fatalf("get completed run: %v", err)
+		t.Fatalf("get duplicate-event run: %v", err)
 	}
-	if run.Status != ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/GENERIC-1044" {
-		t.Fatalf("expected retry to complete chain with PR ref, got %#v", run)
+	if run.Status != ChainStatusBlocked || !run.GitOpsReady || run.PullRequestRef != "" || run.GitOpsAttemptCount != 1 {
+		t.Fatalf("duplicate status events must not implicitly retry GitOps, got %#v", run)
+	}
+	if len(finalizer.inputs) != 1 {
+		t.Fatalf("duplicate status event must not call finalizer again, got %#v", finalizer.inputs)
+	}
+
+	retried, err := svc.RetryGitOps(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("explicit RetryGitOps returned error: %v", err)
+	}
+	if retried.Status != ChainStatusCompleted || retried.GitOpsReady || retried.PullRequestRef != "github-pr-1044" {
+		t.Fatalf("expected explicit retry to complete chain with PR ref, got %#v", retried)
 	}
 	if len(finalizer.inputs) != 2 || finalizer.inputs[1].WorkPlan.ID != "plan-implementation" {
-		t.Fatalf("expected retry to finalize implementation plan, got %#v", finalizer.inputs)
+		t.Fatalf("expected explicit retry to finalize implementation plan, got %#v", finalizer.inputs)
 	}
 }
 
@@ -1886,15 +2024,21 @@ func TestRetryGitOpsFinalizesBlockedReadyChainThroughPublicAPI(t *testing.T) {
 	if blocked.Status != ChainStatusBlocked || !blocked.GitOpsReady || !allStagesCompleted(blocked) {
 		t.Fatalf("expected blocked GitOps-ready chain before retry, got %#v", blocked)
 	}
+	if blocked.GitOpsAttemptCount != 1 || blocked.GitOpsRecoveryStatus != GitOpsRecoveryStatusRepairable || blocked.GitOpsFailureCategory == "" || len(blocked.GitOpsFailureEvidenceRefs) == 0 {
+		t.Fatalf("expected structured repairable GitOps failure before retry, got %#v", blocked)
+	}
 
 	finalizer.err = nil
-	finalizer.result = GitOpsFinalizeResult{PullRequestRef: "pr/GENERIC-1044"}
+	finalizer.result = GitOpsFinalizeResult{PullRequestRef: "github-pr-1044"}
 	retried, err := svc.RetryGitOps(ctx, "project-1", result.ChainRunID)
 	if err != nil {
 		t.Fatalf("RetryGitOps returned error: %v", err)
 	}
-	if retried.Status != ChainStatusCompleted || retried.GitOpsReady || retried.PullRequestRef != "pr/GENERIC-1044" {
+	if retried.Status != ChainStatusCompleted || retried.GitOpsReady || retried.PullRequestRef != "github-pr-1044" {
 		t.Fatalf("expected direct retry to complete chain with PR ref, got %#v", retried)
+	}
+	if retried.GitOpsRecoveryStatus != GitOpsRecoveryStatusCompleted || retried.GitOpsFailureCategory != "" || len(retried.GitOpsFailureEvidenceRefs) != 0 {
+		t.Fatalf("expected successful retry to clear failure metadata and mark recovery completed, got %#v", retried)
 	}
 	if len(finalizer.inputs) != 2 {
 		t.Fatalf("expected initial failure plus direct retry finalization, got %#v", finalizer.inputs)
@@ -1905,6 +2049,57 @@ func TestRetryGitOpsFinalizesBlockedReadyChainThroughPublicAPI(t *testing.T) {
 	}
 	if !containsString(retryInput.AllowedPathspecs, "internal/projectworkflowchain/service.go") || !containsString(retryInput.ReviewRefs, "review:task-post-validation") || !containsString(retryInput.VerifierRefs, "verifier:task-post-validation") {
 		t.Fatalf("direct GitOps retry lost implementation scope or validation evidence: %#v", retryInput)
+	}
+}
+
+func TestRetryGitOpsStopsAfterTerminalRecoveryExhaustion(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	workPlans := &fakeWorkPlans{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	finalizer := &fakeGitOpsFinalizer{err: fmt.Errorf("%w: abcdef123456", projectgitops.ErrVerificationFailed)}
+	svc.SetGitOpsFinalizer(finalizer)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for _, planID := range []string{"plan-decomposition", "plan-implementation", "plan-post-validation"} {
+		err := svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: planID, NewStatus: projectworkplan.WorkPlanStatusDone})
+		if planID == "plan-post-validation" {
+			if err == nil {
+				t.Fatalf("expected first GitOps finalization failure")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("advance after %s done: %v", planID, err)
+		}
+	}
+	for attempt := 2; attempt <= maxChainGitOpsRecoveryAttempts; attempt++ {
+		if _, err := svc.RetryGitOps(ctx, "project-1", result.ChainRunID); err == nil {
+			t.Fatalf("expected retry attempt %d to fail", attempt)
+		}
+	}
+	run, err := svc.Get(ctx, "project-1", result.ChainRunID)
+	if err != nil {
+		t.Fatalf("get exhausted run: %v", err)
+	}
+	if run.GitOpsAttemptCount != maxChainGitOpsRecoveryAttempts || run.GitOpsRecoveryStatus != GitOpsRecoveryStatusTerminal {
+		t.Fatalf("expected exhausted terminal GitOps recovery, got %#v", run)
+	}
+	if !strings.Contains(run.StageRuns[2].BlockedReason, "terminal_attempt_3") {
+		t.Fatalf("expected terminal blocked reason to name exhausted attempt, got %q", run.StageRuns[2].BlockedReason)
+	}
+	finalizer.err = nil
+	finalizer.result = GitOpsFinalizeResult{PullRequestRef: "github-pr-1044"}
+	if _, err := svc.RetryGitOps(ctx, "project-1", result.ChainRunID); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected retry after terminal exhaustion to be rejected, got %v", err)
+	}
+	if len(finalizer.inputs) != maxChainGitOpsRecoveryAttempts {
+		t.Fatalf("terminal retry must not call finalizer again, got %d calls", len(finalizer.inputs))
 	}
 }
 

@@ -20,6 +20,10 @@ func TestLadybugStorePersistsChainRunsAcrossStoreInstances(t *testing.T) {
 	first := NewLadybugStore(graph)
 	run := testRun("run-1", projectworkflowchain.ChainStatusQueued)
 	run.GitOpsReady = true
+	run.GitOpsAttemptCount = 2
+	run.GitOpsFailureCategory = "gitops_verification_failed_abcdef123456"
+	run.GitOpsFailureEvidenceRefs = []string{"gitops-failure:gitops_verification_failed_abcdef123456", "gitops-attempt:2"}
+	run.GitOpsRecoveryStatus = projectworkflowchain.GitOpsRecoveryStatusRepairable
 	run.PullRequestRef = "pr/GENERIC-1044"
 	run.NextAction = "workflow chain completed with draft PR GitOps output"
 	run.AutomationIDs = []string{"automation-decomposition", "automation-implementation", "automation-validation"}
@@ -54,6 +58,9 @@ func TestLadybugStorePersistsChainRunsAcrossStoreInstances(t *testing.T) {
 	}
 	if found.PullRequestRef != run.PullRequestRef || found.NextAction != run.NextAction || len(found.AutomationIDs) != 3 {
 		t.Fatalf("persisted chain lost GitOps handoff refs/actions: %#v", found)
+	}
+	if found.GitOpsAttemptCount != 2 || found.GitOpsFailureCategory != run.GitOpsFailureCategory || found.GitOpsRecoveryStatus != projectworkflowchain.GitOpsRecoveryStatusRepairable || len(found.GitOpsFailureEvidenceRefs) != 2 {
+		t.Fatalf("persisted chain lost GitOps recovery metadata: %#v", found)
 	}
 	if len(found.StageRuns) != 2 || found.StageRuns[1].BlockedReason != "gitops_finalize_failed_gitops_runtime_failed" || found.StageRuns[1].CompletedAt.IsZero() || len(found.StageRuns[1].AutomationIDs) != 1 {
 		t.Fatalf("persisted chain lost stage handoff metadata: %#v", found.StageRuns)

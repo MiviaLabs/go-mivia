@@ -112,15 +112,35 @@ func TestDecompositionWorkflowCompilesRichTaskPackets(t *testing.T) {
 	if !containsConfigString(discover.FilesToRead, ".ai/INDEX.md") || !containsConfigString(discover.FilesToRead, ".ai/skills/mivia-mcp/SKILL.md") {
 		t.Fatalf("discover task missing required instruction reads: %#v", discover.FilesToRead)
 	}
+	impactMap := compiledTaskByRef(t, tasks, "map-downstream-impact")
+	if impactMap.Status != projectworkplan.WorkTaskStatusPlanned || len(impactMap.DependencyTaskIDs) == 0 {
+		t.Fatalf("map-downstream-impact must compile as a dependent planning task, got %#v", impactMap)
+	}
+	if !containsConfigString(impactMap.DownstreamImpactRefs, "dependency-map-ref") || !containsConfigString(impactMap.DownstreamImpactRefs, "downstream-impact-ref") {
+		t.Fatalf("map-downstream-impact must produce decomposition impact refs, got %#v", impactMap.DownstreamImpactRefs)
+	}
+	for _, producedRef := range impactMap.DownstreamImpactRefs {
+		if containsConfigString(impactMap.EvidenceNeeded, producedRef) {
+			t.Fatalf("map-downstream-impact must not require its own produced ref %q as evidence: %#v", producedRef, impactMap.EvidenceNeeded)
+		}
+	}
 	decompose := compiledTaskByRef(t, tasks, "decompose-work-plan")
 	if decompose.ReviewGate == "" || decompose.VerificationRequirement == "" || decompose.ResumeInstructions == "" {
 		t.Fatalf("decompose task is not low-intelligence-ready: %#v", decompose)
+	}
+	if !containsConfigString(decompose.DependencyTaskIDs, impactMap.ID) {
+		t.Fatalf("decompose-work-plan must depend on map-downstream-impact before it can run, deps=%#v map=%s", decompose.DependencyTaskIDs, impactMap.ID)
 	}
 	if !strings.Contains(decompose.ReviewGate, "planning-readiness-review") {
 		t.Fatalf("decompose task missing planning review gate: %q", decompose.ReviewGate)
 	}
 	if len(decompose.AcceptanceCriteria) == 0 || len(decompose.StopConditions) == 0 || len(decompose.VerifierLadder) == 0 || decompose.RegressionApplicability == "" || len(decompose.DownstreamImpactRefs) == 0 || decompose.OutputContract == "" {
 		t.Fatalf("decompose task missing first-class governance fields: %#v", decompose)
+	}
+	for _, producedRef := range []string{"task-decomposition-ref"} {
+		if containsConfigString(decompose.EvidenceNeeded, producedRef) {
+			t.Fatalf("decompose-work-plan must not require its own produced ref %q as evidence: %#v", producedRef, decompose.EvidenceNeeded)
+		}
 	}
 }
 
@@ -162,6 +182,20 @@ func TestGENERICGovernedWorkflowsCompileRequiredAutomationInvariants(t *testing.
 	}
 	if discover := compiledTaskByRef(t, decompositionTasks, "discover-planning-context"); discover.Status != projectworkplan.WorkTaskStatusReady || len(discover.DependencyTaskIDs) != 0 {
 		t.Fatalf("GENERIC root decomposition task must compile ready with no dependencies, got %#v", discover)
+	}
+	impactMap := compiledTaskByRef(t, decompositionTasks, "map-downstream-impact")
+	if !containsConfigString(compiledDecomposeTask.DependencyTaskIDs, impactMap.ID) {
+		t.Fatalf("GENERIC decompose-work-plan must depend on map-downstream-impact before it can run, deps=%#v map=%s", compiledDecomposeTask.DependencyTaskIDs, impactMap.ID)
+	}
+	for _, producedRef := range impactMap.DownstreamImpactRefs {
+		if containsConfigString(impactMap.EvidenceNeeded, producedRef) {
+			t.Fatalf("GENERIC map-downstream-impact must not require its own produced ref %q as evidence: %#v", producedRef, impactMap.EvidenceNeeded)
+		}
+	}
+	for _, producedRef := range []string{"task-decomposition-ref", "regression-test-applicability-ref", "acceptance-criteria-ref", "verifier-ladder-ref"} {
+		if containsConfigString(compiledDecomposeTask.EvidenceNeeded, producedRef) {
+			t.Fatalf("GENERIC decompose-work-plan must not require its own produced ref %q as evidence: %#v", producedRef, compiledDecomposeTask.EvidenceNeeded)
+		}
 	}
 	for _, ref := range []string{"map-downstream-impact", "decompose-work-plan", "mark-ready-after-review"} {
 		task := compiledTaskByRef(t, decompositionTasks, ref)
@@ -552,6 +586,7 @@ func TestGenericTicketToPRPipelineCompilesEveryAutomationHandoff(t *testing.T) {
 			rootTask:    "discover-planning-context",
 			expectedTasks: []string{
 				"discover-planning-context",
+				"map-downstream-impact",
 				"decompose-work-plan",
 				"mark-ready-after-review",
 			},

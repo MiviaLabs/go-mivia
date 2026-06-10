@@ -918,7 +918,32 @@ func (svc *Service) ensureDraftPR(ctx context.Context, workDir string, rendered 
 	if err != nil {
 		return "", err
 	}
-	return "github-pr-" + safeHash(create.Stdout), nil
+	prNumber := githubPRNumberFromOutput(create.Stdout)
+	if prNumber == "" {
+		view, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"pr", "view", "--json", "number", "--jq", ".number"}, Dir: workDir, Env: env})
+		if err == nil {
+			prNumber = strings.TrimSpace(view.Stdout)
+			if parsed := githubPRNumberFromOutput(prNumber); parsed != "" {
+				prNumber = parsed
+			}
+			if matched, _ := regexp.MatchString(`^[0-9]+$`, prNumber); !matched {
+				prNumber = ""
+			}
+		}
+	}
+	if prNumber == "" {
+		return "", fmt.Errorf("%w: draft_pr_ref_unresolved", ErrInvalidInput)
+	}
+	return "github-pr-" + prNumber, nil
+}
+
+func githubPRNumberFromOutput(output string) string {
+	for _, match := range regexp.MustCompile(`(?i)(?:/pull/|#)([0-9]+)\b`).FindAllStringSubmatch(output, -1) {
+		if len(match) == 2 && strings.TrimSpace(match[1]) != "" {
+			return strings.TrimSpace(match[1])
+		}
+	}
+	return ""
 }
 
 func (svc *Service) verifyPostPRChecks(ctx context.Context, workDir string) ([]string, error) {

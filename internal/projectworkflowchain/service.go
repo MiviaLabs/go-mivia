@@ -3,17 +3,23 @@ package projectworkflowchain
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
+	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
+
+const maxChainGitOpsRecoveryAttempts = 3
 
 type Store interface {
 	CreateChainRun(context.Context, ChainRun) (ChainRun, error)
@@ -271,6 +277,9 @@ func (svc *Service) RetryGitOps(ctx context.Context, projectID, chainRunID strin
 	if run.Status != ChainStatusBlocked || !run.GitOpsReady || !allStagesCompleted(run) {
 		return ChainRun{}, fmt.Errorf("%w: chain is not ready for GitOps retry", ErrInvalidInput)
 	}
+	if chainGitOpsRecoveryTerminal(run) {
+		return ChainRun{}, fmt.Errorf("%w: chain GitOps recovery is terminal after %s", ErrInvalidInput, safeAutomationToken(run.GitOpsFailureCategory))
+	}
 	if err := svc.retryBlockedGitOps(ctx, run); err != nil {
 		return ChainRun{}, err
 	}
@@ -340,9 +349,6 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 	if err := svc.ensureStagePlanCompletedSuccessfully(ctx, run, change); err != nil {
 		return err
 	}
-	if run.Status == ChainStatusBlocked && run.GitOpsReady && allStagesCompleted(run) {
-		return svc.retryBlockedGitOps(ctx, run)
-	}
 	cfg, err := svc.config(run.ProjectID, run.ChainRef)
 	if err != nil {
 		return err
@@ -403,7 +409,7 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 		if refreshed, err := svc.store.GetChainRun(ctx, run.ProjectID, run.ID); err == nil {
 			run = refreshed
 		}
-	} else if allStagesCompleted(run) {
+	} else if allStagesCompleted(run) && run.Status != ChainStatusBlocked && !run.GitOpsReady && strings.TrimSpace(run.PullRequestRef) == "" {
 		if cfg.GitOpsMode == GitOpsModeDraftPRAfterValidation {
 			run.Status = ChainStatusPostValidationPassed
 			run.GitOpsReady = true
@@ -415,13 +421,9 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 			}
 			run = updated
 			if err := svc.finalizeGitOps(ctx, &run); err != nil {
-				run.Status = ChainStatusBlocked
-				run.GitOpsReady = true
-				run.NextAction = "chain blocked while creating draft PR GitOps output"
-				if len(run.StageRuns) > 0 {
-					run.StageRuns[len(run.StageRuns)-1].BlockedReason = gitOpsBlockedReason(err)
+				if _, updateErr := svc.recordGitOpsFinalizationFailure(ctx, run, err); updateErr != nil {
+					return updateErr
 				}
-				_, _ = svc.store.UpdateChainRun(ctx, run)
 				return err
 			}
 		} else {
@@ -479,15 +481,13 @@ func (svc *Service) markChainRunTerminalFromWorkPlan(ctx context.Context, run Ch
 }
 
 func (svc *Service) retryBlockedGitOps(ctx context.Context, run ChainRun) error {
+	if chainGitOpsRecoveryTerminal(run) {
+		return fmt.Errorf("%w: chain GitOps recovery is terminal after %s", ErrInvalidInput, safeAutomationToken(run.GitOpsFailureCategory))
+	}
 	if err := svc.finalizeGitOps(ctx, &run); err != nil {
-		run.Status = ChainStatusBlocked
-		run.GitOpsReady = true
-		run.NextAction = "chain blocked while creating draft PR GitOps output"
-		if len(run.StageRuns) > 0 {
-			run.StageRuns[len(run.StageRuns)-1].BlockedReason = gitOpsBlockedReason(err)
+		if _, updateErr := svc.recordGitOpsFinalizationFailure(ctx, run, err); updateErr != nil {
+			return updateErr
 		}
-		run.UpdatedAt = svc.now()
-		_, _ = svc.store.UpdateChainRun(ctx, run)
 		return err
 	}
 	run.UpdatedAt = svc.now()
@@ -505,6 +505,9 @@ func (svc *Service) finalizeGitOps(ctx context.Context, run *ChainRun) error {
 	if strings.TrimSpace(run.PullRequestRef) != "" {
 		run.Status = ChainStatusCompleted
 		run.GitOpsReady = false
+		run.GitOpsFailureCategory = ""
+		run.GitOpsFailureEvidenceRefs = nil
+		run.GitOpsRecoveryStatus = GitOpsRecoveryStatusCompleted
 		run.NextAction = "workflow chain completed with draft PR GitOps output"
 		return nil
 	}
@@ -544,11 +547,42 @@ func (svc *Service) finalizeGitOps(ctx context.Context, run *ChainRun) error {
 	if result.Skipped || result.NoChanges || strings.TrimSpace(result.PullRequestRef) == "" {
 		return fmt.Errorf("%w: GitOps finalization did not create a draft PR", ErrInvalidInput)
 	}
+	if !chainActionablePullRequestRef(result.PullRequestRef) {
+		return fmt.Errorf("%w: GitOps finalization returned non-actionable draft PR ref", ErrInvalidInput)
+	}
 	run.PullRequestRef = result.PullRequestRef
 	run.Status = ChainStatusCompleted
 	run.GitOpsReady = false
+	run.GitOpsFailureCategory = ""
+	run.GitOpsFailureEvidenceRefs = nil
+	run.GitOpsRecoveryStatus = GitOpsRecoveryStatusCompleted
 	run.NextAction = "workflow chain completed with draft PR GitOps output"
 	return nil
+}
+
+func chainActionablePullRequestRef(ref string) bool {
+	return regexp.MustCompile(`^github-pr-[0-9]+$`).MatchString(strings.TrimSpace(ref))
+}
+
+func (svc *Service) recordGitOpsFinalizationFailure(ctx context.Context, run ChainRun, err error) (ChainRun, error) {
+	category := chainGitOpsFailureCategory(err)
+	run.Status = ChainStatusBlocked
+	run.GitOpsReady = true
+	run.GitOpsAttemptCount++
+	run.GitOpsFailureCategory = category
+	run.GitOpsFailureEvidenceRefs = appendUniqueMany(run.GitOpsFailureEvidenceRefs, chainGitOpsFailureEvidenceRefs(err, category, run.GitOpsAttemptCount))
+	if chainGitOpsFailureRepairable(category) && run.GitOpsAttemptCount < maxChainGitOpsRecoveryAttempts {
+		run.GitOpsRecoveryStatus = GitOpsRecoveryStatusRepairable
+		run.NextAction = "chain GitOps recovery is repairable; retry_gitops may resume draft PR finalization"
+	} else {
+		run.GitOpsRecoveryStatus = GitOpsRecoveryStatusTerminal
+		run.NextAction = "chain GitOps recovery is terminal; fix the recorded category before starting a new recovery"
+	}
+	if len(run.StageRuns) > 0 {
+		run.StageRuns[len(run.StageRuns)-1].BlockedReason = chainGitOpsBlockedReason(category, run.GitOpsRecoveryStatus, run.GitOpsAttemptCount)
+	}
+	run.UpdatedAt = svc.now()
+	return svc.store.UpdateChainRun(ctx, run)
 }
 
 func (svc *Service) ensureStagePlanCompletedSuccessfully(ctx context.Context, run ChainRun, change projectworkplan.WorkPlanStatusChange) error {
@@ -617,6 +651,97 @@ func gitOpsBlockedReason(err error) string {
 		return "gitops_finalize_failed"
 	}
 	return "gitops_finalize_failed_" + safe
+}
+
+func chainGitOpsFailureCategory(err error) string {
+	if err == nil {
+		return "gitops_finalize_failed"
+	}
+	if errors.Is(err, ErrInvalidInput) {
+		return gitOpsBlockedReason(err)
+	}
+	if projectgitops.FailureCategory(err) == "gitops_post_task_failed" {
+		return gitOpsBlockedReason(err)
+	}
+	category := projectgitops.FailureCategoryWithDetail(err)
+	if category == "" || category == "gitops_post_task_failed" {
+		return gitOpsBlockedReason(err)
+	}
+	return safeGitOpsCategory(category)
+}
+
+func chainGitOpsBlockedReason(category string, recoveryStatus string, attemptCount int) string {
+	category = safeGitOpsCategory(category)
+	if category == "" {
+		category = "gitops_finalize_failed"
+	}
+	status := safeAutomationToken(recoveryStatus)
+	if status == "" {
+		status = GitOpsRecoveryStatusRepairable
+	}
+	if attemptCount < 1 {
+		attemptCount = 1
+	}
+	return fmt.Sprintf("%s_%s_attempt_%d", category, status, attemptCount)
+}
+
+func chainGitOpsFailureEvidenceRefs(err error, category string, attemptCount int) []string {
+	category = safeGitOpsCategory(category)
+	if category == "" {
+		category = "gitops_finalize_failed"
+	}
+	refs := []string{
+		"gitops-failure:" + category,
+		fmt.Sprintf("gitops-attempt:%d", attemptCount),
+	}
+	if dirtyPaths := projectgitops.DirtyWorktreeScopePaths(err); len(dirtyPaths) > 0 {
+		refs = append(refs, "gitops-dirty-scope:"+safeShortHash(strings.Join(dirtyPaths, "\n")))
+	}
+	return refs
+}
+
+func chainGitOpsFailureRepairable(category string) bool {
+	category = strings.TrimSpace(category)
+	switch {
+	case category == "gitops_dirty_worktree", category == "gitops_dirty_worktree_scope":
+		return true
+	case strings.HasPrefix(category, "gitops_verification_failed"):
+		return true
+	case strings.HasPrefix(category, "gitops_downstream_checks_failed"):
+		return true
+	case strings.HasPrefix(category, "gitops_finalize_failed_") && !strings.Contains(category, "invalid_project_workflow_chain_input"):
+		return true
+	default:
+		return false
+	}
+}
+
+func chainGitOpsRecoveryTerminal(run ChainRun) bool {
+	return run.GitOpsRecoveryStatus == GitOpsRecoveryStatusTerminal ||
+		(run.GitOpsAttemptCount >= maxChainGitOpsRecoveryAttempts && run.GitOpsRecoveryStatus != GitOpsRecoveryStatusCompleted)
+}
+
+func safeShortHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func safeGitOpsCategory(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		case r == ':' || r == '/' || r == '\\' || r == ' ' || r == '\t' || r == '\n':
+			if b.Len() > 0 && !strings.HasSuffix(b.String(), "_") {
+				b.WriteByte('_')
+			}
+		}
+	}
+	return strings.Trim(b.String(), "_-.")
 }
 
 type gitOpsFinalizeMetadata struct {
@@ -828,10 +953,8 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 	}
 	carriedCount := 0
 	carriedBySourceRef := map[string]string{}
-	for _, task := range sourceTasks {
-		if !chainStageOutputTask(task, compiledTaskIDs) {
-			continue
-		}
+	carriedSourceTasks := chainStageOutputTasksInDependencyOrder(sourceTasks, compiledTaskIDs)
+	for _, task := range carriedSourceTasks {
 		carriedCount++
 		if existing, exists := existingTasksByRef[task.TaskRef]; exists {
 			carriedBySourceRef[task.ID] = existing.ID
@@ -848,11 +971,7 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 			continue
 		}
 		dependencyIDs := carriedTaskDependencyIDs(task, sourceRefs, carriedBySourceRef)
-		status := projectworkplan.WorkTaskStatusPlanned
-		if len(dependencyIDs) == 0 {
-			status = projectworkplan.WorkTaskStatusReady
-		}
-		created, err := svc.workPlans.CreateWorkTask(ctx, carriedTaskCreateInput(projectID, compiled.WorkPlanID, run, task, status, dependencyIDs))
+		created, err := svc.workPlans.CreateWorkTask(ctx, carriedTaskCreateInput(projectID, compiled.WorkPlanID, run, task, projectworkplan.WorkTaskStatusPlanned, dependencyIDs))
 		if err != nil {
 			return err
 		}
@@ -873,6 +992,46 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 		return fmt.Errorf("%w: missing_carried_implementation_tasks", ErrInvalidInput)
 	}
 	return nil
+}
+
+func chainStageOutputTasksInDependencyOrder(tasks []projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}) []projectworkplan.WorkTask {
+	eligibleByRef := map[string]projectworkplan.WorkTask{}
+	for _, task := range tasks {
+		if !chainStageOutputTask(task, compiledTaskIDs) {
+			continue
+		}
+		if strings.TrimSpace(task.ID) != "" {
+			eligibleByRef[task.ID] = task
+		}
+		if strings.TrimSpace(task.TaskRef) != "" {
+			eligibleByRef[task.TaskRef] = task
+		}
+	}
+	visited := map[string]bool{}
+	visiting := map[string]bool{}
+	var ordered []projectworkplan.WorkTask
+	var visit func(projectworkplan.WorkTask)
+	visit = func(task projectworkplan.WorkTask) {
+		key := firstNonEmpty(task.ID, task.TaskRef)
+		if key == "" || visited[key] || visiting[key] {
+			return
+		}
+		visiting[key] = true
+		for _, dep := range task.DependencyTaskIDs {
+			if depTask, ok := eligibleByRef[strings.TrimSpace(dep)]; ok {
+				visit(depTask)
+			}
+		}
+		visiting[key] = false
+		visited[key] = true
+		ordered = append(ordered, task)
+	}
+	for _, task := range tasks {
+		if chainStageOutputTask(task, compiledTaskIDs) {
+			visit(task)
+		}
+	}
+	return ordered
 }
 
 func targetPlanHasSelector(tasks []projectworkplan.WorkTask) bool {
@@ -1022,7 +1181,9 @@ func chainStageOutputTaskHasReviewProof(task projectworkplan.WorkTask) bool {
 }
 
 func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task projectworkplan.WorkTask, status string, dependencyIDs []string) projectworkplan.CreateWorkTaskInput {
-	reviewResultRefs := append([]string(nil), task.ReviewResultRefs...)
+	evidenceRefs := append([]string(nil), task.EvidenceRefs...)
+	evidenceRefs = append(evidenceRefs, task.ReviewResultRefs...)
+	evidenceRefs = append(evidenceRefs, task.VerifierResultRefs...)
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               projectID,
 		PlanID:                  planID,
@@ -1045,11 +1206,11 @@ func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task 
 		FailureCriteria:         task.FailureCriteria,
 		ReviewGate:              task.ReviewGate,
 		ResumeInstructions:      task.ResumeInstructions,
-		EvidenceRefs:            append([]string(nil), task.EvidenceRefs...),
+		EvidenceRefs:            evidenceRefs,
 		ClaimRefs:               append([]string(nil), task.ClaimRefs...),
-		VerifierResultRefs:      append([]string(nil), task.VerifierResultRefs...),
-		ReviewResultRefs:        reviewResultRefs,
-		ReviewExemptReason:      task.ReviewExemptReason,
+		VerifierResultRefs:      nil,
+		ReviewResultRefs:        nil,
+		ReviewExemptReason:      "",
 		ArtifactRefs:            append([]string(nil), task.ArtifactRefs...),
 		AgentRunIDs:             append([]string(nil), task.AgentRunIDs...),
 		DecompositionQuality:    task.DecompositionQuality,

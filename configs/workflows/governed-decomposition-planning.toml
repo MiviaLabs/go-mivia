@@ -118,13 +118,52 @@ downstream_impact_refs = ["context-pack-ref", "mcp-surface-gap-ref"]
 output_contract = "bounded planning context packet with repo instruction refs, context health refs, and MCP surface gap refs"
 
 [[steps]]
+id = "map-downstream-impact"
+kind = "work_task"
+title = "Map Downstream Impact"
+agent = "planning-worker"
+depends_on = ["discover-planning-context"]
+description = "Produce the dependency map and downstream impact refs required before task decomposition."
+evidence_needed = ["context-pack-ref", "project-context-health", "mcp-surface-gap-ref"]
+files_to_read = [
+  ".ai/INDEX.md",
+  ".ai/skills/mivia-mcp/SKILL.md",
+  "docs/agent-context-guide.md",
+  "configs/workflows/governed-decomposition-planning.toml"
+]
+files_to_edit = []
+likely_files_affected = [".ai", "docs", "internal", "configs"]
+verification_requirement = "orchestrator verifies dependency-map-ref and downstream-impact-ref exist before decomposition"
+expected_output = "metadata-only dependency map and downstream impact refs for decomposition"
+failure_criteria = "block if downstream impact cannot be mapped from bounded context refs without hidden chat context"
+review_gate = "planning-readiness-review must approve downstream impact refs before decomposition"
+resume_instructions = "resume from Work Plan id, context-pack-ref, dependency-map-ref, and downstream-impact-ref"
+acceptance_criteria = [
+  "Dependency map identifies prerequisite task ordering and affected workflow stages.",
+  "Downstream impact refs cover implementation, review, verifier, GitOps, and PR creation handoffs.",
+  "Output is metadata-only and sufficient for isolated decomposition work."
+]
+stop_conditions = [
+  "Block if dependency or downstream impact refs are missing or unverifiable.",
+  "Stop if impact mapping depends on hidden chat context or unsafe unbounded payload material."
+]
+verifier_ladder = [
+  "orchestrator checks dependency-map-ref exists",
+  "orchestrator checks downstream-impact-ref exists",
+  "orchestrator verifies decompose-work-plan depends on this reviewed task"
+]
+regression_test_applicability = "not_applicable for metadata-only downstream impact mapping"
+downstream_impact_refs = ["dependency-map-ref", "downstream-impact-ref"]
+output_contract = "dependency map and downstream impact refs available before decomposition"
+
+[[steps]]
 id = "decompose-work-plan"
 kind = "work_task"
 title = "Decompose Work Plan"
 agent = "planning-worker"
-depends_on = ["discover-planning-context"]
+depends_on = ["map-downstream-impact"]
 description = "Create small Work Tasks with objective, files, evidence, dependencies, verifier, output, failure criteria, resume instructions, and review gate."
-evidence_needed = ["context-pack-ref", "task-decomposition-ref", "dependency-map-ref"]
+evidence_needed = ["context-pack-ref", "dependency-map-ref", "downstream-impact-ref"]
 files_to_read = [
   ".ai/INDEX.md",
   ".ai/skills/mivia-mcp/SKILL.md",
@@ -225,10 +264,10 @@ max_parallel_tasks = 2
 
 [[review_gates]]
 id = "planning-readiness-review"
-applies_to = ["discover-planning-context", "decompose-work-plan", "mark-ready-after-review", "queue-planning-automation"]
+applies_to = ["discover-planning-context", "map-downstream-impact", "decompose-work-plan", "mark-ready-after-review", "queue-planning-automation"]
 reviewer_agent = "planning-reviewer"
 required = true
 independent_from_owner = true
-required_artifacts = ["work-plan-ref", "work-task-refs", "evidence-refs", "dependency-map-ref"]
+required_artifacts = ["work-plan-ref", "work-task-refs", "evidence-refs", "dependency-map-ref", "downstream-impact-ref"]
 allowed_actions = ["approved", "rejected", "needs_changes", "blocked"]
 instructions = "Approve only if each Work Task is isolated-worker-ready, metadata-only, has evidence needs, verifier scope, dependencies, resume instructions, and independent review requirements."

@@ -198,7 +198,7 @@ func TestPostTaskCreatesDraftPRWithMASSTicketConventions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected MASS GitOps draft PR to succeed: %v", err)
 	}
-	if result.PullRequestRef == "" || !containsString(result.EvidenceRefs, "draft-pr-ready") {
+	if result.PullRequestRef != "github-pr-1044" || !containsString(result.EvidenceRefs, "draft-pr-ready") {
 		t.Fatalf("expected draft PR evidence, got %#v", result)
 	}
 	var create Command
@@ -226,6 +226,71 @@ func TestPostTaskCreatesDraftPRWithMASSTicketConventions(t *testing.T) {
 	}
 	if !containsEnv(create.Env, "GH_TOKEN=test-token") {
 		t.Fatalf("expected GitHub token env for PR creation, got %#v", create.Env)
+	}
+}
+
+func TestPostTaskFailsWhenDraftPRCreateOutputHasNoActionablePRRef(t *testing.T) {
+	runner := &recordingRunner{
+		results: []CommandResult{
+			{},
+			{Stdout: " M internal/projectgitops/service.go\n"},
+			{Stdout: "feat-MASS-1044-gitops\n"},
+			{},
+			{},
+			{},
+			{Stdout: "abc123def456\n"},
+			{Stdout: "https://github.com/MiviaLabs/mass-monorepo.git\n"},
+			{},
+			{},
+			{Stdout: "created draft pull request\n"},
+		},
+		errs: []error{
+			nil, nil, nil, nil, nil, nil, nil, nil,
+			errors.New("no pull request found"),
+			nil,
+			nil,
+		},
+	}
+	svc := NewWithRunner(Options{
+		Enabled:           true,
+		CommitAfterTask:   true,
+		PushAfterTask:     true,
+		DraftPRAfterPush:  true,
+		RemoteName:        "origin",
+		GitHubCLIPath:     "gh",
+		GitHubTokenEnv:    "MIVIA_TEST_GH_TOKEN",
+		BranchNamePattern: "^(feat|fix|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+		Conventions: Conventions{
+			AllowedChangeTypes:       []string{"feat", "fix", "chore"},
+			DefaultChangeType:        "feat",
+			RequireTicket:            true,
+			TicketRefPattern:         "^MASS-[0-9]+$",
+			PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): {{work_task_title}}",
+			PullRequestBodyTemplate:  "{{what_changed}}\n\n{{how_verified}}",
+		},
+	}, runner)
+	t.Setenv("MIVIA_TEST_GH_TOKEN", "test-token")
+
+	result, err := svc.PostTask(context.Background(), PostTaskInput{
+		WorkDir:          "/tmp/mass-worktree",
+		ProjectID:        "mass-monorepo",
+		PlanID:           "work_plan_mass_1044",
+		TaskID:           "work_task_final_readiness",
+		TaskRef:          "final-pr-readiness",
+		TaskTitle:        "booking expiry service v2",
+		TicketRef:        "MASS-1044",
+		ChangeType:       "feat",
+		BranchName:       "feat-MASS-1044-gitops",
+		BaseRef:          "main",
+		ReviewRefs:       []string{"review_result:post_validation_approved"},
+		VerifierRefs:     []string{"verifier:focused_tests_passed"},
+		AllowedPathspecs: []string{"internal/projectgitops"},
+	})
+	if err == nil {
+		t.Fatalf("expected unresolved draft PR ref to fail, got %#v", result)
+	}
+	if result.PullRequestRef != "" || containsString(result.EvidenceRefs, "draft-pr-ready") {
+		t.Fatalf("unresolved draft PR must not return ready PR evidence, got %#v", result)
 	}
 }
 
@@ -510,6 +575,9 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 			{},
 			{Stdout: "https://github.com/example/repo.git\n"},
 			{},
+			{},
+			{},
+			{Stdout: "created draft pull request\n"},
 			{Stdout: "https://github.com/example/repo/pull/123\n"},
 		},
 		errs: []error{
@@ -524,9 +592,9 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 			nil,
 			nil,
 			nil,
-			nil,
-			nil,
 			errors.New("no existing pr"),
+			nil,
+			nil,
 		},
 	}
 	svc := NewWithRunner(Options{
@@ -565,7 +633,7 @@ func TestPostTaskCreatesDraftPRForCleanBranchAheadOfMain(t *testing.T) {
 		TestResults:     []string{"post-validation completed"},
 	})
 	if err != nil {
-		t.Fatalf("expected clean ahead branch PR finalization to succeed: %v", err)
+		t.Fatalf("expected clean ahead branch PR finalization to succeed: %v; commands=%s", err, commandArgs(runner.commands))
 	}
 	if result.NoChanges || result.PushRef == "" || result.PullRequestRef == "" {
 		t.Fatalf("expected push and draft PR refs, got %#v", result)
@@ -594,6 +662,7 @@ func TestPostTaskCleanAheadBranchSignsExistingCommitBeforePush(t *testing.T) {
 			{Stdout: "abc123def456\n"},
 			{Stdout: "https://github.com/example/repo.git\n"},
 			{},
+			{Stdout: "https://github.com/example/repo/pull/123\n"},
 			{Stdout: "https://github.com/example/repo/pull/123\n"},
 		},
 		errs: []error{
@@ -668,6 +737,8 @@ func TestPostTaskCleanAheadBranchStagesGeneratedArtifactsBeforePush(t *testing.T
 			{},
 			{Stdout: "abc123def456\n"},
 			{Stdout: "https://github.com/example/repo.git\n"},
+			{Stdout: "https://github.com/example/repo/pull/123\n"},
+			{},
 			{Stdout: "https://github.com/example/repo/pull/123\n"},
 		},
 	}
@@ -2592,6 +2663,7 @@ func TestPostTaskCreatesDraftPRWithRenderedMetadata(t *testing.T) {
 			{Stdout: "abc123def456\n"},
 			{Stdout: "https://github.com/example/repo.git\n"},
 			{},
+			{Stdout: "https://github.example/pull/1\n"},
 			{Stdout: "https://github.example/pull/1\n"},
 		},
 		errs: []error{

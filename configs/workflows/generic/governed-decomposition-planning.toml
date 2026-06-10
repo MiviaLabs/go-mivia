@@ -126,7 +126,7 @@ title = "Map Downstream Impact"
 agent = "planning-worker"
 depends_on = ["discover-planning-context"]
 description = "Map downstream impact before task decomposition: affected apps/libs/packages, public APIs, contracts/OpenAPI, generated artifacts, events/outbox, Temporal workflows, migrations, policies, catalog, Flutter/mobile surfaces, observability/logging, and external integrations."
-evidence_needed = ["changed-path-impact-ref", "reference-search-ref", "call-graph-ref", "contract-impact-ref", "generated-artifact-impact-ref", "risk-domain-ref"]
+evidence_needed = ["context-pack-ref", "package-boundary-ref", "risk-domain-ref", "mcp-surface-gap-ref"]
 files_to_read = [
   ".agentic/policies/repo-standards.md",
   ".agentic/policies/risk-review-mapping.yaml",
@@ -165,7 +165,7 @@ title = "Decompose Work Plan"
 agent = "planning-worker"
 depends_on = ["map-downstream-impact"]
 description = "Create granular GENERIC Work Tasks. Each task must have one objective, bounded files_to_read, expected files_to_edit or explicit discovery scope, dependencies, downstream impact refs, regression-test applicability decision, acceptance criteria, stop conditions, verifier ladder, review gate, output contract, and resume instructions. Split tasks that cross unrelated packages, risk domains, generated artifacts, or verification ladders."
-evidence_needed = ["context-pack-ref", "task-decomposition-ref", "dependency-map-ref", "downstream-impact-ref", "regression-test-applicability-ref", "acceptance-criteria-ref", "verifier-ladder-ref"]
+evidence_needed = ["context-pack-ref", "dependency-map-ref", "downstream-impact-ref", "risk-domain-ref"]
 files_to_read = [
   ".agentic/README.md",
   ".agentic/skills/project-plan/SKILL.md",

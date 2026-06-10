@@ -463,7 +463,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		if status == projectautomation.RunStatusCompleted && strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && !taskHasGovernedCloseout(taskMetadata) && shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun, taskMetadata) {
 			if closeoutErr := client.closeoutMetadataOnlyTask(ctx, projectID, claimed, readOnlyReviewRun); closeoutErr != nil {
 				status = projectautomation.RunStatusFailed
-				failureCategory = "automation_task_closeout_failed"
+				failureCategory = metadataOnlyCloseoutFailureCategory(closeoutErr)
 			} else {
 				taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
 			}
@@ -1889,7 +1889,7 @@ func (client *runnerClient) closeoutMetadataOnlyTask(ctx context.Context, projec
 		Note:            "metadata-only automation completed without runner-level failure",
 	}
 	if _, err := client.post(ctx, pathBase+"/verifier-results", verifierInput, nil); err != nil {
-		return err
+		return metadataOnlyCloseoutError{category: "automation_task_closeout_failed_verifier_attach", err: err}
 	}
 	statusInput := struct {
 		RunID          string `json:"run_id,omitempty"`
@@ -1903,7 +1903,7 @@ func (client *runnerClient) closeoutMetadataOnlyTask(ctx context.Context, projec
 		SafeNextAction: "complete read-only reviewer gate after verifier metadata is attached",
 	}
 	if _, err := client.post(ctx, pathBase+"/status", statusInput, nil); err != nil {
-		return err
+		return metadataOnlyCloseoutError{category: "automation_task_closeout_failed_status_update", err: err}
 	}
 	completeInput := struct {
 		RunID              string   `json:"run_id,omitempty"`
@@ -1923,9 +1923,33 @@ func (client *runnerClient) closeoutMetadataOnlyTask(ctx context.Context, projec
 		EvidenceRefs:       []string{"automation_run:" + runID},
 	}
 	if _, err := client.post(ctx, pathBase+"/complete", completeInput, nil); err != nil {
-		return err
+		return metadataOnlyCloseoutError{category: "automation_task_closeout_failed_complete", err: err}
 	}
 	return nil
+}
+
+type metadataOnlyCloseoutError struct {
+	category string
+	err      error
+}
+
+func (err metadataOnlyCloseoutError) Error() string {
+	if err.err == nil {
+		return err.category
+	}
+	return err.category + ": " + err.err.Error()
+}
+
+func (err metadataOnlyCloseoutError) Unwrap() error {
+	return err.err
+}
+
+func metadataOnlyCloseoutFailureCategory(err error) string {
+	var closeoutErr metadataOnlyCloseoutError
+	if errors.As(err, &closeoutErr) && strings.TrimSpace(closeoutErr.category) != "" {
+		return strings.TrimSpace(closeoutErr.category)
+	}
+	return "automation_task_closeout_failed"
 }
 
 func shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun bool, task runnerWorkTaskMetadata) bool {

@@ -57,6 +57,30 @@ func TestGovernedWorkflowCloseoutInstructionsAvoidValidatorForbiddenLiterals(t *
 	}
 }
 
+func TestPlanningReadinessReviewDecisionRequiresExactApprovalToken(t *testing.T) {
+	for _, ref := range []string{
+		"review:unapproved",
+		"review:not-approved",
+		"review:approval-pending",
+		"review:needs_changes",
+		"review:blocked",
+		"review:approved:needs_changes",
+	} {
+		if got := planningReadinessReviewDecision(ref); got != "rejected" {
+			t.Fatalf("expected %q to reject, got %q", ref, got)
+		}
+	}
+	for _, ref := range []string{
+		"review:approved",
+		"review_result_task_planning_readiness_approved",
+		"review.passed",
+	} {
+		if got := planningReadinessReviewDecision(ref); got != "approved" {
+			t.Fatalf("expected %q to approve, got %q", ref, got)
+		}
+	}
+}
+
 func TestCallAutomationToolCreateAcceptsCommonCompatibilityAliases(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t, Options{Enabled: true})
@@ -1716,6 +1740,23 @@ func TestClaimNextRunPrefersTracedQueuedRunOverOlderUntracedHistory(t *testing.T
 }
 
 func TestCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t *testing.T) {
+	testCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t, "governed_closeout_apply_failed_invalid_project_workplan_input")
+}
+
+func TestCompleteAttemptRequeuesMetadataOnlyCloseoutStepFailures(t *testing.T) {
+	for _, category := range []string{
+		"automation_task_closeout_failed_verifier_attach",
+		"automation_task_closeout_failed_status_update",
+		"automation_task_closeout_failed_complete",
+	} {
+		t.Run(category, func(t *testing.T) {
+			testCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t, category)
+		})
+	}
+}
+
+func testCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t *testing.T, failureCategory string) {
+	t.Helper()
 	ctx := context.Background()
 	store := newTestStore()
 	task := readyTask("task-a", "decompose-a", []string{"internal/foo.go"})
@@ -1741,7 +1782,7 @@ func TestCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t *testing.
 		ProjectID:          "project-1",
 		RunID:              "run-a",
 		Status:             RunStatusFailed,
-		FailureCategory:    "governed_closeout_apply_failed_invalid_project_workplan_input",
+		FailureCategory:    failureCategory,
 		ClaimID:            "claim-a",
 		RunnerID:           "runner-a",
 		EvidenceRefs:       []string{"closeout:governed-closeout-apply-failed"},
@@ -1750,7 +1791,7 @@ func TestCompleteAttemptRequeuesFailedGovernedCloseoutForClaimedTask(t *testing.
 	if err != nil {
 		t.Fatalf("CompleteAttempt returned error: %v", err)
 	}
-	if updated.Status != RunStatusFailed || updated.FailureCategory != "governed_closeout_apply_failed_invalid_project_workplan_input" {
+	if updated.Status != RunStatusFailed || updated.FailureCategory != failureCategory {
 		t.Fatalf("expected governed closeout run to be failed durably, got %#v", updated)
 	}
 	requeuedTask := fake.tasks[task.ID]
@@ -2649,6 +2690,160 @@ func TestCompleteReviewedReadinessWrapperDoesNotReleaseTasksWithoutAutomation(t 
 	}
 	if got := fake.tasks[metadataOnly.ID]; got.Status != projectworkplan.WorkTaskStatusPlanned {
 		t.Fatalf("expected metadata-only planned task to stay planned, got %+v", got)
+	}
+}
+
+func TestBlockedReadinessWrapperRecoversWhenApprovedChildrenCanRun(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	wrapper := readyTask("task-ready-wrapper", "mark-ready-after-review", nil)
+	wrapper.Status = projectworkplan.WorkTaskStatusBlocked
+	wrapper.PlanID = "plan-1"
+	wrapper.ClaimedByRunID = "run-wrapper"
+	wrapper.DecompositionQuality = projectworkplan.DecompositionReady
+	wrapper.VerifierResultRefs = []string{"verifier.automation.review-metadata"}
+	wrapper.BlockedReason = "worker blocked despite approved children"
+	wrapper.ResumeInstructions = "recover after approved child review refs"
+	implementation := readyTask("task-implementation", "implement-ticket-slice", []string{"internal/foo.go"})
+	implementation.Status = projectworkplan.WorkTaskStatusPlanned
+	implementation.PlanID = "plan-1"
+	implementation.DecompositionQuality = projectworkplan.DecompositionReady
+	implementation.FilesToEdit = []string{"internal/foo.go"}
+	implementation.ReviewResultRefs = []string{"review_result_task-implementation_planning_readiness_approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		wrapper.ID:        wrapper,
+		implementation.ID: implementation,
+	}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	svc.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	if _, err := store.CreateAutomation(ctx, Automation{
+		ID:              "automation-implementation",
+		ProjectID:       implementation.ProjectID,
+		AutomationRef:   "auto-implementation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "implementation-worker",
+		PlanID:          implementation.PlanID,
+		AllowedTaskRefs: []string{implementation.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+	}); err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	run := AutomationRun{
+		ID:             "run-wrapper",
+		ProjectID:      wrapper.ProjectID,
+		AutomationID:   "automation-wrapper",
+		PlanID:         wrapper.PlanID,
+		TaskID:         wrapper.ID,
+		Status:         RunStatusVerifying,
+		RunnerKind:     RunnerKindCodexCLI,
+		WorkTaskStatus: projectworkplan.WorkTaskStatusBlocked,
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	recovered, err := svc.finishRunAfterTaskTerminal(ctx, run, wrapper)
+	if err != nil {
+		t.Fatalf("finishRunAfterTaskTerminal returned error: %v", err)
+	}
+	if recovered.Status != RunStatusCompleted || recovered.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected recovered wrapper run to complete, got %#v", recovered)
+	}
+	if got := fake.tasks[wrapper.ID]; got.Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected blocked wrapper to complete through recovery, got %#v", got)
+	}
+	if got := fake.tasks[implementation.ID]; got.Status != projectworkplan.WorkTaskStatusReady {
+		t.Fatalf("expected approved implementation task to release, got %#v", got)
+	}
+}
+
+func TestBlockedReadinessWrapperDoesNotRecoverRejectedChildReview(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	wrapper := readyTask("task-ready-wrapper", "mark-ready-after-review", nil)
+	wrapper.Status = projectworkplan.WorkTaskStatusBlocked
+	wrapper.PlanID = "plan-1"
+	wrapper.ClaimedByRunID = "run-wrapper"
+	wrapper.DecompositionQuality = projectworkplan.DecompositionReady
+	wrapper.VerifierResultRefs = []string{"verifier.automation.review-metadata"}
+	wrapper.BlockedReason = "review rejected"
+	wrapper.ResumeInstructions = "repair decomposition before retry"
+	implementation := readyTask("task-implementation", "implement-ticket-slice", []string{"internal/foo.go"})
+	implementation.Status = projectworkplan.WorkTaskStatusPlanned
+	implementation.PlanID = "plan-1"
+	implementation.DecompositionQuality = projectworkplan.DecompositionReady
+	implementation.FilesToEdit = []string{"internal/foo.go"}
+	implementation.ReviewResultRefs = []string{"review_result_task-implementation_planning_readiness_rejected"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		wrapper.ID:        wrapper,
+		implementation.ID: implementation,
+	}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	if _, err := store.CreateAutomation(ctx, Automation{
+		ID:              "automation-implementation",
+		ProjectID:       implementation.ProjectID,
+		AutomationRef:   "auto-implementation",
+		Status:          AutomationStatusEnabled,
+		AgentID:         "implementation-worker",
+		PlanID:          implementation.PlanID,
+		AllowedTaskRefs: []string{implementation.TaskRef},
+		TriggerKind:     TriggerKindAutomatic,
+	}); err != nil {
+		t.Fatalf("CreateAutomation returned error: %v", err)
+	}
+	run := AutomationRun{ID: "run-wrapper", ProjectID: wrapper.ProjectID, AutomationID: "automation-wrapper", PlanID: wrapper.PlanID, TaskID: wrapper.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, WorkTaskStatus: projectworkplan.WorkTaskStatusBlocked}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	blocked, err := svc.finishRunAfterTaskTerminal(ctx, run, wrapper)
+	if err != nil {
+		t.Fatalf("finishRunAfterTaskTerminal returned error: %v", err)
+	}
+	if blocked.Status != RunStatusBlocked || blocked.FailureCategory != "work_task_blocked" {
+		t.Fatalf("expected rejected review to remain blocked, got %#v", blocked)
+	}
+	if got := fake.tasks[implementation.ID]; got.Status != projectworkplan.WorkTaskStatusPlanned {
+		t.Fatalf("rejected child must not release, got %#v", got)
+	}
+}
+
+func TestBlockedReadinessWrapperDoesNotRecoverWithoutEnabledAutomation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore()
+	wrapper := readyTask("task-ready-wrapper", "mark-ready-after-review", nil)
+	wrapper.Status = projectworkplan.WorkTaskStatusBlocked
+	wrapper.PlanID = "plan-1"
+	wrapper.ClaimedByRunID = "run-wrapper"
+	wrapper.DecompositionQuality = projectworkplan.DecompositionReady
+	wrapper.VerifierResultRefs = []string{"verifier.automation.review-metadata"}
+	wrapper.BlockedReason = "no automation"
+	wrapper.ResumeInstructions = "create automation before retry"
+	implementation := readyTask("task-implementation", "implement-ticket-slice", []string{"internal/foo.go"})
+	implementation.Status = projectworkplan.WorkTaskStatusPlanned
+	implementation.PlanID = "plan-1"
+	implementation.DecompositionQuality = projectworkplan.DecompositionReady
+	implementation.FilesToEdit = []string{"internal/foo.go"}
+	implementation.ReviewResultRefs = []string{"review_result_task-implementation_planning_readiness_approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		wrapper.ID:        wrapper,
+		implementation.ID: implementation,
+	}}
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	run := AutomationRun{ID: "run-wrapper", ProjectID: wrapper.ProjectID, AutomationID: "automation-wrapper", PlanID: wrapper.PlanID, TaskID: wrapper.ID, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI, WorkTaskStatus: projectworkplan.WorkTaskStatusBlocked}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	blocked, err := svc.finishRunAfterTaskTerminal(ctx, run, wrapper)
+	if err != nil {
+		t.Fatalf("finishRunAfterTaskTerminal returned error: %v", err)
+	}
+	if blocked.Status != RunStatusBlocked || blocked.FailureCategory != "work_task_blocked" {
+		t.Fatalf("expected missing automation to remain blocked, got %#v", blocked)
+	}
+	if got := fake.tasks[implementation.ID]; got.Status != projectworkplan.WorkTaskStatusPlanned {
+		t.Fatalf("approved child without automation must not release, got %#v", got)
 	}
 }
 

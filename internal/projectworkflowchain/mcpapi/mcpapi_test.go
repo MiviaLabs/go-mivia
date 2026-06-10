@@ -91,7 +91,7 @@ func TestCallToolRetryGitOpsUsesSafeRefsOnly(t *testing.T) {
 		t.Fatalf("retry gitops: %v", err)
 	}
 	structured := result["structuredContent"].(projectworkflowchain.ChainRun)
-	if structured.PullRequestRef != "pr/GENERIC-1044" {
+	if structured.PullRequestRef != "github-pr-1044" {
 		t.Fatalf("unexpected structured result: %#v", structured)
 	}
 }
@@ -129,7 +129,7 @@ func TestCallToolGetAndListPreserveWorkflowChainHandoffMetadata(t *testing.T) {
 				t.Fatalf("%s: %v", tc.tool, err)
 			}
 			body := result["content"].([]map[string]string)[0]["text"]
-			if !strings.Contains(body, `"pull_request_ref":"pr/GENERIC-1044"`) || !strings.Contains(body, `"next_action":"workflow chain completed with draft PR GitOps output"`) {
+			if !strings.Contains(body, `"pull_request_ref":"github-pr-1044"`) || !strings.Contains(body, `"next_action":"workflow chain completed with draft PR GitOps output"`) {
 				t.Fatalf("tool content lost handoff refs/actions: %s", body)
 			}
 			switch structured := result["structuredContent"].(type) {
@@ -206,7 +206,7 @@ func TestCallToolGenericChainUsesRealCompilerAndPreservesGeneratedHandoffs(t *te
 	finalizer := &mcpGitOpsFinalizer{result: projectworkflowchain.GitOpsFinalizeResult{
 		CommitRef:      "commit/generic-mcp-2044",
 		PushRef:        "push/generic-mcp-2044",
-		PullRequestRef: "pr/generic-mcp-2044",
+		PullRequestRef: "github-pr-2044",
 		EvidenceRefs:   []string{"gitops-evidence:generic-mcp-2044"},
 	}}
 	chainSvc.SetGitOpsFinalizer(finalizer)
@@ -272,7 +272,7 @@ func TestCallToolGenericChainUsesRealCompilerAndPreservesGeneratedHandoffs(t *te
 		t.Fatalf("real MCP get: %v", err)
 	}
 	run := got["structuredContent"].(projectworkflowchain.ChainRun)
-	if run.Status != projectworkflowchain.ChainStatusCompleted || run.PullRequestRef != "pr/generic-mcp-2044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+	if run.Status != projectworkflowchain.ChainStatusCompleted || run.PullRequestRef != "github-pr-2044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
 		t.Fatalf("MCP get lost completed status/action/PR refs: %#v", run)
 	}
 	if len(finalizer.inputs) != 1 || finalizer.inputs[0].InputRef != "input:ticket/GENERIC-2044" || finalizer.inputs[0].CreatedByRunID != "codex-mcp-run-2044" || finalizer.inputs[0].TraceID != "trace-generic-mcp-2044" {
@@ -286,7 +286,7 @@ func TestCallToolGenericChainUsesRealCompilerAndPreservesGeneratedHandoffs(t *te
 		t.Fatalf("real MCP list: %v", err)
 	}
 	listResult := listed["structuredContent"].(projectworkflowchain.ListResult)
-	if len(listResult.Runs) != 1 || listResult.Runs[0].PullRequestRef != "pr/generic-mcp-2044" {
+	if len(listResult.Runs) != 1 || listResult.Runs[0].PullRequestRef != "github-pr-2044" {
 		t.Fatalf("MCP list lost completed chain refs: %#v", listResult)
 	}
 }
@@ -318,7 +318,7 @@ func completedChainRun() projectworkflowchain.ChainRun {
 		Status:         projectworkflowchain.ChainStatusCompleted,
 		AutomationIDs:  []string{"automation-decomposition", "automation-implementation", "automation-validation"},
 		GitOpsReady:    false,
-		PullRequestRef: "pr/GENERIC-1044",
+		PullRequestRef: "github-pr-1044",
 		NextAction:     "workflow chain completed with draft PR GitOps output",
 		StageRuns: []projectworkflowchain.StageRun{
 			{StageRef: "decomposition", WorkflowID: "workflow-decomposition", Status: projectworkflowchain.StageStatusCompleted, AutomationIDs: []string{"automation-decomposition"}},
@@ -330,7 +330,7 @@ func completedChainRun() projectworkflowchain.ChainRun {
 
 func assertCompletedChainHandoff(t *testing.T, run projectworkflowchain.ChainRun) {
 	t.Helper()
-	if run.Status != projectworkflowchain.ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "pr/GENERIC-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
+	if run.Status != projectworkflowchain.ChainStatusCompleted || run.GitOpsReady || run.PullRequestRef != "github-pr-1044" || run.NextAction != "workflow chain completed with draft PR GitOps output" {
 		t.Fatalf("chain handoff status/actions were not preserved: %#v", run)
 	}
 	if len(run.AutomationIDs) != 3 || len(run.StageRuns) != 3 {

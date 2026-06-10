@@ -113,6 +113,7 @@ func cloneRun(run projectworkflowchain.ChainRun) projectworkflowchain.ChainRun {
 	run.ContextRefs = append([]string(nil), run.ContextRefs...)
 	run.WorkPlanIDs = append([]string(nil), run.WorkPlanIDs...)
 	run.AutomationIDs = append([]string(nil), run.AutomationIDs...)
+	run.GitOpsFailureEvidenceRefs = append([]string(nil), run.GitOpsFailureEvidenceRefs...)
 	run.StageRuns = append([]projectworkflowchain.StageRun(nil), run.StageRuns...)
 	for i := range run.StageRuns {
 		run.StageRuns[i].WorkTaskIDs = append([]string(nil), run.StageRuns[i].WorkTaskIDs...)

@@ -362,7 +362,7 @@ func normalizeGovernedCloseoutFreeText(value string) string {
 func normalizeGovernedCloseoutChildTaskRef(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" ||
-		unsafeText(value) ||
+		unsafeCloseoutRefMaterial(value) ||
 		strings.Contains(value, "\\") ||
 		strings.Contains(value, "..") ||
 		strings.HasPrefix(value, "/") ||
@@ -397,6 +397,34 @@ func normalizeGovernedCloseoutChildTaskRef(value string) string {
 		return normalized
 	}
 	return value
+}
+
+func unsafeCloseoutRefMaterial(value string) bool {
+	value = strings.TrimSpace(value)
+	lower := redactCloseoutSafeProhibitionPhrases(strings.ToLower(value))
+	return closeoutEmailPattern.MatchString(value) ||
+		closeoutPhonePattern.MatchString(value) ||
+		strings.Contains(lower, "secret=") ||
+		strings.Contains(lower, "token=") ||
+		strings.Contains(lower, "credential=") ||
+		strings.Contains(lower, "api_key") ||
+		strings.Contains(lower, "openai_api_key") ||
+		strings.Contains(lower, "anthropic_api_key") ||
+		strings.Contains(lower, "provider_payload") ||
+		strings.Contains(lower, "provider payload") ||
+		strings.Contains(lower, "raw_prompt") ||
+		strings.Contains(lower, "raw_completion") ||
+		strings.Contains(lower, "raw_stderr") ||
+		strings.Contains(lower, "raw stderr") ||
+		strings.Contains(lower, "raw log") ||
+		strings.Contains(lower, "raw source") ||
+		strings.Contains(lower, "source dump") ||
+		strings.Contains(lower, "begin private key") ||
+		strings.Contains(lower, "ghp_") ||
+		strings.HasPrefix(lower, "sk-") ||
+		strings.Contains(lower, " sk-") ||
+		strings.Contains(lower, "=sk-") ||
+		containsCloseoutRootMarker(value)
 }
 
 func normalizeGovernedCloseoutChildTaskRefs(values []string) []string {
@@ -1263,11 +1291,8 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 		if planID == "" {
 			return fmt.Errorf("%w: child tasks require plan id", projectautomation.ErrInvalidInput)
 		}
-		for _, child := range output.ChildTasks {
-			input := governedChildTaskCreateInput(child, runID, traceID)
-			if err := client.ensureGovernedChildTask(ctx, projectID, planID, child, input); err != nil {
-				return fmt.Errorf("child_task_create_failed: %w", err)
-			}
+		if _, err := client.ensureGovernedChildTasks(ctx, projectID, planID, output.ChildTasks, runID, traceID); err != nil {
+			return err
 		}
 	}
 	pathBase := fmt.Sprintf("/api/v1/projects/%s/work-tasks/%s", url.PathEscape(projectID), url.PathEscape(taskID))
@@ -1336,21 +1361,112 @@ func (client *runnerClient) applyGovernedCloseout(ctx context.Context, projectID
 	}
 }
 
-func (client *runnerClient) ensureGovernedChildTask(ctx context.Context, projectID string, planID string, child governedCloseoutWorkTask, input any) error {
+func (client *runnerClient) ensureGovernedChildTasks(ctx context.Context, projectID string, planID string, children []governedCloseoutWorkTask, runID string, traceID string) (map[string]runnerWorkTaskMetadata, error) {
+	childrenByRef := make(map[string]governedCloseoutWorkTask, len(children))
+	for _, child := range children {
+		ref := strings.TrimSpace(child.TaskRef)
+		if ref == "" {
+			return nil, fmt.Errorf("child_task_create_failed: %w: child task_ref required", projectautomation.ErrInvalidInput)
+		}
+		if _, exists := childrenByRef[ref]; exists {
+			return nil, fmt.Errorf("child_task_create_failed: %w: duplicate child task_ref", projectautomation.ErrInvalidInput)
+		}
+		childrenByRef[ref] = child
+	}
+	createdByRef := make(map[string]runnerWorkTaskMetadata, len(children))
+	visiting := make(map[string]bool, len(children))
+	var ensure func(governedCloseoutWorkTask) (runnerWorkTaskMetadata, error)
+	ensure = func(child governedCloseoutWorkTask) (runnerWorkTaskMetadata, error) {
+		ref := strings.TrimSpace(child.TaskRef)
+		if existing, ok := createdByRef[ref]; ok {
+			return existing, nil
+		}
+		if visiting[ref] {
+			return runnerWorkTaskMetadata{}, fmt.Errorf("child_task_create_failed: %w: cyclic child dependency", projectautomation.ErrInvalidInput)
+		}
+		visiting[ref] = true
+		resolvedDeps := make([]string, 0, len(child.DependencyTaskIDs))
+		for _, dep := range child.DependencyTaskIDs {
+			resolved, err := client.resolveGovernedChildDependency(ctx, projectID, planID, strings.TrimSpace(dep), childrenByRef, ensure)
+			if err != nil {
+				return runnerWorkTaskMetadata{}, fmt.Errorf("child_task_create_failed: %w", err)
+			}
+			if resolved != "" && !containsStringValue(resolvedDeps, resolved) {
+				resolvedDeps = append(resolvedDeps, resolved)
+			}
+		}
+		visiting[ref] = false
+		resolvedChild := child
+		resolvedChild.DependencyTaskIDs = resolvedDeps
+		input := governedChildTaskCreateInput(resolvedChild, runID, traceID)
+		created, err := client.ensureGovernedChildTask(ctx, projectID, planID, resolvedChild, input)
+		if err != nil {
+			return runnerWorkTaskMetadata{}, fmt.Errorf("child_task_create_failed: %w", err)
+		}
+		createdByRef[ref] = created
+		return created, nil
+	}
+	for _, child := range children {
+		if _, err := ensure(child); err != nil {
+			return nil, err
+		}
+	}
+	return createdByRef, nil
+}
+
+func (client *runnerClient) resolveGovernedChildDependency(ctx context.Context, projectID string, planID string, dep string, childrenByRef map[string]governedCloseoutWorkTask, ensure func(governedCloseoutWorkTask) (runnerWorkTaskMetadata, error)) (string, error) {
+	if dep == "" {
+		return "", nil
+	}
+	if child, ok := childrenByRef[dep]; ok {
+		created, err := ensure(child)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(created.ID) == "" {
+			return "", fmt.Errorf("%w: resolved child dependency has no Work Task id", projectautomation.ErrInvalidInput)
+		}
+		return created.ID, nil
+	}
+	if strings.HasPrefix(dep, "work_task_") {
+		existing, err := client.getWorkTaskMetadata(ctx, projectID, dep)
+		if err != nil {
+			return "", fmt.Errorf("%w: unresolved concrete dependency %s", projectautomation.ErrInvalidInput, safeCloseoutErrorToken(dep))
+		}
+		if strings.TrimSpace(existing.ID) == "" {
+			return "", fmt.Errorf("%w: unresolved concrete dependency %s", projectautomation.ErrInvalidInput, safeCloseoutErrorToken(dep))
+		}
+		return existing.ID, nil
+	}
+	existing, err := client.getWorkTaskByRef(ctx, projectID, planID, dep)
+	if err != nil {
+		return "", fmt.Errorf("%w: unresolved child dependency %s", projectautomation.ErrInvalidInput, safeCloseoutErrorToken(dep))
+	}
+	if strings.TrimSpace(existing.ID) == "" {
+		return "", fmt.Errorf("%w: unresolved child dependency %s", projectautomation.ErrInvalidInput, safeCloseoutErrorToken(dep))
+	}
+	return existing.ID, nil
+}
+
+func (client *runnerClient) ensureGovernedChildTask(ctx context.Context, projectID string, planID string, child governedCloseoutWorkTask, input any) (runnerWorkTaskMetadata, error) {
 	path := fmt.Sprintf("/api/v1/projects/%s/work-plans/%s/tasks", url.PathEscape(projectID), url.PathEscape(planID))
-	if _, err := client.post(ctx, path, input, nil); err == nil {
-		return nil
+	var created runnerWorkTaskMetadata
+	if _, err := client.post(ctx, path, input, &created); err == nil {
+		if strings.TrimSpace(created.ID) == "" {
+			return client.getWorkTaskByRef(ctx, projectID, planID, child.TaskRef)
+		}
+		return created, nil
 	} else if !runnerErrorIsConflict(err) {
-		return err
+		return runnerWorkTaskMetadata{}, err
 	}
 	existing, err := client.getWorkTaskByRef(ctx, projectID, planID, child.TaskRef)
 	if err != nil {
-		return err
+		return runnerWorkTaskMetadata{}, err
 	}
 	if !governedChildTaskMatches(existing, child) {
-		return fmt.Errorf("%w: duplicate child task_ref has different metadata", projectautomation.ErrInvalidInput)
+		return runnerWorkTaskMetadata{}, fmt.Errorf("%w: duplicate child task_ref has different metadata", projectautomation.ErrInvalidInput)
 	}
-	return nil
+	return existing, nil
 }
 
 func runnerErrorIsConflict(err error) bool {
@@ -1412,6 +1528,42 @@ func equalStringSet(left []string, right []string) bool {
 		}
 	}
 	return true
+}
+
+func containsStringValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func safeCloseoutErrorToken(value string) string {
+	value = strings.TrimSpace(value)
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '-' || r == '.' || r == ':' || r == '/' || r == '@' || r == '+':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+		if b.Len() >= 120 {
+			break
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "unknown"
+	}
+	return out
 }
 
 func (client *runnerClient) attachGovernedCloseoutVerifierRefs(ctx context.Context, pathBase string, runID string, traceID string, refs []string) error {
