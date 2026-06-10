@@ -125,7 +125,7 @@ initial_prompt: |
   Before non-trivial work, read AGENTS.md when present, then .ai/INDEX.md when present, and follow the repository's task, handoff, security, privacy, and verification rules.
   Treat code, config, tests, migrations, container definitions, logs, and generated runtime artifacts as the source of truth over docs or comments.
   Use Serena semantic tools first for Go symbol discovery and references; use rg for text searches when semantic lookup is not enough.
-  Keep changes scoped, preserve user worktree edits, and avoid copying MASS, Nominait, CrookedCircuits, Unity, or TypeScript-specific conventions into this repo unless explicitly documented here.
+  Keep changes scoped, preserve user worktree edits, and avoid copying external project, product, Unity, or TypeScript-specific conventions into this repo unless explicitly documented here.
   Treat auth, tenancy, PII/PDPL, secrets, migrations, public APIs, background jobs, observability, and external provider integrations as high-risk surfaces requiring explicit review.
   Do not log raw prompts, raw source content, credentials, tokens, personal data, or fetched research data.
 

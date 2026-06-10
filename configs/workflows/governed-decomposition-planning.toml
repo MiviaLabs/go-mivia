@@ -16,6 +16,8 @@ allowed_tools = [
   "projects.get",
   "projects.context_health",
   "projects.context_pack.build",
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.work_plans.create",
   "projects.work_tasks.create"
 ]
@@ -35,6 +37,8 @@ purpose = "Reviews Work Plan and Work Task decomposition for readiness, evidence
 instructions = "Reject decomposition that lacks evidence refs, verifier scope, dependencies, resume instructions, review gates, files_to_read, or clear files_to_edit decisions."
 allowed_skills = ["mivia-mcp", "project-review"]
 allowed_tools = [
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.work_plans.get",
   "projects.work_tasks.list",
   "projects.work_tasks.attach_review_result",
@@ -56,6 +60,8 @@ purpose = "Compiles planning tasks and queues only reviewed ready tasks for auto
 instructions = "Move tasks to ready or queue automation only after independent review refs, permission snapshots, and safe task packet metadata exist."
 allowed_skills = ["mivia-mcp"]
 allowed_tools = [
+  "projects.integrations.search",
+  "projects.jira.issue.get",
   "projects.work_plans.resume",
   "projects.work_tasks.update_status",
   "projects.automations.create",
@@ -94,15 +100,70 @@ expected_output = "bounded planning context summary and evidence refs"
 failure_criteria = "block if context freshness, scope, or MCP availability cannot be established"
 review_gate = "planning-readiness-review required before context task is done"
 resume_instructions = "resume by reading attached context refs and current Work Plan metadata"
+acceptance_criteria = [
+  "Context refs include repo instructions, project health, bounded context pack refs, and MCP surface gaps.",
+  "Context output is metadata-only and sufficient for isolated decomposition work."
+]
+stop_conditions = [
+  "Stop if repo instructions, context health, or bounded context refs cannot be established.",
+  "Stop if decomposition would depend on hidden chat context or unverified source state."
+]
+verifier_ladder = [
+  "orchestrator checks repo instruction refs",
+  "orchestrator checks context health refs",
+  "orchestrator checks bounded context pack and MCP surface refs"
+]
+regression_test_applicability = "not_applicable for metadata-only context discovery"
+downstream_impact_refs = ["context-pack-ref", "mcp-surface-gap-ref"]
+output_contract = "bounded planning context packet with repo instruction refs, context health refs, and MCP surface gap refs"
+
+[[steps]]
+id = "map-downstream-impact"
+kind = "work_task"
+title = "Map Downstream Impact"
+agent = "planning-worker"
+depends_on = ["discover-planning-context"]
+description = "Produce the dependency map and downstream impact refs required before task decomposition."
+evidence_needed = ["context-pack-ref", "project-context-health", "mcp-surface-gap-ref"]
+files_to_read = [
+  ".ai/INDEX.md",
+  ".ai/skills/mivia-mcp/SKILL.md",
+  "docs/agent-context-guide.md",
+  "configs/workflows/governed-decomposition-planning.toml"
+]
+files_to_edit = []
+likely_files_affected = [".ai", "docs", "internal", "configs"]
+verification_requirement = "orchestrator verifies dependency-map-ref and downstream-impact-ref exist before decomposition"
+expected_output = "metadata-only dependency map and downstream impact refs for decomposition"
+failure_criteria = "block if downstream impact cannot be mapped from bounded context refs without hidden chat context"
+review_gate = "planning-readiness-review must approve downstream impact refs before decomposition"
+resume_instructions = "resume from Work Plan id, context-pack-ref, dependency-map-ref, and downstream-impact-ref"
+acceptance_criteria = [
+  "Dependency map identifies prerequisite task ordering and affected workflow stages.",
+  "Downstream impact refs cover implementation, review, verifier, GitOps, and PR creation handoffs.",
+  "Output is metadata-only and sufficient for isolated decomposition work."
+]
+stop_conditions = [
+  "Block if dependency or downstream impact refs are missing or unverifiable.",
+  "Stop if impact mapping depends on hidden chat context or unsafe unbounded payload material."
+]
+verifier_ladder = [
+  "orchestrator checks dependency-map-ref exists",
+  "orchestrator checks downstream-impact-ref exists",
+  "orchestrator verifies decompose-work-plan depends on this reviewed task"
+]
+regression_test_applicability = "not_applicable for metadata-only downstream impact mapping"
+downstream_impact_refs = ["dependency-map-ref", "downstream-impact-ref"]
+output_contract = "dependency map and downstream impact refs available before decomposition"
 
 [[steps]]
 id = "decompose-work-plan"
 kind = "work_task"
 title = "Decompose Work Plan"
 agent = "planning-worker"
-depends_on = ["discover-planning-context"]
+depends_on = ["map-downstream-impact"]
 description = "Create small Work Tasks with objective, files, evidence, dependencies, verifier, output, failure criteria, resume instructions, and review gate."
-evidence_needed = ["context-pack-ref", "task-decomposition-ref", "dependency-map-ref"]
+evidence_needed = ["context-pack-ref", "dependency-map-ref", "downstream-impact-ref"]
 files_to_read = [
   ".ai/INDEX.md",
   ".ai/skills/mivia-mcp/SKILL.md",
@@ -116,6 +177,22 @@ expected_output = "Work Tasks in planned status with complete metadata"
 failure_criteria = "block if any task depends on hidden chat context or lacks review and verifier requirements"
 review_gate = "planning-readiness-review must approve task packets before ready status"
 resume_instructions = "resume from Work Plan id, task refs, dependency map, and evidence refs"
+acceptance_criteria = [
+  "Each child Work Task has one objective, bounded scope, dependencies, evidence needs, review gate, verifier requirement, and resume instructions.",
+  "Each child Work Task can be executed by an isolated worker from task metadata and attached refs only."
+]
+stop_conditions = [
+  "Block instead of creating tasks when scope, evidence, dependencies, or verifier requirements are missing.",
+  "Do not mark child tasks ready until independent planning review approves the task packets."
+]
+verifier_ladder = [
+  "orchestrator reviews child task metadata completeness",
+  "orchestrator verifies dependency and downstream-impact refs",
+  "orchestrator checks review gate and verifier requirements before ready status"
+]
+regression_test_applicability = "required when decomposition identifies code-impacting work; otherwise record a concrete not-applicable reason"
+downstream_impact_refs = ["dependency-map-ref", "downstream-impact-ref"]
+output_contract = "planned child Work Tasks with complete governance metadata and no hidden chat context"
 max_parallel_tasks = 1
 
 [[steps]]
@@ -134,6 +211,22 @@ expected_output = "ready task refs or blocked task refs with resume instructions
 failure_criteria = "block if any task lacks independent review or required metadata"
 review_gate = "planning-readiness-review required before status changes"
 resume_instructions = "resume by listing task statuses and checking attached review refs"
+acceptance_criteria = [
+  "Only independently reviewed decomposition-complete tasks are moved to ready.",
+  "Incomplete tasks remain planned or blocked with concrete resume instructions."
+]
+stop_conditions = [
+  "Stop if any task lacks review refs, verifier requirements, dependencies, or resume instructions.",
+  "Stop if child implementation tasks are missing or still depend on hidden context."
+]
+verifier_ladder = [
+  "orchestrator lists planned child tasks",
+  "orchestrator checks review refs and verifier requirements",
+  "orchestrator moves only complete reviewed tasks to ready"
+]
+regression_test_applicability = "not_applicable for metadata-only readiness transition"
+downstream_impact_refs = ["ready-task-list-ref", "review-result-ref"]
+output_contract = "ready task refs or blocked task refs with exact missing metadata and resume instructions"
 
 [[steps]]
 id = "queue-planning-automation"
@@ -151,14 +244,30 @@ expected_output = "automation batch queued for ready planning tasks"
 failure_criteria = "block if ready tasks overlap unsafely or lack permission snapshots"
 review_gate = "planning-readiness-review required before automation queueing"
 resume_instructions = "resume from automation run refs and task statuses"
+acceptance_criteria = [
+  "Automation refs are queued only for reviewed ready planning tasks.",
+  "Permission snapshot refs and task status refs are attached for every queued automation."
+]
+stop_conditions = [
+  "Stop if any task lacks ready status, permission snapshots, or safe non-overlapping scope.",
+  "Stop if automation queueing would run unreviewed or incomplete planning tasks."
+]
+verifier_ladder = [
+  "orchestrator checks ready task refs",
+  "orchestrator checks permission snapshot refs",
+  "orchestrator checks queued automation refs and task statuses"
+]
+regression_test_applicability = "not_applicable for metadata-only automation queueing"
+downstream_impact_refs = ["automation-ref", "permission-snapshot-ref", "ready-task-list-ref"]
+output_contract = "automation batch refs for reviewed ready planning tasks with permission snapshot refs"
 max_parallel_tasks = 2
 
 [[review_gates]]
 id = "planning-readiness-review"
-applies_to = ["discover-planning-context", "decompose-work-plan", "mark-ready-after-review", "queue-planning-automation"]
+applies_to = ["discover-planning-context", "map-downstream-impact", "decompose-work-plan", "mark-ready-after-review", "queue-planning-automation"]
 reviewer_agent = "planning-reviewer"
 required = true
 independent_from_owner = true
-required_artifacts = ["work-plan-ref", "work-task-refs", "evidence-refs", "dependency-map-ref"]
+required_artifacts = ["work-plan-ref", "work-task-refs", "evidence-refs", "dependency-map-ref", "downstream-impact-ref"]
 allowed_actions = ["approved", "rejected", "needs_changes", "blocked"]
 instructions = "Approve only if each Work Task is isolated-worker-ready, metadata-only, has evidence needs, verifier scope, dependencies, resume instructions, and independent review requirements."

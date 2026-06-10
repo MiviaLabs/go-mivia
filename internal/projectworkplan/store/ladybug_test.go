@@ -39,12 +39,84 @@ func TestLadybugStoreCreateGetListPlanAndTask(t *testing.T) {
 	if gotTask.TaskRef != task.TaskRef || gotTask.VerificationRequirement == "" {
 		t.Fatalf("unexpected task: %#v", gotTask)
 	}
+	if len(gotTask.AcceptanceCriteria) != 1 || len(gotTask.StopConditions) != 1 || len(gotTask.VerifierLadder) != 1 ||
+		gotTask.RegressionApplicability == "" || len(gotTask.DownstreamImpactRefs) != 1 || gotTask.OutputContract == "" {
+		t.Fatalf("expected governed task contract to persist, got %#v", gotTask)
+	}
 	tasks, err := store.ListWorkTasks(ctx, model.WorkTaskFilter{ProjectID: task.ProjectID, PlanID: task.PlanID})
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
 	if len(tasks) != 1 || tasks[0].ID != task.ID {
 		t.Fatalf("expected one task, got %#v", tasks)
+	}
+}
+
+func TestLadybugStoreListWorkTasksPaginatesBeforeHydratingAttachments(t *testing.T) {
+	ctx := context.Background()
+	graph := ladybug.NewMemoryGraph()
+	store := bootstrappedWorkPlanStore(t, ctx, graph)
+	plan := createWorkPlan(t, ctx, store, "project-a", "plan/ref/paged")
+
+	first := createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/001", nil)
+	second := createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/002", nil)
+	third := createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/003", nil)
+	if _, err := store.CreateAttachment(ctx, model.Attachment{
+		ID:              "attachment/ref/002",
+		ProjectID:       plan.ProjectID,
+		PlanID:          plan.ID,
+		TaskID:          second.ID,
+		Kind:            "evidence_ref",
+		Ref:             "evidence/ref/002",
+		AttachedByRunID: "agent_run_attachment",
+	}); err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+
+	page, err := store.ListWorkTasks(ctx, model.WorkTaskFilter{ProjectID: plan.ProjectID, PlanID: plan.ID, PageSize: 2, PageToken: "1"})
+	if err != nil {
+		t.Fatalf("list paged tasks: %v", err)
+	}
+	if len(page) != 2 {
+		t.Fatalf("expected two paged tasks, got %#v", page)
+	}
+	if page[0].ID != second.ID || page[1].ID != third.ID || page[0].ID == first.ID {
+		t.Fatalf("expected offset page to return second and third tasks, got %#v", page)
+	}
+	if len(page[0].EvidenceRefs) != 1 || page[0].EvidenceRefs[0] != "evidence/ref/002" {
+		t.Fatalf("expected returned task attachments to be hydrated, got %#v", page[0])
+	}
+}
+
+func TestLadybugStorePreservesCommaContainingTaskLists(t *testing.T) {
+	ctx := context.Background()
+	graph := ladybug.NewMemoryGraph()
+	store := bootstrappedWorkPlanStore(t, ctx, graph)
+	plan := createWorkPlan(t, ctx, store, "project-a", "plan/ref/a")
+	task := createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/commas", nil)
+	task.AcceptanceCriteria = []string{"verify parser, service, and route"}
+	task.StopConditions = []string{"block when source, verifier, or dependency evidence is missing"}
+	task.VerifierLadder = []string{"run parser test, service test, and route test"}
+	task.DownstreamImpactRefs = []string{"impact/ref,with-comma"}
+	if _, err := store.UpdateWorkTask(ctx, task); err != nil {
+		t.Fatalf("update task with comma lists: %v", err)
+	}
+
+	got, err := store.GetWorkTask(ctx, task.ProjectID, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if len(got.AcceptanceCriteria) != 1 || got.AcceptanceCriteria[0] != task.AcceptanceCriteria[0] {
+		t.Fatalf("acceptance criteria split on comma: %#v", got.AcceptanceCriteria)
+	}
+	if len(got.StopConditions) != 1 || got.StopConditions[0] != task.StopConditions[0] {
+		t.Fatalf("stop conditions split on comma: %#v", got.StopConditions)
+	}
+	if len(got.VerifierLadder) != 1 || got.VerifierLadder[0] != task.VerifierLadder[0] {
+		t.Fatalf("verifier ladder split on comma: %#v", got.VerifierLadder)
+	}
+	if len(got.DownstreamImpactRefs) != 1 || got.DownstreamImpactRefs[0] != task.DownstreamImpactRefs[0] {
+		t.Fatalf("downstream refs split on comma: %#v", got.DownstreamImpactRefs)
 	}
 }
 
@@ -209,6 +281,22 @@ func TestLadybugStorePersistentReopenPlanTaskGraph(t *testing.T) {
 	if _, err := store.CreateAttachment(ctx, model.Attachment{ID: "attachment-claim", ProjectID: task.ProjectID, PlanID: task.PlanID, TaskID: task.ID, Kind: "claim_ref", Ref: "claim/ref/a", AttachedByRunID: "agent_run_a"}); err != nil {
 		t.Fatalf("attach claim: %v", err)
 	}
+	if _, err := store.CreateAttachment(ctx, model.Attachment{ID: "attachment-evidence-reopen", ProjectID: task.ProjectID, PlanID: task.PlanID, TaskID: task.ID, Kind: "evidence_ref", Ref: "evidence/ref/reopen", AttachedByRunID: "agent_run_a"}); err != nil {
+		t.Fatalf("attach evidence: %v", err)
+	}
+	if _, err := store.CreateAttachment(ctx, model.Attachment{ID: "attachment-review-reopen", ProjectID: task.ProjectID, PlanID: task.PlanID, TaskID: task.ID, Kind: "review_result_ref", Ref: "review/ref/reopen", AttachedByRunID: "agent_run_reviewer"}); err != nil {
+		t.Fatalf("attach review: %v", err)
+	}
+	if _, err := store.CreateAttachment(ctx, model.Attachment{ID: "attachment-verifier-reopen", ProjectID: task.ProjectID, PlanID: task.PlanID, TaskID: task.ID, Kind: "verifier_result_ref", Ref: "verifier/ref/reopen", AttachedByRunID: "agent_run_verifier"}); err != nil {
+		t.Fatalf("attach verifier: %v", err)
+	}
+	task.Status = model.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "agent_run_a"
+	task.ExpectedOutput = "persisted expected output for GitOps handoff"
+	task.FailureCriteria = "persisted failure criteria for GitOps handoff"
+	if _, err := store.UpdateWorkTask(ctx, task); err != nil {
+		t.Fatalf("update task status: %v", err)
+	}
 	if err := graph.Close(); err != nil {
 		t.Fatalf("close graph: %v", err)
 	}
@@ -233,6 +321,23 @@ func TestLadybugStorePersistentReopenPlanTaskGraph(t *testing.T) {
 	if gotPlan.Outcome != "persisted plan outcome" {
 		t.Fatalf("expected reopened plan outcome, got %#v", gotPlan)
 	}
+	if gotTask.Status != model.WorkTaskStatusVerifying || gotTask.ClaimedByRunID != "agent_run_a" || gotTask.ExpectedOutput != task.ExpectedOutput || gotTask.FailureCriteria != task.FailureCriteria {
+		t.Fatalf("reopened task lost status or handoff fields: %#v", gotTask)
+	}
+	if !containsString(gotTask.EvidenceRefs, "evidence/ref/reopen") || !containsString(gotTask.ReviewResultRefs, "review/ref/reopen") || !containsString(gotTask.VerifierResultRefs, "verifier/ref/reopen") {
+		t.Fatalf("reopened task lost evidence/review/verifier refs: %#v", gotTask)
+	}
+	listedTasks, err := reopenedStore.ListWorkTasks(ctx, model.WorkTaskFilter{ProjectID: task.ProjectID, PlanID: task.PlanID, Status: model.WorkTaskStatusVerifying})
+	if err != nil {
+		t.Fatalf("list reopened verifying tasks: %v", err)
+	}
+	if len(listedTasks) != 1 || listedTasks[0].ID != task.ID {
+		t.Fatalf("expected reopened verifying task in list, got %#v", listedTasks)
+	}
+	listedTask := listedTasks[0]
+	if !containsString(listedTask.EvidenceRefs, "evidence/ref/reopen") || !containsString(listedTask.ClaimRefs, "claim/ref/a") || !containsString(listedTask.ReviewResultRefs, "review/ref/reopen") || !containsString(listedTask.VerifierResultRefs, "verifier/ref/reopen") {
+		t.Fatalf("listed reopened task lost attachment-backed handoff refs: %#v", listedTask)
+	}
 }
 
 func TestLadybugStoreRejectsDuplicateRefsInScope(t *testing.T) {
@@ -240,15 +345,15 @@ func TestLadybugStoreRejectsDuplicateRefsInScope(t *testing.T) {
 	graph := ladybug.NewMemoryGraph()
 	store := bootstrappedWorkPlanStore(t, ctx, graph)
 	plan := createWorkPlan(t, ctx, store, "project-a", "plan/ref/a")
-	if _, err := store.CreateWorkPlan(ctx, model.WorkPlan{ID: "duplicate-plan", ProjectID: "project-a", PlanRef: "plan/ref/a", Title: "Duplicate", GoalSummary: "same plan ref", Status: model.WorkPlanStatusPlanned}); err == nil {
-		t.Fatal("expected duplicate plan ref to fail")
+	if _, err := store.CreateWorkPlan(ctx, model.WorkPlan{ID: "duplicate-plan", ProjectID: "project-a", PlanRef: "plan/ref/a", Title: "Duplicate", GoalSummary: "same plan ref", Status: model.WorkPlanStatusPlanned}); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("expected duplicate plan ref to return ErrDuplicate, got %v", err)
 	}
 	if _, err := store.CreateWorkPlan(ctx, model.WorkPlan{ID: "other-plan", ProjectID: "project-b", PlanRef: "plan/ref/a", Title: "Other project", GoalSummary: "same plan ref allowed", Status: model.WorkPlanStatusPlanned}); err != nil {
 		t.Fatalf("expected duplicate plan ref in another project to pass: %v", err)
 	}
 	createWorkTask(t, ctx, store, plan.ProjectID, plan.ID, "task/ref/a", nil)
-	if _, err := store.CreateWorkTask(ctx, model.WorkTask{ID: "duplicate-task", ProjectID: plan.ProjectID, PlanID: plan.ID, TaskRef: "task/ref/a", Title: "Duplicate", Status: model.WorkTaskStatusPlanned, VerificationRequirement: "run focused store tests"}); err == nil {
-		t.Fatal("expected duplicate task ref to fail")
+	if _, err := store.CreateWorkTask(ctx, model.WorkTask{ID: "duplicate-task", ProjectID: plan.ProjectID, PlanID: plan.ID, TaskRef: "task/ref/a", Title: "Duplicate", Status: model.WorkTaskStatusPlanned, VerificationRequirement: "run focused store tests"}); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("expected duplicate task ref to return ErrDuplicate, got %v", err)
 	}
 }
 
@@ -299,6 +404,12 @@ func createWorkTask(t *testing.T, ctx context.Context, store *LadybugStore, proj
 		DependencyTaskIDs:       dependencyIDs,
 		VerificationRequirement: "run focused store tests",
 		ResumeInstructions:      "revalidate source before continuing",
+		AcceptanceCriteria:      []string{"source-backed behavior is implemented"},
+		StopConditions:          []string{"missing source evidence"},
+		VerifierLadder:          []string{"focused store test"},
+		RegressionApplicability: "required",
+		DownstreamImpactRefs:    []string{"downstream.impact"},
+		OutputContract:          "metadata contract plus verifier refs",
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -320,6 +431,15 @@ func assertRelationshipStored(t *testing.T, ctx context.Context, graph ladybug.G
 func containsAttachment(attachments []model.Attachment, kind string, ref string, attachedByRunID string) bool {
 	for _, attachment := range attachments {
 		if attachment.Kind == kind && attachment.Ref == ref && attachment.AttachedByRunID == attachedByRunID {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
 			return true
 		}
 	}

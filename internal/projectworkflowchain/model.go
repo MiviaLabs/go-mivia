@@ -8,13 +8,25 @@ const (
 	ChainStatusCompleted            = "completed"
 	ChainStatusPostValidationPassed = "post_validation_passed"
 	ChainStatusBlocked              = "blocked"
+	ChainStatusFailed               = "failed"
+	ChainStatusCancelled            = "cancelled"
+	ChainStatusSuperseded           = "superseded"
 )
 
 const (
-	StageStatusPlanned   = "planned"
-	StageStatusQueued    = "queued"
-	StageStatusCompleted = "completed"
-	StageStatusBlocked   = "blocked"
+	StageStatusPlanned    = "planned"
+	StageStatusQueued     = "queued"
+	StageStatusCompleted  = "completed"
+	StageStatusBlocked    = "blocked"
+	StageStatusFailed     = "failed"
+	StageStatusCancelled  = "cancelled"
+	StageStatusSuperseded = "superseded"
+)
+
+const (
+	GitOpsRecoveryStatusRepairable = "repairable"
+	GitOpsRecoveryStatusTerminal   = "terminal"
+	GitOpsRecoveryStatusCompleted  = "completed"
 )
 
 const (
@@ -57,22 +69,26 @@ type StageConfig struct {
 }
 
 type ChainRun struct {
-	ID             string     `json:"chain_run_id"`
-	ProjectID      string     `json:"project_id"`
-	ChainRef       string     `json:"chain_ref"`
-	InputRef       string     `json:"input_ref"`
-	Status         string     `json:"status"`
-	ContextRefs    []string   `json:"context_refs,omitempty"`
-	StageRuns      []StageRun `json:"stage_runs,omitempty"`
-	WorkPlanIDs    []string   `json:"work_plan_ids,omitempty"`
-	AutomationIDs  []string   `json:"automation_ids,omitempty"`
-	CreatedByRunID string     `json:"created_by_run_id,omitempty"`
-	TraceID        string     `json:"trace_id,omitempty"`
-	GitOpsReady    bool       `json:"gitops_ready,omitempty"`
-	PullRequestRef string     `json:"pull_request_ref,omitempty"`
-	NextAction     string     `json:"next_action,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID                        string     `json:"chain_run_id"`
+	ProjectID                 string     `json:"project_id"`
+	ChainRef                  string     `json:"chain_ref"`
+	InputRef                  string     `json:"input_ref"`
+	Status                    string     `json:"status"`
+	ContextRefs               []string   `json:"context_refs,omitempty"`
+	StageRuns                 []StageRun `json:"stage_runs,omitempty"`
+	WorkPlanIDs               []string   `json:"work_plan_ids,omitempty"`
+	AutomationIDs             []string   `json:"automation_ids,omitempty"`
+	CreatedByRunID            string     `json:"created_by_run_id,omitempty"`
+	TraceID                   string     `json:"trace_id,omitempty"`
+	GitOpsReady               bool       `json:"gitops_ready,omitempty"`
+	GitOpsAttemptCount        int        `json:"gitops_attempt_count,omitempty"`
+	GitOpsFailureCategory     string     `json:"gitops_failure_category,omitempty"`
+	GitOpsFailureEvidenceRefs []string   `json:"gitops_failure_evidence_refs,omitempty"`
+	GitOpsRecoveryStatus      string     `json:"gitops_recovery_status,omitempty"`
+	PullRequestRef            string     `json:"pull_request_ref,omitempty"`
+	NextAction                string     `json:"next_action,omitempty"`
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
 }
 
 type StageRun struct {
@@ -102,6 +118,7 @@ type StartResult struct {
 	ChainRef       string     `json:"chain_ref"`
 	InputRef       string     `json:"input_ref"`
 	Status         string     `json:"status"`
+	ContextRefs    []string   `json:"context_refs,omitempty"`
 	ChainRunID     string     `json:"chain_run_id,omitempty"`
 	StageRuns      []StageRun `json:"stage_runs,omitempty"`
 	WorkPlanIDs    []string   `json:"work_plan_ids,omitempty"`

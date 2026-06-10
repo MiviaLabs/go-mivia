@@ -51,6 +51,7 @@ func (svc *Service) CallAutomationTool(ctx context.Context, name string, argumen
 			ImplementationAgentID:   input.ImplementationAgentID,
 			CreatedByRunID:          input.CreatedByRunID,
 			TraceID:                 input.TraceID,
+			PermissionSnapshotRef:   input.PermissionSnapshotRef,
 			GitBaseRef:              input.GitBaseRef,
 			GitBranchRef:            input.GitBranchRef,
 			GitWorktreeRef:          input.GitWorktreeRef,
@@ -220,6 +221,7 @@ type createRemediationFromFindingMCPInput struct {
 	ImplementationAgentID   string   `json:"implementation_agent_id,omitempty"`
 	CreatedByRunID          string   `json:"created_by_run_id,omitempty"`
 	TraceID                 string   `json:"trace_id,omitempty"`
+	PermissionSnapshotRef   string   `json:"permission_snapshot_ref,omitempty"`
 	GitBaseRef              string   `json:"git_base_ref,omitempty"`
 	GitBranchRef            string   `json:"git_branch_ref,omitempty"`
 	GitWorktreeRef          string   `json:"git_worktree_ref,omitempty"`

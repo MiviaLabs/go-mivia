@@ -36,6 +36,7 @@ func RegisterRoutes(mux *http.ServeMux, svc *projectautomation.Service) {
 	mux.Handle("GET /api/v1/projects/{id}/automation-runs", listRunsHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/automation-runs/claim-next", claimNextRunHandler(svc))
 	mux.Handle("GET /api/v1/projects/{id}/automation-runs/{run_id}", getRunHandler(svc))
+	mux.Handle("POST /api/v1/projects/{id}/automation-runs/{run_id}/gitops-recovery-reset", resetGitOpsRecoveryHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/automation-runs/{run_id}/heartbeat", heartbeatRunHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/automation-runs/{run_id}/attempt-result", completeAttemptHandler(svc))
 }
@@ -154,6 +155,14 @@ func claimNextRunHandler(svc *projectautomation.Service) http.Handler {
 func getRunHandler(svc *projectautomation.Service) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		run, err := svc.GetRun(r.Context(), projectID(r), r.PathValue("run_id"))
+		writeResult(w, run, err, http.StatusOK)
+	})
+}
+
+func resetGitOpsRecoveryHandler(svc *projectautomation.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		input := projectautomation.ResetGitOpsRecoveryInput{ProjectID: projectID(r), RunID: r.PathValue("run_id")}
+		run, err := svc.ResetGitOpsRecovery(r.Context(), input)
 		writeResult(w, run, err, http.StatusOK)
 	})
 }

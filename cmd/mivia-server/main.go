@@ -236,7 +236,7 @@ func run() error {
 	projectConfidenceService := projectconfidence.New(confidencestore.NewLadybugStore(projectGraph))
 	projectKnowledgeService := projectknowledge.New(knowledgestore.NewLadybugStore(projectGraph))
 	projectWorkPlanService := projectworkplan.New(workplanstore.NewLadybugStore(metadataPersistentGraph))
-	projectWorkflowService := projectworkflow.New(workflowstore.NewMemoryStore())
+	projectWorkflowService := projectworkflow.New(workflowstore.NewLadybugStore(metadataPersistentGraph))
 	projectAutomationService := projectautomation.New(automationstore.NewLadybugStore(metadataPersistentGraph), projectWorkPlanService, projectautomation.Options{
 		Enabled:                   cfg.Automation.Enabled,
 		RunnerEnabled:             cfg.Automation.RunnerEnabled,
@@ -273,6 +273,8 @@ func run() error {
 		return err
 	}
 	projectWorkflowChainService := projectworkflowchain.New(chainstore.NewLadybugStore(metadataPersistentGraph), projectWorkflowService, projectWorkPlanService, workflowChainConfigs(cfg))
+	projectWorkflowChainService.SetAutomationAPI(projectAutomationService)
+	projectWorkflowChainService.SetLocalContextReader(projectIntegrationService)
 	projectWorkPlanService.SetStatusChangeHandler(workPlanStatusFanout{handlers: []projectworkplan.WorkPlanStatusChangeHandler{projectAutomationService, projectWorkflowChainService}})
 	projectIngestionOrchestrator := projectingestion.NewOrchestrator(projectRegistry, projectIngestionScheduler, projectingestion.OrchestratorOptions{
 		LiveUpdatesEnabled:       cfg.Ingestion.LiveUpdatesEnabled,
@@ -473,9 +475,9 @@ func (fanout workPlanStatusFanout) HandleWorkPlanStatusChanged(ctx context.Conte
 func workflowChainConfigs(cfg config.Config) []projectworkflowchain.Config {
 	out := make([]projectworkflowchain.Config, 0)
 	for _, project := range cfg.Projects {
-		gitOpsEnabled := cfg.GitOperations.Enabled
+		gitops := cfg.GitOperations
 		if project.GitOperations != nil {
-			gitOpsEnabled = project.GitOperations.Enabled
+			gitops = mergeServerGitOps(gitops, *project.GitOperations)
 		}
 		for _, chain := range project.WorkflowChains {
 			converted := projectworkflowchain.Config{
@@ -488,7 +490,7 @@ func workflowChainConfigs(cfg config.Config) []projectworkflowchain.Config {
 				ContextMode:          chain.ContextMode,
 				DefaultTitleTemplate: chain.DefaultTitleTemplate,
 				GitOpsMode:           chain.GitOpsMode,
-				GitOpsEnabled:        gitOpsEnabled,
+				GitOpsEnabled:        gitops.Enabled,
 				Stages:               make([]projectworkflowchain.StageConfig, 0, len(chain.Stages)),
 			}
 			for _, stage := range chain.Stages {
@@ -517,19 +519,38 @@ func workflowCompileOptions(cfg config.Config) map[string]projectworkflow.Compil
 		options[project.ID] = projectworkflow.CompileOptions{
 			BranchPrefix:          gitops.BranchPrefix,
 			BranchSummaryTemplate: workflowCompileBranchTemplate(project.ID, gitops),
+			DefaultChangeType:     gitops.Conventions.DefaultChangeType,
 		}
 	}
 	return options
 }
 
-func workflowCompileBranchTemplate(projectID string, gitops config.GitOperations) string {
+func workflowCompileBranchTemplate(_ string, gitops config.GitOperations) string {
+	if template := workflowCompileBranchTemplateFromConventions(gitops.Conventions.BranchTemplate); template != "" {
+		return template
+	}
 	if strings.TrimSpace(gitops.BranchNamePattern) == "" {
 		return ""
 	}
-	if strings.Contains(gitops.BranchNamePattern, "MASS-") || projectID == "mass-monorepo" {
-		return "chore-{{ticket_ref}}-{{workflow_ref}}"
+	if branchPatternLooksTicketScoped(gitops.BranchNamePattern) {
+		return "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}"
 	}
 	return "{{token}}"
+}
+
+func workflowCompileBranchTemplateFromConventions(template string) string {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return ""
+	}
+	template = strings.ReplaceAll(template, "{{work_task_ref}}", "{{workflow_ref}}")
+	template = strings.ReplaceAll(template, "{{work_task_title}}", "{{workflow_ref}}")
+	return template
+}
+
+func branchPatternLooksTicketScoped(pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	return strings.Contains(pattern, "[0-9]") || strings.Contains(pattern, `\d`)
 }
 
 type serverWorkflowChainGitOpsFinalizer struct {
@@ -550,19 +571,21 @@ func (finalizer serverWorkflowChainGitOpsFinalizer) FinalizeWorkflowChain(ctx co
 	options := gitOpsOptionsForServerProject(finalizer.cfg, input.ProjectID)
 	options.Verification = gitOpsVerificationForServerProject(finalizer.cfg, input.ProjectID)
 	result, err := projectgitops.New(options).PostTask(ctx, projectgitops.PostTaskInput{
-		WorkDir:         workDir,
-		ProjectID:       input.ProjectID,
-		PlanID:          input.WorkPlan.ID,
-		TaskID:          firstChainTaskID(input),
-		TaskRef:         "workflow-chain-finalize",
-		TaskTitle:       input.InputRef + " workflow chain final GitOps",
-		BranchName:      input.WorkPlan.GitBranchRef,
-		AutomationID:    "workflow-chain-gitops",
-		AutomationRunID: input.ChainRunID,
-		OperatorID:      "mivia-workflow-chain",
-		ReviewRefs:      []string{"workflow-chain-post-validation-passed"},
-		VerifierRefs:    []string{"workflow-chain-post-validation-passed"},
-		TestResults:     []string{"post-validation workflow chain stage completed"},
+		WorkDir:          workDir,
+		ProjectID:        input.ProjectID,
+		PlanID:           input.WorkPlan.ID,
+		TaskID:           firstChainTaskID(input),
+		TaskRef:          "workflow-chain-finalize",
+		TaskTitle:        input.InputRef + " workflow chain final GitOps",
+		BranchName:       input.WorkPlan.GitBranchRef,
+		BaseRef:          input.WorkPlan.GitBaseRef,
+		AutomationID:     "workflow-chain-gitops",
+		AutomationRunID:  input.ChainRunID,
+		OperatorID:       "mivia-workflow-chain",
+		AllowedPathspecs: append([]string(nil), input.AllowedPathspecs...),
+		ReviewRefs:       append([]string(nil), input.ReviewRefs...),
+		VerifierRefs:     append([]string(nil), input.VerifierRefs...),
+		TestResults:      append([]string(nil), input.TestResults...),
 	})
 	if err != nil {
 		return projectworkflowchain.GitOpsFinalizeResult{}, err
@@ -610,7 +633,7 @@ func firstChainTaskID(input projectworkflowchain.GitOpsFinalizeInput) string {
 func gitOpsOptionsForServerProject(cfg config.Config, projectID string) projectgitops.Options {
 	gitops := cfg.GitOperations
 	for _, project := range cfg.Projects {
-		if project.ID == projectID && project.GitOperations != nil {
+		if configProjectMatchesID(project, projectID) && project.GitOperations != nil {
 			gitops = mergeServerGitOps(gitops, *project.GitOperations)
 			break
 		}
@@ -628,6 +651,7 @@ func gitOpsOptionsForServerProject(cfg config.Config, projectID string) projectg
 		CommitAuthorName:             gitops.CommitAuthorName,
 		CommitAuthorEmailEnv:         gitops.CommitAuthorEmailEnv,
 		CommitAuthorEmailFile:        gitops.CommitAuthorEmailFile,
+		SignCommits:                  gitops.SignCommits,
 		SSHPrivateKeyPath:            gitops.SSHPrivateKeyPath,
 		SSHPublicKeyPath:             gitops.SSHPublicKeyPath,
 		SSHKnownHostsPath:            gitops.SSHKnownHostsPath,
@@ -684,6 +708,9 @@ func mergeServerGitOps(base config.GitOperations, override config.GitOperations)
 	if strings.TrimSpace(override.CommitAuthorEmailFile) != "" {
 		merged.CommitAuthorEmailFile = override.CommitAuthorEmailFile
 	}
+	if override.SignCommits {
+		merged.SignCommits = true
+	}
 	if strings.TrimSpace(override.SSHPrivateKeyPath) != "" {
 		merged.SSHPrivateKeyPath = override.SSHPrivateKeyPath
 	}
@@ -706,6 +733,22 @@ func mergeServerGitOps(base config.GitOperations, override config.GitOperations)
 	return merged
 }
 
+func configProjectMatchesID(project config.Project, projectID string) bool {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(project.ID), projectID) {
+		return true
+	}
+	for _, alias := range project.Aliases {
+		if strings.EqualFold(strings.TrimSpace(alias), projectID) {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeServerGitOpsConventions(base config.GitOpsConventions, override config.GitOpsConventions) config.GitOpsConventions {
 	merged := base
 	if strings.TrimSpace(override.CommitType) != "" {
@@ -714,11 +757,32 @@ func mergeServerGitOpsConventions(base config.GitOpsConventions, override config
 	if strings.TrimSpace(override.CommitScope) != "" {
 		merged.CommitScope = override.CommitScope
 	}
+	if strings.TrimSpace(override.BranchTemplate) != "" {
+		merged.BranchTemplate = override.BranchTemplate
+	}
+	if override.RequireTicketRef {
+		merged.RequireTicketRef = true
+	}
+	if strings.TrimSpace(override.TicketRefPattern) != "" {
+		merged.TicketRefPattern = override.TicketRefPattern
+	}
+	if strings.TrimSpace(override.TicketURLTemplate) != "" {
+		merged.TicketURLTemplate = override.TicketURLTemplate
+	}
+	if len(override.AllowedTypes) > 0 {
+		merged.AllowedTypes = append([]string(nil), override.AllowedTypes...)
+	}
+	if strings.TrimSpace(override.DefaultChangeType) != "" {
+		merged.DefaultChangeType = override.DefaultChangeType
+	}
 	if strings.TrimSpace(override.CommitSummaryTemplate) != "" {
 		merged.CommitSummaryTemplate = override.CommitSummaryTemplate
 	}
 	if strings.TrimSpace(override.PullRequestTitleTemplate) != "" {
 		merged.PullRequestTitleTemplate = override.PullRequestTitleTemplate
+	}
+	if strings.TrimSpace(override.PullRequestBodyTemplate) != "" {
+		merged.PullRequestBodyTemplate = override.PullRequestBodyTemplate
 	}
 	if strings.TrimSpace(override.WhatChangedTemplate) != "" {
 		merged.WhatChangedTemplate = override.WhatChangedTemplate
@@ -735,7 +799,7 @@ func mergeServerGitOpsConventions(base config.GitOpsConventions, override config
 func gitOpsVerificationForServerProject(cfg config.Config, projectID string) projectgitops.VerificationProfile {
 	verification := cfg.Verification
 	for _, project := range cfg.Projects {
-		if project.ID == projectID && project.Verification != nil {
+		if configProjectMatchesID(project, projectID) && project.Verification != nil {
 			verification = *project.Verification
 			break
 		}

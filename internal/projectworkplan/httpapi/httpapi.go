@@ -50,6 +50,7 @@ func RegisterRoutes(mux *http.ServeMux, svc *projectworkplan.Service) {
 	mux.Handle("GET /api/v1/projects/{id}/work-tasks/next", getNextWorkTaskHandler(svc))
 	mux.Handle("GET /api/v1/projects/{id}/work-tasks/{task_id}", getWorkTaskHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/status", updateWorkTaskStatusHandler(svc))
+	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/scope", expandWorkTaskScopeHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/claim", claimWorkTaskHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/release", releaseWorkTaskHandler(svc))
 	mux.Handle("POST /api/v1/projects/{id}/work-tasks/{task_id}/start", startWorkTaskHandler(svc))
@@ -194,13 +195,15 @@ func listTasksHandler(list func(*http.Request, projectworkplan.WorkTaskFilter) (
 			Status:         strings.TrimSpace(r.URL.Query().Get("status")),
 			OwnerAgent:     strings.TrimSpace(r.URL.Query().Get("owner_agent")),
 			ClaimedByRunID: firstQuery(r, "claimed_by_run_id", "run_id"),
+			PageSize:       pageSize + 1,
+			PageToken:      strconv.Itoa(pageToken),
 		}
 		tasks, err := list(r, filter)
 		if err != nil {
 			writeResult(w, nil, err, http.StatusOK)
 			return
 		}
-		writeResult(w, paginateTasks(tasks, pageSize, pageToken), nil, http.StatusOK)
+		writeResult(w, paginateFetchedTasks(tasks, pageSize, pageToken), nil, http.StatusOK)
 	})
 }
 
@@ -234,6 +237,18 @@ func updateWorkTaskStatusHandler(svc *projectworkplan.Service) http.Handler {
 		input.ProjectID = ctxInput.projectID
 		input.TaskID = ctxInput.taskID
 		return svc.UpdateWorkTaskStatus(r.Context(), input)
+	})
+}
+
+func expandWorkTaskScopeHandler(svc *projectworkplan.Service) http.Handler {
+	return actionHandler(func(ctxInput actionContext, r *http.Request) (any, error) {
+		var input projectworkplan.ExpandWorkTaskScopeInput
+		if err := decodeJSON(r, &input); err != nil {
+			return nil, err
+		}
+		input.ProjectID = ctxInput.projectID
+		input.TaskID = ctxInput.taskID
+		return svc.ExpandWorkTaskScope(r.Context(), input)
 	})
 }
 
@@ -531,6 +546,21 @@ func paginateTasks(tasks []projectworkplan.WorkTask, pageSize int, pageToken int
 	out := taskListResponse{WorkTasks: tasks[pageToken:end]}
 	if end < len(tasks) {
 		out.NextPageToken = strconv.Itoa(end)
+	}
+	return out
+}
+
+func paginateFetchedTasks(tasks []projectworkplan.WorkTask, pageSize int, pageToken int) taskListResponse {
+	if len(tasks) == 0 {
+		return taskListResponse{WorkTasks: []projectworkplan.WorkTask{}}
+	}
+	end := len(tasks)
+	if end > pageSize {
+		end = pageSize
+	}
+	out := taskListResponse{WorkTasks: tasks[:end]}
+	if len(tasks) > pageSize {
+		out.NextPageToken = strconv.Itoa(pageToken + pageSize)
 	}
 	return out
 }

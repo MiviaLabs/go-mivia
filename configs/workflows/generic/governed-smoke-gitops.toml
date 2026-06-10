@@ -1,0 +1,41 @@
+id = "workflow-governed-smoke-gitops"
+project_id = "generic-monorepo"
+workflow_ref = "governed-smoke-gitops"
+title = "Governed Smoke GitOps"
+purpose = "Exercise the automation GitOps tail with one tiny controlled file edit and draft PR creation."
+status = "enabled"
+
+[[agents]]
+id = "smoke-gitops-worker"
+display_name = "Smoke GitOps Worker"
+purpose = "Create one bounded smoke marker file so the runner can commit, push, and open a draft PR."
+instructions = "Create or update only .agentic/automation-smoke.md with exactly one short safe line: smoke input ref: {{user_request_ref}}. Do not inspect Jira, run broad tests, touch other files, or include secrets."
+allowed_skills = ["mivia-mcp"]
+allowed_tools = [
+  "projects.get",
+  "projects.context_health"
+]
+allowed_commands = []
+denied_commands = ["go test ./...", "git push", "git reset --hard", "git commit", "git commit --no-verify", "git push --no-verify"]
+workspace_mode = "edit"
+network_policy = "local_only"
+secret_policy = "deny"
+log_policy = "metadata_only"
+max_runtime = "10m"
+max_retries = 0
+
+[[steps]]
+id = "smoke-draft-pr"
+kind = "work_task"
+title = "Smoke Draft PR"
+agent = "smoke-gitops-worker"
+description = "Create or update the bounded smoke marker file with exactly this safe input ref value: {{user_request_ref}}. This lets the runner exercise GitOps commit, push, and draft PR creation."
+evidence_needed = ["smoke-chain-ref", "gitops-smoke-ref"]
+files_to_read = ["configs/workflows/generic/governed-smoke-gitops.toml"]
+files_to_edit = [".agentic/automation-smoke.md"]
+likely_files_affected = [".agentic/automation-smoke.md"]
+verification_requirement = "runner verifies the bounded diff and GitOps evidence refs"
+gitops_verification_mode = "bounded_smoke"
+expected_output = "one safe smoke marker file update committed and pushed by runner GitOps"
+failure_criteria = "fail if any file outside .agentic/automation-smoke.md is changed or GitOps cannot create a draft PR"
+resume_instructions = "resume by checking the smoke Work Task, git commit ref, push ref, and draft PR ref"

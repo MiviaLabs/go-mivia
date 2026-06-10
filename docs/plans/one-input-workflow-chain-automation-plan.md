@@ -6,7 +6,7 @@ Planned.
 
 ## Objective
 
-Add a Mivia MCP capability where an operator can submit one bounded input string, such as `MASS-1044`, and the server creates a governed automation chain for the configured project:
+Add a Mivia MCP capability where an operator can submit one bounded input string, such as `GENERIC-1044`, and the server creates a governed automation chain for the configured project:
 
 1. resolve input context from local project integrations and indexed repo context,
 2. compile the configured decomposition workflow into a Work Plan,
@@ -26,7 +26,7 @@ The chain must be project-configurable in TOML and must not store raw prompts, r
 - GitOps is already isolated in `internal/projectgitops` and must remain downstream of verifier/review evidence.
 - Local Jira/Confluence content is allowed only through Mivia local integrations, not live connector calls.
 - Repo rules require automation to be lifecycle-triggered: create tasks as `planned`, create/enable automation, then transition tasks to `ready`.
-- Existing MASS local config already defines enabled workflow TOML paths for decomposition, implementation, code-review bug planning, and post-implementation validation.
+- Existing GENERIC local config already defines enabled workflow TOML paths for decomposition, implementation, code-review bug planning, and post-implementation validation.
 
 ## Proposed User Contract
 
@@ -38,9 +38,9 @@ Input:
 
 ```json
 {
-  "id": "mass-monorepo",
-  "chain_ref": "mass-governed-ticket-delivery",
-  "input_text": "MASS-1044",
+  "id": "generic-monorepo",
+  "chain_ref": "GENERIC-governed-ticket-delivery",
+  "input_text": "GENERIC-1044",
   "created_by_run_id": "optional-safe-ref",
   "trace_id": "optional-safe-ref",
   "dry_run": false
@@ -51,9 +51,9 @@ Output:
 
 ```json
 {
-  "project_id": "mass-monorepo",
-  "chain_ref": "mass-governed-ticket-delivery",
-  "input_ref": "jira:MASS-1044",
+  "project_id": "generic-monorepo",
+  "chain_ref": "GENERIC-governed-ticket-delivery",
+  "input_ref": "jira:GENERIC-1044",
   "status": "queued",
   "work_plan_ids": ["..."],
   "automation_ids": ["..."],
@@ -69,10 +69,10 @@ Add project-scoped workflow chain config:
 
 ```toml
 [[projects.workflow_chains]]
-chain_ref = "mass-governed-ticket-delivery"
+chain_ref = "GENERIC-governed-ticket-delivery"
 enabled = true
 input_kind = "jira_issue_key"
-input_pattern = "^MASS-[0-9]+$"
+input_pattern = "^GENERIC-[0-9]+$"
 context_provider = "jira"
 context_mode = "local_ingested"
 default_title_template = "{{input_ref}} governed delivery"
@@ -174,13 +174,13 @@ Do not persist raw Jira descriptions, raw Confluence content, source dumps, prom
 - Draft PR GitOps is allowed only after post-validation completes and configured GitOps checks pass.
 - Manual `projects.automations.run` is allowed only for smoke tests and explicit recovery, not normal chain flow.
 
-## MASS Local Config Update
+## GENERIC Local Config Update
 
 Update ignored local config only after code is implemented and validated:
 
-- add `[[projects.workflow_chains]]` under `mass-monorepo`,
+- add `[[projects.workflow_chains]]` under `generic-monorepo`,
 - set `input_kind = "jira_issue_key"`,
-- set `input_pattern = "^MASS-[0-9]+$"`,
+- set `input_pattern = "^GENERIC-[0-9]+$"`,
 - chain stages:
   - `governed-decomposition-planning`,
   - `governed-workplan-implementation`,
@@ -194,7 +194,7 @@ Committed examples should use placeholder projects and no real credentials.
 Narrow tests first:
 
 - config parsing and validation rejects duplicate stages, dependency cycles, unknown workflow refs, unsafe refs, unsafe input patterns, missing post-validation when GitOps draft PR is configured.
-- start tool rejects raw/unmatched input text and accepts `MASS-1044`.
+- start tool rejects raw/unmatched input text and accepts `GENERIC-1044`.
 - dry-run start returns planned stage order without creating automation.
 - real start creates decomposition Work Plan, automation metadata, permission refs, and planned downstream stages without executing shell.
 - lifecycle advancement starts implementation only after decomposition review/verifier requirements are satisfied.
@@ -214,8 +214,8 @@ Runtime checks:
 - restart compose stack with local config,
 - `GET /readyz`,
 - native MCP `projects.list`,
-- MCP `projects.workflow_chains.start` dry-run for `MASS-1044`,
-- MCP real start for `MASS-1044` only after confirming local Jira context is ingested and no unsafe data will be stored.
+- MCP `projects.workflow_chains.start` dry-run for `GENERIC-1044`,
+- MCP real start for `GENERIC-1044` only after confirming local Jira context is ingested and no unsafe data will be stored.
 
 ## Review Plan
 
@@ -239,4 +239,4 @@ Second review after fixes:
 - Chain advancement may need a new lifecycle hook in automation/workplan services if no existing completion callback exists.
 - Local Jira data may be unavailable or stale; the start tool must fail with a clear local-context error rather than live-fetching.
 - Draft PR creation depends on existing GitOps config and runner credentials; chain start must report blocked if those are unavailable.
-- Full end-to-end implementation plus live MASS PR creation is high blast radius; keep first implementation behind explicit project TOML chain config and dry-run support.
+- Full end-to-end implementation plus live GENERIC PR creation is high blast radius; keep first implementation behind explicit project TOML chain config and dry-run support.

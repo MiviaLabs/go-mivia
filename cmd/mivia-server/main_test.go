@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +15,10 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/platform/config"
 	"github.com/MiviaLabs/go-mivia/internal/platform/ladybug"
 	"github.com/MiviaLabs/go-mivia/internal/projectregistry"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
+	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkflowchain"
+	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
 )
 
 func TestEffectiveInitialScanOnStartSkipsWhenRestartRecoveryQueued(t *testing.T) {
@@ -53,6 +60,218 @@ func TestDirtyScopeRecoveryResolverUsesProjectGitOpsPolicy(t *testing.T) {
 	}
 	if got := strings.Join(resolver("missing"), ","); got != "" {
 		t.Fatalf("expected no project policy for missing project, got %q", got)
+	}
+}
+
+func TestWorkflowChainConfigsInheritGlobalGitOpsWhenProjectOverridesBranchPolicy(t *testing.T) {
+	chains := workflowChainConfigs(config.Config{
+		GitOperations: config.GitOperations{Enabled: true},
+		Projects: []config.Project{
+			{
+				ID: "generic-monorepo",
+				GitOperations: &config.GitOperations{
+					BranchPrefix:      "",
+					BranchNamePattern: "^(feat|fix|docs|chore)-GENERIC-[0-9]+$",
+				},
+				WorkflowChains: []config.WorkflowChain{
+					{
+						ChainRef:     "GENERIC-governed-ticket-delivery",
+						Enabled:      true,
+						InputKind:    "jira_issue_key",
+						InputPattern: "^GENERIC-[0-9]+$",
+						ContextMode:  "local_ingested",
+						GitOpsMode:   projectworkflowchain.GitOpsModeDraftPRAfterValidation,
+						Stages:       []config.WorkflowChainStage{{StageRef: "decomposition", WorkflowRef: "governed-decomposition-planning"}},
+					},
+				},
+			},
+		},
+	})
+	if len(chains) != 1 {
+		t.Fatalf("expected one workflow chain config, got %#v", chains)
+	}
+	if !chains[0].GitOpsEnabled {
+		t.Fatalf("workflow chain must inherit globally enabled GitOps when project override only sets branch policy: %#v", chains[0])
+	}
+}
+
+func TestWorkflowCompileBranchTemplateUsesGenericTicketScopedPattern(t *testing.T) {
+	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{BranchNamePattern: "^(feat|fix)-PROJ-[0-9]+(-[a-z0-9-]+)*$"}); got != "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}" {
+		t.Fatalf("ticket-scoped branch patterns must use generic ticket/workflow template, got %q", got)
+	}
+	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{Conventions: config.GitOpsConventions{BranchTemplate: "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"}}); got != "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}" {
+		t.Fatalf("project branch conventions must drive workflow compile template, got %q", got)
+	}
+	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{BranchNamePattern: "^automation/[a-z0-9-]+$"}); got != "{{token}}" {
+		t.Fatalf("non-ticket branch patterns must use opaque token template, got %q", got)
+	}
+	if got := workflowCompileBranchTemplate("project-alpha", config.GitOperations{}); got != "" {
+		t.Fatalf("missing branch pattern must not force a compile branch template, got %q", got)
+	}
+}
+
+func TestWorkflowCompileOptionsUseProjectGitOpsConventions(t *testing.T) {
+	cfg := config.Config{
+		GitOperations: config.GitOperations{Conventions: config.GitOpsConventions{
+			BranchTemplate:    "{{change_type}}-{{ticket_ref}}-global",
+			DefaultChangeType: "chore",
+		}},
+		Projects: []config.Project{{
+			ID: "PROJ-monorepo",
+			GitOperations: &config.GitOperations{
+				BranchPrefix:      "",
+				BranchNamePattern: "^(feat|fix|chore)-PROJ-[0-9]+(-[a-z0-9-]+)*$",
+				Conventions: config.GitOpsConventions{
+					BranchTemplate:    "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}",
+					AllowedTypes:      []string{"feat", "fix", "chore"},
+					DefaultChangeType: "feat",
+				},
+			},
+		}},
+	}
+
+	options := workflowCompileOptions(cfg)
+	PROJ := options["PROJ-monorepo"]
+	if PROJ.DefaultChangeType != "feat" {
+		t.Fatalf("project default change type must override global default, got %#v", PROJ)
+	}
+	if PROJ.BranchSummaryTemplate != "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}" {
+		t.Fatalf("project branch template must be adapted for workflow refs, got %#v", PROJ)
+	}
+}
+
+func TestServerWorkflowChainGitOpsFinalizerCommitsGeneratedTaskHandoffRefs(t *testing.T) {
+	repo := initServerGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "apps", "domain", "src", "module.ts"), []byte("export const value = 2;\n"), 0o600); err != nil {
+		t.Fatalf("write changed file: %v", err)
+	}
+	t.Setenv("MIVIA_TEST_GIT_EMAIL", "mivia@example.test")
+	registry, err := projectregistry.NewRegistry([]config.Project{{
+		ID:             "generic-monorepo",
+		DisplayName:    "GENERIC",
+		RootPath:       repo,
+		Enabled:        true,
+		GraphNamespace: "generic-monorepo",
+		DigestMode:     projectregistry.DigestModeMetadataOnly,
+		UpdatePolicy:   projectregistry.UpdatePolicyManual,
+	}}, projectregistry.Options{
+		ContentGraphApprovalAccepted: true,
+		LadybugPath:                  t.TempDir(),
+		SQLitePath:                   ":memory:",
+	})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	finalizer := serverWorkflowChainGitOpsFinalizer{
+		cfg: config.Config{
+			GitOperations: config.GitOperations{
+				Enabled:              true,
+				CommitAfterTask:      true,
+				BranchNamePattern:    "^(feat|fix|docs|chore)-GENERIC-[0-9]+(-[a-z0-9-]+)*$",
+				CommitAuthorEmailEnv: "MIVIA_TEST_GIT_EMAIL",
+			},
+		},
+		registry: registry,
+	}
+
+	result, err := finalizer.FinalizeWorkflowChain(t.Context(), projectworkflowchain.GitOpsFinalizeInput{
+		ProjectID:        "generic-monorepo",
+		ChainRunID:       "workflow_chain_run_GENERIC_1044",
+		InputRef:         "jira:GENERIC-1044",
+		WorkPlan:         projectworkplan.WorkPlan{ID: "plan-post-validation", ProjectID: "generic-monorepo", GitBranchRef: "chore-GENERIC-1044-governed-post-implementation-validation-compile-1", GitBaseRef: "main"},
+		StageRuns:        []projectworkflowchain.StageRun{{StageRef: "post-validation", WorkTaskIDs: []string{"task-final-pr-readiness"}}},
+		AllowedPathspecs: []string{"apps/domain/src/module.ts"},
+		ReviewRefs:       []string{"review_result:post_validation_approved"},
+		VerifierRefs:     []string{"verifier:focused_tests_passed"},
+		TestResults:      []string{"go test ./apps/domain -run TestGENERIC1044 -count=1"},
+	})
+	if err != nil {
+		t.Fatalf("FinalizeWorkflowChain returned error: %v", err)
+	}
+	if result.CommitRef == "" || !containsServerString(result.EvidenceRefs, "git-commit-created") {
+		t.Fatalf("expected local commit result, got %#v", result)
+	}
+	message := runServerGitOutput(t, repo, "log", "-1", "--format=%B")
+	for _, want := range []string{
+		"Work Task ID: task-final-pr-readiness",
+		"Automation Run ID: workflow_chain_run_GENERIC_1044",
+		"Review refs: review_result:post_validation_approved",
+		"Verifier refs: verifier:focused_tests_passed",
+		"go test ./apps/domain -run TestGENERIC1044 -count=1",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("final GitOps commit lost handoff field %q:\n%s", want, message)
+		}
+	}
+}
+
+func TestGenericTicketPipelineConfigLoadsEntryWorkflows(t *testing.T) {
+	cfg := config.Config{
+		ConfigPath:    filepath.Join("..", "..", "mivia-test.toml"),
+		GitOperations: config.GitOperations{Enabled: true},
+		Workflows: config.Workflows{
+			Enabled: true,
+			DefinitionPaths: []string{
+				filepath.Join("configs", "workflows", "generic", "governed-decomposition-planning.toml"),
+				filepath.Join("configs", "workflows", "generic", "governed-workplan-implementation.toml"),
+				filepath.Join("configs", "workflows", "generic", "governed-post-implementation-validation.toml"),
+			},
+		},
+		Projects: []config.Project{{
+			ID:          "generic-monorepo",
+			DisplayName: "Generic Monorepo",
+			RootPath:    "/tmp/generic-monorepo",
+			Enabled:     true,
+			WorkflowChains: []config.WorkflowChain{{
+				ChainRef:             "GENERIC-governed-ticket-delivery",
+				Enabled:              true,
+				InputKind:            "jira_issue_key",
+				InputPattern:         "^GENERIC-[0-9]+$",
+				ContextProvider:      "jira",
+				ContextMode:          "local_ingested",
+				DefaultTitleTemplate: "{{input_ref}} governed delivery",
+				GitOpsMode:           "draft_pr_after_post_validation",
+				Stages: []config.WorkflowChainStage{
+					{StageRef: "decomposition", WorkflowRef: "governed-decomposition-planning", Trigger: "on_chain_start", RequiredStatusBeforeNext: "completed"},
+					{StageRef: "implementation", WorkflowRef: "governed-workplan-implementation", Trigger: "after_stage_review_passed", DependsOn: []string{"decomposition"}, RequiredStatusBeforeNext: "completed"},
+					{StageRef: "post-validation", WorkflowRef: "governed-post-implementation-validation", Trigger: "after_stage_review_passed", DependsOn: []string{"implementation"}, RequiredStatusBeforeNext: "completed"},
+				},
+			}},
+		}},
+	}
+	chains := workflowChainConfigs(cfg)
+	var GENERICChain projectworkflowchain.Config
+	for _, chain := range chains {
+		if chain.ProjectID == "generic-monorepo" && chain.ChainRef == "GENERIC-governed-ticket-delivery" {
+			GENERICChain = chain
+			break
+		}
+	}
+	if GENERICChain.ChainRef == "" || !GENERICChain.Enabled || !GENERICChain.GitOpsEnabled || GENERICChain.GitOpsMode != projectworkflowchain.GitOpsModeDraftPRAfterValidation {
+		t.Fatalf("local GENERIC chain must be enabled with final draft PR GitOps: %#v", GENERICChain)
+	}
+	if GENERICChain.InputKind != projectworkflowchain.InputKindJiraIssueKey || GENERICChain.InputPattern != "^GENERIC-[0-9]+$" || GENERICChain.ContextMode != projectworkflowchain.ContextModeLocalIngested {
+		t.Fatalf("local GENERIC chain must start from local-ingested Jira keys only: %#v", GENERICChain)
+	}
+	workflows := projectworkflow.New(workflowstore.NewMemoryStore())
+	if err := loadConfiguredWorkflows(t.Context(), cfg, workflows, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatalf("load configured workflows: %v", err)
+	}
+	loaded, err := workflows.ListWorkflows(t.Context(), projectworkflow.WorkflowFilter{ProjectID: "generic-monorepo"})
+	if err != nil {
+		t.Fatalf("list GENERIC workflows: %v", err)
+	}
+	loadedRefs := map[string]bool{}
+	for _, workflow := range loaded {
+		loadedRefs[workflow.WorkflowRef] = true
+	}
+	if len(GENERICChain.Stages) != 3 {
+		t.Fatalf("GENERIC ticket chain must have decomposition, implementation, and post-validation stages: %#v", GENERICChain.Stages)
+	}
+	for _, stage := range GENERICChain.Stages {
+		if !loadedRefs[stage.WorkflowRef] {
+			t.Fatalf("GENERIC chain stage %s references workflow %s that was not loaded from local config; loaded=%#v", stage.StageRef, stage.WorkflowRef, loadedRefs)
+		}
 	}
 }
 
@@ -308,4 +527,59 @@ func writeConfigFixture(t *testing.T, body string) string {
 		t.Fatalf("write config fixture: %v", err)
 	}
 	return path
+}
+
+func initServerGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runServerGit(t, dir, "init", "-b", "main")
+	runServerGit(t, dir, "config", "user.name", "Mivia Test")
+	runServerGit(t, dir, "config", "user.email", "mivia@example.test")
+	if err := os.MkdirAll(filepath.Join(dir, "apps", "domain", "src"), 0o755); err != nil {
+		t.Fatalf("mkdir fixture tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "apps", "domain", "src", "module.ts"), []byte("export const value = 1;\n"), 0o600); err != nil {
+		t.Fatalf("write fixture file: %v", err)
+	}
+	runServerGit(t, dir, "add", ".")
+	runServerGit(t, dir, "commit", "-m", "initial")
+	return dir
+}
+
+func runServerGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	_ = runServerGitOutput(t, dir, args...)
+}
+
+func runServerGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
+	return string(output)
+}
+
+func containsServerString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestConfigProjectMatchesIDAcceptsAliases(t *testing.T) {
+	project := config.Project{ID: "generic-monorepo", Aliases: []string{"external-monorepo"}}
+	if !configProjectMatchesID(project, "external-monorepo") {
+		t.Fatalf("expected alias to match project")
+	}
+	if !configProjectMatchesID(project, "GENERIC-MONOREPO") {
+		t.Fatalf("expected canonical id match to be case-insensitive")
+	}
+	if configProjectMatchesID(project, "other-monorepo") {
+		t.Fatalf("did not expect unrelated id to match")
+	}
 }

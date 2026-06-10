@@ -260,6 +260,11 @@ type SubmitRunInput struct {
 	SafeNextAction    string   `json:"safe_next_action,omitempty"`
 }
 
+type ResetGitOpsRecoveryInput struct {
+	ProjectID string `json:"project_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+}
+
 type CreateRemediationFromFindingInput struct {
 	ProjectID               string   `json:"project_id,omitempty"`
 	FindingRef              string   `json:"finding_ref"`
@@ -271,6 +276,7 @@ type CreateRemediationFromFindingInput struct {
 	ImplementationAgentID   string   `json:"implementation_agent_id,omitempty"`
 	CreatedByRunID          string   `json:"created_by_run_id,omitempty"`
 	TraceID                 string   `json:"trace_id,omitempty"`
+	PermissionSnapshotRef   string   `json:"permission_snapshot_ref,omitempty"`
 	GitBaseRef              string   `json:"git_base_ref,omitempty"`
 	GitBranchRef            string   `json:"git_branch_ref,omitempty"`
 	GitWorktreeRef          string   `json:"git_worktree_ref,omitempty"`

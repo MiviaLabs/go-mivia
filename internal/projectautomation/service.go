@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectworkplan"
+	workplanstore "github.com/MiviaLabs/go-mivia/internal/projectworkplan/store"
 )
 
 var ErrInvalidInput = errors.New("invalid project automation input")
@@ -25,9 +26,10 @@ const automationReplacementRetryLimitCategory = "automation_replacement_retry_li
 const defaultExternalRunLeaseTTL = 90 * time.Second
 
 var (
-	refPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
-	emailPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
-	phonePattern = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
+	refPattern                    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
+	emailPattern                  = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+	phonePattern                  = regexp.MustCompile(`\+?[0-9][0-9 .()\-]{7,}[0-9]`)
+	dynamicFailureCategoryPattern = regexp.MustCompile(`(?i)(^|[_:.-])(work_task|automation_run|review_result)_[a-z0-9][a-z0-9._:-]*`)
 )
 
 type Store interface {
@@ -45,7 +47,9 @@ type Store interface {
 }
 
 type WorkTaskAPI interface {
+	GetWorkPlan(context.Context, string, string) (projectworkplan.WorkPlan, error)
 	GetWorkTask(context.Context, string, string) (projectworkplan.WorkTask, error)
+	ListWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error)
 	ListOpenWorkTasks(context.Context, projectworkplan.WorkTaskFilter) ([]projectworkplan.WorkTask, error)
 	ClaimWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
 	StartWorkTask(context.Context, projectworkplan.WorkTaskActionInput) (projectworkplan.WorkTask, error)
@@ -63,6 +67,10 @@ type workTaskStatusUpdater interface {
 
 type workTaskScopeExpander interface {
 	ExpandWorkTaskScope(context.Context, projectworkplan.ExpandWorkTaskScopeInput) (projectworkplan.WorkTask, error)
+}
+
+type workPlanLister interface {
+	ListWorkPlans(context.Context, projectworkplan.WorkPlanFilter) ([]projectworkplan.WorkPlan, error)
 }
 
 type remediationWorkPlanAPI interface {
@@ -136,6 +144,10 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		return CreateRemediationFromFindingResult{}, err
 	}
 	traceID, err := safeOptionalRef(input.TraceID, "trace_id")
+	if err != nil {
+		return CreateRemediationFromFindingResult{}, err
+	}
+	permissionSnapshotRef, err := svc.remediationPermissionSnapshotRef(ctx, projectID, input.PermissionSnapshotRef, runID)
 	if err != nil {
 		return CreateRemediationFromFindingResult{}, err
 	}
@@ -280,8 +292,8 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		AllowedTaskRefs: []string{task.ID, task.TaskRef},
 		TriggerKind:     TriggerKindAutomatic,
 		SchedulePolicy:  "work_plan_status_trigger",
-		PermissionRef:   "permission-remediation-" + findingRef,
-		SourceKind:      AutomationSourceManual,
+		PermissionRef:   permissionSnapshotRef,
+		SourceKind:      AutomationSourceWorkflow,
 		CreatedByRunID:  runID,
 		TraceID:         traceID,
 	}
@@ -300,8 +312,8 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
 		TriggerKind:     TriggerKindAutomatic,
 		SchedulePolicy:  "post_implementation_review",
-		PermissionRef:   "permission-remediation-review-" + findingRef,
-		SourceKind:      AutomationSourceManual,
+		PermissionRef:   permissionSnapshotRef,
+		SourceKind:      AutomationSourceWorkflow,
 		CreatedByRunID:  runID,
 		TraceID:         traceID,
 	}
@@ -324,6 +336,40 @@ func (svc *Service) CreateRemediationFromFinding(ctx context.Context, input Crea
 		result.Activated = true
 	}
 	return result, nil
+}
+
+func (svc *Service) remediationPermissionSnapshotRef(ctx context.Context, projectID string, explicitRef string, runID string) (string, error) {
+	permissionRef, err := safeOptionalRef(explicitRef, "permission_snapshot_ref")
+	if err != nil {
+		return "", err
+	}
+	if permissionRef != "" {
+		if !strings.HasPrefix(permissionRef, PermissionSnapshotRefPrefix) {
+			permissionRef = PermissionSnapshotRefPrefix + permissionRef
+		}
+		if err := validatePermissionSnapshotRef(permissionRef); err != nil {
+			return "", err
+		}
+		return permissionRef, nil
+	}
+	if strings.TrimSpace(runID) == "" {
+		return "", fmt.Errorf("%w: missing_permission_snapshot_ref", ErrInvalidInput)
+	}
+	run, err := svc.store.GetRun(ctx, projectID, runID)
+	if err != nil {
+		return "", fmt.Errorf("%w: missing_permission_snapshot_ref", ErrInvalidInput)
+	}
+	if strings.TrimSpace(run.AutomationID) == "" {
+		return "", fmt.Errorf("%w: missing_permission_snapshot_ref", ErrInvalidInput)
+	}
+	automation, err := svc.store.GetAutomation(ctx, projectID, run.AutomationID)
+	if err != nil {
+		return "", fmt.Errorf("%w: missing_permission_snapshot_ref", ErrInvalidInput)
+	}
+	if err := validatePermissionSnapshotRef(automation.PermissionRef); err != nil {
+		return "", err
+	}
+	return automation.PermissionRef, nil
 }
 
 func (svc *Service) remediationBaseRefFromCreatorRun(ctx context.Context, workPlans remediationWorkPlanAPI, projectID string, runID string) (string, error) {
@@ -585,21 +631,10 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	if err != nil {
 		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
 	}
-	if err := svc.ensureRequiredAutomationReviewRuns(ctx, automation, runnerKind, input); err != nil {
-		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, err.Error())
-	}
-	if !svc.requiredAutomationReviewsDone(ctx, automation) {
-		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "automation_review_gate_open")
-	}
-	if taskID == "" && automation.TriggerKind == TriggerKindAutomatic && svc.workTasks != nil {
-		task, err := svc.resolveTask(ctx, AutomationRun{ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID, RunnerKind: runnerKind}, automation)
-		if err != nil {
-			return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "task_unavailable")
+	if svc.workTasks != nil && strings.TrimSpace(planID) != "" {
+		if err := svc.validatePlanExecutable(ctx, projectID, planID); err != nil {
+			return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, runPlanFailureCategory(err))
 		}
-		taskID = task.ID
-	}
-	if err := svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID, owner); err != nil {
-		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
 	}
 	orchestratorRunID, err := safeOptionalRef(input.OrchestratorRunID, "orchestrator_run_id")
 	if err != nil {
@@ -609,11 +644,44 @@ func (svc *Service) SubmitRun(ctx context.Context, input SubmitRunInput) (Automa
 	if err != nil {
 		return AutomationRun{}, err
 	}
+	input.OrchestratorRunID = orchestratorRunID
+	input.ParentRunID = parentRunID
+	if err := svc.ensureRequiredAutomationReviewRuns(ctx, automation, runnerKind, input); err != nil {
+		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, err.Error())
+	}
+	if !svc.requiredAutomationReviewsDone(ctx, automation) {
+		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "automation_review_gate_open")
+	}
+	var resolvedTask projectworkplan.WorkTask
+	if svc.workTasks != nil {
+		if taskID == "" && automation.TriggerKind == TriggerKindAutomatic {
+			task, err := svc.resolveTask(ctx, AutomationRun{ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID, RunnerKind: runnerKind}, automation)
+			if err != nil {
+				return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "task_unavailable")
+			}
+			taskID = task.ID
+			resolvedTask = task
+		} else if taskID != "" {
+			task, err := svc.workTasks.GetWorkTask(ctx, projectID, taskID)
+			if err != nil {
+				return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, "task_unavailable")
+			}
+			resolvedTask = task
+		}
+		if strings.TrimSpace(resolvedTask.ID) != "" {
+			if err := svc.validateRunPlanExecutable(ctx, AutomationRun{ProjectID: projectID, PlanID: planID}, resolvedTask); err != nil {
+				return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusBlocked, runPlanFailureCategory(err))
+			}
+		}
+	}
+	if err := svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID, owner); err != nil {
+		return svc.createRejectedRun(ctx, automation, planID, taskID, owner, input, RunStatusPolicyDenied, err.Error())
+	}
 	now := svc.now()
 	run := AutomationRun{
 		ID: svc.newID("automation_run"), ProjectID: projectID, AutomationID: automation.ID, AgentID: owner, PlanID: planID,
-		TaskID: taskID, Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: orchestratorRunID,
-		ParentRunID: parentRunID, CreatedAt: now, UpdatedAt: now,
+		TaskID: taskID, WorkTaskStatus: resolvedTask.Status, Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: orchestratorRunID,
+		ParentRunID: parentRunID, TraceID: automation.TraceID, CreatedAt: now, UpdatedAt: now,
 	}
 	return svc.store.CreateRun(ctx, run)
 }
@@ -707,6 +775,9 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, event proje
 			return err
 		}
 	}
+	if err := svc.blockReadyTasksWithoutEnabledAutomation(ctx, event.ProjectID, event.PlanID, automations); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -725,6 +796,157 @@ func (svc *Service) workPlanStatusTriggers(status string) bool {
 
 func workPlanStatusTriggerRunID(event projectworkplan.WorkPlanStatusChange, automation Automation) string {
 	return "workplan-status:" + event.PlanID + ":" + event.NewStatus + ":" + automation.ID
+}
+
+func (svc *Service) blockReadyTasksWithoutEnabledAutomation(ctx context.Context, projectID string, planID string, automations []Automation) error {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" || strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if task.Status != projectworkplan.WorkTaskStatusReady {
+			continue
+		}
+		hasMatch, executableErr := enabledAutomationReadiness(automations, task)
+		if hasMatch && executableErr == nil {
+			continue
+		}
+		if hasMatch && executableErr != nil {
+			category := executableTaskFailureCategory(executableErr)
+			blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+				ProjectID:          task.ProjectID,
+				TaskID:             task.ID,
+				SafeNextAction:     "ready_task_not_executable",
+				TraceID:            "ready-task-not-executable",
+				BlockedReason:      "Ready Work Task has a matching automatic automation but is missing executable metadata: " + category + ".",
+				ResumeInstructions: "Fix the Work Task metadata required by automation execution, then resume the Work Plan.",
+			})
+			if err != nil {
+				return err
+			}
+			if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+				return err
+			}
+			continue
+		}
+		if readyTaskIsConsumedBySelectorAutomation(automations, task) {
+			continue
+		}
+		if svc.readyTaskIsWorkflowChainDecompositionOutput(ctx, projectID, planID, task) {
+			continue
+		}
+		blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "no_enabled_matching_automation",
+			TraceID:            "no-enabled-matching-automation",
+			BlockedReason:      "No enabled automatic automation matches this ready Work Task.",
+			ResumeInstructions: "Enable or create an automatic automation for this task_ref and plan before resuming the Work Plan.",
+		})
+		if err != nil {
+			return err
+		}
+		if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readyTaskIsConsumedBySelectorAutomation(automations []Automation, task projectworkplan.WorkTask) bool {
+	if task.Status != projectworkplan.WorkTaskStatusReady ||
+		task.DecompositionQuality != projectworkplan.DecompositionReady ||
+		strings.TrimSpace(task.VerificationRequirement) == "" ||
+		len(task.FilesToEdit) == 0 ||
+		isGovernedWorkflowTaskRef(task.TaskRef) {
+		return false
+	}
+	for _, automation := range automations {
+		if automation.Status != AutomationStatusEnabled ||
+			automation.TriggerKind != TriggerKindAutomatic ||
+			automation.PlanID != task.PlanID {
+			continue
+		}
+		if containsRef(automation.AllowedTaskRefs, "select-ready-tasks") {
+			return true
+		}
+	}
+	return false
+}
+
+func (svc *Service) readyTaskIsWorkflowChainDecompositionOutput(ctx context.Context, projectID string, planID string, task projectworkplan.WorkTask) bool {
+	if svc == nil || svc.workTasks == nil ||
+		task.Status != projectworkplan.WorkTaskStatusReady ||
+		task.DecompositionQuality != projectworkplan.DecompositionReady ||
+		strings.TrimSpace(task.VerificationRequirement) == "" ||
+		len(task.FilesToEdit) == 0 ||
+		isGovernedWorkflowTaskRef(task.TaskRef) {
+		return false
+	}
+	plan, err := svc.workTasks.GetWorkPlan(ctx, projectID, planID)
+	if err != nil {
+		return false
+	}
+	return workPlanRefIsGovernedDecompositionStage(plan.PlanRef) ||
+		workPlanRefIsGovernedDecompositionStage(plan.ParallelGroupRef) ||
+		workPlanRefIsGovernedDecompositionStage(plan.WorkspaceRef)
+}
+
+func workPlanRefIsGovernedDecompositionStage(ref string) bool {
+	ref = strings.ToLower(strings.TrimSpace(ref))
+	return strings.Contains(ref, "governed-decomposition-planning")
+}
+
+func enabledAutomationReadiness(automations []Automation, task projectworkplan.WorkTask) (bool, error) {
+	var executableErr error
+	for _, automation := range automations {
+		if automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || automation.PlanID != task.PlanID {
+			continue
+		}
+		if !containsRef(automation.RequiredReviewTaskIDs, task.ID) && validateAllowedTaskRef(automation, task) != nil {
+			continue
+		}
+		err := validateExecutableTask(task)
+		if err == nil {
+			return true, nil
+		}
+		if executableErr == nil {
+			executableErr = err
+		}
+	}
+	return executableErr != nil, executableErr
+}
+
+func executableTaskFailureCategory(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.TrimSpace(err.Error())
+	if idx := strings.LastIndex(message, ":"); idx >= 0 {
+		message = strings.TrimSpace(message[idx+1:])
+	}
+	if message == "" {
+		return "task_not_executable"
+	}
+	return message
+}
+
+func hasEnabledAutomationForReadyTask(automations []Automation, task projectworkplan.WorkTask) bool {
+	for _, automation := range automations {
+		if automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || automation.PlanID != task.PlanID {
+			continue
+		}
+		if containsRef(automation.RequiredReviewTaskIDs, task.ID) {
+			return true
+		}
+		if validateAllowedTaskRef(automation, task) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (svc *Service) RunNow(ctx context.Context, input SubmitRunInput) (AutomationRun, error) {
@@ -803,7 +1025,7 @@ func (svc *Service) prepareExternalGitOpsPostTaskRecoveryRun(ctx context.Context
 	now := svc.now()
 	run.Status = RunStatusFailed
 	run.WorkTaskStatus = task.Status
-	run.FailureCategory = "gitops_post_task_failed"
+	run.FailureCategory = "gitops_post_task_failed_runner_post_task"
 	run.UpdatedAt = now
 	return svc.store.UpdateRun(ctx, run)
 }
@@ -883,114 +1105,174 @@ func (svc *Service) ClaimNextRun(ctx context.Context, input ClaimNextRunInput) (
 	if err != nil {
 		return ClaimedRun{}, err
 	}
+	if err := svc.reconcileQueuedRunsFromTerminalPlans(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_queued_terminal_plans", err)
+	}
 	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return claimed, claimNextStepError("claim_interrupted_starting", err)
 	}
 	if err := svc.reconcileRunningRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_running", err)
 	}
 	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_verifying", err)
 	}
 	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_interrupted_progressed", err)
+	}
+	if err := svc.reconcileFailedPostImplementationReviewQueueRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_failed_post_implementation_review_queue", err)
 	}
 	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_recoverable_pre_execution", err)
 	}
 	if err := svc.reconcileExhaustedPreExecutionRecoveryRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_exhausted_pre_execution", err)
 	}
 	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_exhausted_gitops", err)
 	}
 	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
-	}
-	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return ClaimedRun{}, claimNextStepError("reconcile_stale_ready_recovery", err)
 	}
 	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return claimed, claimNextStepError("claim_post_implementation_review_recovery", err)
+	}
+	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("queue_outstanding_post_implementation_reviews_before_gitops", err)
+	}
+	if claimed, ok, err := svc.claimGitOpsPostTaskRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
+		return claimed, claimNextStepError("claim_gitops_post_task_recovery", err)
 	}
 	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
+		return claimed, claimNextStepError("claim_interrupted_starting_after_recovery", err)
 	}
 	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
+		return ClaimedRun{}, claimNextStepError("reconcile_ready_automations", err)
+	}
+	claimed, ok, skippedReason, err := svc.claimFirstQueuedRun(ctx, projectID, agentID, runnerID)
+	if err != nil || ok {
+		return claimed, err
+	}
+	if claimed, ok, err := svc.claimPreExecutionRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
+		return claimed, claimNextStepError("claim_pre_execution_recovery", err)
+	}
+	if err := svc.reconcileRunningRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_running_after_claim", err)
+	}
+	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_verifying_after_claim", err)
+	}
+	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_interrupted_progressed_after_claim", err)
+	}
+	if err := svc.reconcileFailedPostImplementationReviewQueueRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_failed_post_implementation_review_queue_after_claim", err)
+	}
+	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_recoverable_pre_execution_after_claim", err)
+	}
+	if err := svc.reconcileExhaustedPreExecutionRecoveryRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_exhausted_pre_execution_after_claim", err)
+	}
+	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_exhausted_gitops_after_claim", err)
+	}
+	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_stale_ready_recovery_after_claim", err)
+	}
+	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("queue_outstanding_post_implementation_reviews", err)
+	}
+	if claimed, ok, err := svc.claimPostImplementationReviewRecovery(ctx, projectID, agentID, runnerID); err != nil || ok {
+		return claimed, claimNextStepError("claim_post_implementation_review_recovery_after_review_queue", err)
+	}
+	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
+		return claimed, claimNextStepError("claim_interrupted_starting_after_review_queue", err)
+	}
+	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
+		return ClaimedRun{}, claimNextStepError("reconcile_ready_automations_after_review_queue", err)
+	}
+	claimed, ok, skippedReasonAfterReconcile, err := svc.claimFirstQueuedRun(ctx, projectID, agentID, runnerID)
+	if err != nil || ok {
+		return claimed, err
+	}
+	if skippedReasonAfterReconcile != "" {
+		skippedReason = skippedReasonAfterReconcile
+	}
+	if skippedReason != "" {
+		return ClaimedRun{}, fmt.Errorf("%w: queued automation runs not claimable: %s", ErrInvalidInput, skippedReason)
+	}
+	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
+}
+
+func claimNextStepError(step string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: claim_next_%s_failed:%s", ErrInvalidInput, step, safeFailure(err.Error()))
+}
+
+func (svc *Service) claimFirstQueuedRun(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, string, error) {
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
+	if err != nil {
+		return ClaimedRun{}, false, "", err
+	}
+	runs = queuedRunsForRunner(runs, RunnerKindCodexCLI, agentID)
+	svc.sortQueuedRunsForClaim(ctx, runs)
+	skippedReason := ""
+	for _, run := range runs {
+		claimed, task, err := svc.prepareRunForExecution(ctx, run, runnerID)
+		if err != nil {
+			if skippedReason == "" {
+				skippedReason = claimSkipReason(claimed, err)
+			}
+			continue
+		}
+		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, "", nil
+	}
+	return ClaimedRun{}, false, skippedReason, nil
+}
+
+func claimSkipReason(run AutomationRun, err error) string {
+	if strings.TrimSpace(run.FailureCategory) != "" {
+		return safeFailure(run.FailureCategory)
+	}
+	if err == nil {
+		return "unknown"
+	}
+	reason := strings.TrimSpace(err.Error())
+	prefix := ErrInvalidInput.Error() + ":"
+	if strings.HasPrefix(reason, prefix) {
+		reason = strings.TrimSpace(strings.TrimPrefix(reason, prefix))
+	} else if idx := strings.LastIndex(reason, ":"); idx >= 0 && idx+1 < len(reason) {
+		reason = strings.TrimSpace(reason[idx+1:])
+	}
+	return safeFailure(reason)
+}
+
+func (svc *Service) reconcileQueuedRunsFromTerminalPlans(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil {
+		return nil
 	}
 	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
 	if err != nil {
-		return ClaimedRun{}, err
+		return err
 	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.Before(runs[j].CreatedAt) })
 	for _, run := range runs {
-		if run.RunnerKind != RunnerKindCodexCLI {
+		if strings.TrimSpace(run.PlanID) == "" {
 			continue
 		}
-		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
+		err := svc.validatePlanExecutable(ctx, run.ProjectID, run.PlanID)
+		if err == nil || runPlanFailureCategory(err) != "work_plan_terminal" {
 			continue
 		}
-		claimed, task, err := svc.prepareRunForExecution(ctx, run, runnerID)
-		if err != nil {
-			continue
+		if _, err := svc.failRun(ctx, run, RunStatusBlocked, "work_plan_terminal"); err != nil {
+			return err
 		}
-		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, nil
 	}
-	if err := svc.reconcileRunningRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	if err := svc.reconcileVerifyingRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	if err := svc.reconcileInterruptedRunsWithProgressedTasks(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	if err := svc.reconcileRecoverablePreExecutionRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	if err := svc.reconcileExhaustedPreExecutionRecoveryRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	if err := svc.reconcileExhaustedGitOpsRecoveryRuns(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	if err := svc.reconcileRecoveryRunsWithStaleReadyTasks(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	if err := svc.queueOutstandingPostImplementationReviews(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	if claimed, ok, err := svc.claimInterruptedStartingRun(ctx, projectID, agentID, runnerID); err != nil || ok {
-		return claimed, err
-	}
-	if err := svc.reconcileReadyAutomationsForProject(ctx, projectID); err != nil {
-		return ClaimedRun{}, err
-	}
-	runs, err = svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusQueued})
-	if err != nil {
-		return ClaimedRun{}, err
-	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.Before(runs[j].CreatedAt) })
-	for _, run := range runs {
-		if run.RunnerKind != RunnerKindCodexCLI {
-			continue
-		}
-		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
-			continue
-		}
-		claimed, task, err := svc.prepareRunForExecution(ctx, run, runnerID)
-		if err != nil {
-			continue
-		}
-		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, nil
-	}
-	return ClaimedRun{}, fmt.Errorf("%w: no queued automation run", ErrInvalidInput)
+	return nil
 }
 
 func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID string, agentID string, runnerID string) (ClaimedRun, bool, error) {
@@ -1003,6 +1285,7 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 		runs = append(runs, statusRuns...)
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	skippedReason := ""
 	for _, run := range runs {
 		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" {
 			continue
@@ -1014,7 +1297,11 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 			continue
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		reportUnclaimable := strings.TrimSpace(run.SafeSummary) == RunSafeSummaryPostImplementationReviewQueued
 		if err != nil || strings.TrimSpace(task.ClaimedByRunID) != run.ID {
+			if reportUnclaimable && skippedReason == "" {
+				skippedReason = "starting_run_task_not_owned"
+			}
 			continue
 		}
 		switch task.Status {
@@ -1024,19 +1311,38 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 		}
 		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
 		if err != nil {
+			if reportUnclaimable && skippedReason == "" {
+				skippedReason = "starting_run_automation_unavailable"
+			}
 			continue
 		}
 		if err := svc.validateAutomationPolicy(ctx, automation, run.RunnerKind, run.TaskID, run.AgentID); err != nil {
+			if reportUnclaimable && skippedReason == "" {
+				skippedReason = "starting_run_policy_denied:" + claimSkipReason(run, err)
+			}
+			continue
+		}
+		if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+			_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
+			if reportUnclaimable && skippedReason == "" {
+				skippedReason = "starting_run_plan_not_executable:" + runPlanFailureCategory(err)
+			}
 			continue
 		}
 		if !svc.isAutomationReviewTask(automation, run.TaskID) {
 			if err := svc.validateRequiredAutomationReviews(ctx, automation); err != nil {
+				if reportUnclaimable && skippedReason == "" {
+					skippedReason = "starting_run_review_gate_open:" + claimSkipReason(run, err)
+				}
 				continue
 			}
 		}
 		if task.Status != projectworkplan.WorkTaskStatusInProgress {
 			startedTask, err := svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{ProjectID: run.ProjectID, TaskID: task.ID, OwnerAgent: run.AgentID, RunID: run.ID, TraceID: run.TraceID})
 			if err != nil {
+				if reportUnclaimable && skippedReason == "" {
+					skippedReason = "starting_run_task_start_failed"
+				}
 				continue
 			}
 			task = startedTask
@@ -1058,7 +1364,10 @@ func (svc *Service) claimInterruptedStartingRun(ctx context.Context, projectID s
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+	}
+	if skippedReason != "" {
+		return ClaimedRun{}, false, fmt.Errorf("%w: interrupted_starting_run_unclaimable:%s", ErrInvalidInput, skippedReason)
 	}
 	return ClaimedRun{}, false, nil
 }
@@ -1085,6 +1394,15 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
 		if err != nil || !preExecutionRecoveryTaskMatchesRun(task, run) || !svc.dependenciesDone(ctx, task) {
+			continue
+		}
+		if task.Status != projectworkplan.WorkTaskStatusBlocked {
+			if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+				_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
+				continue
+			}
+		} else if !taskOwnsGitOpsRecoveryRun(task, run) {
+			_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
 			continue
 		}
 		task, _, blocked, err := svc.expandOrBlockPreExecutionDirtyScope(ctx, run, task, dirtyPathsFromEvidenceRefs(task.EvidenceRefs))
@@ -1116,12 +1434,32 @@ func (svc *Service) claimPreExecutionRecovery(ctx context.Context, projectID str
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
 	}
 	return ClaimedRun{}, false, nil
 }
 
 func (svc *Service) recoverablePreExecutionRuns(ctx context.Context, projectID string) ([]AutomationRun, error) {
+	activePlanIDs, err := svc.activePlanIDs(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if len(activePlanIDs) > 0 {
+		runs := make([]AutomationRun, 0)
+		for planID := range activePlanIDs {
+			failed, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, PlanID: planID, Status: RunStatusFailed})
+			if err != nil {
+				return nil, err
+			}
+			blocked, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, PlanID: planID, Status: RunStatusBlocked})
+			if err != nil {
+				return nil, err
+			}
+			runs = append(runs, failed...)
+			runs = append(runs, blocked...)
+		}
+		return runs, nil
+	}
 	failed, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
 	if err != nil {
 		return nil, err
@@ -1131,6 +1469,87 @@ func (svc *Service) recoverablePreExecutionRuns(ctx context.Context, projectID s
 		return nil, err
 	}
 	return append(failed, blocked...), nil
+}
+
+func (svc *Service) filterRunsToActivePlans(ctx context.Context, projectID string, runs []AutomationRun) ([]AutomationRun, error) {
+	if len(runs) == 0 || svc == nil || svc.workTasks == nil {
+		return runs, nil
+	}
+	activePlanIDs, err := svc.activePlanIDs(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if len(activePlanIDs) == 0 {
+		return runs, nil
+	}
+	out := make([]AutomationRun, 0, len(runs))
+	for _, run := range runs {
+		if _, ok := activePlanIDs[run.PlanID]; ok {
+			out = append(out, run)
+		}
+	}
+	return out, nil
+}
+
+func (svc *Service) activePlanIDs(ctx context.Context, projectID string) (map[string]struct{}, error) {
+	if svc == nil || svc.workTasks == nil {
+		return nil, nil
+	}
+	workPlans, ok := svc.workTasks.(remediationWorkPlanAPI)
+	if !ok || workPlans == nil {
+		return nil, nil
+	}
+	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: projectID, Status: projectworkplan.WorkPlanStatusActive})
+	if err != nil {
+		return nil, err
+	}
+	activePlanIDs := make(map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		activePlanIDs[plan.ID] = struct{}{}
+	}
+	return activePlanIDs, nil
+}
+
+func (svc *Service) sortQueuedRunsForClaim(ctx context.Context, runs []AutomationRun) {
+	if len(runs) < 2 || svc == nil || svc.store == nil {
+		sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.Before(runs[j].CreatedAt) })
+		return
+	}
+	tracePriority := make(map[string]int, len(runs))
+	for _, run := range runs {
+		priority := 1
+		if strings.TrimSpace(run.TraceID) != "" {
+			priority = 0
+		} else if automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID); err == nil && strings.TrimSpace(automation.TraceID) != "" {
+			priority = 0
+		}
+		tracePriority[run.ID] = priority
+	}
+	sort.SliceStable(runs, func(i, j int) bool {
+		left := tracePriority[runs[i].ID]
+		right := tracePriority[runs[j].ID]
+		if left != right {
+			return left < right
+		}
+		if left == 0 {
+			return runs[i].CreatedAt.After(runs[j].CreatedAt)
+		}
+		return runs[i].CreatedAt.Before(runs[j].CreatedAt)
+	})
+}
+
+func queuedRunsForRunner(runs []AutomationRun, runnerKind string, agentID string) []AutomationRun {
+	filtered := runs[:0]
+	for _, run := range runs {
+		if run.RunnerKind != runnerKind {
+			continue
+		}
+		if agentID != "" && run.AgentID != "" && run.AgentID != agentID {
+			continue
+		}
+		filtered = append(filtered, run)
+	}
+	return filtered
 }
 
 func (svc *Service) reconcileRecoverablePreExecutionRuns(ctx context.Context, projectID string) error {
@@ -1232,11 +1651,21 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 			continue
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
-		if err != nil || !taskHasGitOpsRecoveryCloseout(task) {
+		if err != nil {
 			continue
 		}
-		if !taskOwnsGitOpsRecoveryRun(task, run) {
+		hasRecoveryCloseout := taskHasGitOpsRecoveryCloseout(task) || (containsRef(task.AgentRunIDs, run.ID) && len(task.EvidenceRefs) > 0 && len(automationCloseoutVerifierRefs(task)) > 0 && (len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != ""))
+		if !hasRecoveryCloseout {
 			continue
+		}
+		if !taskOwnsGitOpsRecoveryRun(task, run) && !containsRef(task.AgentRunIDs, run.ID) {
+			continue
+		}
+		if task.Status != projectworkplan.WorkTaskStatusBlocked && !containsRef(task.AgentRunIDs, run.ID) {
+			if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+				_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
+				continue
+			}
 		}
 		now := svc.now()
 		run.Status = RunStatusRunning
@@ -1245,6 +1674,7 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 		run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
 		run.StartedAt = now
 		run.FinishedAt = time.Time{}
+		run.FailureCategory = ""
 		svc.applyExternalClaim(&run, runnerID, now)
 		run.UpdatedAt = now
 		claimed, err := svc.store.UpdateRun(ctx, run)
@@ -1255,7 +1685,7 @@ func (svc *Service) claimGitOpsPostTaskRecovery(ctx context.Context, projectID s
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
 	}
 	return ClaimedRun{}, false, nil
 }
@@ -1268,9 +1698,13 @@ func (svc *Service) reconcileExhaustedGitOpsRecoveryRuns(ctx context.Context, pr
 	if err != nil {
 		return err
 	}
+	runs, err = svc.filterRunsToActivePlans(ctx, projectID, runs)
+	if err != nil {
+		return err
+	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
 	for _, run := range runs {
-		if run.RunnerKind != RunnerKindCodexCLI || !isRecoverableGitOpsPostTaskFailure(run.FailureCategory) {
+		if run.RunnerKind != RunnerKindCodexCLI || (!isRecoverableGitOpsPostTaskFailure(run.FailureCategory) && !isRecoverableRecoveryFailure(run.FailureCategory)) {
 			continue
 		}
 		if svc.canRetryRun(run) {
@@ -1280,13 +1714,24 @@ func (svc *Service) reconcileExhaustedGitOpsRecoveryRuns(ctx context.Context, pr
 			continue
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
-		if err != nil || !taskHasGitOpsRecoveryCloseout(task) {
+		if err != nil || (!taskHasGitOpsRecoveryCloseout(task) && !isRecoverableRecoveryFailure(run.FailureCategory)) {
+			continue
+		}
+		if isTerminalAutomationTaskStatus(task.Status) {
 			continue
 		}
 		if !taskOwnsGitOpsRecoveryRun(task, run) {
 			continue
 		}
-		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory, nil); err != nil {
+		if countTerminalReplacementFailures(runs, task) >= defaultAutomationMaxReplacementRunsPerTask {
+			if _, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task, latestTerminalReplacementFailureCategory(runs, task)); err != nil {
+				return err
+			}
+			continue
+		}
+		evidenceRefs := append([]string(nil), task.EvidenceRefs...)
+		evidenceRefs = append(evidenceRefs, task.VerifierResultRefs...)
+		if _, err := svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, run.FailureCategory, evidenceRefs); err != nil {
 			return err
 		}
 	}
@@ -1327,6 +1772,10 @@ func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, p
 	if err != nil {
 		return ClaimedRun{}, false, err
 	}
+	runs, err = svc.filterRunsToActivePlans(ctx, projectID, runs)
+	if err != nil {
+		return ClaimedRun{}, false, err
+	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
 	for _, run := range runs {
 		if run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.SafeSummary) != RunSafeSummaryPostImplementationReviewQueued || !isRecoverableReviewGitOpsFailure(run.FailureCategory) {
@@ -1349,6 +1798,10 @@ func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, p
 		if err != nil || task.Status == projectworkplan.WorkTaskStatusDone {
 			continue
 		}
+		if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+			_, _ = svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
+			continue
+		}
 		now := svc.now()
 		run.Status = RunStatusRunning
 		run.WorkTaskStatus = task.Status
@@ -1366,7 +1819,7 @@ func (svc *Service) claimPostImplementationReviewRecovery(ctx context.Context, p
 			continue
 		}
 		timeout := automationMaxRuntime(svc.options.Agents, claimed.AgentID, svc.options.DefaultMaxRuntime)
-		return ClaimedRun{Run: claimed, CodexInput: codexInputForRun(claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
+		return ClaimedRun{Run: claimed, CodexInput: svc.codexInputForClaim(ctx, claimed, task), TimeoutMS: timeout.Milliseconds()}, true, nil
 	}
 	return ClaimedRun{}, false, nil
 }
@@ -1493,6 +1946,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		if status == RunStatusFailed && svc.failedAttemptMatchesAdvancedTask(ctx, run) {
 			return run, nil
 		}
+		if svc.attemptMatchesTerminalTaskForRun(ctx, run, status, claimID, runnerID) {
+			return run, nil
+		}
 		if status == RunStatusCompleted && terminalAuditRemediationFailureAlreadyRecorded(run) && claimMatchesTerminalRun(run, claimID, runnerID) {
 			return run, nil
 		}
@@ -1516,6 +1972,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	if err != nil {
 		return AutomationRun{}, err
 	}
+	if err := safeFailureCategory(failureCategory); err != nil {
+		return AutomationRun{}, err
+	}
 	verifierRefs, err := safeRefList(input.VerifierResultRefs, "verifier_result_refs")
 	if err != nil {
 		return AutomationRun{}, err
@@ -1524,6 +1983,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	if err != nil {
 		return AutomationRun{}, err
 	}
+	if isRecoverableGitOpsPostTaskFailure(failureCategory) || isGitOpsRecoveryFailure(failureCategory) {
+		evidenceRefs = appendGitOpsFailureEvidenceRef(evidenceRefs, failureCategory)
+	}
 	claimRefs, err := safeRefList(input.ClaimRefs, "claim_refs")
 	if err != nil {
 		return AutomationRun{}, err
@@ -1531,6 +1993,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	reviewRefs, err := safeRefList(input.ReviewRefs, "review_result_refs")
 	if err != nil {
 		return AutomationRun{}, err
+	}
+	if len(reviewRefs) > 0 && svc.attemptCannotSelfAttachReviewRefs(ctx, run) {
+		reviewRefs = nil
 	}
 	knowledgeRefs, err := safeRefList(input.KnowledgeRefs, "knowledge_candidate_refs")
 	if err != nil {
@@ -1576,18 +2041,46 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	run.UpdatedAt = now
 	switch status {
 	case RunStatusCompleted:
+		if category := svc.postImplementationReviewCompletionBlocker(ctx, run); category != "" {
+			return svc.blockTaskAfterTerminalAttempt(ctx, run, category)
+		}
 		run.Status = RunStatusVerifying
 		run.SafeSummary = "external_codex_cli_completed_verification_required"
 		if err := svc.queuePostImplementationReview(ctx, run); err != nil {
 			return svc.failRun(ctx, run, RunStatusFailed, "post_implementation_review_queue_failed")
 		}
 	case RunStatusTimeout:
+		if isRecoverableCodexExecutionFailure(failureCategory) {
+			return svc.requeueTaskAfterCodexExecutionFailure(ctx, run, failureCategory)
+		}
 		run.Status = RunStatusTimeout
 	case RunStatusFailed:
 		if strings.TrimSpace(run.SafeSummary) == RunSafeSummaryGitOpsPostTaskRecovery && isGitOpsRecoveryFailure(failureCategory) {
 			return svc.requeueTaskAfterGitOpsRecoveryFailure(ctx, run, failureCategory, evidenceRefs)
 		}
-		run.Status = RunStatusFailed
+		if isTerminalGitOpsPostTaskBlocker(failureCategory) {
+			return svc.blockTaskAfterTerminalAttempt(ctx, run, failureCategory)
+		}
+		if isRecoverableGitOpsPostTaskFailure(failureCategory) {
+			run.Status = RunStatusFailed
+			run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
+			break
+		}
+		if isRecoverableCodexExecutionFailure(failureCategory) {
+			return svc.requeueTaskAfterCodexExecutionFailure(ctx, run, failureCategory)
+		}
+		if isNonRetryableCodexExecutionFailure(failureCategory) {
+			return svc.blockTaskAfterNonRetryableCodexExecutionFailure(ctx, run, failureCategory)
+		}
+		if isTerminalGovernedCloseoutFailure(failureCategory) {
+			return svc.blockTaskAfterTerminalAttempt(ctx, run, failureCategory)
+		}
+		if isRecoverableGovernedCloseoutFailure(failureCategory) {
+			return svc.requeueTaskAfterGovernedCloseoutFailure(ctx, run, failureCategory)
+		}
+		return svc.failTaskAfterTerminalAttempt(ctx, run, failureCategory)
+	case RunStatusBlocked:
+		return svc.blockTaskAfterTerminalAttempt(ctx, run, failureCategory)
 	default:
 		run.Status = status
 	}
@@ -1603,9 +2096,149 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 		return AutomationRun{}, fmt.Errorf("%w: automation run durable completion mismatch", ErrInvalidInput)
 	}
 	if status == RunStatusCompleted {
-		return svc.reconcileVerifyingRun(ctx, durable)
+		reconciled, err := svc.reconcileVerifyingRun(ctx, durable)
+		if err != nil {
+			return AutomationRun{}, err
+		}
+		if err := svc.reconcilePostImplementationReviewTarget(ctx, reconciled); err != nil {
+			return AutomationRun{}, err
+		}
+		return reconciled, nil
 	}
 	return durable, nil
+}
+
+func (svc *Service) blockTaskAfterTerminalAttempt(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	run.Status = RunStatusBlocked
+	run.FailureCategory = category
+	run.SafeSummary = "external_codex_cli_blocked"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return updated, nil
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return updated, nil
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		return updated, nil
+	}
+	reason := "External Codex runner blocked task."
+	if strings.TrimSpace(category) != "" {
+		reason = "External Codex runner blocked task with " + safeFailure(category) + "."
+	}
+	blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		SafeNextAction:     "external_runner_blocked",
+		RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+		TraceID:            firstNonEmpty(run.TraceID, run.ID),
+		BlockedReason:      reason,
+		ResumeInstructions: "Inspect the automation run evidence and resume only after the blocker is resolved.",
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	updated.WorkTaskStatus = blocked.Status
+	if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+		return updated, err
+	}
+	return svc.store.UpdateRun(ctx, updated)
+}
+
+func (svc *Service) postImplementationReviewCompletionBlocker(ctx context.Context, run AutomationRun) string {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return ""
+	}
+	reviewTask, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil || !isReviewTask(reviewTask) {
+		return ""
+	}
+	targetID := postImplementationReviewTargetID(reviewTask)
+	if targetID == "" {
+		return ""
+	}
+	target, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, targetID)
+	if err != nil {
+		return ""
+	}
+	reviewer := firstNonEmpty(run.AgentID, reviewTask.OwnerAgent)
+	owner := strings.TrimSpace(target.OwnerAgent)
+	if reviewer != "" && owner != "" && strings.EqualFold(reviewer, owner) {
+		return "post_implementation_review_self_review"
+	}
+	gate := strings.ToLower(strings.TrimSpace(reviewTask.ReviewGate))
+	if reviewer != "" && strings.Contains(gate, "independent-reviewer-must-not-be-"+strings.ToLower(reviewer)) {
+		return "post_implementation_review_self_review"
+	}
+	return ""
+}
+
+func (svc *Service) attemptCannotSelfAttachReviewRefs(ctx context.Context, run AutomationRun) bool {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return false
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil || isReviewTask(task) || isReadOnlyScannerTask(task) || taskUsesBoundedSmokeGitOpsVerification(task) {
+		return false
+	}
+	if len(task.FilesToEdit) == 0 && strings.TrimSpace(task.ReviewGate) == "" {
+		return false
+	}
+	return true
+}
+
+func (svc *Service) failTaskAfterTerminalAttempt(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	run.Status = RunStatusFailed
+	run.FailureCategory = category
+	run.SafeSummary = "external_codex_cli_failed"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return updated, nil
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return updated, nil
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		return updated, nil
+	}
+	outcome := "External Codex runner failed task."
+	if strings.TrimSpace(category) != "" {
+		outcome = "External Codex runner failed task with " + safeFailure(category) + "."
+	}
+	failed, err := svc.workTasks.FailWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:      task.ProjectID,
+		TaskID:         task.ID,
+		SafeNextAction: "external_runner_failed",
+		RunID:          firstNonEmpty(task.ClaimedByRunID, run.ID),
+		TraceID:        firstNonEmpty(run.TraceID, run.ID),
+		Outcome:        outcome,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	updated.WorkTaskStatus = failed.Status
+	if err := svc.updatePlanAfterTerminalTask(ctx, failed); err != nil {
+		return updated, err
+	}
+	return svc.store.UpdateRun(ctx, updated)
 }
 
 func terminalAuditRemediationFailureAlreadyRecorded(run AutomationRun) bool {
@@ -1708,6 +2341,30 @@ func (svc *Service) failedAttemptMatchesAdvancedTask(ctx context.Context, run Au
 	}
 }
 
+func (svc *Service) attemptMatchesTerminalTaskForRun(ctx context.Context, run AutomationRun, status string, claimID string, runnerID string) bool {
+	if svc == nil || svc.workTasks == nil || run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return false
+	}
+	if !isTerminalRunStatus(status) || !claimMatchesTerminalRun(run, claimID, runnerID) {
+		return false
+	}
+	switch run.Status {
+	case RunStatusCompleted, RunStatusFailed, RunStatusBlocked, RunStatusCancelled, RunStatusTimeout, RunStatusVerifying:
+	default:
+		return false
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil || !taskOwnedByRun(task, run.ID) {
+		return false
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusDone, projectworkplan.WorkTaskStatusFailed, projectworkplan.WorkTaskStatusBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
 func (svc *Service) externallyClaimedTaskOwnsRun(ctx context.Context, run AutomationRun) bool {
 	if svc == nil || svc.workTasks == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" || strings.TrimSpace(run.ID) == "" {
 		return false
@@ -1717,6 +2374,14 @@ func (svc *Service) externallyClaimedTaskOwnsRun(ctx context.Context, run Automa
 		return false
 	}
 	return strings.TrimSpace(task.ClaimedByRunID) == run.ID
+}
+
+func taskOwnedByRun(task projectworkplan.WorkTask, runID string) bool {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return false
+	}
+	return strings.TrimSpace(task.ClaimedByRunID) == runID || containsRef(task.AgentRunIDs, runID)
 }
 
 func terminalAttemptAlreadyRecorded(run AutomationRun, status string) bool {
@@ -1761,6 +2426,7 @@ func recoveryResumeInstructions(sentence string) string {
 }
 
 func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, run AutomationRun, category string, evidenceRefs []string) (AutomationRun, error) {
+	category = normalizeGitOpsRecoveryFailureCategory(category, evidenceRefs)
 	updater, ok := svc.workTasks.(workTaskStatusUpdater)
 	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
 		run.Status = RunStatusFailed
@@ -1777,7 +2443,13 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
 	}
+	if isTerminalGitOpsPostTaskBlocker(category) || isUnrecoverableGitOpsPostTaskExecutionFailure(category) {
+		return svc.blockTaskAfterGitOpsRecoveryBlocker(ctx, run, task, category)
+	}
 	dirtyPaths := dirtyPathsFromEvidenceRefs(evidenceRefs)
+	if isGitOpsVerificationFailure(category) {
+		return svc.requeueTaskAfterGitOpsVerificationFailure(ctx, updater, run, task, category, evidenceRefs)
+	}
 	if strings.TrimSpace(category) == "gitops_dirty_worktree_scope" && len(dirtyPaths) > 0 {
 		expandScopes, outsidePaths := svc.classifyDirtyScopePaths(run.ProjectID, task, dirtyPaths)
 		if len(outsidePaths) > 0 {
@@ -1797,6 +2469,48 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 					task = expanded
 				}
 			}
+			readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+				WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+					ProjectID:          task.ProjectID,
+					TaskID:             task.ID,
+					SafeNextAction:     "gitops_recovery_failed_requeue_implementation",
+					RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+					TraceID:            firstNonEmpty(run.TraceID, run.ID),
+					ResumeInstructions: recoveryResumeInstructions("GitOps dirty paths were inside likely_files_affected and files_to_edit was expanded for retry: " + strings.Join(dirtyPaths, ", ")),
+					EvidenceRefs:       append([]string(nil), evidenceRefs...),
+				},
+				Status: projectworkplan.WorkTaskStatusReady,
+			})
+			if err != nil {
+				return AutomationRun{}, err
+			}
+			task = readyTask
+			run.Status = RunStatusFailed
+			run.WorkTaskStatus = task.Status
+			run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
+			run.FailureCategory = "gitops_post_task_failed_runner_post_task"
+			run.AttemptCount = 0
+			run.ClaimID = ""
+			run.RunnerID = ""
+			run.LeaseExpiresAt = time.Time{}
+			run.StartedAt = time.Time{}
+			now := svc.now()
+			if run.FinishedAt.IsZero() {
+				run.FinishedAt = now
+			}
+			run.UpdatedAt = now
+			updated, err := svc.store.UpdateRun(ctx, run)
+			if err != nil {
+				return AutomationRun{}, err
+			}
+			automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+			if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, task) != nil {
+				return updated, nil
+			}
+			if err := svc.queueReadyDependentAutomation(ctx, automation, task); err != nil {
+				return updated, nil
+			}
+			return updated, nil
 		}
 	}
 	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
@@ -1807,6 +2521,7 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
 			TraceID:            firstNonEmpty(run.TraceID, run.ID),
 			ResumeInstructions: gitOpsRecoveryResumeInstructions(category, dirtyPaths),
+			EvidenceRefs:       append([]string(nil), evidenceRefs...),
 		},
 		Status: projectworkplan.WorkTaskStatusReady,
 	})
@@ -1816,7 +2531,10 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 	run.Status = RunStatusFailed
 	run.WorkTaskStatus = readyTask.Status
 	run.SafeSummary = gitOpsRecoveryRequeueSummary(category)
-	run.FailureCategory = "gitops_recovery_failed_requires_implementation"
+	run.FailureCategory = gitOpsRecoveryImplementationFailureCategory(category)
+	if isGitOpsDownstreamChecksFailure(category) {
+		run.FailureCategory = "gitops_recovery_failed_requires_downstream_checks"
+	}
 	now := svc.now()
 	if run.FinishedAt.IsZero() {
 		run.FinishedAt = now
@@ -1836,12 +2554,156 @@ func (svc *Service) requeueTaskAfterGitOpsRecoveryFailure(ctx context.Context, r
 	return updated, nil
 }
 
+func (svc *Service) requeueTaskAfterGitOpsVerificationFailure(ctx context.Context, updater workTaskStatusUpdater, run AutomationRun, task projectworkplan.WorkTask, category string, evidenceRefs []string) (AutomationRun, error) {
+	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "gitops_verification_repair",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			ResumeInstructions: gitOpsVerificationRepairResumeInstructions(category),
+			EvidenceRefs:       appendGitOpsFailureEvidenceRef(evidenceRefs, category),
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = readyTask.Status
+	run.SafeSummary = gitOpsVerificationRepairRequeueSummary(category)
+	run.FailureCategory = gitOpsRecoveryVerificationRepairFailureCategory(category)
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+		return updated, nil
+	}
+	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+		return updated, nil
+	}
+	return updated, nil
+}
+
+func normalizeGitOpsRecoveryFailureCategory(category string, evidenceRefs []string) string {
+	category = strings.TrimSpace(category)
+	var fallback string
+	for _, ref := range evidenceRefs {
+		ref = strings.TrimSpace(ref)
+		if !strings.HasPrefix(ref, "gitops-failure:") {
+			continue
+		}
+		candidate := strings.TrimSpace(strings.TrimPrefix(ref, "gitops-failure:"))
+		if candidate != "" {
+			candidate = safeFailure(candidate)
+			if isGitOpsVerificationFailure(candidate) {
+				return candidate
+			}
+			if fallback == "" {
+				fallback = candidate
+			}
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	if category == "gitops_post_task_failed" || category == "gitops_post_task_failed_unclassified" {
+		return "gitops_post_task_failed_runner_post_task"
+	}
+	return category
+}
+
+func (svc *Service) blockTaskAfterGitOpsRecoveryBlocker(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask, category string) (AutomationRun, error) {
+	reason := gitOpsRecoveryBlockedReason(category)
+	blockedTask, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		SafeNextAction:     "gitops_recovery_blocked",
+		RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+		TraceID:            firstNonEmpty(run.TraceID, run.ID),
+		BlockedReason:      reason,
+		ResumeInstructions: recoveryResumeInstructions(reason + " Fix GitOps configuration, credentials, branch policy, push, or PR setup before rerunning."),
+		EvidenceRefs:       []string{"gitops-failure:" + safeFailure(category)},
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusBlocked
+	run.WorkTaskStatus = blockedTask.Status
+	run.FailureCategory = safeFailure(category)
+	run.SafeSummary = "gitops_recovery_blocked_after_" + safeFailure(category)
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	return svc.store.UpdateRun(ctx, run)
+}
+
+func gitOpsRecoveryImplementationFailureCategory(category string) string {
+	return "gitops_recovery_failed_requires_implementation"
+}
+
+func gitOpsRecoveryVerificationRepairFailureCategory(category string) string {
+	return "gitops_recovery_failed_requires_verification_repair"
+}
+
+func isGitOpsVerificationFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return category == "gitops_verification_failed" || strings.HasPrefix(category, "gitops_verification_failed_")
+}
+
+func isGitOpsDownstreamChecksFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return category == "gitops_downstream_checks_failed" || strings.HasPrefix(category, "gitops_downstream_checks_failed_")
+}
+
+func isUnrecoverableGitOpsPostTaskExecutionFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return category == "gitops_post_task_failed" || strings.HasPrefix(category, "gitops_post_task_failed_")
+}
+
+func gitOpsRecoveryBlockedReason(category string) string {
+	category = safeFailure(category)
+	if category == "" {
+		return "GitOps recovery blocked by an unclassified post-task failure."
+	}
+	return "GitOps recovery blocked after " + category + "."
+}
+
 func gitOpsRecoveryRequeueSummary(category string) string {
 	category = safeFailure(category)
 	if category == "" {
 		return RunSafeSummaryGitOpsRecoveryRequeuedImplementation
 	}
 	return RunSafeSummaryGitOpsRecoveryRequeuedImplementation + "_after_" + category
+}
+
+func gitOpsVerificationRepairRequeueSummary(category string) string {
+	category = safeFailure(category)
+	if category == "" {
+		return "gitops_recovery_requeued_verification_repair"
+	}
+	return "gitops_recovery_requeued_verification_repair_after_" + category
+}
+
+func appendGitOpsFailureEvidenceRef(evidenceRefs []string, category string) []string {
+	refs := append([]string(nil), evidenceRefs...)
+	failureRef := "gitops-failure:" + safeFailure(category)
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == failureRef {
+			return refs
+		}
+	}
+	return append(refs, failureRef)
 }
 
 func (svc *Service) blockTaskAfterOutOfScopeDirtyPaths(ctx context.Context, updater workTaskStatusUpdater, run AutomationRun, task projectworkplan.WorkTask, dirtyPaths []string) (AutomationRun, error) {
@@ -1916,7 +2778,14 @@ func gitOpsRecoveryResumeInstructions(category string, dirtyPaths []string) stri
 	if len(dirtyPaths) > 0 {
 		return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; dirty paths: " + strings.Join(dirtyPaths, ", ") + ". Rerun implementation after files_to_edit scope is corrected.")
 	}
+	if isGitOpsDownstreamChecksFailure(category) {
+		return recoveryResumeInstructions("GitOps post-PR checks failed with " + safeFailure(category) + ". This is a bounded downstream-check repair run: inspect the failed GitHub check, CI status, configured post_pr_checks policy, and PR evidence; fix only the issue required for those checks to pass, then close out for GitOps retry. Do not commit, push, open PRs, or add unrelated feature behavior.")
+	}
 	return recoveryResumeInstructions("GitOps recovery failed with " + safeFailure(category) + "; rerun implementation to fix verification, generated artifacts, commit scope, or PR readiness before GitOps post-task is retried.")
+}
+
+func gitOpsVerificationRepairResumeInstructions(category string) string {
+	return recoveryResumeInstructions("GitOps verification failed with " + safeFailure(category) + ". This is a bounded verifier-repair run: fix only the failing configured verifier, such as lint, typecheck, semgrep, generated-artifact, or other validation command. Start from the verifier ladder or project verification config, run the narrow failing verifier when feasible, then close out for GitOps retry. Do not commit, push, open PRs, or add unrelated feature behavior.")
 }
 
 func preExecutionRecoveryRequeueSummary(category string) string {
@@ -2033,6 +2902,222 @@ func (svc *Service) requeueTaskAfterPreExecutionRecoveryFailure(ctx context.Cont
 	return updated, nil
 }
 
+func (svc *Service) requeueTaskAfterGovernedCloseoutFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = "governed_closeout_failed_requeue_unavailable"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = "governed_closeout_failed_requeue_unavailable"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusReady, projectworkplan.WorkTaskStatusClaimed, projectworkplan.WorkTaskStatusInProgress, projectworkplan.WorkTaskStatusFailed:
+	default:
+		run.Status = RunStatusFailed
+		run.WorkTaskStatus = task.Status
+		run.FailureCategory = category
+		run.SafeSummary = "governed_closeout_failed_task_advanced"
+		now := svc.now()
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		return svc.store.UpdateRun(ctx, run)
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		run.Status = RunStatusFailed
+		run.WorkTaskStatus = task.Status
+		run.FailureCategory = category
+		run.SafeSummary = "governed_closeout_failed_task_claimed_by_other_run"
+		now := svc.now()
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		return svc.store.UpdateRun(ctx, run)
+	}
+	if planUpdater, ok := svc.workTasks.(interface {
+		UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
+	}); ok && planUpdater != nil && strings.TrimSpace(run.PlanID) != "" {
+		if _, err := planUpdater.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:      run.ProjectID,
+			PlanID:         run.PlanID,
+			Status:         projectworkplan.WorkPlanStatusActive,
+			RunID:          firstNonEmpty(run.ID, task.ClaimedByRunID),
+			TraceID:        firstNonEmpty(run.TraceID, run.ID),
+			CurrentTaskID:  task.ID,
+			SafeNextAction: "governed_closeout_failed_requeue_implementation",
+			ResumeSummary:  governedCloseoutRecoveryResumeInstructions(category),
+		}); err != nil {
+			return AutomationRun{}, err
+		}
+	}
+	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "governed_closeout_failed_requeue_implementation",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			ResumeInstructions: governedCloseoutRecoveryResumeInstructions(category),
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = readyTask.Status
+	run.FailureCategory = category
+	run.SafeSummary = "governed_closeout_failed_requeue_implementation"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+		return updated, nil
+	}
+	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+		return updated, nil
+	}
+	return updated, nil
+}
+
+func (svc *Service) requeueTaskAfterCodexExecutionFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = "codex_execution_failed_requeue_unavailable"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		run.Status = RunStatusFailed
+		run.FailureCategory = category
+		run.SafeSummary = "codex_execution_failed_requeue_unavailable"
+		run.UpdatedAt = svc.now()
+		return svc.store.UpdateRun(ctx, run)
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusReady, projectworkplan.WorkTaskStatusClaimed, projectworkplan.WorkTaskStatusInProgress:
+	default:
+		run.Status = RunStatusFailed
+		run.WorkTaskStatus = task.Status
+		run.FailureCategory = category
+		run.SafeSummary = "codex_execution_failed_task_advanced"
+		now := svc.now()
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		return svc.store.UpdateRun(ctx, run)
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		run.Status = RunStatusFailed
+		run.WorkTaskStatus = task.Status
+		run.FailureCategory = category
+		run.SafeSummary = "codex_execution_failed_task_claimed_by_other_run"
+		now := svc.now()
+		if run.FinishedAt.IsZero() {
+			run.FinishedAt = now
+		}
+		run.UpdatedAt = now
+		return svc.store.UpdateRun(ctx, run)
+	}
+	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			SafeNextAction:     "codex_execution_failed_requeue_implementation",
+			RunID:              firstNonEmpty(task.ClaimedByRunID, run.ID),
+			TraceID:            firstNonEmpty(run.TraceID, run.ID),
+			ResumeInstructions: codexExecutionFailureResumeInstructions(category),
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = readyTask.Status
+	run.FailureCategory = category
+	run.SafeSummary = "codex_execution_failed_requeue_implementation"
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+	if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
+		return updated, nil
+	}
+	if err := svc.queueReadyDependentAutomation(ctx, automation, readyTask); err != nil {
+		return updated, nil
+	}
+	return updated, nil
+}
+
+func (svc *Service) blockTaskAfterNonRetryableCodexExecutionFailure(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {
+	run.Status = RunStatusFailed
+	run.FailureCategory = category
+	run.SafeSummary = category
+	now := svc.now()
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = now
+	}
+	run.UpdatedAt = now
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return updated, nil
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return updated, nil
+	}
+	if claimedBy := strings.TrimSpace(task.ClaimedByRunID); claimedBy != "" && claimedBy != run.ID {
+		return updated, nil
+	}
+	blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		SafeNextAction:     category,
+		TraceID:            category,
+		BlockedReason:      nonRetryableCodexBlockedReason(category),
+		ResumeInstructions: nonRetryableCodexResumeInstructions(category),
+	})
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+		return updated, err
+	}
+	return updated, nil
+}
+
 func (svc *Service) reconcileVerifyingRuns(ctx context.Context, projectID string) error {
 	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" {
 		return nil
@@ -2082,6 +3167,9 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 	if err != nil {
 		return run, nil
 	}
+	if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil && runPlanFailureCategory(err) == "work_plan_terminal" {
+		return svc.blockRunFromTerminalPlan(ctx, run, task)
+	}
 	if run.Status == RunStatusClaiming || run.Status == RunStatusStarting {
 		if task.Status == projectworkplan.WorkTaskStatusDone {
 			return svc.completeRunAfterTaskDone(ctx, run, task)
@@ -2105,7 +3193,7 @@ func (svc *Service) reconcileRunningRun(ctx context.Context, run AutomationRun) 
 			}
 			return svc.reconcileVerifyingRun(ctx, updated)
 		}
-		if (svc.externalRunLeaseExpired(run) || svc.runStartedBeforeService(run)) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
+		if (svc.externalRunLeaseExpired(run) || svc.runStartedBeforeService(run) || svc.externalRunNeverClaimedExpired(run)) && (task.Status == projectworkplan.WorkTaskStatusReady || task.Status == projectworkplan.WorkTaskStatusClaimed || task.Status == projectworkplan.WorkTaskStatusInProgress) {
 			return svc.requeueAbandonedRunningRun(ctx, run, task)
 		}
 		return run, nil
@@ -2192,6 +3280,24 @@ func (svc *Service) externalRunLeaseExpired(run AutomationRun) bool {
 	return !svc.now().Before(run.LeaseExpiresAt)
 }
 
+func externalRunNeverClaimed(run AutomationRun) bool {
+	return run.ClaimID == "" && run.RunnerID == "" && run.ClaimedAt.IsZero() && run.LastHeartbeatAt.IsZero() && run.LeaseExpiresAt.IsZero()
+}
+
+func (svc *Service) externalRunNeverClaimedExpired(run AutomationRun) bool {
+	if svc == nil || !externalRunNeverClaimed(run) {
+		return false
+	}
+	marker := run.UpdatedAt
+	if marker.IsZero() {
+		marker = run.StartedAt
+	}
+	if marker.IsZero() {
+		return false
+	}
+	return !svc.now().Before(marker.Add(defaultExternalRunLeaseTTL))
+}
+
 func (svc *Service) externalClaimStillActive(run AutomationRun) bool {
 	if svc == nil || run.ClaimID == "" || run.LeaseExpiresAt.IsZero() {
 		return false
@@ -2262,6 +3368,10 @@ func (svc *Service) reconcileInterruptedRunsWithProgressedTasks(ctx context.Cont
 	if err != nil {
 		return err
 	}
+	runs, err = svc.filterRunsToActivePlans(ctx, projectID, runs)
+	if err != nil {
+		return err
+	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
 	for _, run := range runs {
 		if run.RunnerKind != RunnerKindCodexCLI || strings.TrimSpace(run.FailureCategory) != "external_runner_interrupted" || run.TaskID == "" {
@@ -2318,14 +3428,26 @@ func (svc *Service) reconcileRecoveryRunsWithStaleReadyTasks(ctx context.Context
 	if err != nil {
 		return err
 	}
+	runs, err = svc.filterRunsToActivePlans(ctx, projectID, runs)
+	if err != nil {
+		return err
+	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
 	for _, run := range runs {
-		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" || run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady {
+		if run.RunnerKind != RunnerKindCodexCLI || run.TaskID == "" {
 			continue
 		}
-		switch strings.TrimSpace(run.FailureCategory) {
-		case "gitops_recovery_failed_requires_implementation", "pre_execution_recovery_failed_requires_implementation":
-		default:
+		if run.WorkTaskStatus != projectworkplan.WorkTaskStatusReady && !isRecoverableCodexExecutionFailure(run.FailureCategory) && !isRecoverableGovernedCloseoutFailure(run.FailureCategory) {
+			continue
+		}
+		if !isRecoverableRecoveryFailure(run.FailureCategory) && !isRecoverableCodexExecutionFailure(run.FailureCategory) && !isRecoverableGovernedCloseoutFailure(run.FailureCategory) {
+			continue
+		}
+		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
+		if err != nil {
+			continue
+		}
+		if automation.SourceKind == AutomationSourceWorkflow && strings.TrimSpace(automation.TraceID) == "" {
 			continue
 		}
 		task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
@@ -2350,7 +3472,6 @@ func (svc *Service) reconcileRecoveryRunsWithStaleReadyTasks(ctx context.Context
 		if err != nil {
 			return err
 		}
-		automation, err := svc.store.GetAutomation(ctx, run.ProjectID, run.AutomationID)
 		if err != nil || automation.Status != AutomationStatusEnabled || automation.TriggerKind != TriggerKindAutomatic || validateAllowedTaskRef(automation, readyTask) != nil {
 			continue
 		}
@@ -2369,11 +3490,19 @@ func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun
 	if err != nil {
 		return run, nil
 	}
+	if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil && runPlanFailureCategory(err) == "work_plan_terminal" {
+		return svc.blockRunFromTerminalPlan(ctx, run, task)
+	}
 	if task.Status == projectworkplan.WorkTaskStatusDone {
 		return svc.completeRunAfterTaskDone(ctx, run, task)
 	}
 	if isTerminalIncompleteTaskStatus(task.Status) {
 		return svc.finishRunAfterTaskTerminal(ctx, run, task)
+	}
+	if ready, err := svc.promoteGitOpsReadyTaskForReview(ctx, run, task); err != nil {
+		return run, err
+	} else if ready.ID != "" {
+		task = ready
 	}
 	if taskNeedsGitOpsPostTaskRecovery(run, task) {
 		return svc.markRunForGitOpsPostTaskRecovery(ctx, run, task)
@@ -2398,8 +3527,10 @@ func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun
 		ReviewResultRefs:   append([]string(nil), task.ReviewResultRefs...),
 	}
 	if reason := automationReviewExemptReason(task); reason != "" {
-		action.ReviewResultRefs = nil
-		action.ReviewExemptReason = reason
+		if !taskUsesBoundedSmokeGitOpsVerification(task) || len(action.ReviewResultRefs) == 0 {
+			action.ReviewResultRefs = nil
+			action.ReviewExemptReason = reason
+		}
 	}
 	if isNoConfirmedBugPlannerTask(task) && len(action.ClaimRefs) == 0 {
 		action.ClaimRefs = []string{"claim.no-confirmed-bug-remediation-not-required"}
@@ -2421,15 +3552,231 @@ func (svc *Service) reconcileVerifyingRun(ctx context.Context, run AutomationRun
 	return updated, nil
 }
 
+func (svc *Service) promoteGitOpsReadyTaskForReview(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (projectworkplan.WorkTask, error) {
+	if svc == nil || svc.workTasks == nil || run.Status != RunStatusVerifying {
+		return projectworkplan.WorkTask{}, nil
+	}
+	if task.Status != projectworkplan.WorkTaskStatusReady || isReviewTask(task) || len(task.FilesToEdit) == 0 || !taskHasGitOpsCompletionRef(task) {
+		return projectworkplan.WorkTask{}, nil
+	}
+	if len(automationCloseoutVerifierRefs(task)) == 0 {
+		return projectworkplan.WorkTask{}, nil
+	}
+	action := projectworkplan.WorkTaskActionInput{
+		ProjectID:      run.ProjectID,
+		TaskID:         task.ID,
+		RunID:          firstNonEmpty(run.ID, task.ClaimedByRunID),
+		TraceID:        firstNonEmpty(run.TraceID, run.ID),
+		SafeNextAction: "post_gitops_review_handoff",
+	}
+	if strings.TrimSpace(action.RunID) == "" {
+		return projectworkplan.WorkTask{}, fmt.Errorf("%w: post_gitops_review_run_missing", ErrInvalidInput)
+	}
+	claimed, err := svc.workTasks.ClaimWorkTask(ctx, action)
+	if err != nil {
+		return projectworkplan.WorkTask{}, err
+	}
+	started, err := svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:      run.ProjectID,
+		TaskID:         claimed.ID,
+		RunID:          action.RunID,
+		TraceID:        action.TraceID,
+		SafeNextAction: "post_gitops_review_handoff",
+	})
+	if err != nil {
+		return projectworkplan.WorkTask{}, err
+	}
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok {
+		return projectworkplan.WorkTask{}, fmt.Errorf("%w: post_gitops_review_status_unavailable", ErrInvalidInput)
+	}
+	return updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          run.ProjectID,
+			TaskID:             started.ID,
+			RunID:              action.RunID,
+			TraceID:            action.TraceID,
+			Outcome:            started.Outcome,
+			SafeNextAction:     "post_gitops_review_handoff",
+			VerifierResultRefs: automationCloseoutVerifierRefs(started),
+			EvidenceRefs:       append([]string(nil), started.EvidenceRefs...),
+			ClaimRefs:          append([]string(nil), started.ClaimRefs...),
+		},
+		Status: projectworkplan.WorkTaskStatusNeedsReview,
+	})
+}
+
+func (svc *Service) reconcilePostImplementationReviewTarget(ctx context.Context, reviewRun AutomationRun) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || reviewRun.Status != RunStatusCompleted || reviewRun.TaskID == "" {
+		return nil
+	}
+	reviewTask, err := svc.workTasks.GetWorkTask(ctx, reviewRun.ProjectID, reviewRun.TaskID)
+	if err != nil || reviewTask.Status != projectworkplan.WorkTaskStatusDone || !isReviewTask(reviewTask) {
+		return nil
+	}
+	targetID := postImplementationReviewTargetID(reviewTask)
+	if targetID == "" {
+		return nil
+	}
+	target, err := svc.workTasks.GetWorkTask(ctx, reviewRun.ProjectID, targetID)
+	if err != nil {
+		return nil
+	}
+	if strings.TrimSpace(target.TaskRef) == "decompose-work-plan" {
+		return svc.reconcileDecompositionChildReviewRefs(ctx, reviewRun, target)
+	}
+	if !taskNeedsPostImplementationReview(target) {
+		return nil
+	}
+	reviewRef := "review_result_" + safeBranchToken(target.ID) + "_approved"
+	if !containsRef(target.ReviewResultRefs, reviewRef) {
+		if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+			ProjectID:       target.ProjectID,
+			TaskID:          target.ID,
+			Ref:             reviewRef,
+			AttachedByRunID: reviewRun.ID,
+			TraceID:         firstNonEmpty(reviewRun.TraceID, reviewRun.ID),
+			Note:            "post-implementation review completed",
+		}); err != nil {
+			return err
+		}
+	}
+	parentRunID := firstNonEmpty(reviewRun.ParentRunID, target.ClaimedByRunID)
+	if parentRunID == "" {
+		return nil
+	}
+	parent, err := svc.store.GetRun(ctx, target.ProjectID, parentRunID)
+	if err != nil || parent.Status != RunStatusVerifying {
+		return nil
+	}
+	_, err = svc.reconcileVerifyingRun(ctx, parent)
+	return err
+}
+
+func (svc *Service) reconcileDecompositionChildReviewRefs(ctx context.Context, reviewRun AutomationRun, target projectworkplan.WorkTask) error {
+	tasks, err := svc.workTasks.ListWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: target.ProjectID, PlanID: target.PlanID, PageSize: 1000})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if !decompositionGeneratedImplementationTaskNeedsReviewRef(task) {
+			continue
+		}
+		reviewRef := "review_result_" + safeBranchToken(task.ID) + "_planning_readiness_approved"
+		if containsRef(task.ReviewResultRefs, reviewRef) {
+			continue
+		}
+		if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+			ProjectID:       task.ProjectID,
+			TaskID:          task.ID,
+			Ref:             reviewRef,
+			AttachedByRunID: reviewRun.ID,
+			TraceID:         firstNonEmpty(reviewRun.TraceID, reviewRun.ID),
+			Note:            "planning-readiness review completed for generated decomposition child task",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decompositionGeneratedImplementationTaskNeedsReviewRef(task projectworkplan.WorkTask) bool {
+	if strings.TrimSpace(task.TaskRef) == "" || isReviewTask(task) || isGovernedWorkflowTaskRef(task.TaskRef) {
+		return false
+	}
+	if task.DecompositionQuality != projectworkplan.DecompositionReady || len(task.FilesToEdit) == 0 {
+		return false
+	}
+	if len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" {
+		return false
+	}
+	return strings.TrimSpace(task.ReviewGate) != ""
+}
+
+func postImplementationReviewTargetID(task projectworkplan.WorkTask) string {
+	for _, ref := range append(append([]string{}, task.EvidenceNeeded...), task.ContextPackRefs...) {
+		value := strings.TrimSpace(ref)
+		for _, prefix := range []string{"review-target-", "implementation-task-"} {
+			if strings.HasPrefix(value, prefix) {
+				return strings.TrimSpace(strings.TrimPrefix(value, prefix))
+			}
+		}
+	}
+	return ""
+}
+
 func (svc *Service) markRunForGitOpsPostTaskRecovery(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
 	now := svc.now()
 	run.Status = RunStatusFailed
 	run.WorkTaskStatus = task.Status
 	run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
-	run.FailureCategory = "gitops_post_task_failed"
+	run.FailureCategory = "gitops_post_task_failed_runner_post_task"
 	if run.FinishedAt.IsZero() {
 		run.FinishedAt = now
 	}
+	run.UpdatedAt = now
+	return svc.store.UpdateRun(ctx, run)
+}
+
+func (svc *Service) ResetGitOpsRecovery(ctx context.Context, input ResetGitOpsRecoveryInput) (AutomationRun, error) {
+	projectID, runID, err := safeProjectObject(input.ProjectID, input.RunID, "run_id")
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if svc == nil || svc.store == nil || svc.workTasks == nil {
+		return AutomationRun{}, fmt.Errorf("%w: automation service unavailable", ErrInvalidInput)
+	}
+	run, err := svc.store.GetRun(ctx, projectID, runID)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	requeuedRecovery := (run.FailureCategory == "gitops_recovery_failed_requires_implementation" && strings.HasPrefix(strings.TrimSpace(run.SafeSummary), "gitops_recovery_requeued_implementation_after_")) ||
+		(run.FailureCategory == "gitops_recovery_failed_requires_verification_repair" && strings.HasPrefix(strings.TrimSpace(run.SafeSummary), "gitops_recovery_requeued_verification_repair_after_"))
+	terminalPlanAfterRecovery := run.FailureCategory == "work_plan_terminal" && strings.TrimSpace(run.SafeSummary) == "work_plan_terminal"
+	if run.RunnerKind != RunnerKindCodexCLI || (!isResettableGitOpsRecoveryFailure(run.FailureCategory) && !requeuedRecovery && !terminalPlanAfterRecovery) {
+		return AutomationRun{}, fmt.Errorf("%w: run is not a GitOps post-task recovery blocker", ErrInvalidInput)
+	}
+	if run.Status != RunStatusBlocked && run.Status != RunStatusFailed {
+		return AutomationRun{}, fmt.Errorf("%w: run status is not resettable", ErrInvalidInput)
+	}
+	task, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	if task.Status != projectworkplan.WorkTaskStatusBlocked && isTerminalAutomationTaskStatus(task.Status) {
+		return AutomationRun{}, fmt.Errorf("%w: task is not eligible for GitOps recovery reset", ErrInvalidInput)
+	}
+	hasRecoveryCloseout := taskHasGitOpsRecoveryCloseout(task) || ((requeuedRecovery || terminalPlanAfterRecovery) && len(task.EvidenceRefs) > 0 && len(automationCloseoutVerifierRefs(task)) > 0 && (len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != ""))
+	if !hasRecoveryCloseout || (!taskOwnsGitOpsRecoveryRun(task, run) && !containsRef(task.AgentRunIDs, run.ID)) {
+		return AutomationRun{}, fmt.Errorf("%w: task is not eligible for GitOps recovery reset", ErrInvalidInput)
+	}
+	if planUpdater, ok := svc.workTasks.(interface {
+		UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
+	}); ok && planUpdater != nil && strings.TrimSpace(run.PlanID) != "" {
+		if _, err := planUpdater.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:      run.ProjectID,
+			PlanID:         run.PlanID,
+			Status:         projectworkplan.WorkPlanStatusActive,
+			RunID:          run.ID,
+			TraceID:        firstNonEmpty(run.TraceID, run.ID),
+			CurrentTaskID:  task.ID,
+			SafeNextAction: "gitops_recovery_reset_reopen_plan",
+			ResumeSummary:  "GitOps recovery reset reopened the Work Plan at the failed task.",
+		}); err != nil {
+			return AutomationRun{}, err
+		}
+	}
+	now := svc.now()
+	run.Status = RunStatusFailed
+	run.WorkTaskStatus = task.Status
+	run.SafeSummary = RunSafeSummaryGitOpsPostTaskRecovery
+	run.FailureCategory = "gitops_post_task_failed_runner_post_task"
+	run.AttemptCount = 0
+	run.ClaimID = ""
+	run.RunnerID = ""
+	run.LeaseExpiresAt = time.Time{}
+	run.StartedAt = time.Time{}
+	run.FinishedAt = now
 	run.UpdatedAt = now
 	return svc.store.UpdateRun(ctx, run)
 }
@@ -2503,6 +3850,12 @@ func (svc *Service) completeRunAfterTaskDone(ctx context.Context, run Automation
 	if err != nil {
 		return AutomationRun{}, err
 	}
+	if err := svc.reconcilePostImplementationReviewParent(ctx, updated); err != nil {
+		return updated, err
+	}
+	if err := svc.releaseImplementationTasksAfterPlanningReadinessReview(ctx, task); err != nil {
+		return updated, nil
+	}
 	if err := svc.reconcileReadyDependentAutomations(ctx, task.ProjectID, task.PlanID, task.ID); err != nil {
 		return updated, nil
 	}
@@ -2512,7 +3865,205 @@ func (svc *Service) completeRunAfterTaskDone(ctx context.Context, run Automation
 	return updated, nil
 }
 
+func (svc *Service) releaseImplementationTasksAfterPlanningReadinessReview(ctx context.Context, task projectworkplan.WorkTask) error {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(task.TaskRef) != "mark-ready-after-review" || task.Status != projectworkplan.WorkTaskStatusDone {
+		return nil
+	}
+	if planUpdater, ok := svc.workTasks.(interface {
+		UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
+	}); ok && strings.TrimSpace(task.PlanID) != "" {
+		if _, err := planUpdater.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:      task.ProjectID,
+			PlanID:         task.PlanID,
+			Status:         projectworkplan.WorkPlanStatusDone,
+			RunID:          firstNonEmpty(task.ClaimedByRunID, task.ID),
+			TraceID:        firstNonEmpty(task.TraceID, task.ID),
+			SafeNextAction: "planning_readiness_review_completed_stage",
+			ResumeSummary:  "planning readiness review completed; workflow chain may compile the next stage",
+		}); err != nil {
+			return err
+		}
+	}
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok {
+		return nil
+	}
+	candidates, err := svc.planningReadinessApprovedReleaseCandidates(ctx, task)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		if _, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+			WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+				ProjectID:      candidate.ProjectID,
+				TaskID:         candidate.ID,
+				RunID:          firstNonEmpty(task.ClaimedByRunID, task.ID),
+				TraceID:        firstNonEmpty(task.TraceID, task.ID),
+				SafeNextAction: "planning_readiness_review_approved_release",
+				Outcome:        "planning readiness review approved implementation task release",
+			},
+			Status: projectworkplan.WorkTaskStatusReady,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) planningReadinessApprovedReleaseCandidates(ctx context.Context, task projectworkplan.WorkTask) ([]projectworkplan.WorkTask, error) {
+	if svc == nil || svc.workTasks == nil {
+		return nil, nil
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: task.ProjectID, PlanID: task.PlanID})
+	if err != nil {
+		return nil, err
+	}
+	var candidates []projectworkplan.WorkTask
+	for _, candidate := range tasks {
+		if !planningReadinessApprovedImplementationTask(candidate) {
+			continue
+		}
+		if !svc.hasEnabledAutomationForTask(ctx, candidate) {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+func (svc *Service) hasEnabledAutomationForTask(ctx context.Context, task projectworkplan.WorkTask) bool {
+	if svc == nil || svc.store == nil {
+		return false
+	}
+	automations, err := svc.store.ListAutomations(ctx, AutomationFilter{ProjectID: task.ProjectID})
+	if err != nil {
+		return false
+	}
+	for _, automation := range automations {
+		if strings.TrimSpace(automation.PlanID) != "" && automation.PlanID != task.PlanID {
+			continue
+		}
+		if automation.Status == AutomationStatusEnabled && automation.TriggerKind == TriggerKindAutomatic && validateAllowedTaskRef(automation, task) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func planningReadinessApprovedImplementationTask(task projectworkplan.WorkTask) bool {
+	if task.Status != projectworkplan.WorkTaskStatusPlanned || task.DecompositionQuality != projectworkplan.DecompositionReady {
+		return false
+	}
+	if strings.TrimSpace(task.TaskRef) == "" || strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-") {
+		return false
+	}
+	if !planningReadinessTaskHasApprovedReview(task) {
+		return false
+	}
+	return len(task.FilesToEdit) > 0
+}
+
+func planningReadinessTaskHasApprovedReview(task projectworkplan.WorkTask) bool {
+	if len(task.ReviewResultRefs) == 0 {
+		return false
+	}
+	approved := false
+	for _, ref := range task.ReviewResultRefs {
+		decision := planningReadinessReviewDecision(ref)
+		if decision == "rejected" {
+			return false
+		}
+		if decision == "approved" {
+			approved = true
+		}
+	}
+	return approved
+}
+
+func planningReadinessReviewDecision(ref string) string {
+	value := strings.ToLower(strings.TrimSpace(ref))
+	if value == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+	for _, part := range parts {
+		switch part {
+		case "reject", "rejected", "blocked", "pending", "unapproved", "not":
+			return "rejected"
+		case "needs":
+			return "rejected"
+		}
+	}
+	for _, part := range parts {
+		switch part {
+		case "approved", "passed":
+			return "approved"
+		}
+	}
+	return ""
+}
+
+func (svc *Service) reconcilePostImplementationReviewParent(ctx context.Context, reviewRun AutomationRun) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil || strings.TrimSpace(reviewRun.ParentRunID) == "" {
+		return nil
+	}
+	if strings.TrimSpace(reviewRun.SafeSummary) != RunSafeSummaryVerifiedTaskDone {
+		return nil
+	}
+	parent, err := svc.store.GetRun(ctx, reviewRun.ProjectID, reviewRun.ParentRunID)
+	if err != nil || strings.TrimSpace(parent.TaskID) == "" {
+		return nil
+	}
+	if parent.Status != RunStatusVerifying && !parentFailedOnlyBecauseReviewQueueFailed(parent) {
+		return nil
+	}
+	parentTask, err := svc.workTasks.GetWorkTask(ctx, parent.ProjectID, parent.TaskID)
+	if err != nil {
+		return nil
+	}
+	if taskNeedsPostImplementationReview(parentTask) {
+		reviewRef := "review_result_" + safeBranchToken(parentTask.ID) + "_approved"
+		if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+			ProjectID:       parentTask.ProjectID,
+			TaskID:          parentTask.ID,
+			Ref:             reviewRef,
+			AttachedByRunID: reviewRun.ID,
+			TraceID:         firstNonEmpty(reviewRun.TraceID, reviewRun.ID),
+			Note:            "post-implementation review completed",
+		}); err != nil {
+			return err
+		}
+	} else if !taskReadyForAutomationCloseout(parentTask) {
+		return nil
+	}
+	if parent.Status != RunStatusVerifying {
+		parent.Status = RunStatusVerifying
+		parent.FailureCategory = ""
+		parent.SafeSummary = "external_codex_cli_completed_verification_required"
+		parent.FinishedAt = time.Time{}
+		parent.UpdatedAt = svc.now()
+		var updateErr error
+		parent, updateErr = svc.store.UpdateRun(ctx, parent)
+		if updateErr != nil {
+			return updateErr
+		}
+	}
+	_, err = svc.reconcileVerifyingRun(ctx, parent)
+	return err
+}
+
+func parentFailedOnlyBecauseReviewQueueFailed(run AutomationRun) bool {
+	return run.Status == RunStatusFailed && strings.TrimSpace(run.FailureCategory) == "post_implementation_review_queue_failed"
+}
+
 func (svc *Service) finishRunAfterTaskTerminal(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
+	if task.Status == projectworkplan.WorkTaskStatusBlocked {
+		if recovered, ok, err := svc.completeBlockedPlanningReadinessReviewWhenApproved(ctx, run, task); ok || err != nil {
+			return recovered, err
+		}
+	}
 	run.WorkTaskStatus = task.Status
 	run.SafeSummary = "external_codex_cli_task_terminal"
 	switch task.Status {
@@ -2536,7 +4087,111 @@ func (svc *Service) finishRunAfterTaskTerminal(ctx context.Context, run Automati
 		run.FinishedAt = now
 	}
 	run.UpdatedAt = now
-	return svc.store.UpdateRun(ctx, run)
+	updated, err := svc.store.UpdateRun(ctx, run)
+	if err != nil {
+		return AutomationRun{}, err
+	}
+	return updated, svc.updatePlanAfterTerminalTask(ctx, task)
+}
+
+func (svc *Service) completeBlockedPlanningReadinessReviewWhenApproved(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, bool, error) {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(task.TaskRef) != "mark-ready-after-review" || task.Status != projectworkplan.WorkTaskStatusBlocked {
+		return AutomationRun{}, false, nil
+	}
+	candidates, err := svc.planningReadinessApprovedReleaseCandidates(ctx, task)
+	if err != nil {
+		return AutomationRun{}, false, err
+	}
+	if len(candidates) == 0 {
+		return AutomationRun{}, false, nil
+	}
+	updater, ok := svc.workTasks.(workTaskStatusUpdater)
+	if !ok || updater == nil {
+		return AutomationRun{}, false, nil
+	}
+	runID := firstNonEmpty(run.ID, task.ClaimedByRunID, task.ID)
+	traceID := firstNonEmpty(run.TraceID, task.TraceID, runID)
+	ready, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
+		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
+			ProjectID:          task.ProjectID,
+			TaskID:             task.ID,
+			RunID:              firstNonEmpty(task.ClaimedByRunID, runID),
+			TraceID:            traceID,
+			SafeNextAction:     "planning_readiness_recovered_after_approved_child_reviews",
+			ResumeInstructions: "Planning readiness was deterministically recovered because reviewed implementation tasks are ready for release.",
+		},
+		Status: projectworkplan.WorkTaskStatusReady,
+	})
+	if err != nil {
+		return AutomationRun{}, true, err
+	}
+	claimed, err := svc.workTasks.ClaimWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:      ready.ProjectID,
+		TaskID:         ready.ID,
+		RunID:          runID,
+		TraceID:        traceID,
+		SafeNextAction: "planning_readiness_recovery_claim",
+	})
+	if err != nil {
+		return AutomationRun{}, true, err
+	}
+	started, err := svc.workTasks.StartWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:      claimed.ProjectID,
+		TaskID:         claimed.ID,
+		RunID:          runID,
+		TraceID:        traceID,
+		SafeNextAction: "planning_readiness_recovery_start",
+	})
+	if err != nil {
+		return AutomationRun{}, true, err
+	}
+	reviewRef := "review_result_" + safeBranchToken(started.ID) + "_planning_readiness_recovery_approved"
+	if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+		ProjectID:       started.ProjectID,
+		TaskID:          started.ID,
+		Ref:             reviewRef,
+		AttachedByRunID: "planning-readiness-review",
+		TraceID:         traceID,
+		Note:            "deterministic recovery based on approved child implementation review refs",
+	}); err != nil {
+		return AutomationRun{}, true, err
+	}
+	verifierRefs := automationCloseoutVerifierRefs(started)
+	if len(verifierRefs) == 0 {
+		verifierRefs = []string{"verifier.automation.planning-readiness-recovery"}
+		if _, err := svc.workTasks.AttachVerifierResult(ctx, projectworkplan.AttachInput{
+			ProjectID:       started.ProjectID,
+			TaskID:          started.ID,
+			Ref:             verifierRefs[0],
+			AttachedByRunID: runID,
+			TraceID:         traceID,
+			Note:            "deterministic planning-readiness recovery verifier",
+		}); err != nil {
+			return AutomationRun{}, true, err
+		}
+	}
+	completed, err := svc.workTasks.CompleteWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+		ProjectID:          started.ProjectID,
+		TaskID:             started.ID,
+		RunID:              runID,
+		TraceID:            traceID,
+		SafeNextAction:     "planning_readiness_recovered_release_approved_children",
+		Outcome:            "planning readiness recovered after approved child implementation review refs",
+		VerifierResultRefs: verifierRefs,
+		ReviewResultRefs:   []string{reviewRef},
+		EvidenceRefs:       append([]string{"planning-readiness-recovery-approved-children"}, task.EvidenceRefs...),
+	})
+	if err != nil {
+		return AutomationRun{}, true, err
+	}
+	recovered, err := svc.completeRunAfterTaskDone(ctx, run, completed)
+	return recovered, true, err
+}
+
+func (svc *Service) blockRunFromTerminalPlan(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
+	run.WorkTaskStatus = task.Status
+	run.SafeSummary = "work_plan_terminal"
+	return svc.failRun(ctx, run, RunStatusBlocked, "work_plan_terminal")
 }
 
 func isTerminalIncompleteTaskStatus(status string) bool {
@@ -2545,6 +4200,67 @@ func isTerminalIncompleteTaskStatus(status string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func isTerminalAutomationTaskStatus(status string) bool {
+	return status == projectworkplan.WorkTaskStatusDone || isTerminalIncompleteTaskStatus(status)
+}
+
+func (svc *Service) updatePlanAfterTerminalTask(ctx context.Context, task projectworkplan.WorkTask) error {
+	if task.ProjectID == "" || task.PlanID == "" {
+		return nil
+	}
+	workPlans, ok := svc.workTasks.(remediationWorkPlanAPI)
+	if !ok || workPlans == nil {
+		return nil
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusBlocked:
+		if svc.planHasActiveOrPendingConcreteWork(ctx, task) {
+			return nil
+		}
+		_, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:     task.ProjectID,
+			PlanID:        task.PlanID,
+			Status:        projectworkplan.WorkPlanStatusBlocked,
+			Outcome:       firstNonEmpty(task.BlockedReason, "automation Work Task blocked"),
+			ResumeSummary: firstNonEmpty(task.ResumeInstructions, "resolve blocked Work Task before resuming automation"),
+			CurrentTaskID: task.ID,
+		})
+		return err
+	case projectworkplan.WorkTaskStatusFailed:
+		_, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:     task.ProjectID,
+			PlanID:        task.PlanID,
+			Status:        projectworkplan.WorkPlanStatusFailed,
+			Outcome:       firstNonEmpty(task.Outcome, "automation Work Task failed"),
+			ResumeSummary: firstNonEmpty(task.ResumeInstructions, "inspect failed Work Task before resuming automation"),
+			CurrentTaskID: task.ID,
+		})
+		return err
+	case projectworkplan.WorkTaskStatusCancelled:
+		_, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:     task.ProjectID,
+			PlanID:        task.PlanID,
+			Status:        projectworkplan.WorkPlanStatusCancelled,
+			Outcome:       firstNonEmpty(task.Outcome, "automation Work Task cancelled"),
+			ResumeSummary: firstNonEmpty(task.ResumeInstructions, "cancelled Work Task terminated automation Work Plan"),
+			CurrentTaskID: task.ID,
+		})
+		return err
+	case projectworkplan.WorkTaskStatusSuperseded:
+		_, err := workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:     task.ProjectID,
+			PlanID:        task.PlanID,
+			Status:        projectworkplan.WorkPlanStatusSuperseded,
+			Outcome:       firstNonEmpty(task.Outcome, "automation Work Task superseded"),
+			ResumeSummary: firstNonEmpty(task.ResumeInstructions, "superseded Work Task terminated automation Work Plan"),
+			CurrentTaskID: task.ID,
+		})
+		return err
+	default:
+		return nil
 	}
 }
 
@@ -2593,10 +4309,80 @@ func (svc *Service) reconcileReadyAutomationsForProject(ctx context.Context, pro
 	if err != nil {
 		return err
 	}
+	automations, err := svc.store.ListAutomations(ctx, AutomationFilter{ProjectID: projectID, Status: AutomationStatusEnabled})
+	if err != nil {
+		return err
+	}
 	for _, plan := range plans {
 		if err := svc.reconcileReadyAutomationsForPlan(ctx, projectID, plan.ID, ""); err != nil {
 			return err
 		}
+		if err := svc.blockReadyTasksWithoutEnabledAutomation(ctx, projectID, plan.ID, automations); err != nil {
+			return err
+		}
+		if err := svc.blockActivePlanFromStaleBlockedTasks(ctx, projectID, plan.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) planHasActiveOrPendingConcreteWork(ctx context.Context, terminalTask projectworkplan.WorkTask) bool {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(terminalTask.ProjectID) == "" || strings.TrimSpace(terminalTask.PlanID) == "" {
+		return false
+	}
+	if !isGovernedWorkflowTaskRef(terminalTask.TaskRef) {
+		return false
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{
+		ProjectID: terminalTask.ProjectID,
+		PlanID:    terminalTask.PlanID,
+	})
+	if err != nil {
+		return false
+	}
+	for _, candidate := range tasks {
+		if candidate.ID == terminalTask.ID || isGovernedWorkflowTaskRef(candidate.TaskRef) || isReviewTask(candidate) {
+			continue
+		}
+		if !concreteTaskCanStillAdvancePlan(candidate) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func concreteTaskCanStillAdvancePlan(task projectworkplan.WorkTask) bool {
+	if len(task.FilesToEdit) == 0 && task.DecompositionQuality != projectworkplan.DecompositionReady {
+		return false
+	}
+	switch task.Status {
+	case projectworkplan.WorkTaskStatusPlanned,
+		projectworkplan.WorkTaskStatusReady,
+		projectworkplan.WorkTaskStatusClaimed,
+		projectworkplan.WorkTaskStatusInProgress,
+		projectworkplan.WorkTaskStatusNeedsReview,
+		projectworkplan.WorkTaskStatusVerifying:
+		return true
+	default:
+		return false
+	}
+}
+
+func (svc *Service) blockActivePlanFromStaleBlockedTasks(ctx context.Context, projectID string, planID string) error {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(projectID) == "" || strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if task.Status != projectworkplan.WorkTaskStatusBlocked {
+			continue
+		}
+		return svc.updatePlanAfterTerminalTask(ctx, task)
 	}
 	return nil
 }
@@ -2726,6 +4512,9 @@ func (svc *Service) readyPlannedDependentTasks(ctx context.Context, projectID st
 }
 
 func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automation Automation, task projectworkplan.WorkTask) error {
+	if err := svc.validateRunPlanExecutable(ctx, AutomationRun{ProjectID: task.ProjectID, PlanID: task.PlanID}, task); err != nil {
+		return nil
+	}
 	existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: task.ProjectID, AutomationID: automation.ID, PlanID: task.PlanID})
 	if err != nil {
 		return err
@@ -2740,14 +4529,24 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 		return err
 	}
 	if countTerminalReplacementFailures(existing, task) >= defaultAutomationMaxReplacementRunsPerTask {
-		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
+		_, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task, latestTerminalReplacementFailureCategory(existing, task))
 		return err
+	}
+	hasReplacementTrigger := false
+	for _, run := range existing {
+		if run.TaskID == task.ID && svc.shouldQueueReplacementRunForTask(ctx, automation, run, task) {
+			hasReplacementTrigger = true
+			break
+		}
 	}
 	for _, run := range existing {
 		if run.TaskID != task.ID {
 			continue
 		}
 		if svc.shouldQueueReplacementRunForTask(ctx, automation, run, task) {
+			continue
+		}
+		if hasReplacementTrigger && isTerminalRunStatus(run.Status) {
 			continue
 		}
 		return nil
@@ -2760,6 +4559,7 @@ func (svc *Service) queueReadyDependentAutomation(ctx context.Context, automatio
 		AgentID:           firstNonEmpty(task.OwnerAgent, automation.AgentID),
 		PlanID:            task.PlanID,
 		TaskID:            task.ID,
+		WorkTaskStatus:    task.Status,
 		Status:            RunStatusQueued,
 		RunnerKind:        RunnerKindCodexCLI,
 		AttemptCount:      0,
@@ -2821,7 +4621,11 @@ func (svc *Service) replacementRetryLimitReached(ctx context.Context, run Automa
 }
 
 func (svc *Service) blockRunAfterReplacementRetryLimit(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (AutomationRun, error) {
-	blockedTask, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task)
+	lastFailureCategory, err := svc.latestTerminalReplacementFailureCategory(ctx, run, task)
+	if err != nil {
+		return run, err
+	}
+	blockedTask, err := svc.blockTaskAfterReplacementRetryLimit(ctx, task, lastFailureCategory)
 	if err != nil {
 		return run, err
 	}
@@ -2837,15 +4641,67 @@ func (svc *Service) blockRunAfterReplacementRetryLimit(ctx context.Context, run 
 	return svc.store.UpdateRun(ctx, run)
 }
 
-func (svc *Service) blockTaskAfterReplacementRetryLimit(ctx context.Context, task projectworkplan.WorkTask) (projectworkplan.WorkTask, error) {
-	return svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
+func (svc *Service) latestTerminalReplacementFailureCategory(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) (string, error) {
+	if run.ProjectID == "" || run.AutomationID == "" || task.PlanID == "" || task.ID == "" {
+		return "", nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: run.ProjectID, AutomationID: run.AutomationID, PlanID: task.PlanID})
+	if err != nil {
+		return "", err
+	}
+	return latestTerminalReplacementFailureCategory(runs, task), nil
+}
+
+func latestTerminalReplacementFailureCategory(runs []AutomationRun, task projectworkplan.WorkTask) string {
+	sort.Slice(runs, func(i, j int) bool { return runs[i].UpdatedAt.Before(runs[j].UpdatedAt) })
+	for i := len(runs) - 1; i >= 0; i-- {
+		candidate := runs[i]
+		if candidate.TaskID != task.ID || !isTerminalReplacementFailure(candidate) {
+			continue
+		}
+		if category := strings.TrimSpace(candidate.FailureCategory); category != "" {
+			return category
+		}
+	}
+	return ""
+}
+
+func (svc *Service) blockTaskAfterReplacementRetryLimit(ctx context.Context, task projectworkplan.WorkTask, lastFailureCategory string) (projectworkplan.WorkTask, error) {
+	blockedReason := replacementRetryLimitBlockedReason(lastFailureCategory)
+	blocked, err := svc.workTasks.BlockWorkTask(ctx, projectworkplan.WorkTaskActionInput{
 		ProjectID:          task.ProjectID,
 		TaskID:             task.ID,
 		SafeNextAction:     automationReplacementRetryLimitCategory,
 		TraceID:            "automation-replacement-limit",
-		BlockedReason:      "Automation replacement retry limit reached after repeated GitOps, pre-execution, or external-runner recovery failures.",
-		ResumeInstructions: "Inspect the task worktree, dirty files, GitOps scope, and task file metadata before requeueing. Do not create another replacement run until the concrete blocker is corrected.",
+		BlockedReason:      blockedReason,
+		ResumeInstructions: replacementRetryLimitResumeInstructions(lastFailureCategory),
 	})
+	if err != nil {
+		return projectworkplan.WorkTask{}, err
+	}
+	if err := svc.updatePlanAfterTerminalTask(ctx, blocked); err != nil {
+		return blocked, err
+	}
+	return blocked, nil
+}
+
+func replacementRetryLimitBlockedReason(lastFailureCategory string) string {
+	category := strings.TrimSpace(lastFailureCategory)
+	if category == "" {
+		return "Automation replacement retry limit reached; last concrete failure category is unavailable."
+	}
+	return "Automation replacement retry limit reached after repeated " + category + " failures."
+}
+
+func replacementRetryLimitResumeInstructions(lastFailureCategory string) string {
+	category := strings.TrimSpace(lastFailureCategory)
+	if isRecoverableGovernedCloseoutFailure(category) {
+		return governedCloseoutRecoveryResumeInstructions(category)
+	}
+	if isRecoverableCodexExecutionFailure(category) {
+		return codexExecutionFailureResumeInstructions(category)
+	}
+	return "Inspect the last failed automation run and correct " + safeFailure(category) + " before requeueing. Do not create another replacement run until the concrete blocker is corrected."
 }
 
 func countTerminalReplacementFailures(runs []AutomationRun, task projectworkplan.WorkTask) int {
@@ -2892,14 +4748,12 @@ func isActiveAutomationRunStatus(status string) bool {
 func isTerminalReplacementFailure(run AutomationRun) bool {
 	switch run.Status {
 	case RunStatusFailed:
-		switch strings.TrimSpace(run.FailureCategory) {
-		case "gitops_recovery_failed_requires_implementation", "pre_execution_recovery_failed_requires_implementation":
+		if isRecoverableRecoveryFailure(run.FailureCategory) || isRecoverableCodexExecutionFailure(run.FailureCategory) || isRecoverableGovernedCloseoutFailure(run.FailureCategory) {
 			return true
-		default:
-			return false
 		}
-	case RunStatusTimeout:
 		return false
+	case RunStatusTimeout:
+		return isRecoverableCodexExecutionFailure(run.FailureCategory)
 	default:
 		return false
 	}
@@ -2911,12 +4765,119 @@ func shouldQueueReplacementRun(run AutomationRun) bool {
 		return isRecoverablePreExecutionFailure(run.FailureCategory) ||
 			isRecoverableGitOpsPostTaskFailure(run.FailureCategory) ||
 			isRecoverableReviewGitOpsFailure(run.FailureCategory) ||
-			strings.TrimSpace(run.FailureCategory) == "gitops_recovery_failed_requires_implementation" ||
-			strings.TrimSpace(run.FailureCategory) == "pre_execution_recovery_failed_requires_implementation"
+			isRecoverableRecoveryFailure(run.FailureCategory) ||
+			isRecoverableCodexExecutionFailure(run.FailureCategory) ||
+			isRecoverableGovernedCloseoutFailure(run.FailureCategory)
 	case RunStatusTimeout:
 		return strings.TrimSpace(run.FailureCategory) == "external_runner_interrupted"
 	default:
 		return false
+	}
+}
+
+func isRecoverableRecoveryFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return category == "gitops_recovery_failed_requires_implementation" ||
+		strings.HasPrefix(category, "gitops_recovery_failed_requires_implementation_after_") ||
+		category == "gitops_recovery_failed_requires_verification_repair" ||
+		strings.HasPrefix(category, "gitops_recovery_failed_requires_verification_repair_after_") ||
+		category == "pre_execution_recovery_failed_requires_implementation"
+}
+
+func isRecoverableCodexExecutionFailure(category string) bool {
+	switch strings.TrimSpace(category) {
+	case "codex_cli_failed", "codex_cli_timeout":
+		return true
+	default:
+		return false
+	}
+}
+
+func isNonRetryableCodexExecutionFailure(category string) bool {
+	switch strings.TrimSpace(category) {
+	case "codex_auth_unavailable", "codex_config_unreadable", "codex_output_schema_invalid", "codex_usage_limit_reached":
+		return true
+	default:
+		return false
+	}
+}
+
+func isRecoverableGovernedCloseoutFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	if isTerminalGovernedCloseoutFailure(category) {
+		return false
+	}
+	for _, prefix := range []string{
+		"automation_task_closeout_failed",
+		"automation_task_closeout_missing",
+		"governed_closeout_apply_failed",
+		"governed_closeout_output_missing",
+		"governed_closeout_readback_failed",
+		"governed_closeout_schema_create_failed",
+	} {
+		if category == prefix || strings.HasPrefix(category, prefix+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+func isTerminalGovernedCloseoutFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	for _, prefix := range []string{
+		"governed_closeout_invalid_json",
+		"governed_closeout_validation_failed",
+	} {
+		if category == prefix || strings.HasPrefix(category, prefix+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+func governedCloseoutRecoveryResumeInstructions(category string) string {
+	category = strings.TrimSpace(category)
+	if category == "" {
+		category = "governed_closeout_failed"
+	}
+	return "Governed closeout failed with " + category + ". Inspect the automation run evidence and retry the same bounded task; do not bypass child task, review gate, verifier, or stop-condition requirements."
+}
+
+func codexExecutionFailureResumeInstructions(category string) string {
+	category = strings.TrimSpace(category)
+	if category == "" {
+		category = "codex_cli_failed"
+	}
+	return recoveryResumeInstructions("Codex execution failed with " + safeFailure(category) + ". Inspect the automation run evidence, runner worktree, Codex binary/config, and generated closeout before retrying the same bounded task.")
+}
+
+func nonRetryableCodexBlockedReason(category string) string {
+	switch strings.TrimSpace(category) {
+	case "codex_auth_unavailable":
+		return "Codex authentication is unavailable; automation cannot continue until runner credentials are restored."
+	case "codex_config_unreadable":
+		return "Codex config is unreadable; automation cannot continue until runner config permissions are corrected."
+	case "codex_output_schema_invalid":
+		return "Codex output schema is invalid for the configured runner; automation cannot continue until the schema or runner invocation is corrected."
+	case "codex_usage_limit_reached":
+		return "Codex usage limit reached; automation cannot continue until quota or credits are available."
+	default:
+		return "Codex execution failed with a non-retryable runtime condition."
+	}
+}
+
+func nonRetryableCodexResumeInstructions(category string) string {
+	switch strings.TrimSpace(category) {
+	case "codex_auth_unavailable":
+		return "Restore Codex runner authentication, then explicitly requeue this Work Task; do not retry automatically while auth is unavailable."
+	case "codex_config_unreadable":
+		return "Correct Codex runner config permissions, then explicitly requeue this Work Task; do not retry automatically while config is unreadable."
+	case "codex_output_schema_invalid":
+		return "Correct the runner output-schema configuration, then explicitly requeue this Work Task; do not retry automatically while the schema is invalid."
+	case "codex_usage_limit_reached":
+		return "Restore Codex quota or credits, then explicitly requeue this Work Task; do not retry automatically while the usage limit is active."
+	default:
+		return "Resolve the non-retryable Codex runtime condition, then explicitly requeue this Work Task."
 	}
 }
 
@@ -2929,9 +4890,19 @@ func (svc *Service) shouldQueueReplacementRunForTask(ctx context.Context, automa
 		strings.Contains(strings.TrimSpace(run.FailureCategory), "task_not_ready") {
 		return true
 	}
+	if run.Status == RunStatusBlocked &&
+		task.Status == projectworkplan.WorkTaskStatusReady &&
+		strings.TrimSpace(run.FailureCategory) == "task_dependencies_not_done" {
+		return true
+	}
 	if run.Status == RunStatusFailed &&
 		task.Status == projectworkplan.WorkTaskStatusReady &&
 		strings.TrimSpace(run.FailureCategory) == "gitops_dirty_worktree_scope_requires_plan" {
+		return true
+	}
+	if run.Status == RunStatusFailed &&
+		task.Status == projectworkplan.WorkTaskStatusReady &&
+		strings.TrimSpace(run.FailureCategory) == "gitops_recovery_failed_requires_downstream_checks" {
 		return true
 	}
 	if run.Status == RunStatusBlocked &&
@@ -2992,6 +4963,99 @@ func (svc *Service) queueOutstandingPostImplementationReviews(ctx context.Contex
 	return nil
 }
 
+func (svc *Service) reconcileFailedPostImplementationReviewQueueRuns(ctx context.Context, projectID string) error {
+	if svc == nil || svc.store == nil || svc.workTasks == nil {
+		return nil
+	}
+	runs, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusFailed})
+	if err != nil {
+		return err
+	}
+	runs, err = svc.filterRunsToActivePlans(ctx, projectID, runs)
+	if err != nil {
+		return err
+	}
+	candidates := make([]AutomationRun, 0, len(runs))
+	for _, run := range runs {
+		if parentFailedOnlyBecauseReviewQueueFailed(run) && run.RunnerKind == RunnerKindCodexCLI && run.TaskID != "" && run.PlanID != "" {
+			candidates = append(candidates, run)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	completedRuns, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: projectID, Status: RunStatusCompleted})
+	if err != nil {
+		return err
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].UpdatedAt.Before(candidates[j].UpdatedAt) })
+	for _, run := range candidates {
+		target, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+		if err != nil {
+			continue
+		}
+		reviewRun, ok := svc.completedReviewRunForFailedParent(ctx, completedRuns, run, target)
+		if ok {
+			if taskNeedsPostImplementationReview(target) {
+				reviewRef := "review_result_" + safeBranchToken(target.ID) + "_approved"
+				if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+					ProjectID:       target.ProjectID,
+					TaskID:          target.ID,
+					Ref:             reviewRef,
+					AttachedByRunID: reviewRun.ID,
+					TraceID:         firstNonEmpty(reviewRun.TraceID, reviewRun.ID),
+					Note:            "post-implementation review completed after parent review-queue recovery",
+				}); err != nil {
+					return err
+				}
+			}
+			run.Status = RunStatusVerifying
+			run.FailureCategory = ""
+			run.SafeSummary = "external_codex_cli_completed_verification_required"
+			run.FinishedAt = time.Time{}
+			run.UpdatedAt = svc.now()
+			updated, err := svc.store.UpdateRun(ctx, run)
+			if err != nil {
+				return err
+			}
+			if _, err := svc.reconcileVerifyingRun(ctx, updated); err != nil {
+				return err
+			}
+			continue
+		}
+		run.Status = RunStatusVerifying
+		run.FailureCategory = ""
+		run.SafeSummary = "external_codex_cli_completed_verification_required"
+		run.FinishedAt = time.Time{}
+		run.UpdatedAt = svc.now()
+		updated, err := svc.store.UpdateRun(ctx, run)
+		if err != nil {
+			return err
+		}
+		if err := svc.queuePostImplementationReview(ctx, updated); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (svc *Service) completedReviewRunForFailedParent(ctx context.Context, runs []AutomationRun, parent AutomationRun, target projectworkplan.WorkTask) (AutomationRun, bool) {
+	reviewTaskRef := "review-" + target.TaskRef
+	for _, run := range runs {
+		if run.PlanID != parent.PlanID || run.TaskID == "" {
+			continue
+		}
+		task, err := svc.workTasks.GetWorkTask(ctx, parent.ProjectID, run.TaskID)
+		if err != nil {
+			continue
+		}
+		if task.Status == projectworkplan.WorkTaskStatusDone && matchesPostImplementationReviewTask(task, target, reviewTaskRef) {
+			return run, true
+		}
+	}
+	return AutomationRun{}, false
+}
+
 func (svc *Service) queueReviewForImplementationTask(ctx context.Context, run AutomationRun, target projectworkplan.WorkTask) error {
 	tasks, err := svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: run.ProjectID, PlanID: run.PlanID})
 	if err != nil {
@@ -2999,7 +5063,7 @@ func (svc *Service) queueReviewForImplementationTask(ctx context.Context, run Au
 	}
 	reviewTaskRef := "review-" + target.TaskRef
 	for _, task := range tasks {
-		if task.TaskRef != reviewTaskRef {
+		if !matchesPostImplementationReviewTask(task, target, reviewTaskRef) {
 			continue
 		}
 		if task.Status == projectworkplan.WorkTaskStatusDone {
@@ -3038,15 +5102,25 @@ func (svc *Service) queueReviewForImplementationTask(ctx context.Context, run Au
 }
 
 func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) error {
+	if err := svc.validateRunPlanExecutable(ctx, parent, reviewTask); err != nil {
+		return nil
+	}
+	reviewAgentID := firstNonEmpty(reviewTask.OwnerAgent, "codex-reviewer")
 	automations, err := svc.store.ListAutomations(ctx, AutomationFilter{ProjectID: parent.ProjectID, Status: AutomationStatusEnabled})
 	if err != nil {
 		return err
 	}
 	for _, automation := range automations {
-		if automation.PlanID != parent.PlanID || automation.TriggerKind != TriggerKindAutomatic || automation.SchedulePolicy != "post_implementation_review" {
+		if automation.PlanID != parent.PlanID || automation.TriggerKind != TriggerKindAutomatic {
+			continue
+		}
+		if automation.SchedulePolicy != "post_implementation_review" && validateAllowedTaskRef(automation, reviewTask) != nil {
 			continue
 		}
 		if validateAllowedTaskRef(automation, reviewTask) != nil {
+			continue
+		}
+		if !svc.reviewAutomationPolicyCompatible(ctx, automation, firstNonEmpty(parent.RunnerKind, RunnerKindCodexCLI), reviewTask.ID, reviewAgentID) {
 			continue
 		}
 		existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: parent.ProjectID, AutomationID: automation.ID, PlanID: parent.PlanID})
@@ -3062,9 +5136,9 @@ func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent
 		reviewRun := AutomationRun{
 			ID: svc.newID("automation_run"), ProjectID: parent.ProjectID, AutomationID: automation.ID,
 			AgentID: firstNonEmpty(reviewTask.OwnerAgent, automation.AgentID), PlanID: parent.PlanID, TaskID: reviewTask.ID,
-			Status: RunStatusQueued, RunnerKind: firstNonEmpty(parent.RunnerKind, RunnerKindCodexCLI), AttemptCount: 0,
+			WorkTaskStatus: reviewTask.Status, Status: RunStatusQueued, RunnerKind: firstNonEmpty(parent.RunnerKind, RunnerKindCodexCLI), AttemptCount: 0,
 			OrchestratorRunID: "post-review:" + parent.ID, ParentRunID: parent.ID,
-			SafeSummary: RunSafeSummaryPostImplementationReviewQueued, CreatedAt: now, UpdatedAt: now,
+			TraceID: parent.TraceID, SafeSummary: RunSafeSummaryPostImplementationReviewQueued, CreatedAt: now, UpdatedAt: now,
 		}
 		_, err = svc.store.CreateRun(ctx, reviewRun)
 		return err
@@ -3078,18 +5152,55 @@ func (svc *Service) queuePostImplementationReviewRun(ctx context.Context, parent
 	}, reviewTaskForAutomation(reviewTask, automation))
 }
 
+func (svc *Service) reviewAutomationPolicyCompatible(ctx context.Context, automation Automation, runnerKind string, taskID string, reviewAgentID string) bool {
+	if !strings.HasPrefix(strings.TrimSpace(automation.PermissionRef), PermissionSnapshotRefPrefix) {
+		return true
+	}
+	if svc.options.PermissionResolver == nil {
+		return true
+	}
+	return svc.validateAutomationPolicy(ctx, automation, runnerKind, taskID, reviewAgentID) == nil
+}
+
+func matchesPostImplementationReviewTask(task projectworkplan.WorkTask, target projectworkplan.WorkTask, baseRef string) bool {
+	taskRef := strings.TrimSpace(task.TaskRef)
+	baseRef = strings.TrimSpace(baseRef)
+	if taskRef == "" || baseRef == "" {
+		return false
+	}
+	if taskRef == baseRef {
+		return true
+	}
+	if !strings.HasPrefix(taskRef, baseRef+"-") {
+		return false
+	}
+	targetID := strings.TrimSpace(target.ID)
+	targetRef := strings.TrimSpace(target.TaskRef)
+	if targetID == "" && targetRef == "" {
+		return true
+	}
+	return containsRef(task.DependencyTaskIDs, targetID) || containsRef(task.DependencyTaskIDs, targetRef)
+}
+
 func taskNeedsPostImplementationReview(task projectworkplan.WorkTask) bool {
-	if isReviewTask(task) || len(task.FilesToEdit) == 0 {
+	if isReviewTask(task) || isReadOnlyScannerTask(task) {
+		return false
+	}
+	if taskUsesBoundedSmokeGitOpsVerification(task) {
 		return false
 	}
 	if len(task.ReviewResultRefs) > 0 {
+		return false
+	}
+	hasReviewGate := strings.TrimSpace(task.ReviewGate) != ""
+	if len(task.FilesToEdit) == 0 && !hasReviewGate {
 		return false
 	}
 	switch task.Status {
 	case projectworkplan.WorkTaskStatusNeedsReview:
 		return true
 	case projectworkplan.WorkTaskStatusVerifying:
-		return strings.TrimSpace(task.ReviewGate) != ""
+		return hasReviewGate
 	default:
 		return false
 	}
@@ -3100,14 +5211,27 @@ func (svc *Service) createRecoveryPostImplementationReviewTask(ctx context.Conte
 	if !ok || workPlans == nil {
 		return projectworkplan.WorkTask{}, fmt.Errorf("%w: post_implementation_review_task_missing", ErrInvalidInput)
 	}
+	var lastErr error
+	for _, candidateRef := range svc.recoveryPostImplementationReviewTaskRefs(run, target, reviewTaskRef) {
+		task, err := svc.createRecoveryPostImplementationReviewTaskWithRef(ctx, workPlans, run, target, candidateRef)
+		if err == nil || !isDuplicateWorkTaskRefError(err) {
+			return task, err
+		}
+		lastErr = err
+	}
+	return projectworkplan.WorkTask{}, lastErr
+}
+
+func (svc *Service) createRecoveryPostImplementationReviewTaskWithRef(ctx context.Context, workPlans remediationWorkPlanAPI, run AutomationRun, target projectworkplan.WorkTask, reviewTaskRef string) (projectworkplan.WorkTask, error) {
 	reviewerAgentID := independentReviewerAgent(target.OwnerAgent)
 	files := uniqueRefs(append(append(append([]string{}, target.FilesToRead...), target.FilesToEdit...), target.LikelyFilesAffected...))
-	return workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
+	targetLabel := firstNonEmpty(target.TaskRef, "implementation-task")
+	task, err := workPlans.CreateWorkTask(ctx, projectworkplan.CreateWorkTaskInput{
 		ProjectID:               run.ProjectID,
 		PlanID:                  run.PlanID,
 		TaskRef:                 reviewTaskRef,
 		Title:                   "Review remediation " + target.TaskRef,
-		Description:             "Independently review implementation task " + target.ID + " after automation runner completion.",
+		Description:             "Independently review implementation task " + targetLabel + " after automation runner completion.",
 		Status:                  projectworkplan.WorkTaskStatusReady,
 		OwnerAgent:              reviewerAgentID,
 		RunID:                   run.ID,
@@ -3115,36 +5239,109 @@ func (svc *Service) createRecoveryPostImplementationReviewTask(ctx context.Conte
 		EvidenceNeeded:          safeWorkerEvidenceRefs([]string{"review-target-" + target.ID, "implementation-task-" + target.ID, "implementation-output-refs"}),
 		FilesToRead:             files,
 		LikelyFilesAffected:     files,
-		VerificationRequirement: "Attach an independent review_result_ref to implementation task " + target.ID + " before completion.",
-		ExpectedOutput:          "Independent review decision for implementation task " + target.ID + " with review refs attached to the implementation task.",
+		VerificationRequirement: "Attach an independent review_result_ref to implementation task " + targetLabel + " before completion.",
+		ExpectedOutput:          "Independent review decision for implementation task " + targetLabel + " with review refs attached to the implementation task.",
 		FailureCriteria:         "Block on self-review, missing implementation evidence, missing verifier refs, unsafe payloads, or unclear approval decision.",
 		ReviewGate:              "independent-reviewer-must-not-be-" + target.OwnerAgent,
-		ResumeInstructions:      "Review implementation task " + target.ID + " only. Attach review_result_ref to that implementation task, then complete this review task.",
+		ResumeInstructions:      "Review implementation task " + targetLabel + " only. Attach review_result_ref to that implementation task, then complete this review task.",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 	})
+	return task, err
+}
+
+func (svc *Service) recoveryPostImplementationReviewTaskRefs(run AutomationRun, target projectworkplan.WorkTask, baseRef string) []string {
+	refs := []string{baseRef}
+	if target.ID != "" {
+		refs = append(refs, baseRef+"-"+target.ID)
+	}
+	if run.ID != "" {
+		refs = append(refs, baseRef+"-"+safeBranchToken(firstNonEmpty(target.ID, target.TaskRef))+"-"+safeBranchToken(run.ID))
+	}
+	refs = append(refs, baseRef+"-"+safeBranchToken(svc.newID("review_task_ref")))
+	return uniqueRefs(refs)
+}
+
+func isDuplicateWorkTaskRefError(err error) bool {
+	return errors.Is(err, workplanstore.ErrDuplicate) || strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "duplicate work task ref in plan")
 }
 
 func (svc *Service) createRecoveryPostImplementationReviewAutomation(ctx context.Context, parent AutomationRun, reviewTask projectworkplan.WorkTask) (Automation, error) {
-	automationRef := "auto-review-" + safeBranchToken(reviewTask.TaskRef)
-	if automationRef == "auto-review-" {
-		automationRef += reviewTask.ID
+	reviewTaskToken := safeAutomationRefToken(reviewTask.TaskRef)
+	parentToken := safeAutomationRefToken(firstNonEmpty(parent.PlanID, reviewTask.PlanID, parent.ID))
+	parentAutomation, err := svc.store.GetAutomation(ctx, parent.ProjectID, parent.AutomationID)
+	if err != nil {
+		return Automation{}, err
 	}
-	return svc.CreateAutomation(ctx, CreateAutomationInput{
-		ProjectID:       parent.ProjectID,
-		AutomationRef:   automationRef,
-		Title:           "Review remediation " + reviewTask.TaskRef,
-		Purpose:         "Independently review implementation output for task " + reviewTask.TaskRef + ".",
-		Status:          AutomationStatusEnabled,
-		AgentID:         firstNonEmpty(reviewTask.OwnerAgent, "codex-reviewer"),
-		PlanID:          parent.PlanID,
-		AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
-		TriggerKind:     TriggerKindAutomatic,
-		SchedulePolicy:  "post_implementation_review",
-		PermissionRef:   "permission-remediation-review-" + safeBranchToken(reviewTask.TaskRef),
-		SourceKind:      AutomationSourceManual,
-		CreatedByRunID:  parent.ID,
-		TraceID:         firstNonEmpty(parent.TraceID, parent.ID),
-	})
+	reviewAgentID := firstNonEmpty(reviewTask.OwnerAgent, "codex-reviewer")
+	permissionRef := inheritedPermissionRefForAgent(parentAutomation, reviewAgentID)
+	sourceKind := parentAutomation.SourceKind
+	if sourceKind == "" {
+		sourceKind = AutomationSourceManual
+	}
+	if sourceKind == AutomationSourceWorkflow {
+		if err := validatePermissionSnapshotRef(parentAutomation.PermissionRef); err != nil {
+			return Automation{}, err
+		}
+		if permissionRef == "" {
+			sourceKind = AutomationSourceManual
+		}
+	}
+	var lastErr error
+	for _, automationRef := range svc.recoveryPostImplementationReviewAutomationRefs(parent, reviewTask, reviewTaskToken, parentToken) {
+		automation, err := svc.CreateAutomation(ctx, CreateAutomationInput{
+			ProjectID:       parent.ProjectID,
+			AutomationRef:   automationRef,
+			Title:           "Review remediation output",
+			Purpose:         "Independently review implementation output for the assigned task.",
+			Status:          AutomationStatusEnabled,
+			AgentID:         reviewAgentID,
+			PlanID:          parent.PlanID,
+			AllowedTaskRefs: []string{reviewTask.ID, reviewTask.TaskRef},
+			TriggerKind:     TriggerKindAutomatic,
+			SchedulePolicy:  "post_implementation_review",
+			PermissionRef:   permissionRef,
+			SourceKind:      sourceKind,
+			CreatedByRunID:  parent.ID,
+			TraceID:         firstNonEmpty(parent.TraceID, parent.ID),
+		})
+		if err == nil || !isDuplicateAutomationRefError(err) {
+			return automation, err
+		}
+		lastErr = err
+	}
+	return Automation{}, lastErr
+}
+
+func (svc *Service) recoveryPostImplementationReviewAutomationRefs(parent AutomationRun, reviewTask projectworkplan.WorkTask, reviewTaskToken string, parentToken string) []string {
+	baseRef := "auto-review-" + reviewTaskToken + "-" + parentToken
+	if baseRef == "auto-review-" {
+		baseRef += reviewTask.ID
+	}
+	refs := []string{baseRef}
+	if parent.ID != "" {
+		refs = append(refs, baseRef+"-"+safeAutomationRefToken(parent.ID))
+	}
+	refs = append(refs, baseRef+"-"+safeAutomationRefToken(svc.newID("review_automation_ref")))
+	return uniqueRefs(refs)
+}
+
+func isDuplicateAutomationRefError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "already exists") || strings.Contains(text, "duplicate automation")
+}
+
+func inheritedPermissionRefForAgent(parent Automation, agentID string) string {
+	permissionRef := strings.TrimSpace(parent.PermissionRef)
+	if permissionRef == "" {
+		return ""
+	}
+	if strings.TrimSpace(parent.AgentID) == strings.TrimSpace(agentID) {
+		return permissionRef
+	}
+	return ""
 }
 
 func reviewTaskForAutomation(reviewTask projectworkplan.WorkTask, automation Automation) projectworkplan.WorkTask {
@@ -3198,8 +5395,8 @@ func (svc *Service) ComputeParallelBatch(ctx context.Context, input ComputeParal
 		if conflict := firstFileConflict(task, usedFiles); conflict != "" {
 			continue
 		}
-		for _, file := range task.LikelyFilesAffected {
-			usedFiles[strings.ToLower(file)] = task.ID
+		for _, file := range taskConflictScopes(task) {
+			usedFiles[file] = task.ID
 		}
 		selected = append(selected, task)
 	}
@@ -3237,6 +5434,10 @@ func (svc *Service) prepareRunForExecution(ctx context.Context, run AutomationRu
 	task, err := svc.resolveTask(ctx, run, automation)
 	if err != nil {
 		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, "task_unavailable")
+		return updated, projectworkplan.WorkTask{}, err
+	}
+	if err := svc.validateRunPlanExecutable(ctx, run, task); err != nil {
+		updated, _ := svc.failRun(ctx, run, RunStatusBlocked, runPlanFailureCategory(err))
 		return updated, projectworkplan.WorkTask{}, err
 	}
 	if reached, err := svc.replacementRetryLimitReached(ctx, run, task); err != nil {
@@ -3317,6 +5518,48 @@ func (svc *Service) candidateTasks(ctx context.Context, projectID string, planID
 		return out, nil
 	}
 	return svc.workTasks.ListOpenWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+}
+
+func (svc *Service) validateRunPlanExecutable(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) error {
+	planID := firstNonEmpty(task.PlanID, run.PlanID)
+	return svc.validatePlanExecutable(ctx, run.ProjectID, planID)
+}
+
+func (svc *Service) validatePlanExecutable(ctx context.Context, projectID string, planID string) error {
+	if strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	plan, err := svc.workTasks.GetWorkPlan(ctx, projectID, planID)
+	if err != nil {
+		return fmt.Errorf("%w: work_plan_unavailable", ErrInvalidInput)
+	}
+	if isTerminalWorkPlanStatus(plan.Status) {
+		return fmt.Errorf("%w: work_plan_terminal", ErrInvalidInput)
+	}
+	return nil
+}
+
+func runPlanFailureCategory(err error) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(err.Error(), "work_plan_unavailable") {
+		return "work_plan_unavailable"
+	}
+	return "work_plan_terminal"
+}
+
+func isTerminalWorkPlanStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case projectworkplan.WorkPlanStatusDone,
+		projectworkplan.WorkPlanStatusBlocked,
+		projectworkplan.WorkPlanStatusFailed,
+		projectworkplan.WorkPlanStatusCancelled,
+		projectworkplan.WorkPlanStatusSuperseded:
+		return true
+	default:
+		return false
+	}
 }
 
 func (svc *Service) resolveRunnerKind(requested string) (string, error) {
@@ -3438,11 +5681,19 @@ type CodexTaskInput struct {
 	Description             string   `json:"description,omitempty"`
 	EvidenceNeeded          []string `json:"evidence_needed,omitempty"`
 	ContextPackRefs         []string `json:"context_pack_refs,omitempty"`
+	WorkPlanContext         []string `json:"work_plan_context,omitempty"`
+	DependencyContext       []string `json:"dependency_context,omitempty"`
 	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
 	VerificationRequirement string   `json:"verification_requirement"`
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string   `json:"output_contract,omitempty"`
 	RunnerInstructions      []string `json:"runner_instructions"`
 }
 
@@ -3468,7 +5719,7 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	builder.WriteString("Perform the task now in the current repository workspace. Keep the change limited to the likely affected files. Do not run full test suites. Do not mark the Work Task done; the orchestrator will verify and complete it.\n\n")
 	builder.WriteString("Identifiers:\n")
 	writePromptLine(&builder, "- Project ID", input.ProjectID)
-	writePromptLine(&builder, "- Mivia MCP server URL", input.MCPServerURL)
+	writePromptLine(&builder, "- Mivia server URL", input.MCPServerURL)
 	writePromptLine(&builder, "- Automation run ID", input.AutomationRunID)
 	writePromptLine(&builder, "- Trace ID", input.TraceID)
 	writePromptLine(&builder, "- Work Plan ID", input.PlanID)
@@ -3479,26 +5730,57 @@ func RenderCodexTaskPrompt(input CodexTaskInput) string {
 	writePromptLine(&builder, "- Description", input.Description)
 	writePromptList(&builder, "- Evidence needed", input.EvidenceNeeded)
 	writePromptList(&builder, "- Context pack refs", input.ContextPackRefs)
+	writePromptList(&builder, "- Work Plan context", input.WorkPlanContext)
+	writePromptList(&builder, "- Completed dependency context", input.DependencyContext)
 	writePromptList(&builder, "- Likely files affected", input.LikelyFilesAffected)
 	writePromptLine(&builder, "- Verification requirement", input.VerificationRequirement)
 	writePromptLine(&builder, "- Expected output", input.ExpectedOutput)
 	writePromptLine(&builder, "- Failure criteria", input.FailureCriteria)
 	writePromptLine(&builder, "- Resume instructions", input.ResumeInstructions)
+	writePromptList(&builder, "- Acceptance criteria", input.AcceptanceCriteria)
+	writePromptList(&builder, "- Stop conditions", input.StopConditions)
+	writePromptList(&builder, "- Verifier ladder", input.VerifierLadder)
+	writePromptLine(&builder, "- Regression test applicability", input.RegressionApplicability)
+	writePromptList(&builder, "- Downstream impact refs", input.DownstreamImpactRefs)
+	writePromptLine(&builder, "- Output contract", input.OutputContract)
+	if !isGovernedWorkflowTaskRef(input.TaskRef) {
+		writeConcreteRESTCloseoutEndpoints(&builder, input)
+	}
 	builder.WriteString("\nRules:\n")
 	builder.WriteString("- Do not call projects.automation_runs.complete_attempt. The external runner owns automation run attempt reporting after your process exits.\n")
 	builder.WriteString("- Do not commit, push, or create pull requests when supervised runner GitOps is enabled. Modify task files only; the runner commits, pushes, and opens draft PRs after governed task closeout.\n")
 	builder.WriteString("- When attaching MCP evidence, claim, verifier, and knowledge refs, use short safe refs with only letters, numbers, dots, underscores, and hyphens. Do not use colons, slashes, paths, commands, raw logs, or source snippets as refs.\n")
 	builder.WriteString("- Do not attach review_result refs unless this task explicitly says you are the independent reviewer. Implementation workers must not self-review.\n")
 	builder.WriteString("- For confirmed bug fixes, add a focused regression test when feasible. If a regression test is not feasible in the task scope, record the concrete reason in the task outcome.\n")
-	builder.WriteString("- Before exiting successfully, record governed MCP closeout: attach bounded evidence and verifier refs, then move this Work Task out of in_progress, normally to needs_review. If blocked, use projects.work_tasks.block or fail.\n")
+	builder.WriteString("- Before exiting successfully on non-governed tasks, record governed system closeout: attach bounded evidence and verifier refs, then move this Work Task out of in_progress, normally to needs_review. For governed wrapper tasks, return the required JSON object instead; the runner owns lifecycle mutation.\n")
 	builder.WriteString("- If you confirm a real bug and the task asks for automatic remediation, call projects.automations.create_remediation_from_finding with finding_status=confirmed and activate_plan=true. Do not call projects.automations.run.\n")
 	builder.WriteString("- If no bug is confirmed, attach a no-confirmed-bug evidence ref and move this Work Task to needs_review with that outcome.\n")
-	builder.WriteString("- If native MCP tools are unavailable and the Mivia MCP server URL is present, call the MCP endpoint with JSON-RPC tools/call, Content-Type application/json, Accept application/json, text/event-stream, and MCP-Protocol-Version 2025-06-18.\n")
+	builder.WriteString("- If native MCP tools are unavailable and the Mivia server URL is present, use direct HTTP REST against that exact runtime URL only for documented REST endpoints listed above, or direct HTTP MCP JSON-RPC against that exact runtime URL for read-only local context reads. For governed wrapper tasks, use direct HTTP only for read-only local MCP JSON-RPC context reads such as projects.jira_issue_get; do not mutate Work Plans, Work Tasks, automation runs, evidence, review, verifier, GitOps, or lifecycle state by direct HTTP. Do not hard-code hostnames or ports and do not depend on Codex MCP harness configuration.\n")
+	builder.WriteString("- When context refs include jira:<ISSUE> or jira-context:<ISSUE>:<section>, resolve them from locally ingested Jira via projects.jira_issue_get before planning or decomposing implementation work. Do not call live Jira, and store only safe refs in closeout metadata.\n")
 	for _, instruction := range input.RunnerInstructions {
 		writePromptLine(&builder, "-", instruction)
 	}
 	builder.WriteString("- Return a concise summary of changed files, evidence, risks, and tests not run.\n")
 	return builder.String()
+}
+
+func writeConcreteRESTCloseoutEndpoints(builder *strings.Builder, input CodexTaskInput) {
+	baseURL := strings.TrimRight(strings.TrimSpace(input.MCPServerURL), "/")
+	projectID := strings.TrimSpace(input.ProjectID)
+	planID := strings.TrimSpace(input.PlanID)
+	taskID := strings.TrimSpace(input.TaskID)
+	if baseURL == "" || projectID == "" || taskID == "" {
+		return
+	}
+	builder.WriteString("\nConcrete REST closeout endpoints:\n")
+	if planID != "" {
+		writePromptLine(builder, "- Create child Work Task", baseURL+"/api/v1/projects/"+projectID+"/work-plans/"+planID+"/tasks")
+	}
+	writePromptLine(builder, "- Attach wrapper evidence", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID+"/evidence")
+	writePromptLine(builder, "- Move wrapper status", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID+"/status")
+	writePromptLine(builder, "- Block wrapper", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID+"/block")
+	writePromptLine(builder, "- Fail wrapper", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID+"/fail")
+	writePromptLine(builder, "- Read wrapper back", baseURL+"/api/v1/projects/"+projectID+"/work-tasks/"+taskID)
 }
 
 func writePromptLine(builder *strings.Builder, label string, value string) {
@@ -3529,6 +5811,93 @@ func writePromptList(builder *strings.Builder, label string, values []string) {
 	}
 }
 
+func (svc *Service) codexInputForClaim(ctx context.Context, run AutomationRun, task projectworkplan.WorkTask) CodexTaskInput {
+	input := codexInputForRun(run, task)
+	input.WorkPlanContext = svc.workPlanContextLines(ctx, task)
+	input.DependencyContext = svc.dependencyContextLines(ctx, task)
+	return input
+}
+
+func (svc *Service) workPlanContextLines(ctx context.Context, task projectworkplan.WorkTask) []string {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(task.ProjectID) == "" || strings.TrimSpace(task.PlanID) == "" {
+		return nil
+	}
+	lister, ok := svc.workTasks.(workPlanLister)
+	if !ok || lister == nil {
+		return nil
+	}
+	plans, err := lister.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: task.ProjectID})
+	if err != nil {
+		return nil
+	}
+	for _, plan := range plans {
+		if plan.ID != task.PlanID {
+			continue
+		}
+		parts := make([]string, 0, 8)
+		appendPromptField(&parts, "plan_ref", plan.PlanRef)
+		appendPromptField(&parts, "user_request_ref", plan.UserRequestRef)
+		appendPromptField(&parts, "title", plan.Title)
+		appendPromptField(&parts, "goal_summary", plan.GoalSummary)
+		appendPromptField(&parts, "resume_summary", plan.ResumeSummary)
+		appendPromptField(&parts, "git_base_ref", plan.GitBaseRef)
+		appendPromptField(&parts, "git_branch_ref", plan.GitBranchRef)
+		if len(parts) == 0 {
+			return nil
+		}
+		return []string{strings.Join(parts, "; ")}
+	}
+	return nil
+}
+
+func (svc *Service) dependencyContextLines(ctx context.Context, task projectworkplan.WorkTask) []string {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(task.ProjectID) == "" || len(task.DependencyTaskIDs) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(task.DependencyTaskIDs))
+	for _, dependencyID := range task.DependencyTaskIDs {
+		dependencyID = strings.TrimSpace(dependencyID)
+		if dependencyID == "" {
+			continue
+		}
+		dependency, err := svc.workTasks.GetWorkTask(ctx, task.ProjectID, dependencyID)
+		if err != nil {
+			continue
+		}
+		parts := make([]string, 0, 12)
+		appendPromptField(&parts, "task_ref", dependency.TaskRef)
+		appendPromptField(&parts, "task_id", dependency.ID)
+		appendPromptField(&parts, "status", dependency.Status)
+		appendPromptField(&parts, "outcome", dependency.Outcome)
+		appendPromptRefs(&parts, "context_pack_refs", dependency.ContextPackRefs)
+		appendPromptRefs(&parts, "evidence_refs", dependency.EvidenceRefs)
+		appendPromptRefs(&parts, "claim_refs", dependency.ClaimRefs)
+		appendPromptRefs(&parts, "verifier_result_refs", dependency.VerifierResultRefs)
+		appendPromptRefs(&parts, "review_result_refs", dependency.ReviewResultRefs)
+		appendPromptField(&parts, "review_exempt_reason", dependency.ReviewExemptReason)
+		if len(parts) > 0 {
+			lines = append(lines, strings.Join(parts, "; "))
+		}
+	}
+	return lines
+}
+
+func appendPromptField(parts *[]string, name string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	*parts = append(*parts, name+"="+value)
+}
+
+func appendPromptRefs(parts *[]string, name string, refs []string) {
+	refs = uniqueRefs(refs)
+	if len(refs) == 0 {
+		return
+	}
+	*parts = append(*parts, name+"=["+strings.Join(refs, ", ")+"]")
+}
+
 func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTaskInput {
 	instructions := []string{
 		"Use the Mivia MCP project id from this input.",
@@ -3536,15 +5905,33 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		"Use only the bounded task scope and likely affected files unless current source proves a narrower necessary change.",
 		"Do not run verifier commands unless this task explicitly allows worker verification.",
 	}
-	if strings.HasPrefix(task.TaskRef, "review-") {
+	if isGitOpsVerificationRepairTask(run, task) {
+		instructions = append(instructions,
+			"This is a GitOps verifier-repair run. Fix only the failing configured verifier named in resume instructions or evidence refs.",
+			"For lint, formatting, typecheck, semgrep, generated-artifact, or other validation failures, make the smallest code or generated-artifact correction needed for that verifier.",
+			"Run the narrow failing verifier or the smallest target-specific equivalent when feasible, and record a safe verifier_result_ref or exact not-run reason in closeout.",
+			"Do not implement unrelated feature behavior. Do not commit, push, or create pull requests; runner GitOps retries after closeout.",
+		)
+	}
+	if isAutomationTaskCloseoutMissingRecovery(run, task) {
+		instructions = append(instructions,
+			"The previous attempt failed because governed closeout JSON was missing. Your final response must be exactly one governed closeout JSON object.",
+			"Do not exit with prose-only output. If no code change is needed, still return closeout_action=needs_review with safe evidence_refs and verifier_result_refs, or closeout_action=block with the exact safe blocker.",
+		)
+	}
+	governedInstructions := GovernedWorkflowStepInstructions(task.TaskRef)
+	implementationCloseoutInstructions := ImplementationTaskCloseoutInstructions(task.TaskRef, task.FilesToEdit)
+	if strings.HasPrefix(task.TaskRef, "review-") && len(governedInstructions) == 0 {
 		instructions = append(instructions,
 			"This is an independent review task. Do not edit implementation files.",
 			"Review the implementation task named in the task description or evidence refs.",
 			"Attach a review_result_ref to the implementation task before completing this review task.",
 		)
-	} else {
+	} else if len(governedInstructions) == 0 && len(implementationCloseoutInstructions) == 0 {
 		instructions = append(instructions, "Leave verifier execution and task completion to the orchestrator.")
 	}
+	instructions = append(instructions, governedInstructions...)
+	instructions = append(instructions, implementationCloseoutInstructions...)
 	return CodexTaskInput{
 		SchemaVersion:           1,
 		ProjectID:               run.ProjectID,
@@ -3562,7 +5949,157 @@ func codexInputForRun(run AutomationRun, task projectworkplan.WorkTask) CodexTas
 		ExpectedOutput:          task.ExpectedOutput,
 		FailureCriteria:         task.FailureCriteria,
 		ResumeInstructions:      task.ResumeInstructions,
+		AcceptanceCriteria:      append([]string(nil), task.AcceptanceCriteria...),
+		StopConditions:          append([]string(nil), task.StopConditions...),
+		VerifierLadder:          append([]string(nil), task.VerifierLadder...),
+		RegressionApplicability: task.RegressionApplicability,
+		DownstreamImpactRefs:    append([]string(nil), task.DownstreamImpactRefs...),
+		OutputContract:          task.OutputContract,
 		RunnerInstructions:      instructions,
+	}
+}
+
+func isGitOpsVerificationRepairTask(run AutomationRun, task projectworkplan.WorkTask) bool {
+	if strings.TrimSpace(run.FailureCategory) == gitOpsRecoveryVerificationRepairFailureCategory("") {
+		return true
+	}
+	text := strings.Join([]string{
+		run.SafeSummary,
+		run.FailureCategory,
+		task.ResumeInstructions,
+		strings.Join(task.EvidenceRefs, " "),
+	}, " ")
+	text = strings.ToLower(text)
+	return strings.Contains(text, "gitops_verification_failed") || strings.Contains(text, "gitops_verification_repair")
+}
+
+func isAutomationTaskCloseoutMissingRecovery(run AutomationRun, task projectworkplan.WorkTask) bool {
+	text := strings.Join([]string{
+		run.SafeSummary,
+		run.FailureCategory,
+		task.ResumeInstructions,
+		strings.Join(task.EvidenceRefs, " "),
+	}, " ")
+	return strings.Contains(strings.ToLower(text), "automation_task_closeout_missing")
+}
+
+func GovernedWorkflowStepInstructions(taskRef string) []string {
+	instructions := governedWorkflowStepInstructions(taskRef)
+	return append([]string(nil), instructions...)
+}
+
+func ImplementationTaskCloseoutInstructions(taskRef string, filesToEdit []string) []string {
+	if len(filesToEdit) == 0 || len(governedWorkflowStepInstructions(taskRef)) > 0 || strings.HasPrefix(strings.TrimSpace(taskRef), "review-") {
+		return nil
+	}
+	return governedWorkflowCloseoutInstructions([]string{
+		"This concrete implementation task edits repository files and must end with governed closeout JSON. Do not exit successfully with prose-only output.",
+		"Use closeout_action=needs_review only when the bounded implementation is complete enough for independent review. Use closeout_action=block when required source, test, dependency, or runtime evidence is missing. Use closeout_action=fail only for terminal unrecoverable failure.",
+		"evidence_refs must include safe refs for changed files, regression-test applicability, tests run or exact not-run reason, downstream impact refs when applicable, and any local agentic evidence required by the task.",
+		"verifier_result_refs must include focused verifier refs when verification ran or a safe not-run verifier ref when the task explicitly cannot run verification.",
+		"child_tasks must be empty for a concrete implementation task; decomposition and review task creation belong to workflow governance steps.",
+		"Do not call lifecycle, automation run, or completion APIs. The runner owns task closeout after validating this JSON.",
+	})
+}
+
+func governedWorkflowStepInstructions(taskRef string) []string {
+	switch strings.TrimSpace(taskRef) {
+	case "decompose-work-plan":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This governance step must produce concrete child Work Task metadata for the requested ticket in the final child_tasks JSON array. Do not exit successfully with only metadata on this wrapper task.",
+			"Each generated child Work Task must be implementation-ready: one objective, files_to_read, files_to_edit or explicit discovery scope, downstream impact, regression-test applicability, acceptance criteria, stop conditions, verifier ladder, dependencies, and resume instructions.",
+			"If no concrete implementation task can be derived from the ticket and source evidence, block this task with the exact missing evidence instead of marking it ready or done.",
+		})
+	case "mark-ready-after-review":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This governance step must inspect child Work Tasks from decomposition and return needs_review only when reviewed implementation-ready child tasks exist. Do not exit successfully if no child implementation Work Tasks exist.",
+			"If no child implementation task is ready, block this task and state whether decomposition produced no tasks, review refs are missing, or task metadata is incomplete.",
+		})
+	case "select-ready-tasks":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This governance step must select actual ready child implementation Work Tasks from the previous decomposition output. Do not exit successfully if the only ready tasks are workflow wrapper tasks.",
+			"If no concrete child implementation task is selected, block this task with a missing-ready-implementation-task reason.",
+		})
+	case "run-implementation-batch":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This governance step must dispatch or execute concrete selected child implementation tasks. Do not exit successfully with no repository diff, no child task evidence, and no explicit blocked reason.",
+			"If selected implementation tasks cannot be claimed or executed, block this task and attach the selected task refs and blocker category.",
+		})
+	case "review-implementation-batch":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This governance step must independently review concrete child implementation task outputs. Do not exit successfully if there are no child implementation tasks, no implementation evidence refs, or no diff/branch evidence to review.",
+			"If implementation output is missing or unreviewable, block this task with missing-implementation-output instead of approving the batch.",
+		})
+	case "orchestrator-verification":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This governance step must verify concrete implementation outputs against the ticket, downstream impact map, regression-test decision, and verifier ladder. Do not exit successfully if there are no implementation outputs to verify.",
+			"If verification cannot run or required implementation evidence is missing, block this task with missing-verification-evidence or verifier-unavailable.",
+		})
+	case "pr-gitops-readiness":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This governance step must not approve GitOps readiness when there is no implementation diff and no existing branch/PR evidence for the ticket.",
+			"If no diff exists after implementation, block this task with no-implementation-diff instead of approving PR readiness.",
+		})
+	case "collect-final-scope":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This post-validation step must collect bounded final scope refs: changed files, implementation task refs, downstream impact refs, regression-test refs, generated artifact refs, and local agentic evidence.",
+			"If final scope evidence is missing, stale, too broad, or contains unreviewed changes, block with the exact missing final-scope ref.",
+		})
+	case "validate-regression-and-downstream":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This post-validation step must independently validate regression-test evidence, downstream reachability, affected targets, contracts, generated artifacts, and sensitive-risk negative coverage.",
+			"If validation evidence is missing or not feasible, block with the exact missing regression or downstream ref.",
+		})
+	case "run-final-verification":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This post-validation step must verify concrete implementation outputs with feasible regression checks first, then affected lint/typecheck/test/policy/generated-artifact/diff checks.",
+			"If a required verifier cannot run or fails, block with the first failed verifier ref.",
+		})
+	case "final-pr-readiness":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This post-validation step must approve GitOps only after validation review refs, verifier refs, regression evidence, generated artifact checks, branch policy, PR metadata, and metadata redaction checks are complete.",
+			"If GitOps readiness evidence is incomplete or unsafe, block with the exact missing readiness ref.",
+		})
+	case "smoke-draft-pr":
+		return governedWorkflowCloseoutInstructions([]string{
+			"This smoke GitOps step must create or update only the bounded smoke marker file requested by the task, then return governed closeout JSON so the runner can exercise commit, push, and draft PR creation.",
+			"If the bounded smoke marker cannot be created safely, block with smoke-marker-unavailable.",
+		})
+	default:
+		return nil
+	}
+}
+
+func governedWorkflowCloseoutInstructions(stepInstructions []string) []string {
+	return append(stepInstructions,
+		"For this governed workflow wrapper, do not call MCP or REST for Work Task lifecycle closeout. The runner owns governed state transitions.",
+		"Your final response must be a single JSON object. Do not wrap it in prose. Required top-level fields: closeout_action, outcome, safe_next_action, evidence_refs, verifier_result_refs, child_tasks, block_reason, failure_reason.",
+		"closeout_action must be one of needs_review, block, or fail. Use needs_review only when the requested wrapper output is complete. Use block when required source or ticket evidence is missing. Use fail only for terminal execution failure.",
+		"child_tasks must contain concrete implementation Work Tasks only when this wrapper decomposes or selects implementation work. Review, verification, readiness, validation, and GitOps wrappers must set child_tasks to an empty array.",
+		"When child_tasks are allowed, each child task must include task_ref, title, description, status, owner_agent, evidence_needed, context_pack_refs, files_to_read or explicit discovery scope, files_to_edit when known, likely_files_affected, dependency_task_ids, verification_requirement, expected_output, failure_criteria, review_gate, resume_instructions, decomposition_quality, acceptance_criteria, stop_conditions, verifier_ladder, regression_test_applicability, downstream_impact_refs, and output_contract. child task status must be exactly planned, ready, or blocked. decomposition_quality must be exactly one of draft, ready, too_broad, missing_evidence, missing_context, missing_verification, or missing_resume. Use empty arrays or empty strings only when a field is genuinely not applicable; runner validation still rejects missing required safe metadata.",
+		"Set child task output_contract to safe bounded artifact wording such as bounded diff refs plus verifier refs; do not name prohibited data categories there.",
+		"Use only bounded safe metadata in JSON: source-evidence refs, log-evidence refs, relative repo paths, and short task metadata. Do not include verbatim source/log content, machine roots, credentials, external URLs, provider data, or PII. Do not echo prohibited data-type phrases inside child task metadata; use source-evidence or log-evidence instead.",
+		"The runner will validate this JSON, create child tasks, attach evidence, and move/block/fail this wrapper task. If the JSON is missing or invalid, the automation fails deterministically.",
+	)
+}
+
+func isGovernedWorkflowTaskRef(taskRef string) bool {
+	switch strings.TrimSpace(taskRef) {
+	case "decompose-work-plan",
+		"mark-ready-after-review",
+		"select-ready-tasks",
+		"run-implementation-batch",
+		"review-implementation-batch",
+		"orchestrator-verification",
+		"pr-gitops-readiness",
+		"collect-final-scope",
+		"validate-regression-and-downstream",
+		"run-final-verification",
+		"final-pr-readiness",
+		"smoke-draft-pr":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -3748,7 +6285,14 @@ func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, auto
 		if task.Status != projectworkplan.WorkTaskStatusReady {
 			continue
 		}
-		existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: automation.ID, PlanID: automation.PlanID})
+		if err := svc.validateRunPlanExecutable(ctx, AutomationRun{ProjectID: automation.ProjectID, PlanID: automation.PlanID}, task); err != nil {
+			return err
+		}
+		reviewAutomation, err := svc.reviewAutomationForTask(ctx, automation, task)
+		if err != nil {
+			return err
+		}
+		existing, err := svc.store.ListRuns(ctx, RunFilter{ProjectID: automation.ProjectID, AutomationID: reviewAutomation.ID, PlanID: automation.PlanID})
 		if err != nil {
 			return err
 		}
@@ -3764,16 +6308,45 @@ func (svc *Service) ensureRequiredAutomationReviewRuns(ctx context.Context, auto
 		}
 		now := svc.now()
 		reviewRun := AutomationRun{
-			ID: svc.newID("automation_run"), ProjectID: automation.ProjectID, AutomationID: automation.ID,
-			AgentID: firstNonEmpty(task.OwnerAgent, automation.AgentID), PlanID: task.PlanID, TaskID: task.ID,
-			Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: input.OrchestratorRunID,
-			ParentRunID: input.ParentRunID, SafeSummary: "automation_review_gate_queued", CreatedAt: now, UpdatedAt: now,
+			ID: svc.newID("automation_run"), ProjectID: automation.ProjectID, AutomationID: reviewAutomation.ID,
+			AgentID: firstNonEmpty(task.OwnerAgent, reviewAutomation.AgentID), PlanID: task.PlanID, TaskID: task.ID,
+			WorkTaskStatus: task.Status, Status: RunStatusQueued, RunnerKind: runnerKind, AttemptCount: 0, OrchestratorRunID: input.OrchestratorRunID,
+			ParentRunID: input.ParentRunID, TraceID: firstNonEmpty(automation.TraceID, input.OrchestratorRunID), SafeSummary: "automation_review_gate_queued", CreatedAt: now, UpdatedAt: now,
 		}
 		if _, err := svc.store.CreateRun(ctx, reviewRun); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (svc *Service) reviewAutomationForTask(ctx context.Context, fallback Automation, task projectworkplan.WorkTask) (Automation, error) {
+	if strings.TrimSpace(task.ID) == "" {
+		return fallback, nil
+	}
+	automations, err := svc.store.ListAutomations(ctx, AutomationFilter{ProjectID: fallback.ProjectID, Status: AutomationStatusEnabled})
+	if err != nil {
+		return Automation{}, err
+	}
+	for _, candidate := range automations {
+		if candidate.ID == fallback.ID || candidate.PlanID != fallback.PlanID {
+			continue
+		}
+		if automationAllowsTask(candidate, task) {
+			return candidate, nil
+		}
+	}
+	return fallback, nil
+}
+
+func automationAllowsTask(automation Automation, task projectworkplan.WorkTask) bool {
+	for _, allowed := range automation.AllowedTaskRefs {
+		switch strings.TrimSpace(allowed) {
+		case task.ID, task.TaskRef:
+			return true
+		}
+	}
+	return false
 }
 
 func (svc *Service) requiredAutomationReviewsDone(ctx context.Context, automation Automation) bool {
@@ -3854,13 +6427,49 @@ func permissionAllowsRunner(metadata PermissionSnapshotMetadata, runnerKind stri
 }
 
 func (svc *Service) dependenciesDone(ctx context.Context, task projectworkplan.WorkTask) bool {
+	if isReviewTask(task) {
+		return svc.reviewDependenciesReadyForExecution(ctx, task)
+	}
 	for _, dependencyID := range task.DependencyTaskIDs {
-		dependency, err := svc.workTasks.GetWorkTask(ctx, task.ProjectID, dependencyID)
+		dependency, err := svc.getWorkTaskByIDOrRef(ctx, task.ProjectID, task.PlanID, dependencyID)
 		if err != nil || dependency.Status != projectworkplan.WorkTaskStatusDone {
 			return false
 		}
 	}
 	return true
+}
+
+func (svc *Service) reviewDependenciesReadyForExecution(ctx context.Context, task projectworkplan.WorkTask) bool {
+	for _, dependencyID := range task.DependencyTaskIDs {
+		dependency, err := svc.getWorkTaskByIDOrRef(ctx, task.ProjectID, task.PlanID, dependencyID)
+		if err != nil {
+			return false
+		}
+		switch dependency.Status {
+		case projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying, projectworkplan.WorkTaskStatusDone:
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (svc *Service) getWorkTaskByIDOrRef(ctx context.Context, projectID string, planID string, taskIDOrRef string) (projectworkplan.WorkTask, error) {
+	task, err := svc.workTasks.GetWorkTask(ctx, projectID, taskIDOrRef)
+	if err == nil {
+		return task, nil
+	}
+	tasks, listErr := svc.workTasks.ListWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: projectID, PlanID: planID, PageSize: 1000})
+	if listErr != nil {
+		return projectworkplan.WorkTask{}, err
+	}
+	for _, candidate := range tasks {
+		if strings.TrimSpace(candidate.TaskRef) == strings.TrimSpace(taskIDOrRef) {
+			return candidate, nil
+		}
+	}
+	return projectworkplan.WorkTask{}, err
 }
 
 func validateExecutableTask(task projectworkplan.WorkTask) error {
@@ -3873,16 +6482,72 @@ func validateExecutableTask(task projectworkplan.WorkTask) error {
 	if strings.TrimSpace(task.VerificationRequirement) == "" {
 		return fmt.Errorf("%w: missing_verification", ErrInvalidInput)
 	}
+	if implementationTaskRequiresGovernanceContract(task) {
+		if len(task.AcceptanceCriteria) == 0 {
+			return fmt.Errorf("%w: missing_acceptance_criteria", ErrInvalidInput)
+		}
+		if len(task.StopConditions) == 0 {
+			return fmt.Errorf("%w: missing_stop_conditions", ErrInvalidInput)
+		}
+		if len(task.VerifierLadder) == 0 {
+			return fmt.Errorf("%w: missing_verifier_ladder", ErrInvalidInput)
+		}
+		if strings.TrimSpace(task.RegressionApplicability) == "" {
+			return fmt.Errorf("%w: missing_regression_test_applicability", ErrInvalidInput)
+		}
+		if len(task.DownstreamImpactRefs) == 0 {
+			return fmt.Errorf("%w: missing_downstream_impact_refs", ErrInvalidInput)
+		}
+		if strings.TrimSpace(task.OutputContract) == "" {
+			return fmt.Errorf("%w: missing_output_contract", ErrInvalidInput)
+		}
+	}
 	return nil
 }
 
-func isRecoverableGitOpsPostTaskFailure(category string) bool {
-	switch strings.TrimSpace(category) {
-	case "gitops_post_task_failed", "gitops_branch_policy_failed", "gitops_command_failed", "gitops_invalid_input", "gitops_verification_failed", "gitops_dirty_worktree_scope":
-		return true
-	default:
+func implementationTaskRequiresGovernanceContract(task projectworkplan.WorkTask) bool {
+	if isGovernedWorkflowTaskRef(task.TaskRef) || isReviewTask(task) || isReadOnlyScannerTask(task) || len(task.FilesToEdit) == 0 {
 		return false
 	}
+	owner := strings.ToLower(strings.TrimSpace(task.OwnerAgent))
+	return strings.Contains(owner, "implementation")
+}
+
+func isRecoverableGitOpsPostTaskFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return category == "gitops_dirty_worktree_scope" ||
+		category == "gitops_post_task_failed" ||
+		strings.HasPrefix(category, "gitops_post_task_failed_") ||
+		category == "gitops_invalid_input_ssh_key_unavailable" ||
+		category == "gitops_invalid_input_github_token_unavailable" ||
+		category == "gitops_command_failed_git_config_global" ||
+		category == "gitops_command_failed_git_c_credential_helper" ||
+		category == "gitops_command_failed_git_push_origin" ||
+		strings.HasPrefix(category, "gitops_command_failed_git_push_origin_") ||
+		category == "gitops_verification_failed" ||
+		strings.HasPrefix(category, "gitops_verification_failed_") ||
+		category == "gitops_invalid_input_no_changed_files_matched"
+}
+
+func isResettableGitOpsRecoveryFailure(category string) bool {
+	category = strings.TrimSpace(category)
+	return isRecoverableGitOpsPostTaskFailure(category) ||
+		category == "gitops_dirty_worktree_scope_requires_plan"
+}
+
+func isTerminalGitOpsPostTaskBlocker(category string) bool {
+	category = strings.TrimSpace(category)
+	if category == "" {
+		return false
+	}
+	if category == "gitops_branch_policy_failed" ||
+		category == "gitops_command_failed" ||
+		strings.HasPrefix(category, "gitops_command_failed_") ||
+		category == "gitops_invalid_input" ||
+		strings.HasPrefix(category, "gitops_invalid_input_") {
+		return !isRecoverableGitOpsPostTaskFailure(category)
+	}
+	return false
 }
 
 func isRecoverablePreExecutionFailure(category string) bool {
@@ -3920,7 +6585,7 @@ func isRecoverableReviewGitOpsFailure(category string) bool {
 
 func taskHasGitOpsRecoveryCloseout(task projectworkplan.WorkTask) bool {
 	switch task.Status {
-	case projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying, projectworkplan.WorkTaskStatusDone:
+	case projectworkplan.WorkTaskStatusNeedsReview, projectworkplan.WorkTaskStatusVerifying, projectworkplan.WorkTaskStatusDone, projectworkplan.WorkTaskStatusBlocked:
 	default:
 		return false
 	}
@@ -3937,20 +6602,33 @@ func taskNeedsGitOpsPostTaskRecovery(run AutomationRun, task projectworkplan.Wor
 	if task.Status != projectworkplan.WorkTaskStatusNeedsReview && task.Status != projectworkplan.WorkTaskStatusVerifying {
 		return false
 	}
-	if len(task.ReviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" {
+	if !taskReadyForAutomationCloseout(task) {
 		return false
 	}
+	if (len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "") && isGovernedWorkflowTaskRef(task.TaskRef) && strings.TrimSpace(task.TaskRef) != "smoke-draft-pr" {
+		return false
+	}
+	if taskHasGitOpsCompletionRef(task) {
+		return false
+	}
+	return true
+}
+
+func taskHasGitOpsCompletionRef(task projectworkplan.WorkTask) bool {
 	for _, ref := range append(append([]string{}, task.EvidenceRefs...), task.ClaimRefs...) {
 		normalized := strings.ToLower(strings.TrimSpace(ref))
-		if strings.HasPrefix(normalized, "git-commit") ||
+		if strings.HasPrefix(normalized, "gitops-commit") ||
+			strings.HasPrefix(normalized, "gitops-push") ||
+			strings.HasPrefix(normalized, "gitops-pr") ||
+			strings.HasPrefix(normalized, "git-commit") ||
 			strings.HasPrefix(normalized, "git-push") ||
 			strings.HasPrefix(normalized, "draft-pr") ||
 			strings.Contains(normalized, "git-no-changes") ||
 			strings.Contains(normalized, "draft-pr-ready") {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
@@ -3959,13 +6637,42 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 	default:
 		return false
 	}
+	if taskUsesBoundedSmokeGitOpsVerification(task) {
+		return true
+	}
+	if taskNeedsPostImplementationReview(task) {
+		return false
+	}
 	if isReadOnlyScannerTask(task) && readOnlyScannerTaskHasCloseoutOutput(task) {
 		return true
 	}
-	if len(task.VerifierResultRefs) == 0 {
+	if !isReadOnlyScannerTask(task) && len(task.FilesToEdit) == 0 && metadataOnlyTaskHasCloseoutEvidence(task) {
+		return true
+	}
+	if len(automationCloseoutVerifierRefs(task)) == 0 {
 		return false
 	}
-	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" || automationReviewExemptReason(task) != ""
+	return len(task.ReviewResultRefs) > 0 || automationReviewExemptReason(task) != ""
+}
+
+func taskUsesBoundedSmokeGitOpsVerification(task projectworkplan.WorkTask) bool {
+	mode := strings.TrimSpace(task.GitOpsVerificationMode)
+	if mode != "" && mode != "bounded_smoke" {
+		return false
+	}
+	if strings.TrimSpace(task.TaskRef) != "smoke-draft-pr" {
+		return false
+	}
+	if len(task.FilesToEdit) != 1 || strings.TrimSpace(task.FilesToEdit[0]) != ".agentic/automation-smoke.md" {
+		return false
+	}
+	if !containsRef(task.EvidenceRefs, "gitops-smoke-ref") {
+		return false
+	}
+	if mode == "bounded_smoke" {
+		return true
+	}
+	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != ""
 }
 
 func isReviewTask(task projectworkplan.WorkTask) bool {
@@ -3985,6 +6692,8 @@ func automationReviewExemptReason(task projectworkplan.WorkTask) string {
 	switch {
 	case isReviewTask(task):
 		return "independent review task; secondary review not required"
+	case taskUsesBoundedSmokeGitOpsVerification(task):
+		return "bounded smoke GitOps verification; review gate intentionally exempt"
 	case isReadOnlyScannerTask(task):
 		return "read-only automation task; downstream review remains dependency-gated"
 	case isNoConfirmedBugPlannerTask(task):
@@ -4025,7 +6734,26 @@ func automationCloseoutVerifierRefs(task projectworkplan.WorkTask) []string {
 	if len(refs) == 0 && isReadOnlyScannerTask(task) && readOnlyScannerTaskHasCloseoutOutput(task) {
 		refs = append(refs, "verifier.automation.read-only-scanner-output")
 	}
+	if len(refs) == 0 && !isReadOnlyScannerTask(task) && len(task.FilesToEdit) == 0 && metadataOnlyTaskHasCloseoutEvidence(task) {
+		refs = append(refs, "verifier.automation.metadata-only-output")
+	}
 	return refs
+}
+
+func gitOpsTaskHasCloseoutEvidence(task projectworkplan.WorkTask) bool {
+	for _, ref := range task.EvidenceRefs {
+		value := strings.ToLower(strings.TrimSpace(ref))
+		if strings.HasPrefix(value, "gitops-commit") ||
+			strings.HasPrefix(value, "gitops-push") ||
+			strings.HasPrefix(value, "gitops-pr") ||
+			strings.HasPrefix(value, "git-commit") ||
+			strings.HasPrefix(value, "git-push") ||
+			strings.HasPrefix(value, "draft-pr") ||
+			strings.Contains(value, "draft-pr-ready") {
+			return true
+		}
+	}
+	return false
 }
 
 func isMeaningfulScannerEvidenceRef(ref string) bool {
@@ -4078,16 +6806,29 @@ func refIndicatesNoConfirmedBug(value string) bool {
 }
 
 func firstFileConflict(task projectworkplan.WorkTask, used map[string]string) string {
-	for _, file := range task.LikelyFilesAffected {
-		key := strings.ToLower(strings.TrimSpace(file))
-		if key == "" {
-			continue
-		}
+	for _, key := range taskConflictScopes(task) {
 		if used[key] != "" {
 			return key
 		}
 	}
 	return ""
+}
+
+func taskConflictScopes(task projectworkplan.WorkTask) []string {
+	scopes := make([]string, 0, len(task.FilesToEdit)+len(task.LikelyFilesAffected))
+	seen := map[string]struct{}{}
+	for _, file := range append(append([]string{}, task.FilesToEdit...), task.LikelyFilesAffected...) {
+		key := strings.ToLower(strings.TrimSpace(file))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		scopes = append(scopes, key)
+	}
+	return scopes
 }
 
 func safeProjectObject(projectID, objectID, field string) (string, string, error) {
@@ -4124,13 +6865,36 @@ func safeRefList(values []string, field string) ([]string, error) {
 	}
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		safe, err := safeRef(value, field)
+		safe, err := safeRefListValue(value, field)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, safe)
 	}
 	return out, nil
+}
+
+func safeRefListValue(value, field string) (string, error) {
+	if field == "evidence_refs" {
+		return safeEvidenceRef(value, field)
+	}
+	return safeRef(value, field)
+}
+
+func safeEvidenceRef(value, field string) (string, error) {
+	if safe, err := safeRef(value, field); err == nil {
+		return safe, nil
+	}
+	value = strings.TrimSpace(value)
+	const prefix = "gitops-dirty-path:"
+	if !strings.HasPrefix(value, prefix) {
+		return "", fmt.Errorf("%w: %s must be a safe ref", ErrInvalidInput, field)
+	}
+	path := filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(value, prefix)))
+	if len(value) > 2048 || !isSafeTaskPath(path) || emailPattern.MatchString(path) || phonePattern.MatchString(path) {
+		return "", fmt.Errorf("%w: %s must be a safe ref", ErrInvalidInput, field)
+	}
+	return prefix + path, nil
 }
 
 func safeFileList(values []string, field string) ([]string, error) {
@@ -4143,7 +6907,7 @@ func safeFileList(values []string, field string) ([]string, error) {
 		if trimmed == "" {
 			continue
 		}
-		if len(trimmed) > 300 || strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "\x00\r\n\\") {
+		if strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "\x00\r\n\\") {
 			return nil, fmt.Errorf("%w: %s contains unsafe path", ErrInvalidInput, field)
 		}
 		out = append(out, trimmed)
@@ -4191,6 +6955,9 @@ func (svc *Service) classifyDirtyScopePaths(projectID string, task projectworkpl
 		scope := firstMatchingTaskScope(path, likely)
 		if scope == "" {
 			scope = firstMatchingTaskScope(path, supportScopes)
+		}
+		if scope == "" && parentBarrelForScope(path, append(current, likely...)) {
+			scope = path
 		}
 		if scope == "" {
 			outside = append(outside, path)
@@ -4244,9 +7011,37 @@ func taskPathMatchesScope(path string, scope string) bool {
 	return path == scope || strings.HasPrefix(path, scope+"/")
 }
 
+func parentBarrelForScope(path string, scopes []string) bool {
+	path = strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(path)), "/")
+	if !isSafeTaskPath(path) || !isIndexBarrelPath(path) {
+		return false
+	}
+	for _, scope := range safeTaskPathspecs(scopes) {
+		dir := strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(scope)), "/")
+		parent := filepath.ToSlash(filepath.Dir(dir))
+		if parent == "." || parent == "/" || parent == dir {
+			continue
+		}
+		if path == parent+"/index.ts" || path == parent+"/index.tsx" || path == parent+"/index.js" || path == parent+"/index.jsx" {
+			return true
+		}
+	}
+	return false
+}
+
+func isIndexBarrelPath(path string) bool {
+	base := filepath.Base(filepath.ToSlash(strings.TrimSpace(path)))
+	switch base {
+	case "index.ts", "index.tsx", "index.js", "index.jsx":
+		return true
+	default:
+		return false
+	}
+}
+
 func isSafeTaskPath(path string) bool {
 	path = filepath.ToSlash(strings.TrimSpace(path))
-	return path != "" && len(path) <= 300 && !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "\\") && !strings.Contains(path, "..") && !strings.Contains(path, ":") && !strings.ContainsAny(path, "\x00\r\n\\")
+	return path != "" && !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "\\") && !strings.Contains(path, "..") && !strings.Contains(path, ":") && !strings.ContainsAny(path, "\x00\r\n\\")
 }
 
 func safeRequiredText(value, field string, max int) (string, error) {
@@ -4283,6 +7078,34 @@ func safeText(value, field string, max int) (string, error) {
 	return value, nil
 }
 
+func safeFailureCategory(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	lower := strings.ToLower(value)
+	if dynamicFailureCategoryPattern.MatchString(lower) {
+		return fmt.Errorf("%w: failure_category contains unsafe dynamic content", ErrInvalidInput)
+	}
+	for _, marker := range []string{
+		"/",
+		"\\",
+		".go",
+		".ts",
+		".tsx",
+		".js",
+		".jsx",
+		"provider payload",
+		"raw stderr",
+		"raw source",
+		"raw log",
+	} {
+		if strings.Contains(lower, marker) {
+			return fmt.Errorf("%w: failure_category contains unsafe dynamic content", ErrInvalidInput)
+		}
+	}
+	return nil
+}
+
 func safeBranchToken(value string) string {
 	value = strings.TrimSpace(value)
 	var builder strings.Builder
@@ -4305,6 +7128,16 @@ func safeBranchToken(value string) string {
 	}
 	if len(token) > 80 {
 		return token[:80]
+	}
+	return token
+}
+
+func safeAutomationRefToken(value string) string {
+	token := safeBranchToken(value)
+	token = strings.ReplaceAll(token, "_", "-")
+	token = strings.Trim(token, ".-")
+	if token == "" {
+		return "automation"
 	}
 	return token
 }

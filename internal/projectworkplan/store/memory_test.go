@@ -128,6 +128,28 @@ func TestMemoryStoreTaskDuplicateAndFilters(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreListWorkTasksHonorsPaginationFilter(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mem := NewMemoryStore()
+	plan, err := mem.CreateWorkPlan(ctx, testPlan("project-1", "plan-1"))
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	for _, ref := range []string{"task-1", "task-2", "task-3"} {
+		if _, err := mem.CreateWorkTask(ctx, testTask("project-1", plan.ID, ref)); err != nil {
+			t.Fatalf("create %s: %v", ref, err)
+		}
+	}
+	page, err := mem.ListWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: "project-1", PlanID: plan.ID, PageSize: 2, PageToken: "1"})
+	if err != nil {
+		t.Fatalf("list paged tasks: %v", err)
+	}
+	if len(page) != 2 || page[0].TaskRef != "task-2" || page[1].TaskRef != "task-3" {
+		t.Fatalf("expected second and third tasks, got %#v", page)
+	}
+}
+
 func TestMemoryStoreAttachmentPersistence(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

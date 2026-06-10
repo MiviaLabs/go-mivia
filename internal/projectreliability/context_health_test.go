@@ -405,7 +405,7 @@ func TestContextHealth_BoundsSlowProvider(t *testing.T) {
 	}
 }
 
-func TestContextHealth_ActiveSyncStillReportsGraphInventory(t *testing.T) {
+func TestContextHealth_StaleActiveSyncDoesNotOverrideCompletedLatestRun(t *testing.T) {
 	svc := newTestService(activeSyncContextProvider{ContextProviderFunc: ContextProviderFunc{
 		latest: RunSummary{
 			ID:             "run-1",
@@ -424,8 +424,8 @@ func TestContextHealth_ActiveSyncStillReportsGraphInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("context health: %v", err)
 	}
-	if health.Status != ContextHealthSyncing || health.StatusReason != "ingestion_active" {
-		t.Fatalf("expected active sync status, got %#v", health)
+	if health.Status != ContextHealthReady || health.StatusReason != "" {
+		t.Fatalf("expected completed latest run to win over stale active sync diagnostics, got %#v", health)
 	}
 	if !health.IndexedContentAvailable || health.EligibleFileCount != 42 || health.IndexedSymbolCount != 100 || health.IndexedChunkCount != 60 {
 		t.Fatalf("expected active sync to keep graph inventory, got %#v", health)

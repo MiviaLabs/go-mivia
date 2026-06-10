@@ -161,6 +161,7 @@ type fileGitOpsConfig struct {
 	CommitAuthorName             *string                      `toml:"commit_author_name"`
 	CommitAuthorEmailEnv         *string                      `toml:"commit_author_email_env"`
 	CommitAuthorEmailFile        *string                      `toml:"commit_author_email_file"`
+	SignCommits                  *bool                        `toml:"sign_commits"`
 	SSHPrivateKeyPath            *string                      `toml:"ssh_private_key_path"`
 	SSHPublicKeyPath             *string                      `toml:"ssh_public_key_path"`
 	SSHKnownHostsPath            *string                      `toml:"ssh_known_hosts_path"`
@@ -169,25 +170,42 @@ type fileGitOpsConfig struct {
 	GitHubCLIPath                *string                      `toml:"github_cli_path"`
 	Conventions                  *fileGitOpsConventionsConfig `toml:"conventions"`
 	DirtyScopeRecovery           *fileDirtyScopeRecovery      `toml:"dirty_scope_recovery"`
+	PostPRChecks                 *filePostPRChecksConfig      `toml:"post_pr_checks"`
 }
 
 type fileDirtyScopeRecovery struct {
 	AllowedSupportPathspecs []string `toml:"allowed_support_pathspecs"`
 }
 
+type filePostPRChecksConfig struct {
+	Enabled         *bool `toml:"enabled"`
+	RequiredOnly    *bool `toml:"required_only"`
+	Watch           *bool `toml:"watch"`
+	FailFast        *bool `toml:"fail_fast"`
+	IntervalSeconds *int  `toml:"interval_seconds"`
+}
+
 type fileGitOpsConventionsConfig struct {
-	CommitType               *string `toml:"commit_type"`
-	CommitScope              *string `toml:"commit_scope"`
-	CommitSummaryTemplate    *string `toml:"commit_summary_template"`
-	PullRequestTitleTemplate *string `toml:"pull_request_title_template"`
-	WhatChangedTemplate      *string `toml:"what_changed_template"`
-	HowVerifiedTemplate      *string `toml:"how_verified_template"`
-	TestsTemplate            *string `toml:"tests_template"`
+	CommitType               *string  `toml:"commit_type"`
+	CommitScope              *string  `toml:"commit_scope"`
+	BranchTemplate           *string  `toml:"branch_template"`
+	RequireTicketRef         *bool    `toml:"require_ticket_ref"`
+	TicketRefPattern         *string  `toml:"ticket_ref_pattern"`
+	TicketURLTemplate        *string  `toml:"ticket_url_template"`
+	AllowedTypes             []string `toml:"allowed_types"`
+	DefaultChangeType        *string  `toml:"default_change_type"`
+	CommitSummaryTemplate    *string  `toml:"commit_summary_template"`
+	PullRequestTitleTemplate *string  `toml:"pull_request_title_template"`
+	PullRequestBodyTemplate  *string  `toml:"pull_request_body_template"`
+	WhatChangedTemplate      *string  `toml:"what_changed_template"`
+	HowVerifiedTemplate      *string  `toml:"how_verified_template"`
+	TestsTemplate            *string  `toml:"tests_template"`
 }
 
 type fileVerificationConfig struct {
 	BootstrapCommands  []string                            `toml:"bootstrap_commands"`
 	AlwaysBeforePR     []string                            `toml:"always_before_pr"`
+	AutofixCommands    []string                            `toml:"autofix_commands"`
 	GeneratedArtifacts []fileGeneratedArtifactVerification `toml:"generated_artifacts"`
 	Env                map[string]string                   `toml:"env"`
 }
@@ -880,6 +898,9 @@ func applyFileGitOps(base *GitOperations, cfg *fileGitOpsConfig) {
 	if cfg.CommitAuthorEmailFile != nil {
 		base.CommitAuthorEmailFile = strings.TrimSpace(*cfg.CommitAuthorEmailFile)
 	}
+	if cfg.SignCommits != nil {
+		base.SignCommits = *cfg.SignCommits
+	}
 	if cfg.SSHPrivateKeyPath != nil {
 		base.SSHPrivateKeyPath = strings.TrimSpace(*cfg.SSHPrivateKeyPath)
 	}
@@ -901,6 +922,23 @@ func applyFileGitOps(base *GitOperations, cfg *fileGitOpsConfig) {
 	if cfg.DirtyScopeRecovery != nil {
 		base.DirtyScopeRecovery.AllowedSupportPathspecs = trimStringSlice(cfg.DirtyScopeRecovery.AllowedSupportPathspecs)
 	}
+	if cfg.PostPRChecks != nil {
+		if cfg.PostPRChecks.Enabled != nil {
+			base.PostPRChecks.Enabled = *cfg.PostPRChecks.Enabled
+		}
+		if cfg.PostPRChecks.RequiredOnly != nil {
+			base.PostPRChecks.RequiredOnly = *cfg.PostPRChecks.RequiredOnly
+		}
+		if cfg.PostPRChecks.Watch != nil {
+			base.PostPRChecks.Watch = *cfg.PostPRChecks.Watch
+		}
+		if cfg.PostPRChecks.FailFast != nil {
+			base.PostPRChecks.FailFast = *cfg.PostPRChecks.FailFast
+		}
+		if cfg.PostPRChecks.IntervalSeconds != nil {
+			base.PostPRChecks.IntervalSeconds = *cfg.PostPRChecks.IntervalSeconds
+		}
+	}
 	if cfg.Conventions != nil {
 		if cfg.Conventions.CommitType != nil {
 			base.Conventions.CommitType = strings.TrimSpace(*cfg.Conventions.CommitType)
@@ -908,11 +946,32 @@ func applyFileGitOps(base *GitOperations, cfg *fileGitOpsConfig) {
 		if cfg.Conventions.CommitScope != nil {
 			base.Conventions.CommitScope = strings.TrimSpace(*cfg.Conventions.CommitScope)
 		}
+		if cfg.Conventions.BranchTemplate != nil {
+			base.Conventions.BranchTemplate = strings.TrimSpace(*cfg.Conventions.BranchTemplate)
+		}
+		if cfg.Conventions.RequireTicketRef != nil {
+			base.Conventions.RequireTicketRef = *cfg.Conventions.RequireTicketRef
+		}
+		if cfg.Conventions.TicketRefPattern != nil {
+			base.Conventions.TicketRefPattern = strings.TrimSpace(*cfg.Conventions.TicketRefPattern)
+		}
+		if cfg.Conventions.TicketURLTemplate != nil {
+			base.Conventions.TicketURLTemplate = strings.TrimSpace(*cfg.Conventions.TicketURLTemplate)
+		}
+		if cfg.Conventions.AllowedTypes != nil {
+			base.Conventions.AllowedTypes = trimStringSlice(cfg.Conventions.AllowedTypes)
+		}
+		if cfg.Conventions.DefaultChangeType != nil {
+			base.Conventions.DefaultChangeType = strings.TrimSpace(*cfg.Conventions.DefaultChangeType)
+		}
 		if cfg.Conventions.CommitSummaryTemplate != nil {
 			base.Conventions.CommitSummaryTemplate = strings.TrimSpace(*cfg.Conventions.CommitSummaryTemplate)
 		}
 		if cfg.Conventions.PullRequestTitleTemplate != nil {
 			base.Conventions.PullRequestTitleTemplate = strings.TrimSpace(*cfg.Conventions.PullRequestTitleTemplate)
+		}
+		if cfg.Conventions.PullRequestBodyTemplate != nil {
+			base.Conventions.PullRequestBodyTemplate = strings.TrimSpace(*cfg.Conventions.PullRequestBodyTemplate)
 		}
 		if cfg.Conventions.WhatChangedTemplate != nil {
 			base.Conventions.WhatChangedTemplate = strings.TrimSpace(*cfg.Conventions.WhatChangedTemplate)
@@ -938,6 +997,7 @@ func (cfg fileVerificationConfig) toVerification() Verification {
 	return Verification{
 		BootstrapCommands:  trimStringSlice(cfg.BootstrapCommands),
 		AlwaysBeforePR:     trimStringSlice(cfg.AlwaysBeforePR),
+		AutofixCommands:    trimStringSlice(cfg.AutofixCommands),
 		GeneratedArtifacts: generated,
 		Env:                trimStringMap(cfg.Env),
 	}

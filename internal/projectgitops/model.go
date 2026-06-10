@@ -15,21 +15,31 @@ type Options struct {
 	CommitAuthorName             string
 	CommitAuthorEmailEnv         string
 	CommitAuthorEmailFile        string
+	SignCommits                  bool
 	SSHPrivateKeyPath            string
 	SSHPublicKeyPath             string
 	SSHKnownHostsPath            string
 	GitHubTokenEnv               string
 	GitHubTokenFile              string
 	GitHubCLIPath                string
+	DirtyScopeSupportPathspecs   []string
 	Conventions                  Conventions
 	Verification                 VerificationProfile
+	PostPRChecks                 PostPRChecks
 }
 
 type Conventions struct {
 	CommitType               string
 	CommitScope              string
+	AllowedChangeTypes       []string
+	DefaultChangeType        string
+	RequireTicket            bool
+	BranchNameTemplate       string
+	TicketRefPattern         string
+	TicketURLTemplate        string
 	CommitSummaryTemplate    string
 	PullRequestTitleTemplate string
+	PullRequestBodyTemplate  string
 	WhatChangedTemplate      string
 	HowVerifiedTemplate      string
 	TestsTemplate            string
@@ -38,6 +48,7 @@ type Conventions struct {
 type VerificationProfile struct {
 	BootstrapCommands  []string
 	AlwaysBeforePR     []string
+	AutofixCommands    []string
 	GeneratedArtifacts []GeneratedArtifactVerifier
 	Env                map[string]string
 }
@@ -46,6 +57,14 @@ type GeneratedArtifactVerifier struct {
 	Paths            []string
 	Command          string
 	RequiredBeforePR bool
+}
+
+type PostPRChecks struct {
+	Enabled         bool
+	RequiredOnly    bool
+	Watch           bool
+	FailFast        bool
+	IntervalSeconds int
 }
 
 type Command struct {
@@ -71,7 +90,10 @@ type PostTaskInput struct {
 	TaskID           string
 	TaskRef          string
 	TaskTitle        string
+	TicketRef        string
+	ChangeType       string
 	BranchName       string
+	BaseRef          string
 	AutomationID     string
 	AutomationRunID  string
 	OperatorID       string

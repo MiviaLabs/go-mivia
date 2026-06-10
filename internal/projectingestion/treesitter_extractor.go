@@ -178,12 +178,14 @@ func (extractor treeSitterExtractor) Parse(ctx context.Context, relative string,
 	if language == nil {
 		return ExtractorResult{}, fmt.Errorf("tree-sitter language unavailable")
 	}
+	treeSitterParseMu.Lock()
+	defer treeSitterParseMu.Unlock()
 	parser := tree_sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(language); err != nil {
 		return ExtractorResult{}, fmt.Errorf("tree-sitter language unavailable")
 	}
-	tree := parser.ParseCtx(ctx, content, nil)
+	tree := parser.Parse(content, nil)
 	if tree == nil {
 		return ExtractorResult{}, fmt.Errorf("tree-sitter parse failed")
 	}

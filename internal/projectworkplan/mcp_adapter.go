@@ -51,7 +51,7 @@ func (svc *Service) CallWorkPlanTool(ctx context.Context, name string, arguments
 		if input.FailureCriteria == "" {
 			input.FailureCriteria = input.FailureBlockCriteria
 		}
-		return svc.CreateWorkTask(ctx, CreateWorkTaskInput{ProjectID: input.projectID(), PlanID: input.planID(), TaskRef: input.TaskRef, Title: input.Title, Description: input.description(), Status: input.Status, OwnerAgent: input.OwnerAgent, RunID: input.runID(), TraceID: input.TraceID, EvidenceNeeded: input.EvidenceNeeded, ContextPackRefs: input.ContextPackRefs, FilesToRead: input.FilesToRead, FilesToEdit: input.FilesToEdit, LikelyFilesAffected: input.LikelyFilesAffected, DependencyTaskIDs: input.DependencyTaskIDs, VerificationRequirement: input.VerificationRequirement, ExpectedOutput: input.ExpectedOutput, FailureCriteria: input.FailureCriteria, ReviewGate: input.ReviewGate, ResumeInstructions: input.ResumeInstructions, KnowledgeCandidateRefs: input.KnowledgeCandidateRefs, DecompositionQuality: input.DecompositionQuality})
+		return svc.CreateWorkTask(ctx, CreateWorkTaskInput{ProjectID: input.projectID(), PlanID: input.planID(), TaskRef: input.TaskRef, Title: input.Title, Description: input.description(), Status: input.Status, OwnerAgent: input.OwnerAgent, RunID: input.runID(), TraceID: input.TraceID, EvidenceNeeded: input.EvidenceNeeded, ContextPackRefs: input.ContextPackRefs, FilesToRead: input.FilesToRead, FilesToEdit: input.FilesToEdit, LikelyFilesAffected: input.LikelyFilesAffected, DependencyTaskIDs: input.DependencyTaskIDs, VerificationRequirement: input.VerificationRequirement, ExpectedOutput: input.ExpectedOutput, FailureCriteria: input.FailureCriteria, ReviewGate: input.ReviewGate, ResumeInstructions: input.ResumeInstructions, KnowledgeCandidateRefs: input.KnowledgeCandidateRefs, DecompositionQuality: input.DecompositionQuality, AcceptanceCriteria: input.AcceptanceCriteria, StopConditions: input.StopConditions, VerifierLadder: input.VerifierLadder, RegressionApplicability: input.RegressionApplicability, DownstreamImpactRefs: input.DownstreamImpactRefs, OutputContract: input.OutputContract})
 	case "projects.work_tasks.get":
 		var input taskIDInput
 		if err := decodeMCP(arguments, &input); err != nil {
@@ -256,6 +256,12 @@ type createTaskMCPInput struct {
 	KnowledgeCandidateRefs  []string `json:"knowledge_candidate_refs,omitempty"`
 	KnowledgeExpectation    string   `json:"knowledge_candidate_expectation,omitempty"`
 	DecompositionQuality    string   `json:"decomposition_quality,omitempty"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string   `json:"output_contract,omitempty"`
 	RunID                   string   `json:"run_id,omitempty"`
 	CreatedByRunID          string   `json:"created_by_run_id,omitempty"`
 }

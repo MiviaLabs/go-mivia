@@ -24,6 +24,25 @@ func TestLoadFileConfig_ExampleConfigParses(t *testing.T) {
 	}
 }
 
+func TestLoadFileConfig_ExampleWorkflowDefinitionPathsExist(t *testing.T) {
+	root := repoRoot(t)
+	path := filepath.Join(root, "configs", "mivia-server.example.toml")
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected example config to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected example config to apply: %v", err)
+	}
+	for _, definitionPath := range merged.Workflows.DefinitionPaths {
+		if _, err := os.Stat(filepath.Join(root, definitionPath)); err != nil {
+			t.Fatalf("workflow definition path %q must exist: %v", definitionPath, err)
+		}
+	}
+}
+
 func TestLoadFileConfig_RejectsUnknownTopLevelField(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1
@@ -128,16 +147,16 @@ func TestLoadFileConfig_AcceptsProjectWorkflowChains(t *testing.T) {
 version = 1
 
 [[projects]]
-id = "mass-monorepo"
-display_name = "MASS"
+id = "generic-monorepo"
+display_name = "GENERIC"
 root_path = "/absolute/path/to/project"
 enabled = true
 
 [[projects.workflow_chains]]
-chain_ref = "mass-governed-ticket-delivery"
+chain_ref = "GENERIC-governed-ticket-delivery"
 enabled = true
 input_kind = "jira_issue_key"
-input_pattern = "^MASS-[0-9]+$"
+input_pattern = "^GENERIC-[0-9]+$"
 context_provider = "jira"
 context_mode = "local_ingested"
 default_title_template = "{{input_ref}} governed delivery"
@@ -173,7 +192,7 @@ required_status_before_next = "completed"
 		t.Fatalf("expected workflow chain config to apply: %v", err)
 	}
 	chains := merged.Projects[0].WorkflowChains
-	if len(chains) != 1 || chains[0].ChainRef != "mass-governed-ticket-delivery" || len(chains[0].Stages) != 3 {
+	if len(chains) != 1 || chains[0].ChainRef != "GENERIC-governed-ticket-delivery" || len(chains[0].Stages) != 3 {
 		t.Fatalf("unexpected workflow chain config: %#v", chains)
 	}
 	if chains[0].Stages[1].DependsOn[0] != "decomposition" {
@@ -222,17 +241,31 @@ commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
 ssh_private_key_path = "/run/secrets/mivia_git_key"
 ssh_public_key_path = "/run/secrets/mivia_git_key.pub"
 ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
-github_token_env = "GITHUB_TOKEN"
+github_token_env = "GH_TOKEN"
 github_cli_path = "gh"
 
 [git_operations.dirty_scope_recovery]
 allowed_support_pathspecs = [".codex", ".claude", ".github", ".ai/skills", ".ai/rules"]
 
+[git_operations.post_pr_checks]
+enabled = true
+required_only = true
+watch = true
+fail_fast = true
+interval_seconds = 15
+
 [git_operations.conventions]
 commit_type = "feat"
 commit_scope = "gitops"
+branch_template = "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"
+require_ticket_ref = true
+ticket_ref_pattern = "^ABC-[0-9]+$"
+ticket_url_template = "https://tracker.example.test/browse/{{ticket_ref}}"
+allowed_types = ["feat", "fix", "docs"]
+default_change_type = "feat"
 commit_summary_template = "finish {{work_task_ref}}"
 pull_request_title_template = "feat({{ticket_ref}}): finish {{work_task_ref}}"
+pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 what_changed_template = "Completed {{work_task_title}} for {{project_id}} on {{branch_name}}."
 how_verified_template = "Review refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 tests_template = "{{test_results}}"
@@ -259,8 +292,20 @@ tests_template = "{{test_results}}"
 	if merged.GitOperations.Conventions.CommitType != "feat" || merged.GitOperations.Conventions.CommitScope != "gitops" || !strings.Contains(merged.GitOperations.Conventions.WhatChangedTemplate, "{{work_task_title}}") {
 		t.Fatalf("unexpected git operations conventions: %+v", merged.GitOperations.Conventions)
 	}
+	if !merged.GitOperations.Conventions.RequireTicketRef || merged.GitOperations.Conventions.TicketRefPattern != "^ABC-[0-9]+$" || merged.GitOperations.Conventions.TicketURLTemplate != "https://tracker.example.test/browse/{{ticket_ref}}" {
+		t.Fatalf("unexpected ticket-aware git operations conventions: %+v", merged.GitOperations.Conventions)
+	}
+	if merged.GitOperations.Conventions.BranchTemplate != "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}" || strings.Join(merged.GitOperations.Conventions.AllowedTypes, ",") != "feat,fix,docs" || merged.GitOperations.Conventions.DefaultChangeType != "feat" {
+		t.Fatalf("unexpected branch/type git operations conventions: %+v", merged.GitOperations.Conventions)
+	}
+	if !strings.Contains(merged.GitOperations.Conventions.PullRequestBodyTemplate, "{{tests}}") {
+		t.Fatalf("unexpected pull request body template: %+v", merged.GitOperations.Conventions)
+	}
 	if strings.Join(merged.GitOperations.DirtyScopeRecovery.AllowedSupportPathspecs, ",") != ".codex,.claude,.github,.ai/skills,.ai/rules" {
 		t.Fatalf("unexpected dirty scope recovery config: %+v", merged.GitOperations.DirtyScopeRecovery)
+	}
+	if !merged.GitOperations.PostPRChecks.Enabled || !merged.GitOperations.PostPRChecks.RequiredOnly || !merged.GitOperations.PostPRChecks.Watch || !merged.GitOperations.PostPRChecks.FailFast || merged.GitOperations.PostPRChecks.IntervalSeconds != 15 {
+		t.Fatalf("unexpected post PR checks config: %+v", merged.GitOperations.PostPRChecks)
 	}
 
 	t.Setenv("MIVIA_GIT_OPS_REMOTE_NAME", "origin")
@@ -295,7 +340,7 @@ commit_author_name = "Mivia Automation"
 commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
 ssh_private_key_path = "/run/secrets/mivia_git_key"
 ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
-github_token_env = "GITHUB_TOKEN"
+github_token_env = "GH_TOKEN"
 github_cli_path = "gh"
 
 [[projects]]
@@ -308,14 +353,24 @@ workspace_mode = "edit"
 [projects.git_operations]
 branch_prefix = ""
 branch_name_pattern = "^(feat|fix|docs)-ABC-[0-9]+(-[a-z0-9-]+)*$"
+sign_commits = true
 
 [projects.git_operations.dirty_scope_recovery]
 allowed_support_pathspecs = [".codex", ".github"]
 
+[projects.git_operations.post_pr_checks]
+enabled = true
+required_only = true
+watch = true
+interval_seconds = 20
+
 [projects.git_operations.conventions]
 commit_type = "docs"
+allowed_types = ["docs", "chore"]
+default_change_type = "docs"
 commit_summary_template = "complete {{work_task_ref}}"
 pull_request_title_template = "{{commit_subject}}"
+pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 what_changed_template = "Summary: {{work_task_title}}"
 how_verified_template = "Automation Run ID: {{automation_run_id}}"
 tests_template = "{{test_results}}"
@@ -337,17 +392,79 @@ tests_template = "{{test_results}}"
 		t.Fatalf("expected project git operations override, got %+v", merged.Projects)
 	}
 	projectGitOps := merged.Projects[0].GitOperations
-	if !projectGitOps.PushAfterTask || projectGitOps.SSHPrivateKeyPath == "" || projectGitOps.GitHubTokenEnv != "GITHUB_TOKEN" {
+	if !projectGitOps.PushAfterTask || projectGitOps.SSHPrivateKeyPath == "" || projectGitOps.GitHubTokenEnv != "GH_TOKEN" {
 		t.Fatalf("expected project override to inherit global push settings, got %+v", projectGitOps)
 	}
 	if projectGitOps.BranchPrefix != "" || projectGitOps.BranchNamePattern == "" {
 		t.Fatalf("expected project branch policy override, got %+v", projectGitOps)
+	}
+	if !projectGitOps.SignCommits {
+		t.Fatalf("expected project signed commits override, got %+v", projectGitOps)
 	}
 	if projectGitOps.Conventions.CommitType != "docs" || !strings.Contains(projectGitOps.Conventions.WhatChangedTemplate, "Summary") {
 		t.Fatalf("expected project convention override, got %+v", projectGitOps.Conventions)
 	}
 	if strings.Join(projectGitOps.DirtyScopeRecovery.AllowedSupportPathspecs, ",") != ".codex,.github" {
 		t.Fatalf("expected project dirty scope support path override, got %+v", projectGitOps.DirtyScopeRecovery)
+	}
+	if !projectGitOps.PostPRChecks.Enabled || !projectGitOps.PostPRChecks.RequiredOnly || !projectGitOps.PostPRChecks.Watch || projectGitOps.PostPRChecks.IntervalSeconds != 20 {
+		t.Fatalf("expected project post PR checks override, got %+v", projectGitOps.PostPRChecks)
+	}
+}
+
+func TestLoadFileConfig_AcceptsPROJTicketAwareGitOpsConventions(t *testing.T) {
+	path := writeTempConfig(t, `
+version = 1
+
+[[projects]]
+id = "PROJ-monorepo"
+root_path = "/repo/PROJ"
+enabled = true
+digest_mode = "content_graph"
+workspace_mode = "edit"
+
+[projects.git_operations]
+branch_prefix = ""
+branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-PROJ-[0-9]+(-[a-z0-9-]+)*$"
+
+[projects.git_operations.conventions]
+commit_type = "chore"
+commit_scope = ""
+branch_template = "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"
+require_ticket_ref = true
+ticket_ref_pattern = "^PROJ-[0-9]+$"
+ticket_url_template = "https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}"
+allowed_types = ["feat", "fix", "docs", "chore", "refactor", "hotfix", "revert"]
+default_change_type = "chore"
+commit_summary_template = "complete {{work_task_ref}}"
+pull_request_title_template = "{{change_type}}({{ticket_ref}}): complete {{work_task_ref}}"
+pull_request_body_template = "## What changed\nJira: https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}\n\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
+what_changed_template = "Type of Change:\n- {{change_type}}\n\nWork Item:\n- {{work_task_ref}}"
+how_verified_template = "Review refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
+tests_template = "{{test_results}}"
+`)
+
+	cfg, err := loadFileConfig(path)
+	if err != nil {
+		t.Fatalf("expected PROJ GitOps conventions to parse: %v", err)
+	}
+	merged, err := cfg.applyTo(defaultConfig(path))
+	if err != nil {
+		t.Fatalf("expected PROJ GitOps conventions to apply: %v", err)
+	}
+	merged.resolveAutoSettings(1)
+	if err := merged.Validate(); err != nil {
+		t.Fatalf("expected PROJ GitOps conventions to validate: %v", err)
+	}
+	conventions := merged.Projects[0].GitOperations.Conventions
+	if conventions.BranchTemplate != "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}" || !conventions.RequireTicketRef || conventions.TicketRefPattern != "^PROJ-[0-9]+$" || conventions.TicketURLTemplate != "https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}" {
+		t.Fatalf("unexpected PROJ ticket conventions: %+v", conventions)
+	}
+	if strings.Join(conventions.AllowedTypes, ",") != "feat,fix,docs,chore,refactor,hotfix,revert" || conventions.DefaultChangeType != "chore" || conventions.CommitType != "chore" {
+		t.Fatalf("unexpected PROJ change type conventions: %+v", conventions)
+	}
+	if !strings.Contains(conventions.PullRequestBodyTemplate, "## What changed") || !strings.Contains(conventions.PullRequestBodyTemplate, "{{tests}}") {
+		t.Fatalf("expected full PROJ PR body template, got %q", conventions.PullRequestBodyTemplate)
 	}
 }
 
@@ -384,6 +501,7 @@ version = 1
 
 [verification]
 always_before_pr = ["go test ./..."]
+autofix_commands = ["gofmt -w internal"]
 
 [verification.env]
 GOFLAGS = "-count=1"
@@ -405,6 +523,9 @@ bootstrap_commands = ["pnpm install --frozen-lockfile --prefer-offline --ignore-
 always_before_pr = [
   "pnpm -s nx affected -t lint --base=origin/main --head=HEAD",
   "pnpm -s nx affected -t typecheck --base=origin/main --head=HEAD",
+]
+autofix_commands = [
+  "pnpm -s nx affected -t lint --base=origin/main --head=HEAD --fix",
 ]
 
 [projects.verification.env]
@@ -432,6 +553,9 @@ required_before_pr = true
 	if strings.Join(merged.Verification.AlwaysBeforePR, ",") != "go test ./..." {
 		t.Fatalf("expected global verification, got %+v", merged.Verification)
 	}
+	if strings.Join(merged.Verification.AutofixCommands, ",") != "gofmt -w internal" {
+		t.Fatalf("expected global autofix commands, got %+v", merged.Verification.AutofixCommands)
+	}
 	if merged.Verification.Env["GOFLAGS"] != "-count=1" {
 		t.Fatalf("expected global verification env, got %+v", merged.Verification.Env)
 	}
@@ -441,6 +565,9 @@ required_before_pr = true
 	projectVerification := merged.Projects[0].Verification
 	if len(projectVerification.AlwaysBeforePR) != 2 || !strings.Contains(projectVerification.AlwaysBeforePR[0], "lint") {
 		t.Fatalf("unexpected project always-before-pr commands: %+v", projectVerification.AlwaysBeforePR)
+	}
+	if len(projectVerification.AutofixCommands) != 1 || !strings.Contains(projectVerification.AutofixCommands[0], "--fix") {
+		t.Fatalf("unexpected project autofix commands: %+v", projectVerification.AutofixCommands)
 	}
 	if projectVerification.Env["BFF_ADMIN_URL"] != "http://localhost:3000" || projectVerification.Env["SESSION_PASSWORD"] == "" {
 		t.Fatalf("unexpected project verification env: %+v", projectVerification.Env)
@@ -586,11 +713,31 @@ func TestGitOperationsValidateRejectsUnsafeCombinations(t *testing.T) {
 			cfg.GitOperations.SSHPrivateKeyPath = "secrets/mivia_git_key"
 		},
 		"two_token_refs": func(cfg *Config) {
-			cfg.GitOperations.GitHubTokenEnv = "GITHUB_TOKEN"
+			cfg.GitOperations.GitHubTokenEnv = "GH_TOKEN"
 			cfg.GitOperations.GitHubTokenFile = "/run/secrets/github_token"
 		},
 		"bad_convention_type": func(cfg *Config) {
 			cfg.GitOperations.Conventions.CommitType = "Feature"
+		},
+		"commit_type_not_allowed": func(cfg *Config) {
+			cfg.GitOperations.Conventions.CommitType = "feat"
+			cfg.GitOperations.Conventions.AllowedTypes = []string{"fix"}
+			cfg.GitOperations.Conventions.DefaultChangeType = "fix"
+		},
+		"default_type_not_allowed": func(cfg *Config) {
+			cfg.GitOperations.Conventions.AllowedTypes = []string{"fix"}
+			cfg.GitOperations.Conventions.DefaultChangeType = "feat"
+			cfg.GitOperations.Conventions.CommitType = "fix"
+		},
+		"required_ticket_without_pattern": func(cfg *Config) {
+			cfg.GitOperations.Conventions.RequireTicketRef = true
+			cfg.GitOperations.Conventions.TicketRefPattern = ""
+		},
+		"bad_ticket_pattern": func(cfg *Config) {
+			cfg.GitOperations.Conventions.TicketRefPattern = "["
+		},
+		"bad_ticket_url_late_placeholder": func(cfg *Config) {
+			cfg.GitOperations.Conventions.TicketURLTemplate = "https://tracker.example.test/{{what_changed}}/{{ticket_ref}}"
 		},
 		"bad_convention_placeholder": func(cfg *Config) {
 			cfg.GitOperations.Conventions.CommitSummaryTemplate = "complete {{repository_name}}"

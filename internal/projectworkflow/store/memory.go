@@ -108,6 +108,18 @@ func (store *MemoryStore) CreatePermissionSnapshot(_ context.Context, snapshot p
 	return clonePermissionSnapshot(snapshot), nil
 }
 
+func (store *MemoryStore) UpdatePermissionSnapshot(_ context.Context, snapshot projectworkflow.WorkflowPermissionSnapshot) (projectworkflow.WorkflowPermissionSnapshot, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := snapshotKey{projectID: snapshot.ProjectID, snapshotID: snapshot.ID}
+	if _, ok := store.snapshots[key]; !ok {
+		return projectworkflow.WorkflowPermissionSnapshot{}, ErrNotFound
+	}
+	snapshot = clonePermissionSnapshot(snapshot)
+	store.snapshots[key] = snapshot
+	return clonePermissionSnapshot(snapshot), nil
+}
+
 func (store *MemoryStore) GetPermissionSnapshot(_ context.Context, projectID, snapshotID string) (projectworkflow.WorkflowPermissionSnapshot, error) {
 	store.mu.RLock()
 	defer store.mu.RUnlock()

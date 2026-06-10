@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -141,6 +142,9 @@ func (store *LadybugStore) GetWorkTask(ctx context.Context, projectID string, ta
 	if task.ProjectID != projectID {
 		return model.WorkTask{}, ErrNotFound
 	}
+	if err := store.hydrateTaskAttachmentRefs(ctx, &task); err != nil {
+		return model.WorkTask{}, err
+	}
 	return cloneWorkTask(task), nil
 }
 
@@ -166,7 +170,7 @@ func (store *LadybugStore) ListWorkTasks(ctx context.Context, filter model.WorkT
 	for _, node := range nodes {
 		task := nodeToWorkTask(node)
 		if task.ProjectID == filter.ProjectID {
-			tasks = append(tasks, cloneWorkTask(task))
+			tasks = append(tasks, task)
 		}
 	}
 	sort.Slice(tasks, func(i, j int) bool {
@@ -175,6 +179,17 @@ func (store *LadybugStore) ListWorkTasks(ctx context.Context, filter model.WorkT
 		}
 		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
 	})
+	start, end, err := taskPageBounds(len(tasks), filter)
+	if err != nil {
+		return nil, err
+	}
+	tasks = tasks[start:end]
+	for i := range tasks {
+		if err := store.hydrateTaskAttachmentRefs(ctx, &tasks[i]); err != nil {
+			return nil, err
+		}
+		tasks[i] = cloneWorkTask(tasks[i])
+	}
 	return tasks, nil
 }
 
@@ -204,16 +219,9 @@ func (store *LadybugStore) ListAttachments(ctx context.Context, projectID string
 	if _, err := store.GetWorkTask(ctx, projectID, taskID); err != nil {
 		return nil, err
 	}
-	labels := []string{labelWorkTaskEvidenceAttachment, labelWorkTaskContextPackAttachment, labelWorkTaskClaimAttachment, labelWorkTaskVerifierResultAttachment, labelWorkTaskReviewResultAttachment, labelWorkTaskKnowledgeAttachment}
-	out := []model.Attachment{}
-	for _, label := range labels {
-		nodes, err := store.graph.ListNodes(ctx, label, map[string]string{"project_id": projectID, "task_id": taskID})
-		if err != nil {
-			return nil, err
-		}
-		for _, node := range nodes {
-			out = append(out, nodeToAttachment(node))
-		}
+	out, err := store.listAttachmentNodes(ctx, projectID, taskID)
+	if err != nil {
+		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
@@ -282,6 +290,45 @@ func (store *LadybugStore) attach(ctx context.Context, label string, relationshi
 	})
 }
 
+func (store *LadybugStore) hydrateTaskAttachmentRefs(ctx context.Context, task *model.WorkTask) error {
+	attachments, err := store.listAttachmentNodes(ctx, task.ProjectID, task.ID)
+	if err != nil {
+		return err
+	}
+	for _, attachment := range attachments {
+		switch attachment.Kind {
+		case "evidence_ref":
+			task.EvidenceRefs = appendUnique(task.EvidenceRefs, attachment.Ref)
+		case "context_pack_ref":
+			task.ContextPackRefs = appendUnique(task.ContextPackRefs, attachment.Ref)
+		case "claim_ref":
+			task.ClaimRefs = appendUnique(task.ClaimRefs, attachment.Ref)
+		case "verifier_result_ref":
+			task.VerifierResultRefs = appendUnique(task.VerifierResultRefs, attachment.Ref)
+		case "review_result_ref":
+			task.ReviewResultRefs = appendUnique(task.ReviewResultRefs, attachment.Ref)
+		case "knowledge_candidate_ref":
+			task.KnowledgeCandidateRefs = appendUnique(task.KnowledgeCandidateRefs, attachment.Ref)
+		}
+	}
+	return nil
+}
+
+func (store *LadybugStore) listAttachmentNodes(ctx context.Context, projectID string, taskID string) ([]model.Attachment, error) {
+	labels := []string{labelWorkTaskEvidenceAttachment, labelWorkTaskContextPackAttachment, labelWorkTaskClaimAttachment, labelWorkTaskVerifierResultAttachment, labelWorkTaskReviewResultAttachment, labelWorkTaskKnowledgeAttachment}
+	out := []model.Attachment{}
+	for _, label := range labels {
+		nodes, err := store.graph.ListNodes(ctx, label, map[string]string{"project_id": projectID, "task_id": taskID})
+		if err != nil {
+			return nil, err
+		}
+		for _, node := range nodes {
+			out = append(out, nodeToAttachment(node))
+		}
+	}
+	return out, nil
+}
+
 func attachmentMapping(kind string, ref string) (string, string, string, func(*model.WorkTask)) {
 	switch kind {
 	case "evidence_ref":
@@ -320,7 +367,7 @@ func (store *LadybugStore) ensureUniquePlanRef(ctx context.Context, projectID st
 	}
 	for _, node := range nodes {
 		if node.Properties["id"] != currentID {
-			return fmt.Errorf("duplicate work plan ref in project: %s", planRef)
+			return fmt.Errorf("%w: duplicate work plan ref in project: %s", ErrDuplicate, planRef)
 		}
 	}
 	return nil
@@ -333,7 +380,7 @@ func (store *LadybugStore) ensureUniqueTaskRef(ctx context.Context, projectID st
 	}
 	for _, node := range nodes {
 		if node.Properties["id"] != currentID {
-			return fmt.Errorf("duplicate work task ref in plan: %s", taskRef)
+			return fmt.Errorf("%w: duplicate work task ref in plan: %s", ErrDuplicate, taskRef)
 		}
 	}
 	return nil
@@ -384,6 +431,7 @@ func workTaskNode(task model.WorkTask) ladybug.Node {
 		"likely_files_affected":    joinList(task.LikelyFilesAffected),
 		"dependency_task_ids":      joinList(task.DependencyTaskIDs),
 		"verification_requirement": task.VerificationRequirement,
+		"gitops_verification_mode": task.GitOpsVerificationMode,
 		"expected_output":          task.ExpectedOutput,
 		"failure_criteria":         task.FailureCriteria,
 		"review_gate":              task.ReviewGate,
@@ -400,6 +448,12 @@ func workTaskNode(task model.WorkTask) ladybug.Node {
 		"artifact_refs":            joinList(task.ArtifactRefs),
 		"agent_run_ids":            joinList(task.AgentRunIDs),
 		"decomposition_quality":    task.DecompositionQuality,
+		"acceptance_criteria":      joinList(task.AcceptanceCriteria),
+		"stop_conditions":          joinList(task.StopConditions),
+		"verifier_ladder":          joinList(task.VerifierLadder),
+		"regression_applicability": task.RegressionApplicability,
+		"downstream_impact_refs":   joinList(task.DownstreamImpactRefs),
+		"output_contract":          task.OutputContract,
 		"created_at":               formatTime(task.CreatedAt),
 		"updated_at":               formatTime(task.UpdatedAt),
 		"claimed_at":               formatTime(task.ClaimedAt),
@@ -455,6 +509,7 @@ func nodeToWorkTask(node ladybug.Node) model.WorkTask {
 		LikelyFilesAffected:     splitList(props["likely_files_affected"]),
 		DependencyTaskIDs:       splitList(props["dependency_task_ids"]),
 		VerificationRequirement: props["verification_requirement"],
+		GitOpsVerificationMode:  props["gitops_verification_mode"],
 		ExpectedOutput:          props["expected_output"],
 		FailureCriteria:         props["failure_criteria"],
 		ReviewGate:              props["review_gate"],
@@ -471,6 +526,12 @@ func nodeToWorkTask(node ladybug.Node) model.WorkTask {
 		ArtifactRefs:            splitList(props["artifact_refs"]),
 		AgentRunIDs:             splitList(props["agent_run_ids"]),
 		DecompositionQuality:    props["decomposition_quality"],
+		AcceptanceCriteria:      splitList(props["acceptance_criteria"]),
+		StopConditions:          splitList(props["stop_conditions"]),
+		VerifierLadder:          splitList(props["verifier_ladder"]),
+		RegressionApplicability: props["regression_applicability"],
+		DownstreamImpactRefs:    splitList(props["downstream_impact_refs"]),
+		OutputContract:          props["output_contract"],
 		CreatedAt:               parseTime(props["created_at"]),
 		UpdatedAt:               parseTime(props["updated_at"]),
 		ClaimedAt:               parseTime(props["claimed_at"]),
@@ -536,12 +597,25 @@ func parseTime(value string) time.Time {
 }
 
 func joinList(values []string) string {
-	return strings.Join(values, ",")
+	if len(values) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return strings.Join(values, ",")
+	}
+	return string(data)
 }
 
 func splitList(value string) []string {
 	if value == "" {
 		return nil
+	}
+	if strings.HasPrefix(strings.TrimSpace(value), "[") {
+		var values []string
+		if err := json.Unmarshal([]byte(value), &values); err == nil {
+			return values
+		}
 	}
 	return strings.Split(value, ",")
 }
@@ -579,6 +653,10 @@ func cloneWorkTask(task model.WorkTask) model.WorkTask {
 	task.ReviewResultRefs = cloneStrings(task.ReviewResultRefs)
 	task.ArtifactRefs = cloneStrings(task.ArtifactRefs)
 	task.AgentRunIDs = cloneStrings(task.AgentRunIDs)
+	task.AcceptanceCriteria = cloneStrings(task.AcceptanceCriteria)
+	task.StopConditions = cloneStrings(task.StopConditions)
+	task.VerifierLadder = cloneStrings(task.VerifierLadder)
+	task.DownstreamImpactRefs = cloneStrings(task.DownstreamImpactRefs)
 	return task
 }
 

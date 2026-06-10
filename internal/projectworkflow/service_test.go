@@ -145,7 +145,7 @@ func TestServiceImportConfigWorkflowDefinitions(t *testing.T) {
 			}
 			store := newWorkflowServiceStore()
 			svc := testWorkflowService(store)
-			result, err := svc.ImportWorkflowTOML(ctx, ImportWorkflowTOMLInput{ProjectID: "mass-monorepo", Data: data, CreatedByRunID: "run-import", TraceID: "trace-import"})
+			result, err := svc.ImportWorkflowTOML(ctx, ImportWorkflowTOMLInput{ProjectID: "generic-monorepo", Data: data, CreatedByRunID: "run-import", TraceID: "trace-import"})
 			if err != nil {
 				t.Fatalf("import checked-in workflow: %v issues=%#v", err, result.ValidationIssues)
 			}
@@ -217,6 +217,46 @@ func TestServicePermissionSnapshotHashChangesWhenPermissionsChange(t *testing.T)
 	stored := snapshotForAgent(t, firstStore.snapshotList(), "worker")
 	if len(stored.AllowedTools) != 1 {
 		t.Fatalf("stored snapshot was mutable through returned value: %#v", stored)
+	}
+}
+
+func TestServiceImportExistingWorkflowRefreshesDefinitionAndSnapshots(t *testing.T) {
+	ctx := context.Background()
+	store := newWorkflowServiceStore()
+	svc := testWorkflowService(store)
+
+	first, err := svc.ImportWorkflowTOML(ctx, ImportWorkflowTOMLInput{ProjectID: "mivialabs-agents-monorepo", Data: []byte(validWorkflowTOML()), CreatedByRunID: "run-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("import first workflow: %v", err)
+	}
+	changedTOML := strings.Replace(validWorkflowTOML(), `instructions = "Use bounded task metadata only."`, `instructions = "Use refreshed bounded task metadata only."`, 1)
+	changedTOML = strings.Replace(changedTOML, `allowed_tools = ["projects.workspace.file_read"]`, `allowed_tools = ["projects.workspace.file_read", "projects.workspace.git_diff"]`, 1)
+
+	second, err := svc.ImportWorkflowTOML(ctx, ImportWorkflowTOMLInput{ProjectID: "mivialabs-agents-monorepo", Data: []byte(changedTOML), CreatedByRunID: "run-2", TraceID: "trace-2"})
+	if err != nil {
+		t.Fatalf("re-import changed workflow: %v", err)
+	}
+	if len(second.Workflows) != 1 || second.Workflows[0].ID != first.Workflows[0].ID {
+		t.Fatalf("expected same workflow to refresh, got %#v", second.Workflows)
+	}
+	stored, err := svc.GetWorkflow(ctx, "mivialabs-agents-monorepo", "workflow-1")
+	if err != nil {
+		t.Fatalf("get refreshed workflow: %v", err)
+	}
+	if stored.Agents[0].Instructions != "Use refreshed bounded task metadata only." {
+		t.Fatalf("workflow definition was not refreshed: %#v", stored.Agents[0])
+	}
+	firstWorker := snapshotForAgent(t, first.PermissionSnapshots, "worker")
+	secondWorker := snapshotForAgent(t, second.PermissionSnapshots, "worker")
+	if firstWorker.ID != secondWorker.ID {
+		t.Fatalf("snapshot id should be stable across refresh: first=%q second=%q", firstWorker.ID, secondWorker.ID)
+	}
+	if firstWorker.ContentHash == secondWorker.ContentHash {
+		t.Fatalf("snapshot content hash was not refreshed: %q", firstWorker.ContentHash)
+	}
+	storedWorker := snapshotForAgent(t, store.snapshotList(), "worker")
+	if storedWorker.ContentHash != secondWorker.ContentHash || !containsString(storedWorker.AllowedTools, "projects.workspace.git_diff") {
+		t.Fatalf("stored snapshot was not refreshed: %#v", storedWorker)
 	}
 }
 
@@ -325,6 +365,16 @@ func (store *workflowServiceStore) CreatePermissionSnapshot(_ context.Context, s
 	key := snapshot.ProjectID + "\x00" + snapshot.ID
 	if _, ok := store.snapshots[key]; ok {
 		return WorkflowPermissionSnapshot{}, errors.New("duplicate snapshot")
+	}
+	snapshot = cloneTestSnapshot(snapshot)
+	store.snapshots[key] = snapshot
+	return cloneTestSnapshot(snapshot), nil
+}
+
+func (store *workflowServiceStore) UpdatePermissionSnapshot(_ context.Context, snapshot WorkflowPermissionSnapshot) (WorkflowPermissionSnapshot, error) {
+	key := snapshot.ProjectID + "\x00" + snapshot.ID
+	if _, ok := store.snapshots[key]; !ok {
+		return WorkflowPermissionSnapshot{}, errors.New("snapshot not found")
 	}
 	snapshot = cloneTestSnapshot(snapshot)
 	store.snapshots[key] = snapshot

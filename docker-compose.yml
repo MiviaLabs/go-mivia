@@ -23,6 +23,8 @@ services:
       MIVIA_CONFIG_PATH: "/app/configs/mivia-server.compose.toml"
       MIVIA_INTERNAL_ADDR: "127.0.0.1:18080"
       MIVIA_PUBLIC_PORT: "8080"
+      GH_TOKEN: "${GH_TOKEN:-}"
+      MIVIA_GIT_AUTHOR_EMAIL: "${MIVIA_GIT_AUTHOR_EMAIL:-}"
     volumes:
       # Persistent project graph/search stores are under
       # /var/lib/mivia/projects/<project-id>/.
@@ -104,24 +106,35 @@ services:
       - mivia-automation-runner
       - --server
       - http://mivia-server:8080
+      - --project
+      - "${MIVIA_AUTOMATION_PROJECT_ID:-}"
       - --watch
       - --poll-interval
       - "${MIVIA_AUTOMATION_RUNNER_POLL_INTERVAL:-5s}"
       - --heartbeat-interval
       - "${MIVIA_AUTOMATION_RUNNER_HEARTBEAT_INTERVAL:-15s}"
+      - --request-timeout
+      - "${MIVIA_AUTOMATION_RUNNER_REQUEST_TIMEOUT:-120s}"
       - --codex
-      - "${MIVIA_AUTOMATION_CODEX_BINARY:-codex}"
+      - "${MIVIA_AUTOMATION_CODEX_BINARY:-/usr/local/bin/codex}"
       - --codex-cd
       - "${MIVIA_AUTOMATION_CODEX_CD:-/workspace}"
       - --codex-sandbox
       - "${MIVIA_AUTOMATION_CODEX_SANDBOX:-workspace-write}"
-      - "--codex-bypass-approvals-and-sandbox=${MIVIA_AUTOMATION_CODEX_BYPASS:-false}"
+      # The runner sidecar is already containerized. Codex's bubblewrap sandbox
+      # cannot create user namespaces in default Docker Desktop/Compose setups.
+      - "--codex-bypass-approvals-and-sandbox=${MIVIA_AUTOMATION_CODEX_BYPASS:-true}"
+      - "--codex-smoke-preflight=${MIVIA_AUTOMATION_CODEX_SMOKE_PREFLIGHT:-false}"
     environment:
+      MIVIA_CONFIG_PATH: "${MIVIA_AUTOMATION_CONFIG_PATH:-/app/configs/mivia-server.compose.toml}"
       MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-10001}"
       MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-10001}"
       MIVIA_RUNTIME_HOME: "${MIVIA_AUTOMATION_HOME:-/home/mivia}"
+      GH_TOKEN: "${GH_TOKEN:-}"
+      MIVIA_GIT_AUTHOR_EMAIL: "${MIVIA_GIT_AUTHOR_EMAIL:-}"
     volumes:
       - mivia-data:/var/lib/mivia
+      - ./configs/mivia-server.compose.toml:/app/configs/mivia-server.compose.toml:ro
       # Mount a project workspace to /workspace and Codex auth to the runner
       # user's CODEX_HOME in an ignored local override when the runner should
       # execute real Codex CLI work from a container.
@@ -160,6 +173,10 @@ volumes:
 #     healthcheck:
 #       disable: true
 #     environment:
+#       MIVIA_CONFIG_PATH: /app/configs/mivia-server.local.toml
+#       MIVIA_AUTOMATION_PROJECT_ID: example-service
 #       MIVIA_RUNTIME_UID: "${MIVIA_AUTOMATION_UID:-1000}"
 #       MIVIA_RUNTIME_GID: "${MIVIA_AUTOMATION_GID:-1000}"
 #       MIVIA_RUNTIME_HOME: /home/example
+#     volumes:
+#       - ./configs/mivia-server.local.toml:/app/configs/mivia-server.local.toml:ro

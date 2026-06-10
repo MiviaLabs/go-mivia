@@ -180,8 +180,15 @@ func (svc *Service) UpdateWorkPlanStatus(ctx context.Context, input UpdateWorkPl
 	if err != nil {
 		return WorkPlan{}, err
 	}
-	if err := validatePlanTransition(plan.Status, next); err != nil {
+	governedCloseoutRecoveryRerun := allowsGovernedCloseoutPlanRecoveryRerun(plan, input, next)
+	planningStageCompletion := allowsPlanningReadinessStageCompletion(plan, input, next)
+	if err := validatePlanTransition(plan.Status, next); err != nil && !governedCloseoutRecoveryRerun && !planningStageCompletion {
 		return WorkPlan{}, err
+	}
+	if next == WorkPlanStatusDone && !planningStageCompletion {
+		if err := svc.ensurePlanHasNoOpenTasks(ctx, projectID, planID); err != nil {
+			return WorkPlan{}, err
+		}
 	}
 	if input.ResumeSummary != "" {
 		plan.ResumeSummary, err = safeOptionalText(input.ResumeSummary, "resume_summary", 500)
@@ -240,6 +247,19 @@ func (svc *Service) UpdateWorkPlanStatus(ctx context.Context, input UpdateWorkPl
 	return updated, nil
 }
 
+func (svc *Service) ensurePlanHasNoOpenTasks(ctx context.Context, projectID, planID string) error {
+	tasks, err := svc.store.ListWorkTasks(ctx, WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if !isTerminalTaskStatus(task.Status) {
+			return fmt.Errorf("%w: work plan cannot be marked done while task %s is %s", ErrInvalidInput, task.ID, task.Status)
+		}
+	}
+	return nil
+}
+
 func (svc *Service) ResumeWorkPlan(ctx context.Context, input ResumeWorkPlanInput) (WorkPlan, error) {
 	return svc.GetWorkPlan(ctx, input.ProjectID, input.PlanID)
 }
@@ -279,7 +299,7 @@ func (svc *Service) CreateWorkTask(ctx context.Context, input CreateWorkTaskInpu
 	if err != nil {
 		return WorkTask{}, err
 	}
-	task, err := svc.buildTask(projectID, planID, taskRef, title, description, owner, runID, traceID, input)
+	task, err := svc.buildTask(ctx, projectID, planID, taskRef, title, description, owner, runID, traceID, input)
 	if err != nil {
 		return WorkTask{}, err
 	}
@@ -297,7 +317,7 @@ func (svc *Service) UpdateWorkTask(ctx context.Context, task WorkTask) (WorkTask
 	return svc.store.UpdateWorkTask(ctx, task)
 }
 
-func (svc *Service) buildTask(projectID, planID, taskRef, title, description, owner, runID, traceID string, input CreateWorkTaskInput) (WorkTask, error) {
+func (svc *Service) buildTask(ctx context.Context, projectID, planID, taskRef, title, description, owner, runID, traceID string, input CreateWorkTaskInput) (WorkTask, error) {
 	evidence, err := safeTextList(input.EvidenceNeeded, "evidence_needed", 200)
 	if err != nil {
 		return WorkTask{}, err
@@ -326,6 +346,10 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	if err != nil {
 		return WorkTask{}, err
 	}
+	gitOpsVerificationMode, err := safeOptionalRef(input.GitOpsVerificationMode, "gitops_verification_mode")
+	if err != nil {
+		return WorkTask{}, err
+	}
 	expected, err := safeOptionalText(input.ExpectedOutput, "expected_output", 500)
 	if err != nil {
 		return WorkTask{}, err
@@ -346,6 +370,58 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	if err != nil {
 		return WorkTask{}, err
 	}
+	evidenceRefs, err := safeRefList(input.EvidenceRefs, "evidence_refs")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	claimRefs, err := safeRefList(input.ClaimRefs, "claim_refs")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	verifierRefs, err := safeRefList(input.VerifierResultRefs, "verifier_result_refs")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	reviewRefs, err := safeRefList(input.ReviewResultRefs, "review_result_refs")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	reviewExemptReason, err := safeOptionalText(input.ReviewExemptReason, "review_exempt_reason", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	artifactRefs, err := safeRefList(input.ArtifactRefs, "artifact_refs")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	agentRunIDs, err := safeRefList(input.AgentRunIDs, "agent_run_ids")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	acceptanceCriteria, err := safeTextList(input.AcceptanceCriteria, "acceptance_criteria", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	stopConditions, err := safeTextList(input.StopConditions, "stop_conditions", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	verifierLadder, err := safeTextList(input.VerifierLadder, "verifier_ladder", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	regressionApplicability, err := safeOptionalText(input.RegressionApplicability, "regression_test_applicability", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
+	downstreamImpactRefs, err := safeRefList(input.DownstreamImpactRefs, "downstream_impact_refs")
+	if err != nil {
+		return WorkTask{}, err
+	}
+	outputContract, err := safeOptionalText(input.OutputContract, "output_contract", 500)
+	if err != nil {
+		return WorkTask{}, err
+	}
 	quality := input.DecompositionQuality
 	if quality == "" {
 		quality = assessDecomposition(evidence, contextRefs, files, deps, verify, expected, failure, resume)
@@ -355,7 +431,7 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 	}
 	now := svc.now()
 	status := WorkTaskStatusPlanned
-	if quality == DecompositionReady {
+	if quality == DecompositionReady && len(deps) == 0 {
 		status = WorkTaskStatusReady
 	}
 	if input.Status != "" {
@@ -366,8 +442,42 @@ func (svc *Service) buildTask(projectID, planID, taskRef, title, description, ow
 		if isTerminalTaskStatus(status) {
 			return WorkTask{}, fmt.Errorf("%w: create task status cannot be terminal", ErrInvalidInput)
 		}
+		if status == WorkTaskStatusReady && len(deps) > 0 {
+			ready, err := svc.dependenciesDone(ctx, projectID, planID, deps)
+			if err != nil {
+				return WorkTask{}, err
+			}
+			if !ready {
+				return WorkTask{}, fmt.Errorf("%w: create task status ready requires completed dependencies", ErrInvalidInput)
+			}
+		}
 	}
-	return WorkTask{ID: svc.newID("work_task"), ProjectID: projectID, PlanID: planID, TaskRef: taskRef, Title: title, Description: description, Status: status, OwnerAgent: owner, TraceID: traceID, EvidenceNeeded: evidence, ContextPackRefs: contextRefs, FilesToRead: filesToRead, FilesToEdit: filesToEdit, LikelyFilesAffected: files, DependencyTaskIDs: deps, VerificationRequirement: verify, ExpectedOutput: expected, FailureCriteria: failure, ReviewGate: reviewGate, ResumeInstructions: resume, KnowledgeCandidateRefs: knowledgeRefs, AgentRunIDs: optionalRefSlice(runID), DecompositionQuality: quality, CreatedAt: now, UpdatedAt: now}, nil
+	for _, ref := range optionalRefSlice(runID) {
+		agentRunIDs = appendUnique(agentRunIDs, ref)
+	}
+	return WorkTask{ID: svc.newID("work_task"), ProjectID: projectID, PlanID: planID, TaskRef: taskRef, Title: title, Description: description, Status: status, OwnerAgent: owner, TraceID: traceID, EvidenceNeeded: evidence, ContextPackRefs: contextRefs, FilesToRead: filesToRead, FilesToEdit: filesToEdit, LikelyFilesAffected: files, DependencyTaskIDs: deps, VerificationRequirement: verify, GitOpsVerificationMode: gitOpsVerificationMode, ExpectedOutput: expected, FailureCriteria: failure, ReviewGate: reviewGate, ResumeInstructions: resume, KnowledgeCandidateRefs: knowledgeRefs, EvidenceRefs: evidenceRefs, ClaimRefs: claimRefs, VerifierResultRefs: verifierRefs, ReviewResultRefs: reviewRefs, ReviewExemptReason: reviewExemptReason, ArtifactRefs: artifactRefs, AgentRunIDs: agentRunIDs, DecompositionQuality: quality, AcceptanceCriteria: acceptanceCriteria, StopConditions: stopConditions, VerifierLadder: verifierLadder, RegressionApplicability: regressionApplicability, DownstreamImpactRefs: downstreamImpactRefs, OutputContract: outputContract, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (svc *Service) dependenciesDone(ctx context.Context, projectID, planID string, deps []string) (bool, error) {
+	tasks, err := svc.store.ListWorkTasks(ctx, WorkTaskFilter{ProjectID: projectID, PlanID: planID})
+	if err != nil {
+		return false, err
+	}
+	done := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		if task.Status == WorkTaskStatusDone {
+			done[task.ID] = true
+			if ref := strings.TrimSpace(task.TaskRef); ref != "" {
+				done[ref] = true
+			}
+		}
+	}
+	for _, dep := range deps {
+		if !done[strings.TrimSpace(dep)] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (svc *Service) GetWorkTask(ctx context.Context, projectID, taskID string) (WorkTask, error) {
@@ -376,6 +486,10 @@ func (svc *Service) GetWorkTask(ctx context.Context, projectID, taskID string) (
 		return WorkTask{}, err
 	}
 	return svc.store.GetWorkTask(ctx, projectID, taskID)
+}
+
+func (svc *Service) ListWorkTasks(ctx context.Context, filter WorkTaskFilter) ([]WorkTask, error) {
+	return svc.listTasks(ctx, filter)
 }
 
 func (svc *Service) ListOpenWorkTasks(ctx context.Context, filter WorkTaskFilter) ([]WorkTask, error) {
@@ -436,10 +550,17 @@ func (svc *Service) GetNextWorkTask(ctx context.Context, input GetNextWorkTaskIn
 	result := summarizeTasks(activeTasks)
 	done := map[string]bool{}
 	byID := map[string]WorkTask{}
+	byDependencyRef := map[string]WorkTask{}
 	for _, task := range activeTasks {
 		byID[task.ID] = task
+		if ref := strings.TrimSpace(task.TaskRef); ref != "" {
+			byDependencyRef[ref] = task
+		}
 		if task.Status == WorkTaskStatusDone {
 			done[task.ID] = true
+			if ref := strings.TrimSpace(task.TaskRef); ref != "" {
+				done[ref] = true
+			}
 		}
 	}
 	candidates := make([]WorkTask, 0)
@@ -455,7 +576,11 @@ func (svc *Service) GetNextWorkTask(ctx context.Context, input GetNextWorkTaskIn
 		}
 		allDepsDone := true
 		for _, dep := range task.DependencyTaskIDs {
+			dep = strings.TrimSpace(dep)
 			depTask, ok := byID[dep]
+			if !ok {
+				depTask, ok = byDependencyRef[dep]
+			}
 			if !ok || depTask.Status == WorkTaskStatusBlocked || !done[dep] {
 				allDepsDone = false
 				break
@@ -489,7 +614,7 @@ func (svc *Service) GetNextWorkTask(ctx context.Context, input GetNextWorkTaskIn
 	result.Found = true
 	result.Task = task
 	result.Plan = plan
-	result.DependencySummary = dependencySummary(task, byID)
+	result.DependencySummary = dependencySummary(task, byID, byDependencyRef)
 	result.EvidenceRefs = append([]string(nil), task.EvidenceRefs...)
 	result.ContextPackRefs = append([]string(nil), task.ContextPackRefs...)
 	result.ResumeInstructions = task.ResumeInstructions
@@ -541,10 +666,14 @@ func isTerminalTaskStatus(status string) bool {
 	return status == WorkTaskStatusDone || status == WorkTaskStatusFailed || status == WorkTaskStatusCancelled || status == WorkTaskStatusSuperseded
 }
 
-func dependencySummary(task WorkTask, byID map[string]WorkTask) []DependencySummary {
+func dependencySummary(task WorkTask, byID map[string]WorkTask, byDependencyRef map[string]WorkTask) []DependencySummary {
 	out := make([]DependencySummary, 0, len(task.DependencyTaskIDs))
 	for _, depID := range task.DependencyTaskIDs {
-		dep := byID[depID]
+		dependencyRef := strings.TrimSpace(depID)
+		dep := byID[dependencyRef]
+		if dep.ID == "" {
+			dep = byDependencyRef[dependencyRef]
+		}
 		out = append(out, DependencySummary{TaskID: depID, Status: dep.Status, Ready: dep.Status == WorkTaskStatusDone})
 	}
 	return out
@@ -632,6 +761,7 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 		return WorkTask{}, err
 	}
 	gitOpsRecoveryRerun := allowsGitOpsRecoveryRerun(task, input, next)
+	governedCloseoutRecoveryRerun := allowsGovernedCloseoutTaskRecoveryRerun(task, input, next)
 	if next == WorkTaskStatusClaimed {
 		if strings.TrimSpace(input.RunID) == "" {
 			return WorkTask{}, fmt.Errorf("%w: run_id is required to claim a task", ErrInvalidInput)
@@ -644,13 +774,13 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 			return WorkTask{}, fmt.Errorf("%w: task is claimed by another run", ErrInvalidInput)
 		}
 	}
-	if next == WorkTaskStatusReady && releaseIsStale(task.Status) && !gitOpsRecoveryRerun {
+	if (gitOpsRecoveryRerun || governedCloseoutRecoveryRerun) && task.ClaimedByRunID != "" && strings.TrimSpace(input.RunID) != task.ClaimedByRunID {
+		return WorkTask{}, fmt.Errorf("%w: recovery rerun requires current claimed run", ErrInvalidInput)
+	}
+	if next == WorkTaskStatusReady && releaseIsStale(task.Status) && !gitOpsRecoveryRerun && !governedCloseoutRecoveryRerun {
 		return task, nil
 	}
-	if gitOpsRecoveryRerun && task.ClaimedByRunID != "" && strings.TrimSpace(input.RunID) != task.ClaimedByRunID {
-		return WorkTask{}, fmt.Errorf("%w: gitops recovery rerun requires current claimed run", ErrInvalidInput)
-	}
-	if next == WorkTaskStatusReady && task.Status != WorkTaskStatusReady && task.Status != WorkTaskStatusPlanned && task.Status != WorkTaskStatusClaimed && task.Status != WorkTaskStatusInProgress && task.Status != WorkTaskStatusBlocked && task.Status != WorkTaskStatusNeedsReview && !gitOpsRecoveryRerun {
+	if next == WorkTaskStatusReady && task.Status != WorkTaskStatusReady && task.Status != WorkTaskStatusPlanned && task.Status != WorkTaskStatusClaimed && task.Status != WorkTaskStatusInProgress && task.Status != WorkTaskStatusBlocked && task.Status != WorkTaskStatusNeedsReview && !gitOpsRecoveryRerun && !governedCloseoutRecoveryRerun {
 		return WorkTask{}, fmt.Errorf("%w: release requires claimed status", ErrInvalidInput)
 	}
 	if next == WorkTaskStatusInProgress && task.Status != WorkTaskStatusClaimed {
@@ -659,11 +789,20 @@ func (svc *Service) transitionTask(ctx context.Context, input WorkTaskActionInpu
 	if next == WorkTaskStatusBlocked && strings.TrimSpace(input.ResumeInstructions) == "" {
 		return WorkTask{}, fmt.Errorf("%w: resume_instructions is required", ErrInvalidInput)
 	}
-	if err := validateTaskTransition(task.Status, next); err != nil && !gitOpsRecoveryRerun {
+	if err := validateTaskTransition(task.Status, next); err != nil && !gitOpsRecoveryRerun && !governedCloseoutRecoveryRerun {
 		return WorkTask{}, err
 	}
 	if next == WorkTaskStatusReady && task.DecompositionQuality != DecompositionReady {
 		return WorkTask{}, fmt.Errorf("%w: task decomposition is not ready", ErrInvalidInput)
+	}
+	if next == WorkTaskStatusReady && len(task.DependencyTaskIDs) > 0 {
+		ready, err := svc.dependenciesSatisfiedForReadyTask(ctx, task)
+		if err != nil {
+			return WorkTask{}, err
+		}
+		if !ready {
+			return WorkTask{}, fmt.Errorf("%w: release requires completed dependencies", ErrInvalidInput)
+		}
 	}
 	if input.OwnerAgent != "" {
 		task.OwnerAgent, err = safeOptionalRef(input.OwnerAgent, "owner_agent")
@@ -972,9 +1111,35 @@ func validatePlanTransition(from, to string) error {
 }
 
 func allowsGitOpsRecoveryRerun(task WorkTask, input WorkTaskActionInput, next string) bool {
+	safeNextAction := strings.TrimSpace(input.SafeNextAction)
 	return task.Status == WorkTaskStatusVerifying &&
 		next == WorkTaskStatusReady &&
-		strings.TrimSpace(input.SafeNextAction) == "gitops_recovery_failed_requeue_implementation" &&
+		(safeNextAction == "gitops_recovery_failed_requeue_implementation" || safeNextAction == "gitops_verification_repair") &&
+		strings.TrimSpace(input.RunID) != ""
+}
+
+func allowsGovernedCloseoutPlanRecoveryRerun(plan WorkPlan, input UpdateWorkPlanStatusInput, next string) bool {
+	return plan.Status == WorkPlanStatusFailed &&
+		next == WorkPlanStatusActive &&
+		strings.TrimSpace(input.SafeNextAction) == "governed_closeout_failed_requeue_implementation" &&
+		strings.TrimSpace(input.RunID) != ""
+}
+
+func allowsPlanningReadinessStageCompletion(plan WorkPlan, input UpdateWorkPlanStatusInput, next string) bool {
+	switch plan.Status {
+	case WorkPlanStatusActive, WorkPlanStatusBlocked:
+	default:
+		return false
+	}
+	return next == WorkPlanStatusDone &&
+		strings.TrimSpace(input.SafeNextAction) == "planning_readiness_review_completed_stage" &&
+		strings.TrimSpace(input.RunID) != ""
+}
+
+func allowsGovernedCloseoutTaskRecoveryRerun(task WorkTask, input WorkTaskActionInput, next string) bool {
+	return task.Status == WorkTaskStatusFailed &&
+		next == WorkTaskStatusReady &&
+		strings.TrimSpace(input.SafeNextAction) == "governed_closeout_failed_requeue_implementation" &&
 		strings.TrimSpace(input.RunID) != ""
 }
 
@@ -988,7 +1153,7 @@ func validateTaskTransition(from, to string) error {
 		WorkTaskStatusClaimed:     {WorkTaskStatusInProgress, WorkTaskStatusReady, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusInProgress:  {WorkTaskStatusReady, WorkTaskStatusBlocked, WorkTaskStatusNeedsReview, WorkTaskStatusVerifying, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusBlocked:     {WorkTaskStatusReady, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
-		WorkTaskStatusNeedsReview: {WorkTaskStatusReady, WorkTaskStatusVerifying, WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
+		WorkTaskStatusNeedsReview: {WorkTaskStatusReady, WorkTaskStatusVerifying, WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusVerifying:   {WorkTaskStatusDone, WorkTaskStatusFailed, WorkTaskStatusBlocked, WorkTaskStatusCancelled, WorkTaskStatusSuperseded},
 		WorkTaskStatusDone:        {WorkTaskStatusSuperseded},
 		WorkTaskStatusFailed:      {WorkTaskStatusSuperseded},
@@ -1004,6 +1169,45 @@ func releaseIsStale(status string) bool {
 	default:
 		return false
 	}
+}
+
+func (svc *Service) dependenciesSatisfiedForReadyTask(ctx context.Context, task WorkTask) (bool, error) {
+	if !workTaskIsReviewTask(task) {
+		return svc.dependenciesDone(ctx, task.ProjectID, task.PlanID, task.DependencyTaskIDs)
+	}
+	tasks, err := svc.store.ListWorkTasks(ctx, WorkTaskFilter{ProjectID: task.ProjectID, PlanID: task.PlanID, PageSize: 1000})
+	if err != nil {
+		return false, err
+	}
+	byID := make(map[string]WorkTask, len(tasks))
+	byRef := make(map[string]WorkTask, len(tasks))
+	for _, candidate := range tasks {
+		byID[candidate.ID] = candidate
+		if ref := strings.TrimSpace(candidate.TaskRef); ref != "" {
+			byRef[ref] = candidate
+		}
+	}
+	for _, dep := range task.DependencyTaskIDs {
+		dep = strings.TrimSpace(dep)
+		depTask, ok := byID[dep]
+		if !ok {
+			depTask, ok = byRef[dep]
+		}
+		if !ok {
+			return false, nil
+		}
+		switch depTask.Status {
+		case WorkTaskStatusNeedsReview, WorkTaskStatusVerifying, WorkTaskStatusDone:
+			continue
+		default:
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func workTaskIsReviewTask(task WorkTask) bool {
+	return strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-")
 }
 
 func validateTransition(from, to string, allowed map[string][]string, label string) error {
@@ -1178,13 +1382,36 @@ func safeTextList(values []string, name string, max int) ([]string, error) {
 func safeRefList(values []string, name string) ([]string, error) {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		safe, err := safeRef(value, name)
+		safe, err := safeRefListValue(value, name)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, safe)
 	}
 	return unique(out), nil
+}
+
+func safeRefListValue(value string, name string) (string, error) {
+	if name == "evidence_refs" {
+		return safeEvidenceRef(value, name)
+	}
+	return safeRef(value, name)
+}
+
+func safeEvidenceRef(value string, name string) (string, error) {
+	if safe, err := safeRef(value, name); err == nil {
+		return safe, nil
+	}
+	value = strings.TrimSpace(value)
+	const prefix = "gitops-dirty-path:"
+	if !strings.HasPrefix(value, prefix) {
+		return "", fmt.Errorf("%w: %s is unsafe", ErrInvalidInput, name)
+	}
+	path := filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(value, prefix)))
+	if len(value) > 2048 || !safePathToken(path) || emailPattern.MatchString(path) || phonePattern.MatchString(path) {
+		return "", fmt.Errorf("%w: %s is unsafe", ErrInvalidInput, name)
+	}
+	return prefix + path, nil
 }
 
 func safePathList(values []string, name string) ([]string, error) {

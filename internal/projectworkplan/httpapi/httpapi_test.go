@@ -72,6 +72,10 @@ func TestWorkTaskRoutesLifecycleAndLists(t *testing.T) {
 	if claimed.Status != "claimed" || claimed.OwnerAgent != "worker-3" {
 		t.Fatalf("expected claimed task, got %#v", claimed)
 	}
+	expanded := postJSON[projectworkplan.WorkTask](t, mux, workTaskPath(projectID, task.ID, "scope"), `{"files_to_edit":["internal/projectworkplan/httpapi/httpapi.go","internal/projectworkplan/service.go"],"resume_instructions":"scope expanded after downstream impact check","run_id":"agent_run_scope","trace_id":"trace_scope"}`, http.StatusOK)
+	if !contains(expanded.FilesToEdit, "internal/projectworkplan/httpapi/httpapi.go") || !contains(expanded.FilesToEdit, "internal/projectworkplan/service.go") || expanded.ResumeInstructions != "scope expanded after downstream impact check" || !contains(expanded.AgentRunIDs, "agent_run_scope") || expanded.TraceID != "trace_scope" {
+		t.Fatalf("expected scope expansion metadata, got %#v", expanded)
+	}
 	started := postJSON[projectworkplan.WorkTask](t, mux, workTaskPath(projectID, task.ID, "start"), `{"run_id":"agent_run_1","trace_id":"trace_1"}`, http.StatusOK)
 	if started.Status != "in_progress" {
 		t.Fatalf("expected in_progress task, got %#v", started)
@@ -207,6 +211,15 @@ func createTask(t *testing.T, mux *http.ServeMux, projectID string, planID strin
 
 func workTaskPath(projectID string, taskID string, suffix string) string {
 	return "/api/v1/projects/" + projectID + "/work-tasks/" + taskID + "/" + suffix
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func get(t *testing.T, mux *http.ServeMux, path string) *httptest.ResponseRecorder {

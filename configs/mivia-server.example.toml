@@ -87,7 +87,7 @@ definition_paths = [
   "configs/workflows/governed-decomposition-planning.toml",
   "configs/workflows/governed-workplan-implementation.toml",
   "configs/workflows/governed-code-review-bug-planning.toml",
-  "configs/workflows/governed-post-implementation-validation.toml",
+  "configs/workflows/generic/governed-post-implementation-validation.toml",
 ]
 
 [automation]
@@ -130,17 +130,18 @@ draft_pr_after_push = false
 require_clean_before_task = true
 cleanup_worktree_after_plan_done = true
 remote_name = "origin"
-branch_prefix = "mivia/"
-# Optional RE2 branch policy checked before push/PR. Leave empty to rely on
-# branch_prefix only, or set per project when another repository has its own
-# branch convention.
+branch_prefix = ""
+# Optional RE2 branch policy checked before push/PR. Leave empty when the
+# repository does not need an additional branch convention.
 branch_name_pattern = ""
 commit_author_name = "Mivia Automation"
 commit_author_email_env = "MIVIA_GIT_AUTHOR_EMAIL"
+# Enable per project when the target repository requires signed commits.
+sign_commits = false
 # ssh_private_key_path = "/run/secrets/mivia_git_ssh_key"
 # ssh_public_key_path = "/run/secrets/mivia_git_ssh_key.pub"
 # ssh_known_hosts_path = "/run/secrets/mivia_known_hosts"
-# github_token_env = "GITHUB_TOKEN"
+# github_token_env = "GH_TOKEN"
 github_cli_path = "gh"
 
 [git_operations.dirty_scope_recovery]
@@ -153,15 +154,23 @@ allowed_support_pathspecs = []
 [git_operations.conventions]
 # All templates use fixed safe placeholders only. Available placeholders:
 # project_id, work_plan_id, work_task_id, work_task_ref, work_task_title,
-# branch_name, ticket_ref, automation_id, automation_run_id, operator_id,
+# branch_name, ticket_ref, ticket_url, slug, change_type, what_changed,
+# how_verified, tests, automation_id, automation_run_id, operator_id,
 # review_refs, verifier_refs, test_results, and commit_subject. ticket_ref is
 # derived from branch/task metadata such as ABC-123. Commit subjects and PR
-# titles must render as Conventional Commits. PR bodies always use the required
-# sections: What changed, How verified, Tests.
+# titles must render as Conventional Commits. PR bodies use the default sections
+# unless pull_request_body_template is configured.
 commit_type = "chore"
 commit_scope = ""
+branch_template = ""
+require_ticket_ref = false
+ticket_ref_pattern = ""
+ticket_url_template = ""
+allowed_types = ["feat", "fix", "docs", "chore", "refactor", "test", "perf", "build", "ci", "revert"]
+default_change_type = "chore"
 commit_summary_template = "complete {{work_task_id}}"
 pull_request_title_template = "{{commit_subject}}"
+pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 what_changed_template = "Completed automation work task {{work_task_id}} for project {{project_id}}."
 how_verified_template = "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 tests_template = "{{test_results}}"
@@ -194,11 +203,11 @@ always_before_pr = []
 # command = "pnpm -s nx run contracts:verify-openapi"
 # required_before_pr = true
 #
-# MASS automation profile example:
+# GENERIC automation profile example:
 #
 # [projects.git_operations]
 # branch_prefix = ""
-# branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-MASS-[0-9]+(-[a-z0-9-]+)*$"
+# branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-GENERIC-[0-9]+(-[a-z0-9-]+)*$"
 #
 # [projects.git_operations.dirty_scope_recovery]
 # allowed_support_pathspecs = [
@@ -216,8 +225,15 @@ always_before_pr = []
 # [projects.git_operations.conventions]
 # commit_type = "chore"
 # commit_scope = ""
+# branch_template = "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"
+# require_ticket_ref = true
+# ticket_ref_pattern = "^GENERIC-[0-9]+$"
+# ticket_url_template = "https://example.atlassian.net/browse/{{ticket_ref}}"
+# allowed_types = ["feat", "fix", "docs", "chore", "refactor", "hotfix", "revert"]
+# default_change_type = "chore"
 # commit_summary_template = "complete {{work_task_ref}}"
-# pull_request_title_template = "chore({{ticket_ref}}): complete {{work_task_ref}}"
+# pull_request_title_template = "{{change_type}}({{ticket_ref}}): complete {{work_task_ref}}"
+# pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 # what_changed_template = "Jira: https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}\n\nSummary:\n- Completed {{work_task_title}}.\n\nWork Item:\n- {{work_task_ref}}\n\nType of Change:\n- Automation task"
 # how_verified_template = "Agent workflow:\n- plan-task: yes (https://rimthan-lab.atlassian.net/browse/{{ticket_ref}})\n- pr-audit: N/A\n\nProject ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}\n\nHAI Handoff Package:\n- Automation metadata is attached through Mivia Work Plan and Work Task refs.\n\nCI/CD Reference:\n- Draft PR created by Mivia GitOps automation."
 # tests_template = "Testing:\n{{test_results}}\n\nCompliance Checklist:\n- [ ] Human reviewer confirms repository-specific acceptance criteria.\n- [ ] CI passes before merge."
@@ -228,14 +244,16 @@ always_before_pr = []
 #   "pnpm install --frozen-lockfile --prefer-offline --ignore-scripts",
 # ]
 # always_before_pr = [
-#   "pnpm exec nx affected -t lint --base=origin/main --head=HEAD --exclude=mass-core,tag:platform:mobile,tag:platform:web --parallel=4 --max-warnings=0",
-#   "pnpm exec nx affected -t typecheck --base=origin/main --head=HEAD --exclude=mass-core,tag:platform:mobile,tag:platform:web --parallel=4",
+#   "pnpm exec nx affected -t lint --base=origin/main --head=HEAD --exclude=GENERIC-core,tag:platform:mobile,tag:platform:web --parallel=4 --max-warnings=0",
+#   "pnpm exec nx affected -t typecheck --base=origin/main --head=HEAD --exclude=GENERIC-core,tag:platform:mobile,tag:platform:web --parallel=4",
 #   "pnpm exec tsc -p tsconfig.docker.json --noEmit",
 #   "semgrep scan --config policies/semgrep/rules/ --error apps/ libs/ packages/",
 # ]
 #
 # [projects.verification.env]
 # CI = "true"
+# BACKOFFICE_WEB_SKIP_ENV_VALIDATION = "1"
+# SKIP_ENV_VALIDATION = "1"
 # BFF_ADMIN_URL = "http://localhost:3000"
 # SESSION_PASSWORD = "0000000000000000000000000000000000000000000000000000000000000000"
 #
@@ -289,6 +307,7 @@ sensitive_marker_policy = "skip_file"
 # [projects.git_operations]
 # branch_prefix = ""
 # branch_name_pattern = "^(feat|fix|docs)-ABC-[0-9]+(-[a-z0-9-]+)*$"
+# sign_commits = true
 #
 # [projects.git_operations.dirty_scope_recovery]
 # allowed_support_pathspecs = [".claude", ".codex", ".github"]
@@ -296,8 +315,14 @@ sensitive_marker_policy = "skip_file"
 # [projects.git_operations.conventions]
 # commit_type = "docs"
 # commit_scope = ""
+# branch_template = "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"
+# require_ticket_ref = true
+# ticket_ref_pattern = "^ABC-[0-9]+$"
+# allowed_types = ["feat", "fix", "docs"]
+# default_change_type = "docs"
 # commit_summary_template = "complete {{work_task_ref}}"
 # pull_request_title_template = "docs({{ticket_ref}}): complete {{work_task_ref}}"
+# pull_request_body_template = "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}"
 # what_changed_template = "Jira: https://example.atlassian.net/browse/{{ticket_ref}}\n\nCompleted {{work_task_title}} for {{project_id}}."
 # how_verified_template = "Agent workflow:\n- plan-task: yes (https://example.atlassian.net/browse/{{ticket_ref}})\n- pr-audit: N/A\n\nProject ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}"
 # tests_template = "{{test_results}}"

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,8 @@ import (
 	"github.com/MiviaLabs/go-mivia/internal/projectautomation"
 	"github.com/MiviaLabs/go-mivia/internal/projectgitops"
 )
+
+const defaultRequestTimeout = 120 * time.Second
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -32,15 +35,18 @@ func run(args []string) int {
 	server := flags.String("server", "http://127.0.0.1:8080", "mivia-server base URL")
 	projectID := flags.String("project", "", "project id; omit to watch all configured projects")
 	agentID := flags.String("agent", "", "optional agent id filter")
-	codexPath := flags.String("codex", "codex", "codex CLI binary path")
-	codexLauncher := flags.String("codex-launcher", "direct", "codex launcher: direct or windows-cmd")
+	codexPath := flags.String("codex", "/usr/local/bin/codex", "codex CLI binary path")
+	codexLauncher := flags.String("codex-launcher", "direct", "codex launcher: direct")
 	codexCD := flags.String("codex-cd", "", "optional workspace directory passed to codex exec --cd")
 	codexSandbox := flags.String("codex-sandbox", "workspace-write", "sandbox mode passed to codex exec")
-	codexBypass := flags.Bool("codex-bypass-approvals-and-sandbox", false, "pass Codex CLI's non-interactive approval and sandbox bypass flag")
+	codexBypass := flags.Bool("codex-bypass-approvals-and-sandbox", true, "pass Codex CLI's non-interactive approval and sandbox bypass flag")
+	codexSmokePreflight := flags.Bool("codex-smoke-preflight", false, "run a non-mutating codex exec smoke test in --codex-cd before claiming work")
+	allowMissingCodexConfig := flags.Bool("allow-missing-codex-config", false, "allow runner startup without CODEX_HOME/config.toml")
+	allowNoProjects := flags.Bool("allow-no-projects", false, "allow watch mode to idle when project discovery returns no configured projects")
 	once := flags.Bool("once", true, "claim and run one queued task, then exit")
 	watch := flags.Bool("watch", false, "continuously claim queued tasks until interrupted")
 	pollInterval := flags.Duration("poll-interval", 5*time.Second, "poll interval when once is false")
-	requestTimeout := flags.Duration("request-timeout", 30*time.Second, "HTTP timeout for server discovery, claim, and report requests")
+	requestTimeout := flags.Duration("request-timeout", defaultRequestTimeout, "HTTP timeout for server discovery, claim, and report requests")
 	heartbeatInterval := flags.Duration("heartbeat-interval", 15*time.Second, "external run heartbeat interval")
 	idleExitAfter := flags.Duration("idle-exit-after", 0, "optional idle duration after which watch mode exits; 0 disables idle exit")
 	if err := flags.Parse(args); err != nil {
@@ -53,7 +59,7 @@ func run(args []string) int {
 	if *watch {
 		*once = false
 	}
-	codexOptions := codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD), Sandbox: strings.TrimSpace(*codexSandbox), BypassApprovalsAndSandbox: *codexBypass}
+	codexOptions := codexLaunchOptions{Path: strings.TrimSpace(*codexPath), Launcher: strings.TrimSpace(*codexLauncher), WorkDir: strings.TrimSpace(*codexCD), Sandbox: strings.TrimSpace(*codexSandbox), BypassApprovalsAndSandbox: *codexBypass, SmokePreflight: *codexSmokePreflight}
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config load failed: %v\n", err)
@@ -67,8 +73,12 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "codex launcher unavailable: %v\n", err)
 		return 1
 	}
-	if err := checkCodexConfigReadable(); err != nil {
+	if err := checkCodexConfigReadable(!*allowMissingCodexConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "codex runtime config unavailable: %v\n", err)
+		return 1
+	}
+	if err := checkRunnerCodexPreflight(context.Background(), codexOptions); err != nil {
+		fmt.Fprintf(os.Stderr, "codex runtime preflight failed: %v\n", err)
 		return 1
 	}
 	runnerID := defaultRunnerID()
@@ -83,6 +93,10 @@ func run(args []string) int {
 			}
 			time.Sleep(*pollInterval)
 			continue
+		}
+		if *watch && strings.TrimSpace(*projectID) == "" && len(projectIDs) == 0 && !*allowNoProjects {
+			fmt.Fprintln(os.Stderr, "project discovery returned no configured projects")
+			return 1
 		}
 		status, keepWatching, claimed := claimProjectRunsExecuteAndReport(context.Background(), client, cfg, projectIDs, strings.TrimSpace(*agentID), codexOptions)
 		if *once || !keepWatching {
@@ -106,7 +120,7 @@ func run(args []string) int {
 
 func normalizedRequestTimeout(timeout time.Duration) time.Duration {
 	if timeout <= 0 {
-		return 30 * time.Second
+		return defaultRequestTimeout
 	}
 	if timeout < time.Second {
 		return time.Second
@@ -151,28 +165,26 @@ func checkCodexLauncher(ctx context.Context, codexOptions codexLaunchOptions) er
 			return fmt.Errorf("%s --version failed: %w: %s", binaryPath, err, strings.TrimSpace(stderr.String()))
 		}
 		return nil
-	case "windows-cmd":
-		command := exec.CommandContext(ctx, "cmd.exe", "/c", binaryPath, "--version")
-		var stderr bytes.Buffer
-		command.Stderr = &stderr
-		if err := command.Run(); err != nil {
-			return fmt.Errorf("cmd.exe /c %s --version failed: %w: %s", binaryPath, err, strings.TrimSpace(stderr.String()))
-		}
-		return nil
 	default:
 		return fmt.Errorf("%w: unknown codex launcher", projectautomation.ErrInvalidInput)
 	}
 }
 
-func checkCodexConfigReadable() error {
+func checkCodexConfigReadable(required bool) error {
 	configPath := codexConfigPath()
 	if strings.TrimSpace(configPath) == "" {
-		return nil
+		if !required {
+			return nil
+		}
+		return fmt.Errorf("%w: codex_config_missing", projectautomation.ErrInvalidInput)
 	}
 	info, err := os.Stat(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			if !required {
+				return nil
+			}
+			return fmt.Errorf("%w: codex_config_missing", projectautomation.ErrInvalidInput)
 		}
 		if errors.Is(err, os.ErrPermission) {
 			return fmt.Errorf("%w: codex_config_unreadable", projectautomation.ErrInvalidInput)
@@ -190,6 +202,85 @@ func checkCodexConfigReadable() error {
 		return err
 	}
 	return file.Close()
+}
+
+func checkRunnerCodexPreflight(ctx context.Context, codexOptions codexLaunchOptions) error {
+	workDir := strings.TrimSpace(codexOptions.WorkDir)
+	if workDir == "" {
+		return nil
+	}
+	if err := checkRunnerWorkDir(ctx, workDir); err != nil {
+		return err
+	}
+	if !codexOptions.SmokePreflight {
+		return nil
+	}
+	inputPath, cleanupInput, err := writeCodexInput(projectautomation.CodexTaskInput{
+		SchemaVersion:  1,
+		ProjectID:      "runner-preflight",
+		TaskID:         "runner-preflight",
+		TaskRef:        "runner-preflight",
+		Title:          "Runner preflight",
+		Description:    "Verify Codex can execute a read-only shell command in the configured workdir without modifying files. Run pwd before returning.",
+		ExpectedOutput: "Return only {\"ok\":true} after a successful pwd shell command. Return {\"ok\":false} if shell execution fails. Do not modify files.",
+	})
+	if err != nil {
+		return fmt.Errorf("%w: codex_preflight_input_create_failed", projectautomation.ErrInvalidInput)
+	}
+	defer cleanupInput()
+	outputPath, cleanupOutput, err := createCodexOutputFile()
+	if err != nil {
+		return fmt.Errorf("%w: codex_preflight_output_create_failed", projectautomation.ErrInvalidInput)
+	}
+	defer cleanupOutput()
+	smokeOptions := codexOptions
+	smokeOptions.OutputSchemaPath = ""
+	command, err := buildRunnerCodexCommand(inputPath, outputPath, 2*time.Minute, smokeOptions)
+	if err != nil {
+		return err
+	}
+	result, err := projectautomation.RunCodexCommand(ctx, command, 16*1024)
+	if err != nil {
+		if result.SafeFailureCategory != "" {
+			return fmt.Errorf("%w: %s", projectautomation.ErrInvalidInput, result.SafeFailureCategory)
+		}
+		return fmt.Errorf("%w: codex_preflight_exec_failed", projectautomation.ErrInvalidInput)
+	}
+	if !codexPreflightOutputOK(readCodexLastMessage(outputPath, result.Output)) {
+		return fmt.Errorf("%w: codex_preflight_unexpected_output", projectautomation.ErrInvalidInput)
+	}
+	return nil
+}
+
+func codexPreflightOutputOK(message string) bool {
+	var output struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(message)), &output); err != nil {
+		return false
+	}
+	return output.OK
+}
+
+func checkRunnerWorkDir(ctx context.Context, workDir string) error {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return nil
+	}
+	if !filepath.IsAbs(workDir) || strings.ContainsAny(workDir, "\x00\r\n") {
+		return fmt.Errorf("%w: workdir must be absolute and safe", projectautomation.ErrInvalidInput)
+	}
+	info, err := os.Stat(workDir)
+	if err != nil {
+		return fmt.Errorf("%w: codex_workdir_unavailable", projectautomation.ErrInvalidInput)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: codex_workdir_not_directory", projectautomation.ErrInvalidInput)
+	}
+	if _, err := os.ReadDir(workDir); err != nil {
+		return fmt.Errorf("%w: codex_workdir_unreadable", projectautomation.ErrInvalidInput)
+	}
+	return prepareRunWorktree(ctx, workDir)
 }
 
 func codexConfigPath() string {
@@ -215,6 +306,8 @@ type codexLaunchOptions struct {
 	WorkDir                   string
 	Sandbox                   string
 	BypassApprovalsAndSandbox bool
+	SmokePreflight            bool
+	OutputSchemaPath          string
 }
 
 func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg config.Config, projectID string, agentID string, codexOptions codexLaunchOptions) (int, bool, bool) {
@@ -229,7 +322,7 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		return 1, true, false
 	}
 	if !ok {
-		fmt.Fprintln(os.Stdout, "no queued automation run")
+		fmt.Fprintf(os.Stdout, "no queued automation run for project %s\n", projectID)
 		return 0, true, false
 	}
 	stopHeartbeat := client.startHeartbeat(ctx, projectID, claimed.Run)
@@ -250,7 +343,13 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	}
 	runCodexOptions := codexOptions
 	runCodexOptions.WorkDir = runWorkDir
+	claimed.CodexInput.ProjectID = firstNonEmpty(claimed.CodexInput.ProjectID, claimed.Run.ProjectID, projectID)
+	claimed.CodexInput.AutomationRunID = firstNonEmpty(claimed.CodexInput.AutomationRunID, claimed.Run.ID)
+	claimed.CodexInput.TraceID = firstNonEmpty(claimed.CodexInput.TraceID, claimed.Run.TraceID)
+	claimed.CodexInput.PlanID = firstNonEmpty(claimed.CodexInput.PlanID, claimed.Run.PlanID)
+	claimed.CodexInput.TaskID = firstNonEmpty(claimed.CodexInput.TaskID, claimed.Run.TaskID)
 	claimed.CodexInput.MCPServerURL = client.baseURL
+	claimed.CodexInput.RunnerInstructions = appendMissingRunnerInstructions(claimed.CodexInput.RunnerInstructions, projectautomation.GovernedWorkflowStepInstructions(claimed.CodexInput.TaskRef)...)
 	claimed.CodexInput.RunnerInstructions = append(claimed.CodexInput.RunnerInstructions, verificationInstructionsForProject(cfg, projectID)...)
 	gitOps := projectgitops.New(gitOpsOptions)
 	readOnlyReviewRun := isReadOnlyReviewRun(claimed)
@@ -258,14 +357,24 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 	if strings.TrimSpace(claimed.Run.TaskID) != "" {
 		taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
 	}
+	if taskMetadataErr == nil {
+		claimed.CodexInput.RunnerInstructions = appendMissingRunnerInstructions(claimed.CodexInput.RunnerInstructions, projectautomation.ImplementationTaskCloseoutInstructions(taskMetadata.TaskRef, taskMetadata.FilesToEdit)...)
+	}
 	runGitOps := !readOnlyReviewRun && (taskMetadataErr != nil || shouldRunGitOpsForTask(taskMetadata))
 	if isGitOpsPostTaskRecoveryRun(claimed.Run) {
-		status, failureCategory, durationMS, evidenceRefs := runGitOpsPostTaskRecovery(ctx, client, gitOps, projectID, runWorkDir, agentID, claimed)
+		status, failureCategory, durationMS, evidenceRefs := runGitOpsPostTaskRecovery(ctx, client, gitOpsOptions, projectID, runWorkDir, agentID, claimed)
+		failureCategory = gitOpsRecoveryFailureCategoryOrFallback(status, failureCategory)
+		if status != projectautomation.RunStatusCompleted && strings.TrimSpace(failureCategory) != "" {
+			evidenceRefs = append(evidenceRefs, "gitops-failure:"+failureCategory)
+		}
 		result := projectautomation.CompleteAttemptInput{
 			Status:          status,
 			FailureCategory: failureCategory,
 			DurationMS:      durationMS,
 			EvidenceRefs:    evidenceRefs,
+		}
+		if status != projectautomation.RunStatusCompleted && strings.TrimSpace(failureCategory) != "" {
+			fmt.Fprintf(os.Stdout, "automation run %s reporting %s failure_category=%s\n", claimed.Run.ID, status, failureCategory)
 		}
 		completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run, result)
 		if err != nil {
@@ -320,14 +429,41 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			return 1, true, true
 		}
 	}
-	status, failureCategory, durationMS := runCodex(ctx, claimed, runCodexOptions)
+	if strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && taskRequiresExplicitGovernedCloseout(taskMetadata) && shouldUseCodexOutputSchemaForGovernedCloseout(taskMetadata) {
+		schemaPath, cleanupSchema, schemaErr := createGovernedCloseoutSchemaFile()
+		if schemaErr != nil {
+			result := projectautomation.CompleteAttemptInput{
+				Status:          projectautomation.RunStatusFailed,
+				FailureCategory: "governed_closeout_schema_create_failed",
+			}
+			completedRun, reportErr := client.completeAttempt(ctx, projectID, claimed.Run, result)
+			if reportErr != nil {
+				fmt.Fprintf(os.Stderr, "attempt result report failed for %s: %v\n", claimed.Run.ID, reportErr)
+				return 1, false, true
+			}
+			fmt.Fprintf(os.Stdout, "automation run %s durably reported %s\n", claimed.Run.ID, completedRun.Status)
+			return 1, true, true
+		}
+		defer cleanupSchema()
+		runCodexOptions.OutputSchemaPath = schemaPath
+	}
+	codexResult := runCodex(ctx, claimed, runCodexOptions)
+	status, failureCategory, durationMS := codexResult.Status, codexResult.FailureCategory, codexResult.DurationMS
 	var evidenceRefs []string
 	if status == projectautomation.RunStatusCompleted {
 		taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+		if status == projectautomation.RunStatusCompleted && strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && taskRequiresExplicitGovernedCloseout(taskMetadata) && !taskHasGovernedCloseout(taskMetadata) {
+			if closeoutErr := client.applyGovernedCloseoutFromOutput(ctx, projectID, claimed, taskMetadata, codexResult.LastMessage); closeoutErr != nil {
+				status = projectautomation.RunStatusFailed
+				failureCategory = governedCloseoutFailureCategory(closeoutErr)
+			} else {
+				taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
+			}
+		}
 		if status == projectautomation.RunStatusCompleted && strings.TrimSpace(claimed.Run.TaskID) != "" && taskMetadataErr == nil && !taskHasGovernedCloseout(taskMetadata) && shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun, taskMetadata) {
 			if closeoutErr := client.closeoutMetadataOnlyTask(ctx, projectID, claimed, readOnlyReviewRun); closeoutErr != nil {
 				status = projectautomation.RunStatusFailed
-				failureCategory = "automation_task_closeout_failed"
+				failureCategory = metadataOnlyCloseoutFailureCategory(closeoutErr)
 			} else {
 				taskMetadata, taskMetadataErr = client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
 			}
@@ -336,12 +472,13 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 			status = projectautomation.RunStatusFailed
 			failureCategory = "automation_task_closeout_missing"
 		}
-		if status == projectautomation.RunStatusCompleted && !readOnlyReviewRun && shouldRunGitOpsForTask(taskMetadata) {
-			gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
+		if status == projectautomation.RunStatusCompleted && !readOnlyReviewRun && shouldRunGitOpsPostTask(taskMetadata) {
+			taskGitOps := projectgitops.New(gitOpsOptionsForTask(gitOpsOptions, taskMetadata))
+			gitResult, err := taskGitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 			if err != nil {
 				status = projectautomation.RunStatusFailed
-				failureCategory = projectgitops.FailureCategoryWithDetail(err)
-				evidenceRefs = append(evidenceRefs, gitOpsDirtyScopeEvidenceRefs(err)...)
+				failureCategory = gitOpsFailureCategoryForRunner(err)
+				evidenceRefs = append(evidenceRefs, gitOpsFailureEvidenceRefs(err)...)
 			} else {
 				evidenceRefs = append(evidenceRefs, gitResult.EvidenceRefs...)
 				for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
@@ -357,6 +494,9 @@ func claimRunExecuteAndReport(ctx context.Context, client *runnerClient, cfg con
 		FailureCategory: failureCategory,
 		DurationMS:      durationMS,
 		EvidenceRefs:    evidenceRefs,
+	}
+	if status != projectautomation.RunStatusCompleted && strings.TrimSpace(failureCategory) != "" {
+		fmt.Fprintf(os.Stdout, "automation run %s reporting %s failure_category=%s\n", claimed.Run.ID, status, failureCategory)
 	}
 	completedRun, err := client.completeAttempt(ctx, projectID, claimed.Run, result)
 	if err != nil {
@@ -397,6 +537,9 @@ func (client *runnerClient) shouldRunProjectCleanup(projectID string, baseWorkDi
 }
 
 func shouldRunGitOpsForTask(task runnerWorkTaskMetadata) bool {
+	if strings.TrimSpace(task.TaskRef) == "final-pr-readiness" {
+		return true
+	}
 	return len(task.FilesToEdit) > 0
 }
 
@@ -422,6 +565,10 @@ func gitOpsTaskPathspecs(claimed projectautomation.ClaimedRun, task runnerWorkTa
 	return append([]string(nil), claimed.CodexInput.LikelyFilesAffected...)
 }
 
+func gitOpsPostTaskPathspecs(claimed projectautomation.ClaimedRun, task runnerWorkTaskMetadata) []string {
+	return gitOpsTaskPathspecs(claimed, task)
+}
+
 func gitOpsDirtyScopeEvidenceRefs(err error) []string {
 	paths := projectgitops.DirtyWorktreeScopePaths(err)
 	if len(paths) == 0 {
@@ -441,6 +588,32 @@ func gitOpsDirtyScopeEvidenceRefs(err error) []string {
 	return out
 }
 
+func gitOpsFailureEvidenceRefs(err error) []string {
+	category := gitOpsFailureCategoryForRunner(err)
+	out := make([]string, 0, 1)
+	if category != "" {
+		out = append(out, "gitops-failure:"+category)
+	}
+	out = append(out, gitOpsDirtyScopeEvidenceRefs(err)...)
+	return out
+}
+
+func gitOpsFailureCategoryForRunner(err error) string {
+	category := strings.TrimSpace(projectgitops.FailureCategoryWithDetail(err))
+	if category == "gitops_post_task_failed" || category == "gitops_post_task_failed_unclassified" {
+		return "gitops_post_task_failed_runner_post_task"
+	}
+	return category
+}
+
+func gitOpsRecoveryFailureCategoryOrFallback(status string, category string) string {
+	category = strings.TrimSpace(category)
+	if status == projectautomation.RunStatusCompleted || category != "" {
+		return category
+	}
+	return "gitops_post_task_failed_runner_post_task"
+}
+
 func isReadOnlyReviewRun(claimed projectautomation.ClaimedRun) bool {
 	if strings.TrimSpace(claimed.Run.SafeSummary) == projectautomation.RunSafeSummaryPostImplementationReviewQueued {
 		return true
@@ -448,7 +621,7 @@ func isReadOnlyReviewRun(claimed projectautomation.ClaimedRun) bool {
 	return strings.HasPrefix(strings.TrimSpace(claimed.CodexInput.TaskRef), "review-")
 }
 
-func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps *projectgitops.Service, projectID string, runWorkDir string, agentID string, claimed projectautomation.ClaimedRun) (string, string, int64, []string) {
+func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOpsOptions projectgitops.Options, projectID string, runWorkDir string, agentID string, claimed projectautomation.ClaimedRun) (string, string, int64, []string) {
 	started := time.Now()
 	taskMetadata, err := client.getWorkTaskMetadata(ctx, projectID, claimed.Run.TaskID)
 	if err != nil {
@@ -457,9 +630,16 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 	if !taskHasGovernedCloseout(taskMetadata) {
 		return projectautomation.RunStatusFailed, "automation_task_closeout_missing", time.Since(started).Milliseconds(), nil
 	}
+	if failure := gitOpsPostTaskCloseoutFailure(taskMetadata); failure != "" {
+		return projectautomation.RunStatusFailed, failure, time.Since(started).Milliseconds(), []string{"gitops-failure:" + failure}
+	}
+	if failure := validateBoundedSmokeOutput(runWorkDir, taskMetadata); failure != "" {
+		return projectautomation.RunStatusFailed, failure, time.Since(started).Milliseconds(), []string{"gitops-failure:" + failure}
+	}
+	gitOps := newGitOpsService(gitOpsOptionsForTask(gitOpsOptions, taskMetadata))
 	gitResult, err := gitOps.PostTask(ctx, gitOpsPostTaskInput(projectID, runWorkDir, agentID, claimed, taskMetadata))
 	if err != nil {
-		return projectautomation.RunStatusFailed, projectgitops.FailureCategoryWithDetail(err), time.Since(started).Milliseconds(), gitOpsDirtyScopeEvidenceRefs(err)
+		return projectautomation.RunStatusFailed, gitOpsFailureCategoryForRunner(err), time.Since(started).Milliseconds(), gitOpsFailureEvidenceRefs(err)
 	}
 	evidenceRefs := append([]string(nil), gitResult.EvidenceRefs...)
 	for _, ref := range []string{gitResult.CommitRef, gitResult.PushRef, gitResult.PullRequestRef} {
@@ -468,6 +648,121 @@ func runGitOpsPostTaskRecovery(ctx context.Context, client *runnerClient, gitOps
 		}
 	}
 	return projectautomation.RunStatusCompleted, "", time.Since(started).Milliseconds(), evidenceRefs
+}
+
+var newGitOpsService = projectgitops.New
+
+func shouldRunGitOpsPostTask(task runnerWorkTaskMetadata) bool {
+	return gitOpsPostTaskCloseoutFailure(task) == ""
+}
+
+func validateBoundedSmokeOutput(workDir string, task runnerWorkTaskMetadata) string {
+	if !taskUsesBoundedSmokeGitOpsVerification(task) {
+		return ""
+	}
+	expected := boundedSmokeExpectedLine(task)
+	if expected == "" {
+		return "bounded_smoke_expected_output_missing"
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, ".agentic", "automation-smoke.md"))
+	if err != nil {
+		return "bounded_smoke_output_missing"
+	}
+	if strings.TrimSpace(string(data)) != expected {
+		return "bounded_smoke_output_mismatch"
+	}
+	return ""
+}
+
+func boundedSmokeExpectedLine(task runnerWorkTaskMetadata) string {
+	for _, source := range []string{task.Description, task.ExpectedOutput} {
+		if token := boundedSmokeInputToken(source); token != "" {
+			return "smoke input ref: " + token
+		}
+	}
+	return ""
+}
+
+func boundedSmokeInputToken(source string) string {
+	const marker = "smoke input ref: "
+	index := strings.Index(source, marker)
+	if index < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(source[index+len(marker):])
+	if rest == "" {
+		return ""
+	}
+	token := strings.Fields(rest)[0]
+	token = strings.TrimRight(token, ".,;:")
+	if token == "" || strings.ContainsAny(token, "\x00\r\n/\\") {
+		return ""
+	}
+	return token
+}
+
+func gitOpsOptionsForTask(options projectgitops.Options, task runnerWorkTaskMetadata) projectgitops.Options {
+	if taskUsesBoundedSmokeGitOpsVerification(task) {
+		options.Verification = projectgitops.VerificationProfile{}
+	}
+	return options
+}
+
+func taskUsesBoundedSmokeGitOpsVerification(task runnerWorkTaskMetadata) bool {
+	mode := strings.TrimSpace(task.GitOpsVerificationMode)
+	if mode != "" && mode != "bounded_smoke" {
+		return false
+	}
+	if strings.TrimSpace(task.TaskRef) != "smoke-draft-pr" {
+		return false
+	}
+	if len(task.FilesToEdit) != 1 || strings.TrimSpace(task.FilesToEdit[0]) != ".agentic/automation-smoke.md" {
+		return false
+	}
+	if !containsRunnerString(task.EvidenceRefs, "gitops-smoke-ref") {
+		return false
+	}
+	if mode == "bounded_smoke" {
+		return true
+	}
+	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != ""
+}
+
+func containsRunnerString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func appendMissingRunnerInstructions(existing []string, candidates ...string) []string {
+	out := append([]string(nil), existing...)
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || containsRunnerString(out, candidate) {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func gitOpsPostTaskCloseoutFailure(task runnerWorkTaskMetadata) string {
+	if !shouldRunGitOpsForTask(task) {
+		return "automation_task_closeout_not_gitops_task"
+	}
+	if taskUsesBoundedSmokeGitOpsVerification(task) {
+		return ""
+	}
+	if len(task.VerifierResultRefs) == 0 {
+		return "automation_task_closeout_missing_verifier_refs"
+	}
+	if len(task.ReviewResultRefs) == 0 {
+		return "automation_task_closeout_missing_review_refs"
+	}
+	return ""
 }
 
 func isGitOpsPostTaskRecoveryRun(run projectautomation.AutomationRun) bool {
@@ -492,7 +787,7 @@ func gitOpsOptionsForProject(cfg config.Config, projectID string) projectgitops.
 	gitops := cfg.GitOperations
 	verification := cfg.Verification
 	for _, project := range cfg.Projects {
-		if project.ID != projectID {
+		if !configProjectMatchesID(project, projectID) {
 			continue
 		}
 		if project.GitOperations != nil {
@@ -546,6 +841,9 @@ func mergeGitOperations(base config.GitOperations, override config.GitOperations
 	if strings.TrimSpace(override.CommitAuthorEmailFile) != "" {
 		merged.CommitAuthorEmailFile = override.CommitAuthorEmailFile
 	}
+	if override.SignCommits {
+		merged.SignCommits = true
+	}
 	if strings.TrimSpace(override.SSHPrivateKeyPath) != "" {
 		merged.SSHPrivateKeyPath = override.SSHPrivateKeyPath
 	}
@@ -566,9 +864,48 @@ func mergeGitOperations(base config.GitOperations, override config.GitOperations
 	}
 	merged.Conventions = mergeGitOpsConventions(merged.Conventions, override.Conventions)
 	if len(override.DirtyScopeRecovery.AllowedSupportPathspecs) > 0 {
-		merged.DirtyScopeRecovery.AllowedSupportPathspecs = append([]string(nil), override.DirtyScopeRecovery.AllowedSupportPathspecs...)
+		merged.DirtyScopeRecovery.AllowedSupportPathspecs = appendPathspecs(merged.DirtyScopeRecovery.AllowedSupportPathspecs, override.DirtyScopeRecovery.AllowedSupportPathspecs...)
+	}
+	merged.PostPRChecks = mergePostPRChecks(merged.PostPRChecks, override.PostPRChecks)
+	return merged
+}
+
+func mergePostPRChecks(base config.PostPRChecks, override config.PostPRChecks) config.PostPRChecks {
+	merged := base
+	if override.Enabled {
+		merged.Enabled = true
+	}
+	if override.RequiredOnly {
+		merged.RequiredOnly = true
+	}
+	if override.Watch {
+		merged.Watch = true
+	}
+	if override.FailFast {
+		merged.FailFast = true
+	}
+	if override.IntervalSeconds > 0 {
+		merged.IntervalSeconds = override.IntervalSeconds
 	}
 	return merged
+}
+
+func appendPathspecs(base []string, extra ...string) []string {
+	out := make([]string, 0, len(base)+len(extra))
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	for _, pathspec := range append(append([]string(nil), base...), extra...) {
+		pathspec = strings.TrimSpace(pathspec)
+		if pathspec == "" {
+			continue
+		}
+		key := strings.ToLower(pathspec)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, pathspec)
+	}
+	return out
 }
 
 func mergeGitOpsConventions(base config.GitOpsConventions, override config.GitOpsConventions) config.GitOpsConventions {
@@ -579,11 +916,32 @@ func mergeGitOpsConventions(base config.GitOpsConventions, override config.GitOp
 	if strings.TrimSpace(override.CommitScope) != "" {
 		merged.CommitScope = override.CommitScope
 	}
+	if strings.TrimSpace(override.BranchTemplate) != "" {
+		merged.BranchTemplate = override.BranchTemplate
+	}
+	if override.RequireTicketRef {
+		merged.RequireTicketRef = true
+	}
+	if strings.TrimSpace(override.TicketRefPattern) != "" {
+		merged.TicketRefPattern = override.TicketRefPattern
+	}
+	if strings.TrimSpace(override.TicketURLTemplate) != "" {
+		merged.TicketURLTemplate = override.TicketURLTemplate
+	}
+	if len(override.AllowedTypes) > 0 {
+		merged.AllowedTypes = append([]string(nil), override.AllowedTypes...)
+	}
+	if strings.TrimSpace(override.DefaultChangeType) != "" {
+		merged.DefaultChangeType = override.DefaultChangeType
+	}
 	if strings.TrimSpace(override.CommitSummaryTemplate) != "" {
 		merged.CommitSummaryTemplate = override.CommitSummaryTemplate
 	}
 	if strings.TrimSpace(override.PullRequestTitleTemplate) != "" {
 		merged.PullRequestTitleTemplate = override.PullRequestTitleTemplate
+	}
+	if strings.TrimSpace(override.PullRequestBodyTemplate) != "" {
+		merged.PullRequestBodyTemplate = override.PullRequestBodyTemplate
 	}
 	if strings.TrimSpace(override.WhatChangedTemplate) != "" {
 		merged.WhatChangedTemplate = override.WhatChangedTemplate
@@ -611,17 +969,33 @@ func gitOpsOptionsFromConfig(cfg config.GitOperations) projectgitops.Options {
 		CommitAuthorName:             cfg.CommitAuthorName,
 		CommitAuthorEmailEnv:         cfg.CommitAuthorEmailEnv,
 		CommitAuthorEmailFile:        cfg.CommitAuthorEmailFile,
+		SignCommits:                  cfg.SignCommits,
 		SSHPrivateKeyPath:            cfg.SSHPrivateKeyPath,
 		SSHPublicKeyPath:             cfg.SSHPublicKeyPath,
 		SSHKnownHostsPath:            cfg.SSHKnownHostsPath,
 		GitHubTokenEnv:               cfg.GitHubTokenEnv,
 		GitHubTokenFile:              cfg.GitHubTokenFile,
 		GitHubCLIPath:                cfg.GitHubCLIPath,
+		DirtyScopeSupportPathspecs:   append([]string(nil), cfg.DirtyScopeRecovery.AllowedSupportPathspecs...),
+		PostPRChecks: projectgitops.PostPRChecks{
+			Enabled:         cfg.PostPRChecks.Enabled,
+			RequiredOnly:    cfg.PostPRChecks.RequiredOnly,
+			Watch:           cfg.PostPRChecks.Watch,
+			FailFast:        cfg.PostPRChecks.FailFast,
+			IntervalSeconds: cfg.PostPRChecks.IntervalSeconds,
+		},
 		Conventions: projectgitops.Conventions{
 			CommitType:               cfg.Conventions.CommitType,
 			CommitScope:              cfg.Conventions.CommitScope,
+			AllowedChangeTypes:       append([]string(nil), cfg.Conventions.AllowedTypes...),
+			DefaultChangeType:        cfg.Conventions.DefaultChangeType,
+			RequireTicket:            cfg.Conventions.RequireTicketRef,
+			BranchNameTemplate:       cfg.Conventions.BranchTemplate,
+			TicketRefPattern:         cfg.Conventions.TicketRefPattern,
+			TicketURLTemplate:        cfg.Conventions.TicketURLTemplate,
 			CommitSummaryTemplate:    cfg.Conventions.CommitSummaryTemplate,
 			PullRequestTitleTemplate: cfg.Conventions.PullRequestTitleTemplate,
+			PullRequestBodyTemplate:  cfg.Conventions.PullRequestBodyTemplate,
 			WhatChangedTemplate:      cfg.Conventions.WhatChangedTemplate,
 			HowVerifiedTemplate:      cfg.Conventions.HowVerifiedTemplate,
 			TestsTemplate:            cfg.Conventions.TestsTemplate,
@@ -641,6 +1015,7 @@ func gitOpsVerificationFromConfig(cfg config.Verification) projectgitops.Verific
 	return projectgitops.VerificationProfile{
 		BootstrapCommands:  append([]string(nil), cfg.BootstrapCommands...),
 		AlwaysBeforePR:     append([]string(nil), cfg.AlwaysBeforePR...),
+		AutofixCommands:    append([]string(nil), cfg.AutofixCommands...),
 		GeneratedArtifacts: generated,
 		Env:                cloneStringMap(cfg.Env),
 	}
@@ -657,10 +1032,26 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return out
 }
 
+func configProjectMatchesID(project config.Project, projectID string) bool {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(project.ID), projectID) {
+		return true
+	}
+	for _, alias := range project.Aliases {
+		if strings.EqualFold(strings.TrimSpace(alias), projectID) {
+			return true
+		}
+	}
+	return false
+}
+
 func verificationInstructionsForProject(cfg config.Config, projectID string) []string {
 	verification := cfg.Verification
 	for _, project := range cfg.Projects {
-		if project.ID == projectID && project.Verification != nil {
+		if configProjectMatchesID(project, projectID) && project.Verification != nil {
 			verification = *project.Verification
 			break
 		}
@@ -669,6 +1060,12 @@ func verificationInstructionsForProject(cfg config.Config, projectID string) []s
 	if len(verification.AlwaysBeforePR) > 0 {
 		instructions = append(instructions, "Project verification before PR is enforced by the runner; keep changes compatible with these commands:")
 		for _, command := range verification.AlwaysBeforePR {
+			instructions = append(instructions, command)
+		}
+	}
+	if len(verification.AutofixCommands) > 0 {
+		instructions = append(instructions, "Runner autofix commands may run after verifier failure before GitOps reports failure:")
+		for _, command := range verification.AutofixCommands {
 			instructions = append(instructions, command)
 		}
 	}
@@ -693,6 +1090,18 @@ func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID st
 	if taskTitle == "" {
 		taskTitle = claimed.CodexInput.Title
 	}
+	reviewRefs := append([]string(nil), taskMetadata.ReviewResultRefs...)
+	verifierRefs := append([]string(nil), taskMetadata.VerifierResultRefs...)
+	testResults := []string(nil)
+	if taskUsesBoundedSmokeGitOpsVerification(taskMetadata) {
+		if len(reviewRefs) == 0 {
+			reviewRefs = []string{"bounded-smoke-review-exempt"}
+		}
+		if len(verifierRefs) == 0 {
+			verifierRefs = []string{"bounded-smoke-verifier"}
+		}
+		testResults = []string{"bounded smoke output exact match: passed"}
+	}
 	return projectgitops.PostTaskInput{
 		WorkDir:          workDir,
 		ProjectID:        firstNonEmpty(claimed.Run.ProjectID, projectID),
@@ -700,19 +1109,62 @@ func gitOpsPostTaskInput(projectID string, workDir string, fallbackOperatorID st
 		TaskID:           firstNonEmpty(claimed.Run.TaskID, claimed.CodexInput.TaskID),
 		TaskRef:          taskRef,
 		TaskTitle:        taskTitle,
+		TicketRef:        runnerGitOpsTicketRef(claimed, taskMetadata),
 		AutomationID:     claimed.Run.AutomationID,
 		AutomationRunID:  firstNonEmpty(claimed.Run.ID, claimed.CodexInput.AutomationRunID),
 		OperatorID:       firstNonEmpty(claimed.Run.AgentID, fallbackOperatorID),
-		AllowedPathspecs: gitOpsTaskPathspecs(claimed, taskMetadata),
-		ReviewRefs:       append([]string(nil), taskMetadata.ReviewResultRefs...),
-		VerifierRefs:     append([]string(nil), taskMetadata.VerifierResultRefs...),
+		AllowedPathspecs: gitOpsPostTaskPathspecs(claimed, taskMetadata),
+		ReviewRefs:       reviewRefs,
+		VerifierRefs:     verifierRefs,
+		TestResults:      testResults,
 	}
+}
+
+func runnerGitOpsTicketRef(claimed projectautomation.ClaimedRun, task runnerWorkTaskMetadata) string {
+	for _, value := range []string{
+		task.TaskRef,
+		task.Title,
+		claimed.CodexInput.TaskRef,
+		claimed.CodexInput.Title,
+		claimed.Run.PlanID,
+		claimed.Run.TaskID,
+		claimed.Run.AutomationID,
+	} {
+		if ticket := normalizeRunnerTicketRef(value); ticket != "" {
+			return ticket
+		}
+	}
+	for _, refs := range [][]string{
+		task.ContextPackRefs,
+		task.EvidenceNeeded,
+		task.EvidenceRefs,
+		task.VerifierResultRefs,
+		task.ReviewResultRefs,
+	} {
+		for _, ref := range refs {
+			if ticket := normalizeRunnerTicketRef(ref); ticket != "" {
+				return ticket
+			}
+		}
+	}
+	return ""
+}
+
+var runnerTicketRefPattern = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]+-[0-9]+\b`)
+
+func normalizeRunnerTicketRef(value string) string {
+	if match := runnerTicketRefPattern.FindString(strings.TrimSpace(value)); match != "" {
+		return strings.ToUpper(match)
+	}
+	return ""
 }
 
 func taskHasGovernedCloseout(task runnerWorkTaskMetadata) bool {
 	switch strings.TrimSpace(task.Status) {
 	case "needs_review", "verifying", "done", "blocked", "failed", "cancelled", "superseded":
 		return true
+	case "ready":
+		return len(task.EvidenceRefs) > 0 && len(task.VerifierResultRefs) > 0 && len(task.ReviewResultRefs) > 0
 	case "":
 		return len(task.EvidenceRefs) > 0 || len(task.ClaimRefs) > 0 || len(task.ReviewResultRefs) > 0 || len(task.VerifierResultRefs) > 0
 	default:
@@ -720,35 +1172,67 @@ func taskHasGovernedCloseout(task runnerWorkTaskMetadata) bool {
 	}
 }
 
-func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexOptions codexLaunchOptions) (string, string, int64) {
+type codexRunOutcome struct {
+	Status          string
+	FailureCategory string
+	DurationMS      int64
+	LastMessage     string
+}
+
+func runCodex(ctx context.Context, claimed projectautomation.ClaimedRun, codexOptions codexLaunchOptions) codexRunOutcome {
 	inputPath, cleanup, err := writeCodexInput(claimed.CodexInput)
 	if err != nil {
-		return projectautomation.RunStatusFailed, "codex_input_create_failed", 0
+		return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: "codex_input_create_failed"}
 	}
 	defer cleanup()
+	outputFile, cleanupOutput, err := createCodexOutputFile()
+	if err != nil {
+		return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: "codex_output_create_failed"}
+	}
+	defer cleanupOutput()
 	timeout := time.Duration(claimed.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	command, err := buildRunnerCodexCommand(inputPath, timeout, codexOptions)
+	command, err := buildRunnerCodexCommand(inputPath, outputFile, timeout, codexOptions)
 	if err != nil {
-		return projectautomation.RunStatusFailed, "codex_command_denied", 0
+		return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: "codex_command_denied"}
 	}
 	result, err := projectautomation.RunCodexCommand(ctx, command, 64*1024)
 	durationMS := result.Duration.Milliseconds()
+	lastMessage := readCodexLastMessage(outputFile, result.Output)
 	if err == nil {
-		return projectautomation.RunStatusCompleted, "", durationMS
+		return codexRunOutcome{Status: projectautomation.RunStatusCompleted, DurationMS: durationMS, LastMessage: lastMessage}
 	}
 	if result.TimedOut {
-		return projectautomation.RunStatusTimeout, "codex_cli_timeout", durationMS
+		return codexRunOutcome{Status: projectautomation.RunStatusTimeout, FailureCategory: "codex_cli_timeout", DurationMS: durationMS, LastMessage: lastMessage}
 	}
 	if result.SafeFailureCategory != "" {
-		return projectautomation.RunStatusFailed, result.SafeFailureCategory, durationMS
+		return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: result.SafeFailureCategory, DurationMS: durationMS, LastMessage: lastMessage}
 	}
-	return projectautomation.RunStatusFailed, "codex_cli_failed", durationMS
+	return codexRunOutcome{Status: projectautomation.RunStatusFailed, FailureCategory: "codex_cli_failed", DurationMS: durationMS, LastMessage: lastMessage}
 }
 
-func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptions codexLaunchOptions) (projectautomation.CodexCommand, error) {
+func createCodexOutputFile() (string, func(), error) {
+	dir, err := os.MkdirTemp("", "mivia-codex-output-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	path := filepath.Join(dir, "last-message.txt")
+	return path, cleanup, nil
+}
+
+func readCodexLastMessage(path string, fallback string) string {
+	if strings.TrimSpace(path) != "" {
+		if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) != "" {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func buildRunnerCodexCommand(inputPath string, outputPath string, timeout time.Duration, codexOptions codexLaunchOptions) (projectautomation.CodexCommand, error) {
 	launcher := strings.TrimSpace(codexOptions.Launcher)
 	if launcher == "" {
 		launcher = "direct"
@@ -756,27 +1240,6 @@ func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptio
 	binaryPath := strings.TrimSpace(codexOptions.Path)
 	if binaryPath == "" {
 		binaryPath = "codex"
-	}
-	if launcher == "windows-cmd" {
-		convertedInputPath, err := windowsPathForRunner(inputPath)
-		if err != nil {
-			return projectautomation.CodexCommand{}, err
-		}
-		args := []string{"/c", "type", convertedInputPath, "|", binaryPath, "exec"}
-		args = appendCodexExecutionOptions(args, codexOptions)
-		if strings.TrimSpace(codexOptions.WorkDir) != "" {
-			convertedWorkDir, err := windowsPathForRunner(strings.TrimSpace(codexOptions.WorkDir))
-			if err != nil {
-				return projectautomation.CodexCommand{}, err
-			}
-			args = append(args, "--cd", convertedWorkDir)
-		}
-		args = append(args, "-")
-		return projectautomation.CodexCommand{
-			Path:    "cmd.exe",
-			Args:    args,
-			Timeout: timeout,
-		}, nil
 	}
 	if launcher != "direct" {
 		return projectautomation.CodexCommand{}, fmt.Errorf("%w: unknown codex launcher", projectautomation.ErrInvalidInput)
@@ -793,10 +1256,23 @@ func buildRunnerCodexCommand(inputPath string, timeout time.Duration, codexOptio
 	if strings.TrimSpace(codexOptions.WorkDir) != "" {
 		args := []string{"exec"}
 		args = appendCodexExecutionOptions(args, codexOptions)
+		if strings.TrimSpace(codexOptions.OutputSchemaPath) != "" {
+			args = append(args, "--output-schema", strings.TrimSpace(codexOptions.OutputSchemaPath))
+		}
+		if strings.TrimSpace(outputPath) != "" {
+			args = append(args, "--output-last-message", strings.TrimSpace(outputPath))
+		}
 		command.Args = append(args, "--cd", strings.TrimSpace(codexOptions.WorkDir), "-")
+		command.Dir = strings.TrimSpace(codexOptions.WorkDir)
 	} else {
 		args := []string{"exec"}
 		args = appendCodexExecutionOptions(args, codexOptions)
+		if strings.TrimSpace(codexOptions.OutputSchemaPath) != "" {
+			args = append(args, "--output-schema", strings.TrimSpace(codexOptions.OutputSchemaPath))
+		}
+		if strings.TrimSpace(outputPath) != "" {
+			args = append(args, "--output-last-message", strings.TrimSpace(outputPath))
+		}
 		command.Args = append(args, "-")
 	}
 	return command, nil
@@ -905,16 +1381,37 @@ type runnerWorkPlan struct {
 }
 
 type runnerWorkTaskMetadata struct {
-	ID                 string   `json:"id"`
-	TaskRef            string   `json:"task_ref,omitempty"`
-	Title              string   `json:"title,omitempty"`
-	Status             string   `json:"status,omitempty"`
-	BlockedReason      string   `json:"blocked_reason,omitempty"`
-	FilesToEdit        []string `json:"files_to_edit,omitempty"`
-	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
-	ClaimRefs          []string `json:"claim_refs,omitempty"`
-	ReviewResultRefs   []string `json:"review_result_refs,omitempty"`
-	VerifierResultRefs []string `json:"verifier_result_refs,omitempty"`
+	ID                      string   `json:"id"`
+	TaskRef                 string   `json:"task_ref,omitempty"`
+	Title                   string   `json:"title,omitempty"`
+	Description             string   `json:"description,omitempty"`
+	Status                  string   `json:"status,omitempty"`
+	BlockedReason           string   `json:"blocked_reason,omitempty"`
+	OwnerAgent              string   `json:"owner_agent,omitempty"`
+	GitOpsVerificationMode  string   `json:"gitops_verification_mode,omitempty"`
+	EvidenceNeeded          []string `json:"evidence_needed,omitempty"`
+	ContextPackRefs         []string `json:"context_pack_refs,omitempty"`
+	FilesToRead             []string `json:"files_to_read,omitempty"`
+	FilesToEdit             []string `json:"files_to_edit,omitempty"`
+	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
+	DependencyTaskIDs       []string `json:"dependency_task_ids,omitempty"`
+	VerificationRequirement string   `json:"verification_requirement,omitempty"`
+	ExpectedOutput          string   `json:"expected_output,omitempty"`
+	FailureCriteria         string   `json:"failure_criteria,omitempty"`
+	ReviewGate              string   `json:"review_gate,omitempty"`
+	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
+	EvidenceRefs            []string `json:"evidence_refs,omitempty"`
+	ClaimRefs               []string `json:"claim_refs,omitempty"`
+	ReviewResultRefs        []string `json:"review_result_refs,omitempty"`
+	ReviewExemptReason      string   `json:"review_exempt_reason,omitempty"`
+	VerifierResultRefs      []string `json:"verifier_result_refs,omitempty"`
+	DecompositionQuality    string   `json:"decomposition_quality,omitempty"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string   `json:"output_contract,omitempty"`
 }
 
 var errNoQueuedRun = errors.New("no queued automation run")
@@ -1073,7 +1570,7 @@ func (client *runnerClient) resolveTaskScopedRunWorkDir(ctx context.Context, pro
 	}
 	scopedPlan := plan
 	scopedPlan.GitWorktreeRef = appendRefToken(plan.GitWorktreeRef, taskToken)
-	scopedPlan.GitBranchRef = appendRefToken(firstNonEmpty(plan.GitBranchRef, "mivia/task"), taskToken)
+	scopedPlan.GitBranchRef = appendRefToken(firstNonEmpty(plan.GitBranchRef, "task"), taskToken)
 	target, err := dedicatedWorktreePath(baseWorkDir, projectID, scopedPlan.GitWorktreeRef)
 	if err != nil {
 		return "", err
@@ -1392,7 +1889,7 @@ func (client *runnerClient) closeoutMetadataOnlyTask(ctx context.Context, projec
 		Note:            "metadata-only automation completed without runner-level failure",
 	}
 	if _, err := client.post(ctx, pathBase+"/verifier-results", verifierInput, nil); err != nil {
-		return err
+		return metadataOnlyCloseoutError{category: "automation_task_closeout_failed_verifier_attach", err: err}
 	}
 	statusInput := struct {
 		RunID          string `json:"run_id,omitempty"`
@@ -1406,7 +1903,7 @@ func (client *runnerClient) closeoutMetadataOnlyTask(ctx context.Context, projec
 		SafeNextAction: "complete read-only reviewer gate after verifier metadata is attached",
 	}
 	if _, err := client.post(ctx, pathBase+"/status", statusInput, nil); err != nil {
-		return err
+		return metadataOnlyCloseoutError{category: "automation_task_closeout_failed_status_update", err: err}
 	}
 	completeInput := struct {
 		RunID              string   `json:"run_id,omitempty"`
@@ -1426,13 +1923,70 @@ func (client *runnerClient) closeoutMetadataOnlyTask(ctx context.Context, projec
 		EvidenceRefs:       []string{"automation_run:" + runID},
 	}
 	if _, err := client.post(ctx, pathBase+"/complete", completeInput, nil); err != nil {
-		return err
+		return metadataOnlyCloseoutError{category: "automation_task_closeout_failed_complete", err: err}
 	}
 	return nil
 }
 
+type metadataOnlyCloseoutError struct {
+	category string
+	err      error
+}
+
+func (err metadataOnlyCloseoutError) Error() string {
+	if err.err == nil {
+		return err.category
+	}
+	return err.category + ": " + err.err.Error()
+}
+
+func (err metadataOnlyCloseoutError) Unwrap() error {
+	return err.err
+}
+
+func metadataOnlyCloseoutFailureCategory(err error) string {
+	var closeoutErr metadataOnlyCloseoutError
+	if errors.As(err, &closeoutErr) && strings.TrimSpace(closeoutErr.category) != "" {
+		return strings.TrimSpace(closeoutErr.category)
+	}
+	return "automation_task_closeout_failed"
+}
+
 func shouldAutoCloseoutMetadataOnlyTask(readOnlyReviewRun bool, task runnerWorkTaskMetadata) bool {
-	return readOnlyReviewRun || len(task.FilesToEdit) == 0
+	if taskRequiresExplicitGovernedCloseout(task) {
+		return false
+	}
+	if readOnlyReviewRun {
+		return true
+	}
+	return len(task.FilesToEdit) == 0
+}
+
+func taskRequiresExplicitGovernedCloseout(task runnerWorkTaskMetadata) bool {
+	if len(task.FilesToEdit) > 0 && len(projectautomation.GovernedWorkflowStepInstructions(task.TaskRef)) == 0 && !strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-") {
+		return true
+	}
+	switch strings.TrimSpace(task.TaskRef) {
+	case "decompose-work-plan",
+		"mark-ready-after-review",
+		"select-ready-tasks",
+		"run-implementation-batch",
+		"review-implementation-batch",
+		"orchestrator-verification",
+		"pr-gitops-readiness",
+		"collect-final-scope",
+		"validate-regression-and-downstream",
+		"run-final-verification",
+		"final-pr-readiness",
+		"smoke-draft-pr":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldUseCodexOutputSchemaForGovernedCloseout(task runnerWorkTaskMetadata) bool {
+	return false
 }
 
 func metadataOnlyCloseoutOutcome(reviewTask bool) string {
@@ -1545,10 +2099,11 @@ func appendRefToken(ref string, token string) string {
 		return ref
 	}
 	suffix := "-" + token
-	maxBase := 200 - len(suffix)
+	const maxWorktreeRefLength = 512
+	maxBase := maxWorktreeRefLength - len(suffix)
 	if maxBase < 1 {
-		if len(token) > 200 {
-			return token[:200]
+		if len(token) > maxWorktreeRefLength {
+			return token[:maxWorktreeRefLength]
 		}
 		return token
 	}

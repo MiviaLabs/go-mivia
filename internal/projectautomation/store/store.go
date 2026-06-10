@@ -13,6 +13,10 @@ func shouldPreserveExistingRun(existing, next projectautomation.AutomationRun) b
 	if next.Status != projectautomation.RunStatusRunning || existing.Status == projectautomation.RunStatusFailed {
 		return false
 	}
+	switch existing.Status {
+	case projectautomation.RunStatusQueued, projectautomation.RunStatusClaiming, projectautomation.RunStatusStarting:
+		return false
+	}
 	switch next.SafeSummary {
 	case "pre_execution_recovery", projectautomation.RunSafeSummaryGitOpsPostTaskRecovery, projectautomation.RunSafeSummaryPostImplementationReviewQueued:
 		return true

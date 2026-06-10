@@ -210,7 +210,7 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 	}
 
 	health.Status, health.StatusReason = classifyHealth(project, latest, hasLatest, activeRuns, health, checkedAt, svc.staleAfter)
-	if activeSync && health.Status != ContextHealthDegraded {
+	if activeSync && health.Status != ContextHealthDegraded && !completedIndexedContentReady(hasLatest, latest, health) {
 		health.Status = ContextHealthSyncing
 		health.StatusReason = "ingestion_active"
 	}
@@ -227,6 +227,10 @@ func (svc *Service) ContextHealth(ctx context.Context, projectID string) (Contex
 		}
 	}
 	return health, nil
+}
+
+func completedIndexedContentReady(hasLatest bool, latest RunSummary, health ContextHealth) bool {
+	return hasLatest && latest.Status == runStatusCompleted && health.Status == ContextHealthReady && health.IndexedContentAvailable
 }
 
 func contextHealthProbe[T any](parent context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {

@@ -1,4 +1,4 @@
-# MASS Automation Runner Reliability Plan
+# PROJ Automation Runner Reliability Plan
 
 Status: planned
 Date: 2026-06-06
@@ -9,7 +9,7 @@ Internet: not used; current failures are fully local to Mivia source, tests, run
 
 ## Goal
 
-Make external automation runners reliable enough to run MASS workers at scale without permanent claim loops, stale running runs, resume-instruction validation deadlocks, or blind recovery churn.
+Make external automation runners reliable enough to run PROJ workers at scale without permanent claim loops, stale running runs, resume-instruction validation deadlocks, or blind recovery churn.
 
 This is not a narrow patch plan. Treat the current fixes as untrusted until the regression suite below proves the whole lifecycle.
 
@@ -47,7 +47,7 @@ This is not a narrow patch plan. Treat the current fixes as untrusted until the 
   - `cmd/mivia-automation-runner/main.go:811-814` posts `CompleteAttempt` to REST.
   - There is no runner heartbeat route, no claim token in `CompleteAttemptInput`, and no post-report GET verification.
 - Local compose config shows the live runner shape:
-  - `.docker-compose.local.yml:75-89` runs `mivia-automation-runner-mass` in watch mode for `mass-monorepo`.
+  - `.docker-compose.local.yml:75-89` runs `mivia-automation-runner-PROJ` in watch mode for `PROJ-monorepo`.
   - `.docker-compose.local.yml:80-82` uses poll interval `5s` and request timeout `60s`.
 
 ## Confirmed Failure Modes To Cover
@@ -307,7 +307,7 @@ Runner changes:
 Compose/config changes:
 
 - Add env/options for heartbeat interval and lease TTL.
-- Keep local MASS runner poll interval at 5s unless tests show claim pressure requires change.
+- Keep local PROJ runner poll interval at 5s unless tests show claim pressure requires change.
 - Do not restart compose until all tests pass.
 
 ### Task 7: Remove Resume Instruction Field-Level Max
@@ -425,14 +425,14 @@ git diff --check
 
 ```sh
 docker compose -f docker-compose.yml -f .docker-compose.local.yml up -d --build --force-recreate mivia-server
-docker compose -f docker-compose.yml -f .docker-compose.local.yml up -d --no-recreate --scale mivia-automation-runner-mass=12 mivia-automation-runner-mass
+docker compose -f docker-compose.yml -f .docker-compose.local.yml up -d --no-recreate --scale mivia-automation-runner-PROJ=12 mivia-automation-runner-PROJ
 ```
 
 10. Verify live state:
 
 ```sh
 curl -fsS http://127.0.0.1:8080/readyz
-docker compose -f docker-compose.yml -f .docker-compose.local.yml logs --since=2m mivia-automation-runner-mass
+docker compose -f docker-compose.yml -f .docker-compose.local.yml logs --since=2m mivia-automation-runner-PROJ
 ```
 
 Then use local MCP/REST only to inspect automation run and Work Task metadata.
@@ -450,7 +450,7 @@ The fix is not complete until all are true:
 7. Duplicate/stale completion reports are idempotent or explicitly rejected by claim id.
 8. Automatic replacements stop at the configured cap.
 9. Explicit operator reruns remain claimable and are not blocked by automatic replacement cap.
-10. MASS runner logs use `durably reported` only after durable state confirmation.
+10. PROJ runner logs use `durably reported` only after durable state confirmation.
 11. Focused and full Go tests pass.
 12. `git diff --check` passes.
 
@@ -458,14 +458,14 @@ The fix is not complete until all are true:
 
 - Do not use Jira or Confluence.
 - Do not start Docker compose before tests pass.
-- Do not bulk reset MASS tasks.
-- Do not reset or clean MASS worktrees automatically.
+- Do not bulk reset PROJ tasks.
+- Do not reset or clean PROJ worktrees automatically.
 - Do not add raw logs, raw prompts, source dumps, roots, secrets, tokens, or PII to tests or logs.
 - Do not implement another isolated one-line recovery patch without the failing regression tests above.
 
 ## Hand-Off Prompt For Implementation Agent
 
-You are implementing `.ai/tasks/active/mass-automation-runner-reliability-plan.md`.
+You are implementing `.ai/tasks/active/PROJ-automation-runner-reliability-plan.md`.
 
 Rules:
 

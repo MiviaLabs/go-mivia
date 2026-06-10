@@ -96,10 +96,17 @@ type WorkflowStep struct {
 	FilesToEdit             []string `json:"files_to_edit,omitempty"`
 	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
 	VerificationRequirement string   `json:"verification_requirement,omitempty"`
+	GitOpsVerificationMode  string   `json:"gitops_verification_mode,omitempty"`
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
 	ReviewGate              string   `json:"review_gate,omitempty"`
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string   `json:"output_contract,omitempty"`
 	MaxParallelTasks        int      `json:"max_parallel_tasks,omitempty"`
 	AutomationStatus        string   `json:"automation_status,omitempty"`
 	TriggerKind             string   `json:"trigger_kind,omitempty"`
@@ -125,13 +132,14 @@ type WorkflowValidationIssue struct {
 }
 
 type WorkflowCompileInput struct {
-	ProjectID      string `json:"project_id,omitempty"`
-	WorkflowID     string `json:"workflow_id"`
-	UserRequestRef string `json:"user_request_ref,omitempty"`
-	CreatedByRunID string `json:"created_by_run_id,omitempty"`
-	TraceID        string `json:"trace_id,omitempty"`
-	TitleOverride  string `json:"title_override,omitempty"`
-	DryRun         bool   `json:"dry_run,omitempty"`
+	ProjectID       string   `json:"project_id,omitempty"`
+	WorkflowID      string   `json:"workflow_id"`
+	UserRequestRef  string   `json:"user_request_ref,omitempty"`
+	ContextPackRefs []string `json:"context_pack_refs,omitempty"`
+	CreatedByRunID  string   `json:"created_by_run_id,omitempty"`
+	TraceID         string   `json:"trace_id,omitempty"`
+	TitleOverride   string   `json:"title_override,omitempty"`
+	DryRun          bool     `json:"dry_run,omitempty"`
 }
 
 type WorkflowCompileResult struct {

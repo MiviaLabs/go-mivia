@@ -136,7 +136,7 @@ Do not bypass lifecycle ordering with manual completion, manual GitOps, manual P
 
 Every automation-created implementation PR must be draft and must be created by runner GitOps, not by the chat/orchestrator agent.
 
-Repository-specific PR policy is enforced by GitOps config, not agent memory. For MASS-style repositories, the Work Plan/automation must use the configured branch policy, Conventional Commit PR title, required Agent workflow body declarations, and fake or real ticket reference supplied by the user/config. Do not let workers invent branch names, PR titles, PR bodies, or manual GitHub commands.
+Repository-specific PR policy is enforced by GitOps config, not agent memory. The Work Plan/automation must use the configured branch policy, PR title policy, required body declarations, and fake or real ticket reference supplied by the user/config. Do not let workers invent branch names, PR titles, PR bodies, or manual GitHub commands.
 
 Required format:
 
@@ -150,7 +150,7 @@ The PR body must name verification evidence and test commands/results or `Not ru
 
 ## CI Parity
 
-Runner GitOps must enforce the repository's configured CI-equivalent gates before commit, push, or draft PR. For MASS this means the configured affected lint/typecheck/test or generated-artifact commands must use the same base/head semantics as GitHub CI, including branch-specific exclusions and `--max-warnings=0` where CI uses it. A task-scoped unit test is not enough to create a PR when the repository CI also requires affected lint/typecheck/build/generated-artifact checks.
+Runner GitOps must enforce the repository's configured CI-equivalent gates before commit, push, or draft PR. For monorepos with affected-task tooling, configured affected lint/typecheck/test or generated-artifact commands must use the same base/head semantics as GitHub CI, including branch-specific exclusions and strict warning policies where CI uses them. A task-scoped unit test is not enough to create a PR when repository CI also requires affected lint/typecheck/build/generated-artifact checks.
 
 If a generated implementation changes test imports or project graph dependencies, require affected lint before PR creation so Nx module-boundary failures are caught locally. If the configured verification profile is missing or weaker than CI, block and fix the project verification config before launching more write-capable automation.
 

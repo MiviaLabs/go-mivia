@@ -85,6 +85,7 @@ type WorkTask struct {
 	LikelyFilesAffected     []string  `json:"likely_files_affected,omitempty"`
 	DependencyTaskIDs       []string  `json:"dependency_task_ids,omitempty"`
 	VerificationRequirement string    `json:"verification_requirement"`
+	GitOpsVerificationMode  string    `json:"gitops_verification_mode,omitempty"`
 	ExpectedOutput          string    `json:"expected_output,omitempty"`
 	FailureCriteria         string    `json:"failure_criteria,omitempty"`
 	ReviewGate              string    `json:"review_gate,omitempty"`
@@ -101,6 +102,12 @@ type WorkTask struct {
 	ArtifactRefs            []string  `json:"artifact_refs,omitempty"`
 	AgentRunIDs             []string  `json:"agent_run_ids,omitempty"`
 	DecompositionQuality    string    `json:"decomposition_quality"`
+	AcceptanceCriteria      []string  `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string  `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string  `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string    `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string  `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string    `json:"output_contract,omitempty"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
 	ClaimedAt               time.Time `json:"claimed_at,omitempty"`
@@ -181,12 +188,26 @@ type CreateWorkTaskInput struct {
 	LikelyFilesAffected     []string `json:"likely_files_affected,omitempty"`
 	DependencyTaskIDs       []string `json:"dependency_task_ids,omitempty"`
 	VerificationRequirement string   `json:"verification_requirement"`
+	GitOpsVerificationMode  string   `json:"gitops_verification_mode,omitempty"`
 	ExpectedOutput          string   `json:"expected_output,omitempty"`
 	FailureCriteria         string   `json:"failure_criteria,omitempty"`
 	ReviewGate              string   `json:"review_gate,omitempty"`
 	ResumeInstructions      string   `json:"resume_instructions,omitempty"`
 	KnowledgeCandidateRefs  []string `json:"knowledge_candidate_refs,omitempty"`
+	EvidenceRefs            []string `json:"evidence_refs,omitempty"`
+	ClaimRefs               []string `json:"claim_refs,omitempty"`
+	VerifierResultRefs      []string `json:"verifier_result_refs,omitempty"`
+	ReviewResultRefs        []string `json:"review_result_refs,omitempty"`
+	ReviewExemptReason      string   `json:"review_exempt_reason,omitempty"`
+	ArtifactRefs            []string `json:"artifact_refs,omitempty"`
+	AgentRunIDs             []string `json:"agent_run_ids,omitempty"`
 	DecompositionQuality    string   `json:"decomposition_quality,omitempty"`
+	AcceptanceCriteria      []string `json:"acceptance_criteria,omitempty"`
+	StopConditions          []string `json:"stop_conditions,omitempty"`
+	VerifierLadder          []string `json:"verifier_ladder,omitempty"`
+	RegressionApplicability string   `json:"regression_test_applicability,omitempty"`
+	DownstreamImpactRefs    []string `json:"downstream_impact_refs,omitempty"`
+	OutputContract          string   `json:"output_contract,omitempty"`
 }
 
 type WorkTaskFilter struct {

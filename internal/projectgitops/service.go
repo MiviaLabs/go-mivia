@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -21,7 +22,9 @@ var (
 	ErrCommandFailed      = errors.New("git operations command failed")
 	ErrDirtyWorktree      = errors.New("git operations dirty worktree")
 	ErrDirtyWorktreeScope = errors.New("git operations dirty worktree outside task scope")
+	ErrRuntimeFailure     = errors.New("git operations runtime setup failed")
 	ErrVerificationFailed = errors.New("git operations verification failed")
+	ErrDownstreamChecks   = errors.New("git operations downstream checks failed")
 )
 
 type DirtyWorktreeScopeError struct {
@@ -98,7 +101,7 @@ func (svc *Service) PreTaskWithinScope(ctx context.Context, workDir string, allo
 		return nil
 	}
 	allowed := sanitizePathspecs(append(allowedPathspecs, svc.generatedArtifactPathspecs()...))
-	outside := changedPathspecsOutsideAllowed(status, allowed)
+	outside := changedPathspecsOutsideAllowedForWorkDir(workDir, status, allowed)
 	if len(allowed) == 0 || len(outside) > 0 {
 		return dirtyWorktreeScopeError(outside)
 	}
@@ -129,15 +132,18 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		return PostTaskResult{}, fmt.Errorf("%w: workdir must be absolute", ErrInvalidInput)
 	}
 	if err := svc.validatePushConfig(); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("validate_push_config", err)
+	}
+	if err := svc.validateDraftPRAuth(ctx, workDir); err != nil {
+		return PostTaskResult{}, gitOpsStageFailure("validate_draft_pr_auth", err)
 	}
 
 	if err := svc.ensureSafeDirectory(ctx, workDir); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("safe_directory", err)
 	}
 	status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("git_status", err)
 	}
 	if strings.TrimSpace(status.Stdout) == "" {
 		return svc.finalizeCleanAheadBranch(ctx, workDir, input, PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}})
@@ -145,7 +151,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 
 	preCommitVerificationRefs, preCommitVerificationTests, err := svc.runPreCommitVerification(ctx, workDir)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("precommit_verification", err)
 	}
 	if len(preCommitVerificationTests) > 0 {
 		input.TestResults = append(input.TestResults, preCommitVerificationTests...)
@@ -153,7 +159,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if len(preCommitVerificationRefs) > 0 {
 		status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
 		if err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("git_status_after_precommit_verification", err)
 		}
 		if strings.TrimSpace(status.Stdout) == "" {
 			result := PostTaskResult{NoChanges: true, EvidenceRefs: []string{"git-no-changes"}}
@@ -162,14 +168,14 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 		}
 	}
 
-	allowedPathspecs := sanitizePathspecs(append(input.AllowedPathspecs, svc.generatedArtifactPathspecs()...))
+	allowedPathspecs := sanitizePathspecs(append(append(input.AllowedPathspecs, svc.options.DirtyScopeSupportPathspecs...), svc.generatedArtifactPathspecs()...))
 	if len(allowedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no safe task pathspecs", ErrInvalidInput)
 	}
-	if outside := changedPathspecsOutsideAllowed(status.Stdout, allowedPathspecs); len(outside) > 0 {
+	if outside := changedPathspecsOutsideAllowedForWorkDir(workDir, status.Stdout, allowedPathspecs); len(outside) > 0 {
 		return PostTaskResult{}, dirtyWorktreeScopeError(outside)
 	}
-	changedPathspecs := changedPathspecsWithinAllowed(status.Stdout, allowedPathspecs)
+	changedPathspecs := changedPathspecsWithinAllowedForWorkDir(workDir, status.Stdout, allowedPathspecs)
 	if len(changedPathspecs) == 0 {
 		return PostTaskResult{}, fmt.Errorf("%w: no changed files matched safe task pathspecs", ErrInvalidInput)
 	}
@@ -180,23 +186,23 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	}
 	branch, err := svc.normalizeBranchForPolicy(ctx, workDir, input)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("branch_policy", err)
 	}
 	input.BranchName = branch
 	rendered, err := Render(input, svc.options.Conventions)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("render", err)
 	}
 	addArgs := append([]string{"add", "--"}, changedPathspecs...)
 	if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("git_add", err)
 	}
 	if _, err := svc.git(ctx, workDir, nil, "diff", "--cached", "--check"); err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("git_diff_check", err)
 	}
 	email, err := svc.authorEmail()
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("author_email", err)
 	}
 	env := []string{
 		"GIT_AUTHOR_NAME=" + svc.options.CommitAuthorName,
@@ -205,30 +211,55 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 	if email != "" {
 		env = append(env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
 	}
-	if _, err := svc.git(ctx, workDir, env, "commit", "--no-verify", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
-		return PostTaskResult{}, err
+	commitArgs := svc.gitCommitArgs("commit", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody)
+	if _, err := svc.git(ctx, workDir, env, commitArgs...); err != nil {
+		return PostTaskResult{}, gitOpsStageFailure("git_commit", err)
 	}
 	postCommitVerificationRefs, postCommitVerificationTests, err := svc.runPostCommitVerification(ctx, workDir)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("postcommit_verification", err)
 	}
 	if len(postCommitVerificationTests) > 0 {
 		input.TestResults = append(input.TestResults, postCommitVerificationTests...)
 		rendered, err = Render(input, svc.options.Conventions)
 		if err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("render_after_postcommit_verification", err)
 		}
-		if _, err := svc.git(ctx, workDir, env, "commit", "--amend", "--no-verify", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody); err != nil {
-			return PostTaskResult{}, err
+		status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
+		if err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("git_status_after_postcommit_verification", err)
+		}
+		if strings.TrimSpace(status.Stdout) != "" {
+			if outside := changedPathspecsOutsideAllowedForWorkDir(workDir, status.Stdout, allowedPathspecs); len(outside) > 0 {
+				return PostTaskResult{}, dirtyWorktreeScopeError(outside)
+			}
+			changedAfterVerification := changedPathspecsWithinAllowedForWorkDir(workDir, status.Stdout, allowedPathspecs)
+			if len(changedAfterVerification) == 0 {
+				return PostTaskResult{}, fmt.Errorf("%w: no verifier autofix files matched safe task pathspecs", ErrInvalidInput)
+			}
+			addArgs := append([]string{"add", "--"}, changedAfterVerification...)
+			if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
+				return PostTaskResult{}, gitOpsStageFailure("git_add_after_postcommit_verification", err)
+			}
+			if _, err := svc.git(ctx, workDir, nil, "diff", "--cached", "--check"); err != nil {
+				return PostTaskResult{}, gitOpsStageFailure("git_diff_check_after_postcommit_verification", err)
+			}
+		}
+		amendArgs := svc.gitCommitArgs("commit", "--amend", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody)
+		if _, err := svc.git(ctx, workDir, env, amendArgs...); err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("git_commit_amend", err)
 		}
 	}
 	sha, err := svc.git(ctx, workDir, nil, "rev-parse", "--short=12", "HEAD")
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("git_rev_parse_head", err)
 	}
 	result := PostTaskResult{
 		CommitRef:    "git-commit-" + strings.TrimSpace(sha.Stdout),
 		EvidenceRefs: append(append([]string{"git-commit-created"}, preCommitVerificationRefs...), postCommitVerificationRefs...),
+	}
+	if svc.shouldSignCommits() {
+		result.EvidenceRefs = append(result.EvidenceRefs, "git-commit-signed")
 	}
 	if svc.options.PushAfterTask {
 		branch := strings.TrimSpace(input.BranchName)
@@ -236,23 +267,28 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 			var err error
 			branch, err = svc.currentBranch(ctx, workDir)
 			if err != nil {
-				return PostTaskResult{}, err
+				return PostTaskResult{}, gitOpsStageFailure("current_branch", err)
 			}
 		}
 		if err := svc.validateBranchPolicy(branch); err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("validate_push_branch_policy", err)
 		}
-		if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", "--no-verify", svc.options.RemoteName, "HEAD:"+branch); err != nil {
-			return PostTaskResult{}, err
+		if _, err := svc.gitPush(ctx, workDir, branch); err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("git_push", err)
 		}
 		result.PushRef = "git-push-" + safeHash(branch)
 		result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed")
 		if svc.options.DraftPRAfterPush {
 			prRef, err := svc.ensureDraftPR(ctx, workDir, rendered)
 			if err != nil {
-				return PostTaskResult{}, err
+				return PostTaskResult{}, gitOpsStageFailure("draft_pr", err)
+			}
+			checkRefs, err := svc.verifyPostPRChecks(ctx, workDir)
+			if err != nil {
+				return PostTaskResult{}, gitOpsStageFailure("post_pr_checks", err)
 			}
 			result.PullRequestRef = prRef
+			result.EvidenceRefs = append(result.EvidenceRefs, checkRefs...)
 			result.EvidenceRefs = append(result.EvidenceRefs, "draft-pr-ready")
 		}
 	}
@@ -260,7 +296,7 @@ func (svc *Service) PostTask(ctx context.Context, input PostTaskInput) (PostTask
 }
 
 func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string, input PostTaskInput, result PostTaskResult) (PostTaskResult, error) {
-	if !svc.options.PushAfterTask || !svc.options.DraftPRAfterPush || !svc.branchHasCommitsAhead(ctx, workDir) {
+	if !svc.options.PushAfterTask || !svc.options.DraftPRAfterPush || !svc.branchHasCommitsAhead(ctx, workDir, input.BaseRef) {
 		return result, nil
 	}
 	branch := strings.TrimSpace(input.BranchName)
@@ -268,31 +304,55 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 		var err error
 		branch, err = svc.currentBranch(ctx, workDir)
 		if err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_current_branch", err)
 		}
 	}
 	input.BranchName = branch
 	branch, err := svc.normalizeBranchForPolicy(ctx, workDir, input)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_branch_policy", err)
 	}
 	input.BranchName = branch
 	preRefs, preTests, err := svc.runPreCommitVerification(ctx, workDir)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_precommit_verification", err)
 	}
 	postRefs, postTests, err := svc.runPostCommitVerification(ctx, workDir)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_postcommit_verification", err)
 	}
 	if len(preTests) > 0 || len(postTests) > 0 {
 		input.TestResults = append(input.TestResults, preTests...)
 		input.TestResults = append(input.TestResults, postTests...)
 	}
+	generatedArtifactsStaged := false
 	if len(preRefs) > 0 || len(postRefs) > 0 {
 		status, err := svc.git(ctx, workDir, nil, "status", "--porcelain")
 		if err != nil {
-			return PostTaskResult{}, err
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_status_after_verification", err)
+		}
+		generatedPathspecs := sanitizePathspecs(svc.generatedArtifactPathspecs())
+		if len(generatedPathspecs) > 0 {
+			changedGeneratedPathspecs := changedPathspecsWithinAllowedForWorkDir(workDir, status.Stdout, generatedPathspecs)
+			if len(changedGeneratedPathspecs) > 0 {
+				addArgs := append([]string{"add", "--"}, changedGeneratedPathspecs...)
+				if _, err := svc.git(ctx, workDir, nil, addArgs...); err != nil {
+					return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_add_generated_artifacts", err)
+				}
+				generatedArtifactsStaged = true
+				status, err = svc.git(ctx, workDir, nil, "status", "--porcelain")
+				if err != nil {
+					return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_status_after_generated_artifacts", err)
+				}
+			}
+		}
+		if strings.TrimSpace(status.Stdout) != "" {
+			if len(generatedPathspecs) > 0 {
+				if outside := changedPathspecsOutsideAllowedForWorkDir(workDir, status.Stdout, generatedPathspecs); len(outside) == 0 {
+					result.EvidenceRefs = append(result.EvidenceRefs, "git-generated-artifacts-staged")
+					status.Stdout = ""
+				}
+			}
 		}
 		if strings.TrimSpace(status.Stdout) != "" {
 			return PostTaskResult{}, fmt.Errorf("%w: verification dirtied clean-ahead branch", ErrDirtyWorktree)
@@ -302,28 +362,85 @@ func (svc *Service) finalizeCleanAheadBranch(ctx context.Context, workDir string
 	}
 	rendered, err := Render(input, svc.options.Conventions)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_render", err)
 	}
-	if _, err := svc.git(ctx, workDir, svc.gitSSHEnv(), "push", "--no-verify", svc.options.RemoteName, "HEAD:"+branch); err != nil {
-		return PostTaskResult{}, err
+	if svc.shouldSignCommits() || generatedArtifactsStaged {
+		email, err := svc.authorEmail()
+		if err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_author_email", err)
+		}
+		env := []string{
+			"GIT_AUTHOR_NAME=" + svc.options.CommitAuthorName,
+			"GIT_COMMITTER_NAME=" + svc.options.CommitAuthorName,
+		}
+		if email != "" {
+			env = append(env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL="+email)
+		}
+		if _, err := svc.git(ctx, workDir, nil, "reset", "--soft", svc.cleanAheadBaseRef(input.BaseRef)); err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_reset_soft", err)
+		}
+		commitArgs := svc.gitCommitArgs("commit", "-m", rendered.CommitSubject+"\n\n"+rendered.CommitBody)
+		if _, err := svc.git(ctx, workDir, env, commitArgs...); err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_commit_signed_squash", err)
+		}
+		sha, err := svc.git(ctx, workDir, nil, "rev-parse", "--short=12", "HEAD")
+		if err != nil {
+			return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_rev_parse_head", err)
+		}
+		result.CommitRef = "git-commit-" + strings.TrimSpace(sha.Stdout)
+		result.EvidenceRefs = append(result.EvidenceRefs, "git-commit-created", "git-clean-ahead-squashed")
+		if svc.shouldSignCommits() {
+			result.EvidenceRefs = append(result.EvidenceRefs, "git-commit-signed")
+		}
+	}
+	if _, err := svc.gitPush(ctx, workDir, branch); err != nil {
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_git_push", err)
 	}
 	prRef, err := svc.ensureDraftPR(ctx, workDir, rendered)
 	if err != nil {
-		return PostTaskResult{}, err
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_draft_pr", err)
+	}
+	checkRefs, err := svc.verifyPostPRChecks(ctx, workDir)
+	if err != nil {
+		return PostTaskResult{}, gitOpsStageFailure("clean_ahead_post_pr_checks", err)
 	}
 	result.NoChanges = false
 	result.PushRef = "git-push-" + safeHash(branch)
 	result.PullRequestRef = prRef
-	result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed", "draft-pr-ready")
+	result.EvidenceRefs = append(result.EvidenceRefs, "git-push-completed")
+	result.EvidenceRefs = append(result.EvidenceRefs, checkRefs...)
+	result.EvidenceRefs = append(result.EvidenceRefs, "draft-pr-ready")
 	return result, nil
 }
 
-func (svc *Service) branchHasCommitsAhead(ctx context.Context, workDir string) bool {
+func (svc *Service) cleanAheadBaseRef(baseRef string) string {
 	remote := strings.TrimSpace(svc.options.RemoteName)
 	if remote == "" {
 		remote = "origin"
 	}
-	result, err := svc.git(ctx, workDir, nil, "rev-list", "--count", remote+"/main..HEAD")
+	base := strings.TrimSpace(baseRef)
+	if base == "" {
+		base = "main"
+	}
+	if strings.HasPrefix(base, remote+"/") {
+		return base
+	}
+	return remote + "/" + strings.TrimPrefix(base, "/")
+}
+
+func (svc *Service) branchHasCommitsAhead(ctx context.Context, workDir string, baseRef string) bool {
+	remote := strings.TrimSpace(svc.options.RemoteName)
+	if remote == "" {
+		remote = "origin"
+	}
+	base := strings.TrimSpace(baseRef)
+	if base == "" {
+		base = "main"
+	}
+	if strings.HasPrefix(base, remote+"/") {
+		base = strings.TrimPrefix(base, remote+"/")
+	}
+	result, err := svc.git(ctx, workDir, nil, "rev-list", "--count", remote+"/"+base+"..HEAD")
 	if err != nil {
 		return false
 	}
@@ -341,12 +458,16 @@ func FailureCategory(err error) string {
 		return "gitops_dirty_worktree_scope"
 	case errors.Is(err, ErrVerificationFailed):
 		return "gitops_verification_failed"
+	case errors.Is(err, ErrDownstreamChecks):
+		return "gitops_downstream_checks_failed"
 	case errors.Is(err, ErrBranchPolicy):
 		return "gitops_branch_policy_failed"
 	case errors.Is(err, ErrInvalidInput):
 		return "gitops_invalid_input"
 	case errors.Is(err, ErrCommandFailed):
 		return "gitops_command_failed"
+	case errors.Is(err, ErrRuntimeFailure):
+		return "gitops_runtime_failed"
 	default:
 		return "gitops_post_task_failed"
 	}
@@ -354,18 +475,45 @@ func FailureCategory(err error) string {
 
 func FailureCategoryWithDetail(err error) string {
 	category := FailureCategory(err)
-	if category != "gitops_verification_failed" {
+	switch category {
+	case "gitops_verification_failed":
+		fields := strings.Fields(err.Error())
+		if len(fields) == 0 {
+			return category
+		}
+		detail := fields[len(fields)-1]
+		if matched, _ := regexp.MatchString(`^[a-f0-9]{12}$`, detail); matched {
+			return category + "_" + detail
+		}
+		return category
+	case "gitops_command_failed":
+		if detail := gitOpsFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
+		return category
+	case "gitops_invalid_input":
+		if detail := invalidInputFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
+		return category
+	case "gitops_runtime_failed":
+		if detail := runtimeFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
+		return category
+	case "gitops_dirty_worktree", "gitops_dirty_worktree_scope", "gitops_branch_policy_failed":
+		return category
+	case "gitops_downstream_checks_failed":
+		if detail := downstreamChecksFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
+		return category
+	default:
+		if detail := genericGitOpsFailureDetail(err.Error()); detail != "" {
+			return category + "_" + detail
+		}
 		return category
 	}
-	fields := strings.Fields(err.Error())
-	if len(fields) == 0 {
-		return category
-	}
-	detail := fields[len(fields)-1]
-	if matched, _ := regexp.MatchString(`^[a-f0-9]{12}$`, detail); matched {
-		return category + "_" + detail
-	}
-	return category
 }
 
 func (svc *Service) runPreCommitVerification(ctx context.Context, workDir string) ([]string, []string, error) {
@@ -442,7 +590,29 @@ func (svc *Service) runVerifierCommand(ctx context.Context, workDir string, comm
 		return err
 	}
 	if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: env}); err != nil {
+		if len(svc.options.Verification.AutofixCommands) == 0 {
+			return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
+		}
+		if fixErr := svc.runVerifierAutofixCommands(ctx, workDir, env); fixErr != nil {
+			return fixErr
+		}
+		if _, retryErr := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: env}); retryErr == nil {
+			return nil
+		}
 		return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
+	}
+	return nil
+}
+
+func (svc *Service) runVerifierAutofixCommands(ctx context.Context, workDir string, env []string) error {
+	for _, command := range svc.options.Verification.AutofixCommands {
+		command = strings.TrimSpace(command)
+		if command == "" || strings.ContainsAny(command, "\x00\r\n") {
+			return fmt.Errorf("%w: unsafe verifier autofix command", ErrInvalidInput)
+		}
+		if _, err := svc.run(ctx, Command{Path: "sh", Args: []string{"-lc", command}, Dir: workDir, Env: env}); err != nil {
+			return fmt.Errorf("%w: %s", ErrVerificationFailed, safeHash(command))
+		}
 	}
 	return nil
 }
@@ -450,7 +620,7 @@ func (svc *Service) runVerifierCommand(ctx context.Context, workDir string, comm
 func verifierEnv(values map[string]string, workDir string) ([]string, error) {
 	configHome := filepath.Join(os.TempDir(), "mivia-gitops-verifier-"+safeHash(workDir), ".config")
 	if err := os.MkdirAll(configHome, 0o700); err != nil {
-		return nil, err
+		return nil, runtimeFailure("verifier_config_home", err)
 	}
 	out := []string{"XDG_CONFIG_HOME=" + configHome}
 	if len(values) == 0 {
@@ -488,24 +658,104 @@ func safeTestResult(command string, status string) string {
 }
 
 func (svc *Service) validatePushConfig() error {
+	if svc.options.SignCommits {
+		keyPath := strings.TrimSpace(svc.options.SSHPrivateKeyPath)
+		if keyPath == "" {
+			return fmt.Errorf("%w: signed commits require ssh private key", ErrInvalidInput)
+		}
+		if !filepath.IsAbs(keyPath) || strings.ContainsAny(keyPath, "\x00\r\n") {
+			return fmt.Errorf("%w: signing key path must be absolute and safe", ErrInvalidInput)
+		}
+		if err := requireReadableFile(keyPath); err != nil {
+			return fmt.Errorf("%w: signing key file is unavailable", ErrInvalidInput)
+		}
+	}
 	if !svc.options.PushAfterTask {
 		return nil
 	}
-	if strings.TrimSpace(svc.options.SSHPrivateKeyPath) == "" || strings.TrimSpace(svc.options.SSHKnownHostsPath) == "" {
-		return fmt.Errorf("%w: ssh key and known hosts are required for push", ErrInvalidInput)
-	}
-	for name, value := range map[string]string{
-		"ssh key":         svc.options.SSHPrivateKeyPath,
-		"ssh known hosts": svc.options.SSHKnownHostsPath,
-	} {
-		if !filepath.IsAbs(value) || strings.ContainsAny(value, "\x00\r\n") {
-			return fmt.Errorf("%w: %s path must be absolute and safe", ErrInvalidInput, name)
+	hasSSHKey := strings.TrimSpace(svc.options.SSHPrivateKeyPath) != ""
+	hasSSHKnownHosts := strings.TrimSpace(svc.options.SSHKnownHostsPath) != ""
+	hasGitHubTokenRef := strings.TrimSpace(svc.options.GitHubTokenEnv) != "" || strings.TrimSpace(svc.options.GitHubTokenFile) != ""
+	requiresSSHPushConfig := hasSSHKnownHosts || (hasSSHKey && !svc.options.SignCommits && !hasGitHubTokenRef)
+	if requiresSSHPushConfig {
+		if !hasSSHKey || !hasSSHKnownHosts {
+			return fmt.Errorf("%w: ssh key and known hosts are required for push", ErrInvalidInput)
+		}
+		for name, value := range map[string]string{
+			"ssh key":         svc.options.SSHPrivateKeyPath,
+			"ssh known hosts": svc.options.SSHKnownHostsPath,
+		} {
+			if !filepath.IsAbs(value) || strings.ContainsAny(value, "\x00\r\n") {
+				return fmt.Errorf("%w: %s path must be absolute and safe", ErrInvalidInput, name)
+			}
+			if err := requireReadableFile(value); err != nil {
+				return fmt.Errorf("%w: %s file is unavailable", ErrInvalidInput, name)
+			}
 		}
 	}
-	if svc.options.DraftPRAfterPush && strings.TrimSpace(svc.options.GitHubTokenEnv) == "" && strings.TrimSpace(svc.options.GitHubTokenFile) == "" {
-		return fmt.Errorf("%w: github token reference required for draft PR", ErrInvalidInput)
+	if hasGitHubTokenRef || svc.options.DraftPRAfterPush {
+		tokenEnv := strings.TrimSpace(svc.options.GitHubTokenEnv)
+		tokenFile := strings.TrimSpace(svc.options.GitHubTokenFile)
+		if tokenEnv != "" && strings.TrimSpace(os.Getenv(tokenEnv)) == "" {
+			return fmt.Errorf("%w: github token env is unavailable", ErrInvalidInput)
+		}
+		if tokenFile != "" {
+			if !filepath.IsAbs(tokenFile) || strings.ContainsAny(tokenFile, "\x00\r\n") {
+				return fmt.Errorf("%w: github token file path must be absolute and safe", ErrInvalidInput)
+			}
+			if err := requireReadableFile(tokenFile); err != nil {
+				return fmt.Errorf("%w: github token file is unavailable", ErrInvalidInput)
+			}
+		}
 	}
 	return nil
+}
+
+func (svc *Service) gitCommitArgs(args ...string) []string {
+	if !svc.shouldSignCommits() {
+		return args
+	}
+	keyPath := strings.TrimSpace(svc.options.SSHPrivateKeyPath)
+	prefix := []string{
+		"-c", "gpg.format=ssh",
+		"-c", "user.signingkey=" + keyPath,
+	}
+	out := append(prefix, args...)
+	if len(args) > 0 && args[0] == "commit" {
+		out = append(out[:len(prefix)+1], append([]string{"-S"}, out[len(prefix)+1:]...)...)
+	}
+	return out
+}
+
+func (svc *Service) shouldSignCommits() bool {
+	return svc.options.SignCommits || strings.TrimSpace(svc.options.SSHPrivateKeyPath) != ""
+}
+func (svc *Service) validateDraftPRAuth(ctx context.Context, workDir string) error {
+	if !svc.options.PushAfterTask || !svc.options.DraftPRAfterPush {
+		return nil
+	}
+	if len(svc.githubEnv()) > 0 {
+		return nil
+	}
+	if _, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"auth", "status"}, Dir: workDir}); err != nil {
+		return fmt.Errorf("%w: github auth is unavailable", ErrInvalidInput)
+	}
+	return nil
+}
+
+func requireReadableFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("path is a directory")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 func (svc *Service) currentBranch(ctx context.Context, workDir string) (string, error) {
@@ -565,6 +815,18 @@ func (svc *Service) normalizeBranchForPolicy(ctx context.Context, workDir string
 }
 
 func (svc *Service) derivePolicyBranch(input PostTaskInput) string {
+	conventions := normalizeConventions(svc.options.Conventions)
+	values := templateValues(input, conventions)
+	if conventions.RequireTicket && values["ticket_ref"] == "unavailable" {
+		return ""
+	}
+	if strings.TrimSpace(conventions.BranchNameTemplate) != "" {
+		branch, err := renderSingleLineTemplate("branch_name_template", conventions.BranchNameTemplate, values)
+		if err != nil {
+			return ""
+		}
+		return branch
+	}
 	projectKey := branchPatternProjectKey(svc.options.BranchNamePattern)
 	if projectKey == "" {
 		projectKey = ticketProjectKey(input.TaskRef, input.TaskTitle, input.BranchName)
@@ -572,11 +834,9 @@ func (svc *Service) derivePolicyBranch(input PostTaskInput) string {
 	if projectKey == "" {
 		return ""
 	}
-	kind := branchKind(svc.options.BranchNamePattern, svc.options.Conventions.CommitType)
-	slug := safeBranchToken(firstNonEmpty(input.TaskRef, input.TaskTitle, input.AutomationRunID))
-	if slug == "" {
-		slug = "automation-task"
-	}
+	kind := branchKind(svc.options.BranchNamePattern, conventions.CommitType)
+	ticketRef := extractTicketRef(input.BranchName, input.TaskRef, input.TaskTitle)
+	slug := branchSlug(ticketRef, input.TaskRef, input.TaskTitle, input.AutomationRunID)
 	return kind + "-" + projectKey + "-0000-" + slug
 }
 
@@ -609,9 +869,9 @@ func branchPatternProjectKey(pattern string) string {
 
 func ticketProjectKey(values ...string) string {
 	for _, value := range values {
-		match := regexp.MustCompile(`\b([A-Z][A-Z0-9]+)-[0-9]+\b`).FindStringSubmatch(strings.TrimSpace(value))
+		match := regexp.MustCompile(`\b([A-Za-z][A-Za-z0-9]+)-[0-9]+\b`).FindStringSubmatch(strings.TrimSpace(value))
 		if len(match) == 2 {
-			return match[1]
+			return strings.ToUpper(match[1])
 		}
 	}
 	return ""
@@ -658,7 +918,99 @@ func (svc *Service) ensureDraftPR(ctx context.Context, workDir string, rendered 
 	if err != nil {
 		return "", err
 	}
-	return "github-pr-" + safeHash(create.Stdout), nil
+	prNumber := githubPRNumberFromOutput(create.Stdout)
+	if prNumber == "" {
+		view, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: []string{"pr", "view", "--json", "number", "--jq", ".number"}, Dir: workDir, Env: env})
+		if err == nil {
+			prNumber = strings.TrimSpace(view.Stdout)
+			if parsed := githubPRNumberFromOutput(prNumber); parsed != "" {
+				prNumber = parsed
+			}
+			if matched, _ := regexp.MatchString(`^[0-9]+$`, prNumber); !matched {
+				prNumber = ""
+			}
+		}
+	}
+	if prNumber == "" {
+		return "", fmt.Errorf("%w: draft_pr_ref_unresolved", ErrInvalidInput)
+	}
+	return "github-pr-" + prNumber, nil
+}
+
+func githubPRNumberFromOutput(output string) string {
+	for _, match := range regexp.MustCompile(`(?i)(?:/pull/|#)([0-9]+)\b`).FindAllStringSubmatch(output, -1) {
+		if len(match) == 2 && strings.TrimSpace(match[1]) != "" {
+			return strings.TrimSpace(match[1])
+		}
+	}
+	return ""
+}
+
+func (svc *Service) verifyPostPRChecks(ctx context.Context, workDir string) ([]string, error) {
+	checks := svc.options.PostPRChecks
+	if !checks.Enabled {
+		return nil, nil
+	}
+	args := []string{"pr", "checks", "--json", "name,bucket,state,workflow"}
+	if checks.RequiredOnly {
+		args = append(args, "--required")
+	}
+	if checks.Watch {
+		args = append(args, "--watch")
+		if checks.FailFast {
+			args = append(args, "--fail-fast")
+		}
+		if checks.IntervalSeconds > 0 {
+			args = append(args, "--interval", strconv.Itoa(checks.IntervalSeconds))
+		}
+	}
+	result, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: args, Dir: workDir, Env: svc.githubEnv()})
+	if strings.TrimSpace(result.Stdout) == "" {
+		return nil, fmt.Errorf("%w: no_check_statuses", ErrDownstreamChecks)
+	}
+	if parseErr := postPRChecksFailure(result.Stdout); parseErr != nil {
+		return nil, parseErr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []string{"post-pr-checks-passed"}, nil
+}
+
+type postPRCheckStatus struct {
+	Name   string `json:"name"`
+	Bucket string `json:"bucket"`
+	State  string `json:"state"`
+}
+
+func postPRChecksFailure(stdout string) error {
+	stdout = strings.TrimSpace(stdout)
+	if stdout == "" {
+		return nil
+	}
+	var statuses []postPRCheckStatus
+	if err := json.Unmarshal([]byte(stdout), &statuses); err != nil {
+		return runtimeFailure("post_pr_checks_parse", err)
+	}
+	blocked := make([]string, 0)
+	for _, status := range statuses {
+		bucket := strings.ToLower(strings.TrimSpace(status.Bucket))
+		switch bucket {
+		case "", "pass", "skipping":
+			continue
+		case "pending":
+			blocked = append(blocked, "pending:"+safeFailureToken(status.Name))
+		case "fail", "cancel":
+			blocked = append(blocked, bucket+":"+safeFailureToken(status.Name))
+		default:
+			blocked = append(blocked, "unknown:"+safeFailureToken(status.Name))
+		}
+	}
+	if len(blocked) == 0 {
+		return nil
+	}
+	sort.Strings(blocked)
+	return fmt.Errorf("%w: %s", ErrDownstreamChecks, strings.Join(blocked, ","))
 }
 
 func (svc *Service) git(ctx context.Context, dir string, env []string, args ...string) (CommandResult, error) {
@@ -666,6 +1018,49 @@ func (svc *Service) git(ctx context.Context, dir string, env []string, args ...s
 		args = append([]string{"-c", "safe.directory=" + safeDir}, args...)
 	}
 	return svc.run(ctx, Command{Path: "git", Args: args, Dir: dir, Env: env})
+}
+
+func (svc *Service) gitPush(ctx context.Context, workDir string, branch string) (CommandResult, error) {
+	args := []string{"push", svc.options.RemoteName, "HEAD:" + branch}
+	env := svc.gitSSHEnv()
+	remoteURL, remotePath, _ := svc.remoteURLAndLocalPath(ctx, workDir)
+	if githubEnv := svc.githubEnv(); len(githubEnv) > 0 && remoteNeedsGitHubCredentialHelper(remoteURL) {
+		args = append([]string{"-c", "credential.helper=", "-c", "credential.helper=!f() { test \"$1\" = get && echo username=x-access-token && echo password=$GH_TOKEN; }; f"}, args...)
+		env = append(env, githubEnv...)
+	}
+	if remotePath != "" {
+		if _, err := svc.git(ctx, workDir, nil, "config", "--global", "--add", "safe.directory", remotePath); err != nil {
+			return CommandResult{}, err
+		}
+		args = append([]string{"-c", "safe.directory=" + remotePath}, args...)
+	}
+	return svc.git(ctx, workDir, env, args...)
+}
+
+func (svc *Service) remoteURLAndLocalPath(ctx context.Context, workDir string) (string, string, error) {
+	remote := strings.TrimSpace(svc.options.RemoteName)
+	if remote == "" {
+		remote = "origin"
+	}
+	result, err := svc.git(ctx, workDir, nil, "config", "--get", "remote."+remote+".url")
+	if err != nil {
+		return "", "", err
+	}
+	remoteURL := strings.TrimSpace(result.Stdout)
+	return remoteURL, safeLocalRemotePath(remoteURL), nil
+}
+
+func remoteNeedsGitHubCredentialHelper(remoteURL string) bool {
+	remoteURL = strings.ToLower(strings.TrimSpace(remoteURL))
+	return strings.HasPrefix(remoteURL, "https://") || strings.HasPrefix(remoteURL, "http://")
+}
+
+func (svc *Service) localRemoteSafeDirectory(ctx context.Context, workDir string) (string, error) {
+	_, remotePath, err := svc.remoteURLAndLocalPath(ctx, workDir)
+	if err != nil {
+		return "", err
+	}
+	return remotePath, nil
 }
 
 func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) error {
@@ -678,7 +1073,7 @@ func (svc *Service) ensureSafeDirectory(ctx context.Context, workDir string) err
 	}
 	home := filepath.Join(os.TempDir(), "mivia-gitops-home-"+safeHash(workDir))
 	if err := os.MkdirAll(home, 0o700); err != nil {
-		return err
+		return runtimeFailure("safe_directory_home", err)
 	}
 	env := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config")}
 	_, err := svc.git(ctx, workDir, env, "config", "--global", "--add", "safe.directory", workDir)
@@ -693,12 +1088,291 @@ func safeGitDirectoryArg(dir string) string {
 	return dir
 }
 
+func safeLocalRemotePath(remoteURL string) string {
+	remoteURL = strings.TrimSpace(remoteURL)
+	if remoteURL == "" || strings.ContainsAny(remoteURL, "\x00\r\n") {
+		return ""
+	}
+	if strings.HasPrefix(remoteURL, "file://") {
+		remoteURL = strings.TrimPrefix(remoteURL, "file://")
+	}
+	if !filepath.IsAbs(remoteURL) {
+		return ""
+	}
+	return filepath.Clean(remoteURL)
+}
+
+func runtimeFailure(detail string, cause error) error {
+	detail = safeFailureToken(detail)
+	if detail == "" {
+		detail = "unclassified"
+	}
+	if cause == nil || strings.TrimSpace(cause.Error()) == "" {
+		return fmt.Errorf("%w: %s", ErrRuntimeFailure, detail)
+	}
+	return fmt.Errorf("%w: %s", ErrRuntimeFailure, detail)
+}
+
+func gitOpsStageFailure(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, sentinel := range []error{
+		ErrInvalidInput,
+		ErrBranchPolicy,
+		ErrCommandFailed,
+		ErrDirtyWorktree,
+		ErrDirtyWorktreeScope,
+		ErrRuntimeFailure,
+		ErrVerificationFailed,
+		ErrDownstreamChecks,
+	} {
+		if errors.Is(err, sentinel) {
+			return err
+		}
+	}
+	return runtimeFailure(stage, err)
+}
+
 func (svc *Service) run(ctx context.Context, command Command) (CommandResult, error) {
 	result, err := svc.runner.Run(ctx, command)
 	if err != nil {
-		return result, fmt.Errorf("%w: %s", ErrCommandFailed, command.Path)
+		detail := commandFailureDetail(command)
+		output := safeCommandFailureOutput(result)
+		if output != "" {
+			detail += "_" + output
+		}
+		return result, fmt.Errorf("%w: %s", ErrCommandFailed, detail)
 	}
 	return result, nil
+}
+
+func safeCommandFailureOutput(result CommandResult) string {
+	output := strings.TrimSpace(result.Stderr)
+	if output == "" {
+		output = strings.TrimSpace(result.Stdout)
+	}
+	if output == "" {
+		return ""
+	}
+	output = redactCommandFailureOutput(output)
+	parts := make([]string, 0, 12)
+	for _, match := range regexp.MustCompile(`\b(400|401|403|404|408|409|429|500|502|503|504|128)\b`).FindAllString(output, -1) {
+		parts = append(parts, "status_"+match)
+		if len(parts) >= 3 {
+			break
+		}
+	}
+	for _, field := range strings.Fields(output) {
+		token := safeFailureToken(field)
+		if token == "" || isLowSignalFailureToken(token) {
+			continue
+		}
+		parts = append(parts, token)
+		if len(parts) >= 12 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	out := strings.Join(parts, "_")
+	if len(out) > 120 {
+		return strings.TrimRight(out[:120], "_")
+	}
+	return out
+}
+
+func redactCommandFailureOutput(output string) string {
+	replacers := []struct {
+		pattern *regexp.Regexp
+		value   string
+	}{
+		{regexp.MustCompile(`(?i)(gh[pousr]_[A-Za-z0-9_]{20,})`), "redacted"},
+		{regexp.MustCompile(`(?i)(github_pat_[A-Za-z0-9_]{20,})`), "redacted"},
+		{regexp.MustCompile(`(?i)(x-access-token:)[^@\s]+`), "${1}redacted"},
+		{regexp.MustCompile(`(?i)(password=)[^\s]+`), "${1}redacted"},
+		{regexp.MustCompile(`(?i)(token=)[^\s]+`), "${1}redacted"},
+	}
+	for _, replacer := range replacers {
+		output = replacer.pattern.ReplaceAllString(output, replacer.value)
+	}
+	return output
+}
+
+func isLowSignalFailureToken(token string) bool {
+	switch token {
+	case "fatal", "error", "remote", "origin", "https", "http", "github", "com", "git", "to", "from", "the", "a", "an", "and", "or", "for", "access", "token":
+		return true
+	default:
+		return token == "redacted" || len(token) < 3
+	}
+}
+
+func commandFailureDetail(command Command) string {
+	parts := []string{safeFailureToken(filepath.Base(command.Path))}
+	for index := 0; index < len(command.Args) && len(parts) < 3; index++ {
+		arg := strings.TrimSpace(command.Args[index])
+		if arg == "" {
+			continue
+		}
+		if arg == "-c" && index+1 < len(command.Args) {
+			index++
+			continue
+		}
+		token := safeFailureToken(arg)
+		if token == "" {
+			continue
+		}
+		parts = append(parts, token)
+	}
+	out := strings.Join(parts, "_")
+	if out == "" {
+		return "command"
+	}
+	if len(out) > 80 {
+		return strings.TrimRight(out[:80], "_")
+	}
+	return out
+}
+
+func gitOpsFailureDetail(message string) string {
+	fields := strings.Fields(strings.TrimSpace(message))
+	if len(fields) == 0 {
+		return ""
+	}
+	return safeFailureToken(fields[len(fields)-1])
+}
+
+func genericGitOpsFailureDetail(message string) string {
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, item := range []struct {
+		needle string
+		detail string
+	}{
+		{needle: "commit author email file", detail: "commit_author_email_file"},
+		{needle: "safe directory", detail: "safe_directory"},
+		{needle: "workdir", detail: "workdir"},
+		{needle: "render", detail: "render"},
+		{needle: "github", detail: "github"},
+		{needle: "pull request", detail: "pull_request"},
+		{needle: "permission denied", detail: "permission_denied"},
+		{needle: "timeout", detail: "timeout"},
+	} {
+		if strings.Contains(message, item.needle) {
+			return item.detail
+		}
+	}
+	fields := strings.Fields(message)
+	for i := len(fields) - 1; i >= 0; i-- {
+		if detail := safeFailureToken(fields[i]); detail != "" {
+			return detail
+		}
+	}
+	return "unclassified"
+}
+
+func downstreamChecksFailureDetail(message string) string {
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, prefix := range []string{"fail:", "pending:", "cancel:", "unknown:"} {
+		index := strings.Index(message, prefix)
+		if index < 0 {
+			continue
+		}
+		fields := strings.FieldsFunc(message[index+len(prefix):], func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\n' || r == '\t'
+		})
+		if len(fields) == 0 {
+			continue
+		}
+		if detail := safeFailureToken(prefix[:len(prefix)-1] + "_" + fields[0]); detail != "" {
+			return detail
+		}
+	}
+	return genericGitOpsFailureDetail(message)
+}
+
+func runtimeFailureDetail(message string) string {
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, item := range []struct {
+		needle string
+		detail string
+	}{
+		{needle: "verifier_config_home", detail: "verifier_config_home"},
+		{needle: "safe_directory_home", detail: "safe_directory_home"},
+		{needle: "mkdir", detail: "mkdir"},
+		{needle: "permission denied", detail: "permission_denied"},
+		{needle: "no space", detail: "no_space"},
+		{needle: "read-only", detail: "read_only"},
+		{needle: "timeout", detail: "timeout"},
+	} {
+		if strings.Contains(message, item.needle) {
+			return item.detail
+		}
+	}
+	fields := strings.Fields(message)
+	for i := len(fields) - 1; i >= 0; i-- {
+		if detail := safeFailureToken(fields[i]); detail != "" {
+			return detail
+		}
+	}
+	return "unclassified"
+}
+
+func invalidInputFailureDetail(message string) string {
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, item := range []struct {
+		needle string
+		detail string
+	}{
+		{needle: "ssh key and known hosts are required", detail: "ssh_config_required"},
+		{needle: "push auth requires ssh key and known hosts or github token reference", detail: "push_auth_required"},
+		{needle: "ssh key file is unavailable", detail: "ssh_key_unavailable"},
+		{needle: "ssh known hosts file is unavailable", detail: "ssh_known_hosts_unavailable"},
+		{needle: "github token reference required", detail: "github_token_required"},
+		{needle: "github token env is unavailable", detail: "github_token_unavailable"},
+		{needle: "github token file path must be absolute", detail: "github_token_file_invalid"},
+		{needle: "github token file is unavailable", detail: "github_token_unavailable"},
+		{needle: "signed commits require ssh private key", detail: "signing_key_required"},
+		{needle: "signing key path must be absolute", detail: "signing_key_invalid"},
+		{needle: "signing key file is unavailable", detail: "signing_key_unavailable"},
+		{needle: "github auth is unavailable", detail: "github_auth_unavailable"},
+		{needle: "no safe task pathspecs", detail: "no_safe_task_pathspecs"},
+		{needle: "no changed files matched safe task pathspecs", detail: "no_changed_files_matched"},
+		{needle: "branch policy", detail: "branch_policy"},
+		{needle: "branch name is too long", detail: "branch_name_too_long"},
+		{needle: "task ref is too long", detail: "task_ref_too_long"},
+		{needle: "task title is too long", detail: "task_title_too_long"},
+		{needle: "commit author email file is unavailable", detail: "commit_author_email_file_unavailable"},
+		{needle: "invalid conventional commit pr title", detail: "pr_title_invalid"},
+		{needle: "invalid conventional commit subject", detail: "commit_subject_invalid"},
+		{needle: "workdir must be absolute", detail: "workdir_invalid"},
+		{needle: "unsafe verifier command", detail: "verifier_command_unsafe"},
+	} {
+		if strings.Contains(message, item.needle) {
+			return item.detail
+		}
+	}
+	return ""
+}
+
+func safeFailureToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range value {
+		allowed := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if allowed {
+			builder.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			builder.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(builder.String(), "_")
 }
 
 func (svc *Service) authorEmail() (string, error) {
@@ -708,7 +1382,7 @@ func (svc *Service) authorEmail() (string, error) {
 	if path := strings.TrimSpace(svc.options.CommitAuthorEmailFile); path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("%w: commit author email file is unavailable", ErrInvalidInput)
 		}
 		return strings.TrimSpace(string(data)), nil
 	}
@@ -716,6 +1390,9 @@ func (svc *Service) authorEmail() (string, error) {
 }
 
 func (svc *Service) gitSSHEnv() []string {
+	if strings.TrimSpace(svc.options.SSHPrivateKeyPath) == "" || strings.TrimSpace(svc.options.SSHKnownHostsPath) == "" {
+		return nil
+	}
 	command := "ssh -i " + shellQuote(svc.options.SSHPrivateKeyPath) + " -o IdentitiesOnly=yes -o UserKnownHostsFile=" + shellQuote(svc.options.SSHKnownHostsPath)
 	return []string{"GIT_SSH_COMMAND=" + command}
 }
@@ -749,7 +1426,14 @@ func sanitizePathspecs(values []string) []string {
 }
 
 func changedPathspecsWithinAllowed(status string, allowed []string) []string {
-	changed := changedPathsFromStatus(status)
+	return changedPathspecsWithinAllowedFromPaths(changedPathsFromStatus(status), allowed)
+}
+
+func changedPathspecsWithinAllowedForWorkDir(workDir string, status string, allowed []string) []string {
+	return changedPathspecsWithinAllowedFromPaths(expandChangedPathsForWorkDir(workDir, changedPathsFromStatus(status)), allowed)
+}
+
+func changedPathspecsWithinAllowedFromPaths(changed []string, allowed []string) []string {
 	out := make([]string, 0, len(changed))
 	seen := make(map[string]struct{}, len(changed))
 	for _, path := range changed {
@@ -770,8 +1454,16 @@ func changedPathspecsWithinAllowed(status string, allowed []string) []string {
 }
 
 func changedPathspecsOutsideAllowed(status string, allowed []string) []string {
+	return changedPathspecsOutsideAllowedFromPaths(changedPathsFromStatus(status), allowed)
+}
+
+func changedPathspecsOutsideAllowedForWorkDir(workDir string, status string, allowed []string) []string {
+	return changedPathspecsOutsideAllowedFromPaths(expandChangedPathsForWorkDir(workDir, changedPathsFromStatus(status)), allowed)
+}
+
+func changedPathspecsOutsideAllowedFromPaths(changed []string, allowed []string) []string {
 	out := make([]string, 0)
-	for _, path := range changedPathsFromStatus(status) {
+	for _, path := range changed {
 		if !isSafeRelativePathspec(path) {
 			out = append(out, "unsafe-pathspec")
 			continue
@@ -791,6 +1483,77 @@ func changedPathspecsOutsideAllowed(status string, allowed []string) []string {
 		}
 	}
 	return out
+}
+
+func expandChangedPathsForWorkDir(workDir string, paths []string) []string {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" || !filepath.IsAbs(workDir) {
+		return append([]string(nil), paths...)
+	}
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		trimmed := strings.TrimSpace(path)
+		if !isSafeRelativePathspec(trimmed) {
+			out = appendUniquePathspec(out, seen, trimmed)
+			continue
+		}
+		if strings.HasSuffix(trimmed, "/") {
+			expanded := untrackedDirectoryFiles(workDir, strings.TrimSuffix(trimmed, "/"))
+			if len(expanded) == 0 {
+				out = appendUniquePathspec(out, seen, trimmed)
+				continue
+			}
+			for _, expandedPath := range expanded {
+				out = appendUniquePathspec(out, seen, expandedPath)
+			}
+			continue
+		}
+		out = appendUniquePathspec(out, seen, trimmed)
+	}
+	return out
+}
+
+func untrackedDirectoryFiles(workDir string, relativeDir string) []string {
+	if !isSafeRelativePathspec(relativeDir) {
+		return nil
+	}
+	root := filepath.Join(workDir, filepath.FromSlash(relativeDir))
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	out := make([]string, 0)
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(workDir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if isSafeRelativePathspec(rel) {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+func appendUniquePathspec(out []string, seen map[string]struct{}, path string) []string {
+	if _, ok := seen[path]; ok {
+		return out
+	}
+	seen[path] = struct{}{}
+	return append(out, path)
 }
 
 func changedPathsFromStatus(status string) []string {
@@ -823,6 +1586,9 @@ func pathMatchesAllowedPathspec(path, allow string) bool {
 	allow = strings.TrimSuffix(strings.TrimSpace(allow), "/")
 	if allow == "" {
 		return false
+	}
+	if allow == "." {
+		return true
 	}
 	return path == allow || strings.HasPrefix(path, allow+"/")
 }

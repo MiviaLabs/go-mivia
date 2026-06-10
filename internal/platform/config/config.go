@@ -134,6 +134,7 @@ type GitOperations struct {
 	CommitAuthorName             string
 	CommitAuthorEmailEnv         string
 	CommitAuthorEmailFile        string
+	SignCommits                  bool
 	SSHPrivateKeyPath            string
 	SSHPublicKeyPath             string
 	SSHKnownHostsPath            string
@@ -142,17 +143,33 @@ type GitOperations struct {
 	GitHubCLIPath                string
 	Conventions                  GitOpsConventions
 	DirtyScopeRecovery           DirtyScopeRecovery
+	PostPRChecks                 PostPRChecks
 }
 
 type DirtyScopeRecovery struct {
 	AllowedSupportPathspecs []string
 }
 
+type PostPRChecks struct {
+	Enabled         bool
+	RequiredOnly    bool
+	Watch           bool
+	FailFast        bool
+	IntervalSeconds int
+}
+
 type GitOpsConventions struct {
 	CommitType               string
 	CommitScope              string
+	BranchTemplate           string
+	RequireTicketRef         bool
+	TicketRefPattern         string
+	TicketURLTemplate        string
+	AllowedTypes             []string
+	DefaultChangeType        string
 	CommitSummaryTemplate    string
 	PullRequestTitleTemplate string
+	PullRequestBodyTemplate  string
 	WhatChangedTemplate      string
 	HowVerifiedTemplate      string
 	TestsTemplate            string
@@ -161,6 +178,7 @@ type GitOpsConventions struct {
 type Verification struct {
 	BootstrapCommands  []string
 	AlwaysBeforePR     []string
+	AutofixCommands    []string
 	GeneratedArtifacts []GeneratedArtifactVerification
 	Env                map[string]string
 }
@@ -427,7 +445,7 @@ func defaultGitOperations() GitOperations {
 		RequireCleanBeforeTask:       true,
 		CleanupWorktreeAfterPlanDone: true,
 		RemoteName:                   "origin",
-		BranchPrefix:                 "mivia/",
+		BranchPrefix:                 "",
 		CommitAuthorName:             "Mivia Automation",
 		CommitAuthorEmailEnv:         "MIVIA_GIT_AUTHOR_EMAIL",
 		GitHubCLIPath:                "gh",
@@ -438,8 +456,15 @@ func defaultGitOperations() GitOperations {
 func defaultGitOpsConventions() GitOpsConventions {
 	return GitOpsConventions{
 		CommitType:               "chore",
+		BranchTemplate:           "",
+		RequireTicketRef:         false,
+		TicketRefPattern:         "",
+		TicketURLTemplate:        "",
+		AllowedTypes:             []string{"feat", "fix", "docs", "chore", "refactor", "test", "perf", "build", "ci", "revert"},
+		DefaultChangeType:        "chore",
 		CommitSummaryTemplate:    "complete {{work_task_id}}",
 		PullRequestTitleTemplate: "{{commit_subject}}",
+		PullRequestBodyTemplate:  "## What changed\n{{what_changed}}\n\n## How verified\n{{how_verified}}\n\n## Tests\n{{tests}}",
 		WhatChangedTemplate:      "Completed automation work task {{work_task_id}} for project {{project_id}}.",
 		HowVerifiedTemplate:      "Project ID: {{project_id}}\nWork Plan ID: {{work_plan_id}}\nWork Task ID: {{work_task_id}}\nAutomation ID: {{automation_id}}\nAutomation Run ID: {{automation_run_id}}\nOperator ID: {{operator_id}}\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}",
 		TestsTemplate:            "{{test_results}}",
@@ -609,6 +634,9 @@ func applyEnvOverrides(cfg *Config) error {
 	cfg.GitOperations.CommitAuthorName = getenv("MIVIA_GIT_OPS_COMMIT_AUTHOR_NAME", cfg.GitOperations.CommitAuthorName)
 	cfg.GitOperations.CommitAuthorEmailEnv = getenv("MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_ENV", cfg.GitOperations.CommitAuthorEmailEnv)
 	cfg.GitOperations.CommitAuthorEmailFile = getenv("MIVIA_GIT_OPS_COMMIT_AUTHOR_EMAIL_FILE", cfg.GitOperations.CommitAuthorEmailFile)
+	if cfg.GitOperations.SignCommits, err = getenvBool("MIVIA_GIT_OPS_SIGN_COMMITS", cfg.GitOperations.SignCommits); err != nil {
+		return err
+	}
 	cfg.GitOperations.SSHPrivateKeyPath = getenv("MIVIA_GIT_OPS_SSH_PRIVATE_KEY_PATH", cfg.GitOperations.SSHPrivateKeyPath)
 	cfg.GitOperations.SSHPublicKeyPath = getenv("MIVIA_GIT_OPS_SSH_PUBLIC_KEY_PATH", cfg.GitOperations.SSHPublicKeyPath)
 	cfg.GitOperations.SSHKnownHostsPath = getenv("MIVIA_GIT_OPS_SSH_KNOWN_HOSTS_PATH", cfg.GitOperations.SSHKnownHostsPath)
@@ -617,8 +645,19 @@ func applyEnvOverrides(cfg *Config) error {
 	cfg.GitOperations.GitHubCLIPath = getenv("MIVIA_GIT_OPS_GITHUB_CLI_PATH", cfg.GitOperations.GitHubCLIPath)
 	cfg.GitOperations.Conventions.CommitType = getenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE", cfg.GitOperations.Conventions.CommitType)
 	cfg.GitOperations.Conventions.CommitScope = getenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SCOPE", cfg.GitOperations.Conventions.CommitScope)
+	cfg.GitOperations.Conventions.BranchTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_BRANCH_TEMPLATE", cfg.GitOperations.Conventions.BranchTemplate)
+	if rawTypes := os.Getenv("MIVIA_GIT_OPS_CONVENTIONS_ALLOWED_TYPES"); strings.TrimSpace(rawTypes) != "" {
+		cfg.GitOperations.Conventions.AllowedTypes = splitCSV(rawTypes)
+	}
+	if cfg.GitOperations.Conventions.RequireTicketRef, err = getenvBool("MIVIA_GIT_OPS_CONVENTIONS_REQUIRE_TICKET_REF", cfg.GitOperations.Conventions.RequireTicketRef); err != nil {
+		return err
+	}
+	cfg.GitOperations.Conventions.TicketRefPattern = getenv("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN", cfg.GitOperations.Conventions.TicketRefPattern)
+	cfg.GitOperations.Conventions.TicketURLTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_TICKET_URL_TEMPLATE", cfg.GitOperations.Conventions.TicketURLTemplate)
+	cfg.GitOperations.Conventions.DefaultChangeType = getenv("MIVIA_GIT_OPS_CONVENTIONS_DEFAULT_CHANGE_TYPE", cfg.GitOperations.Conventions.DefaultChangeType)
 	cfg.GitOperations.Conventions.CommitSummaryTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE", cfg.GitOperations.Conventions.CommitSummaryTemplate)
 	cfg.GitOperations.Conventions.PullRequestTitleTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_TITLE_TEMPLATE", cfg.GitOperations.Conventions.PullRequestTitleTemplate)
+	cfg.GitOperations.Conventions.PullRequestBodyTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_BODY_TEMPLATE", cfg.GitOperations.Conventions.PullRequestBodyTemplate)
 	cfg.GitOperations.Conventions.WhatChangedTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_WHAT_CHANGED_TEMPLATE", cfg.GitOperations.Conventions.WhatChangedTemplate)
 	cfg.GitOperations.Conventions.HowVerifiedTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_HOW_VERIFIED_TEMPLATE", cfg.GitOperations.Conventions.HowVerifiedTemplate)
 	cfg.GitOperations.Conventions.TestsTemplate = getenv("MIVIA_GIT_OPS_CONVENTIONS_TESTS_TEMPLATE", cfg.GitOperations.Conventions.TestsTemplate)
@@ -727,6 +766,11 @@ func (verification Verification) Validate(prefix string) error {
 	}
 	for i, command := range verification.AlwaysBeforePR {
 		if err := validateSafeVerifierCommand(fmt.Sprintf("%s_ALWAYS_BEFORE_PR[%d]", prefix, i), command); err != nil {
+			return err
+		}
+	}
+	for i, command := range verification.AutofixCommands {
+		if err := validateSafeVerifierCommand(fmt.Sprintf("%s_AUTOFIX_COMMANDS[%d]", prefix, i), command); err != nil {
 			return err
 		}
 	}
@@ -907,7 +951,7 @@ func (automation Automation) Validate() error {
 }
 
 func (gitops GitOperations) Validate() error {
-	return gitops.validate("MIVIA_GIT_OPS", false)
+	return gitops.validate("MIVIA_GIT_OPS", true)
 }
 
 func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool) error {
@@ -916,6 +960,12 @@ func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool)
 	}
 	if gitops.DraftPRAfterPush && !gitops.PushAfterTask {
 		return fmt.Errorf("%s_DRAFT_PR_AFTER_PUSH requires %s_PUSH_AFTER_TASK", prefix, prefix)
+	}
+	if gitops.PostPRChecks.Enabled && !gitops.DraftPRAfterPush {
+		return fmt.Errorf("%s_POST_PR_CHECKS_ENABLED requires %s_DRAFT_PR_AFTER_PUSH", prefix, prefix)
+	}
+	if gitops.PostPRChecks.IntervalSeconds < 0 {
+		return fmt.Errorf("%s_POST_PR_CHECKS_INTERVAL_SECONDS must be non-negative", prefix)
 	}
 	if err := validateSafeGitToken(prefix+"_REMOTE_NAME", gitops.RemoteName); err != nil {
 		return err
@@ -955,16 +1005,19 @@ func (gitops GitOperations) validate(prefix string, allowEmptyBranchPrefix bool)
 			return err
 		}
 	}
-	if gitops.PushAfterTask {
-		if strings.TrimSpace(gitops.SSHPrivateKeyPath) == "" {
-			return fmt.Errorf("%s_SSH_PRIVATE_KEY_PATH is required when push after task is enabled", prefix)
-		}
-		if strings.TrimSpace(gitops.SSHKnownHostsPath) == "" {
-			return fmt.Errorf("%s_SSH_KNOWN_HOSTS_PATH is required when push after task is enabled", prefix)
-		}
+	hasSSHPrivateKey := strings.TrimSpace(gitops.SSHPrivateKeyPath) != ""
+	hasSSHKnownHosts := strings.TrimSpace(gitops.SSHKnownHostsPath) != ""
+	if gitops.SignCommits && !hasSSHPrivateKey {
+		return fmt.Errorf("%s_SIGN_COMMITS requires %s_SSH_PRIVATE_KEY_PATH", prefix, prefix)
 	}
-	if gitops.DraftPRAfterPush && strings.TrimSpace(gitops.GitHubTokenEnv) == "" && strings.TrimSpace(gitops.GitHubTokenFile) == "" {
-		return errors.New("draft PR creation requires a GitHub token env or file reference")
+	if hasSSHPrivateKey != hasSSHKnownHosts {
+		if !hasSSHPrivateKey {
+			return fmt.Errorf("%s_SSH_PRIVATE_KEY_PATH is required when SSH known_hosts is configured", prefix)
+		}
+		return fmt.Errorf("%s_SSH_KNOWN_HOSTS_PATH is required when SSH private key is configured", prefix)
+	}
+	if gitops.DraftPRAfterPush && strings.TrimSpace(gitops.GitHubTokenEnv) == "" && strings.TrimSpace(gitops.GitHubTokenFile) == "" && strings.TrimSpace(gitops.GitHubCLIPath) == "" {
+		return errors.New("draft PR creation requires GitHub CLI auth or a GitHub token env/file reference")
 	}
 	if err := gitops.Conventions.Validate(); err != nil {
 		return err
@@ -994,15 +1047,63 @@ func (recovery DirtyScopeRecovery) Validate(prefix string) error {
 }
 
 func (conventions GitOpsConventions) Validate() error {
-	if !regexpMustMatch(`^[a-z][a-z0-9-]*$`, conventions.CommitType) {
+	if !isSafeGitOpsChangeType(conventions.CommitType) {
 		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE must be a safe Conventional Commit type")
 	}
 	if strings.TrimSpace(conventions.CommitScope) != "" && !regexpMustMatch(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`, conventions.CommitScope) {
 		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SCOPE must be a safe Conventional Commit scope")
 	}
+	if strings.TrimSpace(conventions.BranchTemplate) != "" {
+		if strings.ContainsAny(conventions.BranchTemplate, "\r\n\x00") {
+			return errors.New("MIVIA_GIT_OPS_CONVENTIONS_BRANCH_TEMPLATE must be single-line")
+		}
+		if err := validateGitOpsTemplate("MIVIA_GIT_OPS_CONVENTIONS_BRANCH_TEMPLATE", conventions.BranchTemplate); err != nil {
+			return err
+		}
+	}
+	if conventions.RequireTicketRef && strings.TrimSpace(conventions.TicketRefPattern) == "" {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN must not be empty when ticket refs are required")
+	}
+	if strings.TrimSpace(conventions.TicketRefPattern) != "" {
+		if len(strings.TrimSpace(conventions.TicketRefPattern)) > 256 || strings.ContainsAny(conventions.TicketRefPattern, "\r\n\x00") {
+			return errors.New("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN must be a safe single-line RE2 pattern")
+		}
+		if _, err := regexp.Compile(strings.TrimSpace(conventions.TicketRefPattern)); err != nil {
+			return fmt.Errorf("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN must compile as a RE2 pattern: %w", err)
+		}
+	}
+	if strings.TrimSpace(conventions.TicketURLTemplate) != "" {
+		if strings.ContainsAny(conventions.TicketURLTemplate, "\x00") {
+			return errors.New("MIVIA_GIT_OPS_CONVENTIONS_TICKET_URL_TEMPLATE must not contain unsafe control characters")
+		}
+		if err := validateGitOpsTicketURLTemplate(conventions.TicketURLTemplate); err != nil {
+			return err
+		}
+	}
+	if len(conventions.AllowedTypes) == 0 {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_ALLOWED_TYPES must not be empty")
+	}
+	allowedTypes := make(map[string]bool, len(conventions.AllowedTypes))
+	for _, value := range conventions.AllowedTypes {
+		changeType := strings.TrimSpace(value)
+		if !isSafeGitOpsChangeType(changeType) {
+			return errors.New("MIVIA_GIT_OPS_CONVENTIONS_ALLOWED_TYPES must contain only safe Conventional Commit types")
+		}
+		allowedTypes[changeType] = true
+	}
+	if !isSafeGitOpsChangeType(conventions.DefaultChangeType) {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_DEFAULT_CHANGE_TYPE must be a safe Conventional Commit type")
+	}
+	if !allowedTypes[strings.TrimSpace(conventions.DefaultChangeType)] {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_DEFAULT_CHANGE_TYPE must be included in allowed_types")
+	}
+	if !allowedTypes[strings.TrimSpace(conventions.CommitType)] {
+		return errors.New("MIVIA_GIT_OPS_CONVENTIONS_COMMIT_TYPE must be included in allowed_types")
+	}
 	for name, value := range map[string]string{
 		"MIVIA_GIT_OPS_CONVENTIONS_COMMIT_SUMMARY_TEMPLATE":     conventions.CommitSummaryTemplate,
 		"MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_TITLE_TEMPLATE": conventions.PullRequestTitleTemplate,
+		"MIVIA_GIT_OPS_CONVENTIONS_PULL_REQUEST_BODY_TEMPLATE":  conventions.PullRequestBodyTemplate,
 		"MIVIA_GIT_OPS_CONVENTIONS_WHAT_CHANGED_TEMPLATE":       conventions.WhatChangedTemplate,
 		"MIVIA_GIT_OPS_CONVENTIONS_HOW_VERIFIED_TEMPLATE":       conventions.HowVerifiedTemplate,
 		"MIVIA_GIT_OPS_CONVENTIONS_TESTS_TEMPLATE":              conventions.TestsTemplate,
@@ -1028,8 +1129,26 @@ func (conventions GitOpsConventions) Validate() error {
 	return nil
 }
 
+func isSafeGitOpsChangeType(value string) bool {
+	return regexpMustMatch(`^[a-z][a-z0-9-]*$`, value)
+}
+
 func validateGitOpsTemplate(name, value string) error {
-	allowed := map[string]bool{
+	return validateGitOpsTemplateWithAllowedPlaceholders(name, value, gitOpsTemplateAllowedPlaceholders())
+}
+
+func validateGitOpsTicketURLTemplate(value string) error {
+	allowed := gitOpsTemplateAllowedPlaceholders()
+	delete(allowed, "ticket_url")
+	delete(allowed, "commit_subject")
+	delete(allowed, "what_changed")
+	delete(allowed, "how_verified")
+	delete(allowed, "tests")
+	return validateGitOpsTemplateWithAllowedPlaceholders("MIVIA_GIT_OPS_CONVENTIONS_TICKET_URL_TEMPLATE", value, allowed)
+}
+
+func gitOpsTemplateAllowedPlaceholders() map[string]bool {
+	return map[string]bool{
 		"project_id":        true,
 		"work_plan_id":      true,
 		"work_task_id":      true,
@@ -1037,6 +1156,8 @@ func validateGitOpsTemplate(name, value string) error {
 		"work_task_title":   true,
 		"branch_name":       true,
 		"ticket_ref":        true,
+		"ticket_url":        true,
+		"slug":              true,
 		"automation_id":     true,
 		"automation_run_id": true,
 		"operator_id":       true,
@@ -1044,7 +1165,14 @@ func validateGitOpsTemplate(name, value string) error {
 		"verifier_refs":     true,
 		"test_results":      true,
 		"commit_subject":    true,
+		"change_type":       true,
+		"what_changed":      true,
+		"how_verified":      true,
+		"tests":             true,
 	}
+}
+
+func validateGitOpsTemplateWithAllowedPlaceholders(name, value string, allowed map[string]bool) error {
 	for offset := 0; ; {
 		start := strings.Index(value[offset:], "{{")
 		if start < 0 {

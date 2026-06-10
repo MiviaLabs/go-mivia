@@ -98,6 +98,27 @@ func TestParseWorkflowTOMLAllowsLongSafeResumeInstructions(t *testing.T) {
 	}
 }
 
+func TestParseWorkflowTOMLAllowsWorkPlanSizedGovernanceFields(t *testing.T) {
+	longSafeText := strings.Repeat("check scoped evidence ", 18)
+	if len(longSafeText) <= 300 || len(longSafeText) > 500 {
+		t.Fatalf("test text must be between old and current governance limits, got %d", len(longSafeText))
+	}
+	toml := strings.Replace(validWorkflowTOML(), `resume_instructions = "Run focused workflow tests."`, `resume_instructions = "Run focused workflow tests."
+acceptance_criteria = ["`+longSafeText+`"]
+stop_conditions = ["`+longSafeText+`"]
+verifier_ladder = ["`+longSafeText+`"]
+regression_test_applicability = "`+longSafeText+`"`, 1)
+	_, issues, err := ParseWorkflowTOML([]byte(toml))
+	if err != nil {
+		t.Fatalf("ParseWorkflowTOML returned error: %v", err)
+	}
+	for _, issue := range issues {
+		if strings.Contains(issue.FieldPath, "acceptance_criteria") || strings.Contains(issue.FieldPath, "stop_conditions") || strings.Contains(issue.FieldPath, "verifier_ladder") || strings.Contains(issue.FieldPath, "regression_test_applicability") {
+			t.Fatalf("expected WorkPlan-sized governance fields to pass, got %#v", issues)
+		}
+	}
+}
+
 func assertWorkflowIssue(t *testing.T, toml string, code string, field string) {
 	t.Helper()
 	_, issues, err := ParseWorkflowTOML([]byte(toml))

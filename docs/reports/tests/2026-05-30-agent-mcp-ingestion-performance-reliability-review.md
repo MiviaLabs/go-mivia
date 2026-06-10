@@ -51,7 +51,7 @@ Date: 2026-05-30
 6. Watcher startup is not durable for thousands of directories.
    - Startup recursively calls `watcher.Add` for every included directory and returns the first error (`internal/projectingestion/orchestrator.go:324-365`).
    - `mivia-server` treats orchestrator start failure as service startup failure (`cmd/mivia-server/main.go:94-104`).
-   - The local MASS config enables live updates, initial startup scan, queue depth 128, worker count 2, and include `**/*` (`configs/mivia-server.local.toml:18-27`, `configs/mivia-server.local.toml:76-78`).
+   - The local GENERIC config enables live updates, initial startup scan, queue depth 128, worker count 2, and include `**/*` (`configs/mivia-server.local.toml:18-27`, `configs/mivia-server.local.toml:76-78`).
    - Impact: OS watch limits, mounted filesystem behavior, or one inaccessible directory can prevent the local server from starting instead of degrading to manual ingestion.
 
 7. Error diagnostics are too coarse for large scans.

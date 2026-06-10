@@ -17,6 +17,7 @@ type CodexCommand struct {
 	Args      []string
 	Env       []string
 	StdinFile string
+	Dir       string
 	Timeout   time.Duration
 }
 
@@ -33,6 +34,7 @@ type CodexRunResult struct {
 	TimedOut            bool
 	OutputTruncated     bool
 	SafeFailureCategory string
+	Output              string
 }
 
 func DetectCodex(binaryPath string) (string, bool) {
@@ -100,6 +102,9 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 
 	started := time.Now()
 	cmd := exec.CommandContext(runCtx, command.Path, command.Args...)
+	if strings.TrimSpace(command.Dir) != "" {
+		cmd.Dir = command.Dir
+	}
 	cmd.Env = append(os.Environ(), command.Env...)
 	if command.StdinFile != "" {
 		stdin, err := os.Open(command.StdinFile)
@@ -121,6 +126,7 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 		TimedOut:            runCtx.Err() == context.DeadlineExceeded,
 		OutputTruncated:     output.truncated,
 		SafeFailureCategory: safeFailureCategory,
+		Output:              output.String(),
 	}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
@@ -137,6 +143,11 @@ func RunCodexCommand(ctx context.Context, command CodexCommand, maxOutputBytes i
 func safeCodexFailureCategory(output string) string {
 	normalized := strings.ToLower(output)
 	switch {
+	case (strings.Contains(normalized, "invalid schema") && strings.Contains(normalized, "response_format")) ||
+		(strings.Contains(normalized, "output schema") && strings.Contains(normalized, "invalid")):
+		return "codex_output_schema_invalid"
+	case strings.Contains(normalized, "usage limit"):
+		return "codex_usage_limit_reached"
 	case strings.Contains(normalized, "failed to read config file") && strings.Contains(normalized, "permission denied"):
 		return "codex_config_unreadable"
 	case strings.Contains(normalized, "not logged in") || strings.Contains(normalized, "login") && strings.Contains(normalized, "codex"):

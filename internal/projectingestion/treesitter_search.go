@@ -243,13 +243,15 @@ func astSearchFile(ctx context.Context, language *tree_sitter.Language, query *t
 	if !ok || content == "" {
 		return nil, false, nil
 	}
+	treeSitterParseMu.Lock()
+	defer treeSitterParseMu.Unlock()
 	parser := tree_sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(language); err != nil {
 		return nil, false, fmt.Errorf("%w: ast parser unavailable", ErrInvalidInput)
 	}
 	contentBytes := []byte(content)
-	tree := parser.ParseCtx(ctx, contentBytes, nil)
+	tree := parser.Parse(contentBytes, nil)
 	if tree == nil {
 		return nil, false, fmt.Errorf("%w: ast parse failed", ErrInvalidInput)
 	}
