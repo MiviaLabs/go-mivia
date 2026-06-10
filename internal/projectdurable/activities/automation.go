@@ -1,8 +1,11 @@
-// Package activities hosts the observe-only durable activities for the
-// go-workflows shadow pilot (Phase 3). Activities read the current system
-// only through the narrow ports defined in internal/projectdurable and write
-// nothing except shadow-comparison metadata. No activity may mutate runs,
-// tasks, claims, or any other state in this phase.
+// Package activities hosts the durable activities for the go-workflows
+// pilot: the observe-only shadow activities (Phase 3) and the test-only
+// execution activities (Phase 4). Activities touch the current system only
+// through the narrow ports defined in internal/projectdurable. The Phase 3
+// observe activities write nothing except shadow-comparison metadata; the
+// Phase 4 execution activities additionally drive the current service's
+// claim/complete contract through ports, but only test adapters implement
+// those ports until cutover approval - no production path constructs them.
 //
 // Shared workflow DTOs (AutomationRunWorkflowInput, ShadowRunTrace) live in
 // this package rather than in the workflows package: the
@@ -292,6 +295,177 @@ func flattenShadowTrace(trace ShadowRunTrace) map[string]string {
 		"final_status":     trace.FinalStatus,
 		"failure_category": string(trace.FailureCategory),
 		"shadow_only":      strconv.FormatBool(trace.Input.ShadowOnly),
+		"step_count":       strconv.Itoa(len(trace.Steps)),
+	}
+	for i, step := range trace.Steps {
+		key := fmt.Sprintf("step_%02d_%s", i, step.Activity)
+		fields[key] = fmt.Sprintf("status=%s category=%s", step.Status, string(step.FailureCategory))
+	}
+	return fields
+}
+
+// --- Phase 4: test-only execution activities ---------------------------------
+
+// Activity step names for the Phase 4 test-only execution workflow.
+const (
+	ActivityClaimRunForExecution     = "claim-run-for-execution"
+	ActivityCompleteRunAttempt       = "complete-run-attempt"
+	ActivityWriteExecutionComparison = "write-execution-comparison"
+)
+
+// TestExecutionWorkflowInput is the metadata-only input of the Phase 4
+// TEST-ONLY execution workflow. No production path constructs it: there is
+// no configuration that enables durable execution, and the only construction
+// sites are tests. Outcome carries the attempt completion the simulated
+// runner will report; the workflow injects the claim token after claiming.
+type TestExecutionWorkflowInput struct {
+	ProjectID    string                               `json:"project_id"`
+	AutomationID string                               `json:"automation_id"`
+	RunID        string                               `json:"run_id"`
+	TaskID       string                               `json:"task_id,omitempty"`
+	TraceID      string                               `json:"trace_id,omitempty"`
+	RunnerID     string                               `json:"runner_id"`
+	Outcome      projectdurable.DurableAttemptOutcome `json:"outcome"`
+}
+
+// ExecutionTrace is the Phase 4 workflow result. It mirrors ShadowRunTrace:
+// bounded, safe, metadata-only records of every step plus the mirrored final
+// run status and the first non-none failure category.
+type ExecutionTrace struct {
+	Input           TestExecutionWorkflowInput             `json:"input"`
+	Steps           []projectdurable.DurableActivityResult `json:"steps"`
+	FinalStatus     string                                 `json:"final_status"`
+	FailureCategory projectdurable.DurableFailureCategory  `json:"failure_category,omitempty"`
+}
+
+// ClaimedRunResult is the metadata-only result of ClaimRunForExecution: the
+// post-claim run snapshot plus the opaque claim token the completion report
+// must echo.
+type ClaimedRunResult struct {
+	Snapshot projectdurable.DurableRunSnapshot `json:"snapshot"`
+	ClaimID  string                            `json:"claim_id"`
+}
+
+// AutomationRunExecutionActivities groups the Phase 4 test-only execution
+// activities and their ports. Implementations of Claim and Complete are test
+// adapters over the CURRENT projectautomation service until cutover approval;
+// durable code never imports that service. Runs is used for the durable
+// post-completion snapshot re-read; Shadow records the execution comparison.
+// Register one instance per worker alongside AutomationRunActivities (whose
+// observe methods the execution workflow reuses instead of duplicating).
+type AutomationRunExecutionActivities struct {
+	Claim    projectdurable.WorkTaskClaimPort
+	Complete projectdurable.AttemptCompletionPort
+	Runs     projectdurable.AutomationRunObserver
+	Shadow   projectdurable.ShadowComparisonWriter
+}
+
+// ClaimRunForExecution claims the referenced run through the Claim port on
+// behalf of runnerID. Everything is validated fail-closed: the input ref and
+// runner id before the port call, the returned snapshot and claim token
+// after it. Port errors are genericized so no port error text enters durable
+// history.
+func (a *AutomationRunExecutionActivities) ClaimRunForExecution(ctx context.Context, ref projectdurable.SafeAutomationRunRef, runnerID string) (ClaimedRunResult, error) {
+	if err := ref.Validate(); err != nil {
+		return ClaimedRunResult{}, err
+	}
+	if err := projectdurable.ValidateSafeRef(runnerID); err != nil {
+		return ClaimedRunResult{}, fmt.Errorf("%w (field runner_id)", err)
+	}
+	snap, claimID, err := a.Claim.ClaimRun(ctx, ref, runnerID)
+	if err != nil {
+		// Never echo port error content into durable history.
+		return ClaimedRunResult{}, fmt.Errorf("claim run failed")
+	}
+	if err := snap.Validate(); err != nil {
+		return ClaimedRunResult{}, err
+	}
+	if err := projectdurable.ValidateSafeRef(claimID); err != nil {
+		return ClaimedRunResult{}, fmt.Errorf("%w (field claim_id)", err)
+	}
+	if snap.Run.RunID != ref.RunID {
+		return ClaimedRunResult{}, fmt.Errorf("claimed run does not match requested run")
+	}
+	return ClaimedRunResult{Snapshot: snap, ClaimID: claimID}, nil
+}
+
+// CompleteRunAttempt reports one attempt outcome through the Complete port.
+// The outcome is validated fail-closed BEFORE the port is invoked: an
+// outcome carrying unsafe refs (roots, markers, URLs, emails, ...) must never
+// reach the current service. When the Runs observer is configured, the
+// post-completion snapshot is re-read through it (mirroring the current
+// service's durable re-read after completion) and the re-read wins.
+func (a *AutomationRunExecutionActivities) CompleteRunAttempt(ctx context.Context, ref projectdurable.SafeAutomationRunRef, outcome projectdurable.DurableAttemptOutcome) (projectdurable.DurableRunSnapshot, error) {
+	if err := ref.Validate(); err != nil {
+		return projectdurable.DurableRunSnapshot{}, err
+	}
+	if err := outcome.Validate(); err != nil {
+		// Fail closed before touching the port.
+		return projectdurable.DurableRunSnapshot{}, err
+	}
+	snap, err := a.Complete.CompleteAttempt(ctx, ref, outcome)
+	if err != nil {
+		return projectdurable.DurableRunSnapshot{}, fmt.Errorf("complete attempt failed")
+	}
+	if err := snap.Validate(); err != nil {
+		return projectdurable.DurableRunSnapshot{}, err
+	}
+	if snap.Run.RunID != ref.RunID {
+		return projectdurable.DurableRunSnapshot{}, fmt.Errorf("completed run does not match requested run")
+	}
+	if a.Runs != nil {
+		reread, err := a.Runs.LoadRunSnapshot(ctx, ref)
+		if err != nil {
+			return projectdurable.DurableRunSnapshot{}, fmt.Errorf("post-completion snapshot re-read failed")
+		}
+		if err := reread.Validate(); err != nil {
+			return projectdurable.DurableRunSnapshot{}, err
+		}
+		if reread.Run.RunID != ref.RunID {
+			return projectdurable.DurableRunSnapshot{}, fmt.Errorf("post-completion snapshot does not match requested run")
+		}
+		return reread, nil
+	}
+	return snap, nil
+}
+
+// WriteExecutionComparison flattens the execution trace into bounded
+// key->value fields and writes them through the Shadow port, exactly like
+// the Phase 3 WriteShadowComparison (keys validated in sorted order for
+// deterministic failures). This is the only Shadow write in the execution
+// workflow and it always runs last.
+func (a *AutomationRunExecutionActivities) WriteExecutionComparison(ctx context.Context, ref projectdurable.SafeAutomationRunRef, trace ExecutionTrace) (projectdurable.DurableActivityResult, error) {
+	if err := ref.Validate(); err != nil {
+		return projectdurable.DurableActivityResult{}, err
+	}
+	fields := flattenExecutionTrace(trace)
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if err := projectdurable.ValidateSafeRef(key); err != nil {
+			return projectdurable.DurableActivityResult{}, fmt.Errorf("%w (execution field key)", err)
+		}
+		if err := projectdurable.ValidateSafeSummary(fields[key]); err != nil {
+			return projectdurable.DurableActivityResult{}, fmt.Errorf("%w (execution field value)", err)
+		}
+	}
+	if err := a.Shadow.WriteShadowComparison(ctx, ref, fields); err != nil {
+		return projectdurable.DurableActivityResult{}, fmt.Errorf("write execution comparison failed")
+	}
+	return newResult(ActivityWriteExecutionComparison, projectdurable.ActivityStatusOK, projectdurable.FailureCategoryNone,
+		"execution comparison written", []string{"execution-fields:" + strconv.Itoa(len(fields))})
+}
+
+// flattenExecutionTrace converts the execution trace into bounded fields,
+// mirroring flattenShadowTrace with a mode marker instead of a shadow flag.
+func flattenExecutionTrace(trace ExecutionTrace) map[string]string {
+	fields := map[string]string{
+		"mode":             "test_execution",
+		"final_status":     trace.FinalStatus,
+		"failure_category": string(trace.FailureCategory),
 		"step_count":       strconv.Itoa(len(trace.Steps)),
 	}
 	for i, step := range trace.Steps {
