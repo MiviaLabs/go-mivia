@@ -12262,6 +12262,137 @@ func TestCompletedPostImplementationReviewCompletesTargetAndParentRun(t *testing
 	}
 }
 
+func TestCompletedPlanningReviewStampsGeneratedDecompositionChildren(t *testing.T) {
+	ctx := context.Background()
+	decompose := readyTask("task-decompose", "decompose-work-plan", nil)
+	decompose.Status = projectworkplan.WorkTaskStatusDone
+	child := readyTask("generated-child", "mass_1044_expired_booking_selection_and_hold_release", []string{"apps/domain-booking/src/booking/pending-release-reconciler.service.ts"})
+	child.Status = projectworkplan.WorkTaskStatusPlanned
+	child.OwnerAgent = "developer"
+	child.FilesToEdit = []string{"apps/domain-booking/src/booking/pending-release-reconciler.service.ts"}
+	child.ReviewGate = "planning-readiness-review"
+	child.DecompositionQuality = projectworkplan.DecompositionReady
+	child.ReviewResultRefs = nil
+	child.ReviewExemptReason = ""
+	existingReviewedChild := readyTask("already-reviewed-child", "mass_1044_existing_review", []string{"apps/domain-booking/src/payment/payment.service.ts"})
+	existingReviewedChild.Status = projectworkplan.WorkTaskStatusPlanned
+	existingReviewedChild.FilesToEdit = []string{"apps/domain-booking/src/payment/payment.service.ts"}
+	existingReviewedChild.ReviewGate = "planning-readiness-review"
+	existingReviewedChild.DecompositionQuality = projectworkplan.DecompositionReady
+	existingReviewedChild.ReviewResultRefs = []string{"review_result_existing"}
+	metadataOnly := readyTask("metadata-only", "mark-ready-after-review", nil)
+	metadataOnly.Status = projectworkplan.WorkTaskStatusPlanned
+	metadataOnly.ReviewGate = "planning-readiness-review"
+	metadataOnly.DecompositionQuality = projectworkplan.DecompositionReady
+	reviewTask := readyTask("review-decompose", "review-decompose-work-plan-planning-readiness-review", nil)
+	reviewTask.OwnerAgent = "planning-reviewer"
+	reviewTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	reviewTask.ClaimedByRunID = "run-review"
+	reviewTask.EvidenceNeeded = []string{"review-target-task-decompose", "work-task-refs"}
+	reviewTask.VerifierResultRefs = []string{"verifier.review"}
+	reviewTask.ReviewGate = "independent-reviewer-must-not-be-planning-worker"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		decompose.ID:             decompose,
+		child.ID:                 child,
+		existingReviewedChild.ID: existingReviewedChild,
+		metadataOnly.ID:          metadataOnly,
+		reviewTask.ID:            reviewTask,
+	}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	if _, err := store.CreateAutomation(ctx, Automation{ID: "auto-review", ProjectID: "project-1", AutomationRef: "auto-review", Status: AutomationStatusEnabled, AgentID: "planning-reviewer", PlanID: "plan-1"}); err != nil {
+		t.Fatalf("CreateAutomation review returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-review", ProjectID: "project-1", AutomationID: "auto-review", AgentID: "planning-reviewer",
+		PlanID: "plan-1", TaskID: reviewTask.ID, WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress, Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		ClaimID: "claim-review", RunnerID: "runner-review",
+	}); err != nil {
+		t.Fatalf("CreateRun review returned error: %v", err)
+	}
+
+	reviewRun, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:          "project-1",
+		RunID:              "run-review",
+		ClaimID:            "claim-review",
+		RunnerID:           "runner-review",
+		Status:             RunStatusCompleted,
+		VerifierResultRefs: []string{"verifier.review"},
+		EvidenceRefs:       []string{"evidence.review"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if reviewRun.Status != RunStatusCompleted || reviewRun.WorkTaskStatus != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected completed planning review run, got %#v", reviewRun)
+	}
+	updatedChild := fake.tasks[child.ID]
+	if !containsRef(updatedChild.ReviewResultRefs, "review_result_generated-child_planning_readiness_approved") {
+		t.Fatalf("expected generated child planning review ref, got %#v", updatedChild.ReviewResultRefs)
+	}
+	if got := fake.tasks[existingReviewedChild.ID].ReviewResultRefs; len(got) != 1 || got[0] != "review_result_existing" {
+		t.Fatalf("existing reviewed child must not get duplicate refs, got %#v", got)
+	}
+	if len(fake.tasks[metadataOnly.ID].ReviewResultRefs) != 0 {
+		t.Fatalf("metadata-only workflow task must not receive generated-child review refs, got %#v", fake.tasks[metadataOnly.ID].ReviewResultRefs)
+	}
+}
+
+func TestCompletedPlanningReviewReturnsErrorWhenGeneratedChildReviewStampFails(t *testing.T) {
+	ctx := context.Background()
+	decompose := readyTask("task-decompose", "decompose-work-plan", nil)
+	decompose.Status = projectworkplan.WorkTaskStatusDone
+	child := readyTask("generated-child", "mass_1044_expired_booking_selection_and_hold_release", nil)
+	child.Status = projectworkplan.WorkTaskStatusPlanned
+	child.FilesToEdit = []string{"apps/domain-booking/src/booking/pending-release-reconciler.service.ts"}
+	child.ReviewGate = "planning-readiness-review"
+	child.DecompositionQuality = projectworkplan.DecompositionReady
+	reviewTask := readyTask("review-decompose", "review-decompose-work-plan-planning-readiness-review", nil)
+	reviewTask.OwnerAgent = "planning-reviewer"
+	reviewTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	reviewTask.ClaimedByRunID = "run-review"
+	reviewTask.EvidenceNeeded = []string{"review-target-task-decompose"}
+	reviewTask.VerifierResultRefs = []string{"verifier.review"}
+	reviewTask.ReviewGate = "independent-reviewer-must-not-be-planning-worker"
+	fake := &fakeWorkTasks{
+		tasks: map[string]projectworkplan.WorkTask{
+			decompose.ID:  decompose,
+			child.ID:      child,
+			reviewTask.ID: reviewTask,
+		},
+		attachReviewErr: errors.New("attach failed"),
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	if _, err := store.CreateAutomation(ctx, Automation{ID: "auto-review", ProjectID: "project-1", AutomationRef: "auto-review", Status: AutomationStatusEnabled, AgentID: "planning-reviewer", PlanID: "plan-1"}); err != nil {
+		t.Fatalf("CreateAutomation review returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-review", ProjectID: "project-1", AutomationID: "auto-review", AgentID: "planning-reviewer",
+		PlanID: "plan-1", TaskID: reviewTask.ID, WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress, Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		ClaimID: "claim-review", RunnerID: "runner-review",
+	}); err != nil {
+		t.Fatalf("CreateRun review returned error: %v", err)
+	}
+
+	_, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:          "project-1",
+		RunID:              "run-review",
+		ClaimID:            "claim-review",
+		RunnerID:           "runner-review",
+		Status:             RunStatusCompleted,
+		VerifierResultRefs: []string{"verifier.review"},
+		EvidenceRefs:       []string{"evidence.review"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "attach failed") {
+		t.Fatalf("expected child review stamp error to surface, got %v", err)
+	}
+	if len(fake.tasks[child.ID].ReviewResultRefs) != 0 {
+		t.Fatalf("failed child review stamp must not mutate child refs, got %#v", fake.tasks[child.ID].ReviewResultRefs)
+	}
+}
+
 func TestCompletedPostImplementationReviewRejectsSelfReviewHandoff(t *testing.T) {
 	ctx := context.Background()
 	target := completedTaskForAutomationRun(readyTask("task-a", "implementation-task", []string{"internal/foo.go"}), "run-parent", []string{"internal/foo.go"}, []string{"evidence.impl", "gitops-commit:abc", "gitops-push:branch", "gitops-pr:draft"}, []string{"claim.impl"}, nil, "implemented")

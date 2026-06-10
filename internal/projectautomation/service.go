@@ -3619,7 +3619,13 @@ func (svc *Service) reconcilePostImplementationReviewTarget(ctx context.Context,
 		return nil
 	}
 	target, err := svc.workTasks.GetWorkTask(ctx, reviewRun.ProjectID, targetID)
-	if err != nil || !taskNeedsPostImplementationReview(target) {
+	if err != nil {
+		return nil
+	}
+	if strings.TrimSpace(target.TaskRef) == "decompose-work-plan" {
+		return svc.reconcileDecompositionChildReviewRefs(ctx, reviewRun, target)
+	}
+	if !taskNeedsPostImplementationReview(target) {
 		return nil
 	}
 	reviewRef := "review_result_" + safeBranchToken(target.ID) + "_approved"
@@ -3645,6 +3651,46 @@ func (svc *Service) reconcilePostImplementationReviewTarget(ctx context.Context,
 	}
 	_, err = svc.reconcileVerifyingRun(ctx, parent)
 	return err
+}
+
+func (svc *Service) reconcileDecompositionChildReviewRefs(ctx context.Context, reviewRun AutomationRun, target projectworkplan.WorkTask) error {
+	tasks, err := svc.workTasks.ListWorkTasks(ctx, projectworkplan.WorkTaskFilter{ProjectID: target.ProjectID, PlanID: target.PlanID, PageSize: 1000})
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if !decompositionGeneratedImplementationTaskNeedsReviewRef(task) {
+			continue
+		}
+		reviewRef := "review_result_" + safeBranchToken(task.ID) + "_planning_readiness_approved"
+		if containsRef(task.ReviewResultRefs, reviewRef) {
+			continue
+		}
+		if _, err := svc.workTasks.AttachReviewResult(ctx, projectworkplan.AttachInput{
+			ProjectID:       task.ProjectID,
+			TaskID:          task.ID,
+			Ref:             reviewRef,
+			AttachedByRunID: reviewRun.ID,
+			TraceID:         firstNonEmpty(reviewRun.TraceID, reviewRun.ID),
+			Note:            "planning-readiness review completed for generated decomposition child task",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decompositionGeneratedImplementationTaskNeedsReviewRef(task projectworkplan.WorkTask) bool {
+	if strings.TrimSpace(task.TaskRef) == "" || isReviewTask(task) || isGovernedWorkflowTaskRef(task.TaskRef) {
+		return false
+	}
+	if task.DecompositionQuality != projectworkplan.DecompositionReady || len(task.FilesToEdit) == 0 {
+		return false
+	}
+	if len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" {
+		return false
+	}
+	return strings.TrimSpace(task.ReviewGate) != ""
 }
 
 func postImplementationReviewTargetID(task projectworkplan.WorkTask) string {
