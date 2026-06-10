@@ -261,6 +261,8 @@ var unsafeMarkers = []string{
 	"raw_prompt",
 	"raw_completion",
 	"raw_stderr",
+	"raw_source",
+	"source_dump",
 	"provider_payload",
 	"api_key",
 	"secret",
