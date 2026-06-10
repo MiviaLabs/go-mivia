@@ -831,6 +831,51 @@ func TestShadowWrappersStayBoundToConfiguredChainStages(t *testing.T) {
 	}
 }
 
+func TestShadowContextResolverUsesLocalIngestedJiraValidation(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newTestChainStore(), &fakeWorkflowAPI{workflows: enabledWorkflows()}, &fakeWorkPlans{}, []Config{localIngestedTestConfig()})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContext("GENERIC-1044", true)})
+
+	refs, err := svc.ResolveContextRefsForShadow(ctx, "project-1", "chain-1", "jira:GENERIC-1044")
+	if err != nil {
+		t.Fatalf("resolve shadow context refs: %v", err)
+	}
+	for _, ref := range []string{
+		"jira:GENERIC-1044",
+		"jira-context:GENERIC-1044:summary",
+		"jira-context:GENERIC-1044:scope",
+		"jira-context:GENERIC-1044:implementation-evidence",
+		"jira-context:GENERIC-1044:source-anchors",
+		"jira-context:GENERIC-1044:verifier-scope",
+	} {
+		if !containsString(refs, ref) {
+			t.Fatalf("shadow context refs missing %q: %#v", ref, refs)
+		}
+	}
+}
+
+func TestShadowContextResolverRejectsMissingLocalJiraContext(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newTestChainStore(), &fakeWorkflowAPI{workflows: enabledWorkflows()}, &fakeWorkPlans{}, []Config{localIngestedTestConfig()})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContextWithoutImplementationEvidence("GENERIC-1044")})
+
+	if _, err := svc.ResolveContextRefsForShadow(ctx, "project-1", "chain-1", "jira:GENERIC-1044"); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "implementation_evidence") {
+		t.Fatalf("expected local-ingested context rejection, got %v", err)
+	}
+}
+
+func TestShadowContextResolverRejectsUnnormalizedJiraInputRef(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newTestChainStore(), &fakeWorkflowAPI{workflows: enabledWorkflows()}, &fakeWorkPlans{}, []Config{localIngestedTestConfig()})
+	svc.SetLocalContextReader(fakeLocalContextReader{result: localJiraContext("GENERIC-1044", true)})
+
+	for _, inputRef := range []string{"GENERIC-1044", "input:GENERIC-1044", "objective:abcdef012345", "jira:generic-1044"} {
+		if _, err := svc.ResolveContextRefsForShadow(ctx, "project-1", "chain-1", inputRef); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("expected unnormalized Jira ref %q rejected, got %v", inputRef, err)
+		}
+	}
+}
+
 func TestShadowWrappersRejectProjectAndChainDrift(t *testing.T) {
 	ctx := context.Background()
 	svc := New(newTestChainStore(), &fakeWorkflowAPI{workflows: enabledWorkflows()}, &fakeWorkPlans{}, []Config{testConfig()})

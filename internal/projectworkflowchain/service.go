@@ -849,6 +849,32 @@ func (svc *Service) ResolveStageConfigsForShadow(ctx context.Context, projectID,
 	return append([]StageConfig(nil), cfg.Stages...), nil
 }
 
+// ResolveContextRefsForShadow exposes the current chain context-ref resolver
+// for the durable workflow-chain shadow adapter. It returns safe metadata refs
+// only and preserves local-ingested Jira validation before any stage compile.
+func (svc *Service) ResolveContextRefsForShadow(ctx context.Context, projectID, chainRef, inputRef string) ([]string, error) {
+	projectID, err := safeRef(projectID, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	chainRef, err = safeRef(chainRef, "chain_ref")
+	if err != nil {
+		return nil, err
+	}
+	inputRef, err = safeRef(inputRef, "input_ref")
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := svc.config(projectID, chainRef)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateShadowInputRefForConfig(cfg, inputRef); err != nil {
+		return nil, err
+	}
+	return svc.resolveContextRefs(ctx, cfg, inputRef)
+}
+
 // CompileStageMetadataForShadow exposes the current compileStageMetadata
 // helper for the durable workflow-chain shadow adapter. It is compile only:
 // no task release, plan activation, or GitOps finalization happens here.
@@ -954,6 +980,21 @@ func configuredShadowStage(cfg Config, requested StageConfig) (StageConfig, erro
 		return stage, nil
 	}
 	return StageConfig{}, fmt.Errorf("%w: shadow stage is not configured", ErrInvalidInput)
+}
+
+func validateShadowInputRefForConfig(cfg Config, inputRef string) error {
+	switch firstNonEmpty(cfg.InputKind, InputKindSafeRef) {
+	case InputKindJiraIssueKey:
+		key := strings.TrimPrefix(inputRef, "jira:")
+		if key == inputRef || !jiraKeyPattern.MatchString(key) {
+			return fmt.Errorf("%w: shadow input_ref must be a normalized Jira issue ref", ErrInvalidInput)
+		}
+		return nil
+	case InputKindSafeRef:
+		return nil
+	default:
+		return fmt.Errorf("%w: unsupported input_kind", ErrInvalidInput)
+	}
 }
 
 func (svc *Service) compileStage(ctx context.Context, cfg Config, run ChainRun, stage StageConfig, dryRun bool) (StageRun, error) {

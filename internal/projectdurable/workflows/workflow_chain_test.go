@@ -16,6 +16,7 @@ import (
 	automationstore "github.com/MiviaLabs/go-mivia/internal/projectautomation/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectdurable"
 	"github.com/MiviaLabs/go-mivia/internal/projectdurable/activities"
+	"github.com/MiviaLabs/go-mivia/internal/projectintegrations"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflow"
 	workflowstore "github.com/MiviaLabs/go-mivia/internal/projectworkflow/store"
 	"github.com/MiviaLabs/go-mivia/internal/projectworkflowchain"
@@ -66,7 +67,11 @@ type fakeChainPipeline struct {
 
 func newChainPipelineHarness(t *testing.T, stages []projectdurable.SafeChainStagePlan) *chainPipelineHarness {
 	t.Helper()
-	cfg := chainShadowConfig(stages)
+	return newChainPipelineHarnessWithConfig(t, chainShadowConfig(stages))
+}
+
+func newChainPipelineHarnessWithConfig(t *testing.T, cfg projectworkflowchain.Config) *chainPipelineHarness {
+	t.Helper()
 	chainStore := chainstore.NewMemoryStore()
 	workPlanStore := workplanstore.NewMemoryStore()
 	workPlans := projectworkplan.New(workPlanStore)
@@ -104,6 +109,9 @@ func newChainPipelineHarness(t *testing.T, stages []projectdurable.SafeChainStag
 	}
 	chainSvc := projectworkflowchain.New(chainStore, workflows, workPlans, []projectworkflowchain.Config{cfg})
 	chainSvc.SetAutomationAPI(automations)
+	if cfg.ContextProvider == projectworkflowchain.ContextProviderJira && cfg.ContextMode == projectworkflowchain.ContextModeLocalIngested {
+		chainSvc.SetLocalContextReader(chainShadowLocalContextReader{})
+	}
 	finalizer := &chainShadowGitOpsFinalizer{result: projectworkflowchain.GitOpsFinalizeResult{
 		CommitRef:      "commit/chain-1044",
 		PushRef:        "push/chain-1044",
@@ -112,7 +120,6 @@ func newChainPipelineHarness(t *testing.T, stages []projectdurable.SafeChainStag
 	}}
 	chainSvc.SetGitOpsFinalizer(finalizer)
 	pipeline := &fakeChainPipeline{
-		stages:            stages,
 		config:            cfg.Stages,
 		chainStore:        chainStore,
 		chainSvc:          chainSvc,
@@ -154,6 +161,19 @@ func governedChainHarness(t *testing.T) *chainPipelineHarness {
 		{StageRef: "implementation", WorkflowRef: "governed-workplan-implementation"},
 		{StageRef: "post-validation", WorkflowRef: "governed-post-implementation-validation"},
 	})
+}
+
+func jiraBackedGovernedChainHarness(t *testing.T) *chainPipelineHarness {
+	t.Helper()
+	cfg := chainShadowConfig([]projectdurable.SafeChainStagePlan{
+		{StageRef: "decomposition", WorkflowRef: "governed-decomposition-planning"},
+		{StageRef: "implementation", WorkflowRef: "governed-workplan-implementation"},
+		{StageRef: "post-validation", WorkflowRef: "governed-post-implementation-validation"},
+	})
+	cfg.InputKind = projectworkflowchain.InputKindJiraIssueKey
+	cfg.ContextProvider = projectworkflowchain.ContextProviderJira
+	cfg.ContextMode = projectworkflowchain.ContextModeLocalIngested
+	return newChainPipelineHarnessWithConfig(t, cfg)
 }
 
 func chainShadowConfig(stages []projectdurable.SafeChainStagePlan) projectworkflowchain.Config {
@@ -206,6 +226,27 @@ type chainShadowGitOpsFinalizer struct {
 func (f *chainShadowGitOpsFinalizer) FinalizeWorkflowChain(_ context.Context, input projectworkflowchain.GitOpsFinalizeInput) (projectworkflowchain.GitOpsFinalizeResult, error) {
 	f.inputs = append(f.inputs, input)
 	return f.result, nil
+}
+
+type chainShadowLocalContextReader struct{}
+
+func (chainShadowLocalContextReader) ReadLocalContent(_ context.Context, input projectintegrations.LocalReadInput) (projectintegrations.RichContentReadResult, error) {
+	return projectintegrations.RichContentReadResult{
+		Artifact: projectintegrations.RichContentArtifact{
+			ID:      "integration-artifact-1",
+			ItemID:  "10001",
+			ItemKey: input.ItemIDOrKey,
+		},
+		Chunks: []projectintegrations.RichContentChunkView{{
+			ItemKey:   input.ItemIDOrKey,
+			FieldName: "summary",
+			Text:      "Implement bounded automation ticket delivery",
+		}, {
+			ItemKey:   input.ItemIDOrKey,
+			FieldName: "description",
+			Text:      "Acceptance criteria: decompose, implement, verify, and open a draft PR. Source anchors and verifier scope identify the implementation evidence.",
+		}},
+	}, nil
 }
 
 func (p *fakeChainPipeline) ResolveChainStages(ctx context.Context, projectID, chainRef string) ([]projectdurable.SafeChainStagePlan, error) {
@@ -462,11 +503,15 @@ func (p *fakeChainPipeline) ensureRunLocked(ctx context.Context, projectID, chai
 		ChainRef:       chainRef,
 		InputRef:       inputRef,
 		Status:         projectworkflowchain.ChainStatusPlanned,
-		ContextRefs:    []string{inputRef},
 		CreatedByRunID: "codex-orchestrator-run-1044",
 		TraceID:        firstNonEmptyTest(p.traceID, "trace-chain-shadow-current-service"),
 		NextAction:     "compile first stage and activate its Work Plan",
 	}
+	contextRefs, err := p.chainSvc.ResolveContextRefsForShadow(ctx, projectID, chainRef, inputRef)
+	if err != nil {
+		return projectworkflowchain.ChainRun{}, err
+	}
+	run.ContextRefs = contextRefs
 	for _, stage := range p.config {
 		run.StageRuns = append(run.StageRuns, projectworkflowchain.StageRun{
 			StageRef:    stage.StageRef,
@@ -649,6 +694,15 @@ func appendUniqueManyTest(values []string, incoming []string) []string {
 	return values
 }
 
+func containsStringTest(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func firstNonEmptyTest(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -702,6 +756,58 @@ func chainInput() ChainShadowWorkflowInput {
 	}
 }
 
+func chainInputWithRef(inputRef, traceID string) ChainShadowWorkflowInput {
+	input := chainInput()
+	input.InputRef = inputRef
+	input.TraceID = traceID
+	return input
+}
+
+func assertWholeChainShadowJourney(t *testing.T, h *chainPipelineHarness, trace ChainShadowTrace, wantInputRef string) {
+	t.Helper()
+	if trace.FinalStatus != activities.ChainTraceStatusCompleted || trace.PullRequestRef != "github-pr-1044" || trace.GitOpsReady {
+		t.Fatalf("unexpected completed chain trace: %#v", trace)
+	}
+	if got := fmt.Sprint(h.pipeline.compileOrder); got != "[decomposition implementation post-validation]" {
+		t.Fatalf("compile order = %s", got)
+	}
+	if len(trace.Stages) != 3 {
+		t.Fatalf("expected three trace stages, got %#v", trace.Stages)
+	}
+	for _, stageRef := range []string{"decomposition", "implementation", "post-validation"} {
+		outcome, ok := h.pipeline.compiled[stageRef]
+		if !ok {
+			t.Fatalf("missing compiled stage %q", stageRef)
+		}
+		if outcome.PlanID == "" || len(outcome.TaskIDs) == 0 || len(outcome.ReviewerTaskIDs) == 0 || len(outcome.AutomationIDs) == 0 || len(outcome.PermissionSnapshotIDs) == 0 {
+			t.Fatalf("compiled stage %q missing handoff refs: %#v", stageRef, outcome)
+		}
+	}
+	if trace.Stages[1].CarriedIDsCount == 0 || trace.Stages[2].CarriedIDsCount == 0 {
+		t.Fatalf("expected carried concrete outputs into downstream stages: %#v", trace.Stages)
+	}
+	run, err := h.pipeline.chainStore.GetChainRun(context.Background(), "project-1", h.pipeline.runID)
+	if err != nil {
+		t.Fatalf("get current chain run: %v", err)
+	}
+	if run.InputRef != wantInputRef || run.PullRequestRef != "github-pr-1044" || run.Status != projectworkflowchain.ChainStatusCompleted || run.GitOpsReady {
+		t.Fatalf("current chain run diverged from durable trace: %#v", run)
+	}
+	if len(h.pipeline.finalizer.inputs) != 1 {
+		t.Fatalf("expected exactly one draft PR finalization, got %#v", h.pipeline.finalizer.inputs)
+	}
+	gitopsInput := h.pipeline.finalizer.inputs[0]
+	if gitopsInput.InputRef != wantInputRef || gitopsInput.WorkPlan.ID == "" || len(gitopsInput.StageRuns) != 3 {
+		t.Fatalf("GitOps finalization lost chain handoff shape: %#v", gitopsInput)
+	}
+	fields := h.shadow.capturedFields()
+	for _, key := range []string{"agree_final_status", "agree_gitops_ready", "agree_pull_request_ref"} {
+		if fields[key] != "true" {
+			t.Fatalf("shadow comparison %s = %q, fields=%#v steps=%#v", key, fields[key], fields, trace.Steps)
+		}
+	}
+}
+
 func TestChainShadowCompilesTwoStagesInOrder(t *testing.T) {
 	h := defaultChainHarness(t)
 	trace, err := runChainShadowWorkflow(t, h, chainInput())
@@ -722,6 +828,112 @@ func TestChainShadowCompilesTwoStagesInOrder(t *testing.T) {
 	}
 	if h.pipeline.gitOpsCallCount() != 1 {
 		t.Fatalf("completed chain should observe GitOps once, got %d", h.pipeline.gitOpsCallCount())
+	}
+}
+
+func TestChainShadowWholePipelineJiraBackedJourney(t *testing.T) {
+	h := jiraBackedGovernedChainHarness(t)
+	input := chainInputWithRef("jira:GENERIC-1044", "trace-chain-jira-1044")
+	trace, err := runChainShadowWorkflow(t, h, input)
+	if err != nil {
+		t.Fatalf("workflow failed: %v", err)
+	}
+	assertWholeChainShadowJourney(t, h, trace, "jira:GENERIC-1044")
+	contextRefs := h.pipeline.compiled["decomposition"].ContextRefs
+	for _, ref := range []string{
+		"jira:GENERIC-1044",
+		"jira-context:GENERIC-1044:summary",
+		"jira-context:GENERIC-1044:scope",
+		"jira-context:GENERIC-1044:implementation-evidence",
+		"jira-context:GENERIC-1044:source-anchors",
+		"jira-context:GENERIC-1044:verifier-scope",
+	} {
+		if !containsStringTest(contextRefs, ref) {
+			t.Fatalf("Jira-backed shadow compile missing context ref %q: %#v", ref, contextRefs)
+		}
+	}
+}
+
+func TestChainShadowWholePipelineObjectiveRefJourney(t *testing.T) {
+	h := governedChainHarness(t)
+	rawObjective := "Create one new markdown file with a short bounded smoke-test note."
+	intake, err := projectdurable.NormalizeIntake(projectdurable.DurableIntakeRequest{
+		ProjectID:          "project-1",
+		Kind:               projectdurable.IntakeKindObjectiveText,
+		ObjectiveText:      rawObjective,
+		ObjectiveTitleHint: "objective smoke intake",
+	})
+	if err != nil {
+		t.Fatalf("normalize objective intake: %v", err)
+	}
+	input := chainInputWithRef(intake.InputRef, "trace-chain-objective-small-md-file")
+	trace, err := runChainShadowWorkflow(t, h, input)
+	if err != nil {
+		t.Fatalf("workflow failed: %v", err)
+	}
+	assertWholeChainShadowJourney(t, h, trace, intake.InputRef)
+	contextRefs := h.pipeline.compiled["decomposition"].ContextRefs
+	if !containsStringTest(contextRefs, "repo:"+intake.InputRef) {
+		t.Fatalf("objective shadow compile missing hashed repo context ref: %#v", contextRefs)
+	}
+	fields := h.shadow.capturedFields()
+	for key, value := range fields {
+		if strings.Contains(strings.ToLower(value), strings.ToLower(rawObjective)) || strings.Contains(key, "prompt") {
+			t.Fatalf("shadow comparison persisted raw objective/prompt data: %s=%q", key, value)
+		}
+	}
+}
+
+func TestChainShadowBoundaryReplayCompletesWithoutDuplicates(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		stageRef   string
+		wantStages int
+	}{
+		{name: "decomposition", stageRef: "decomposition", wantStages: 1},
+		{name: "implementation", stageRef: "implementation", wantStages: 2},
+		{name: "post-validation", stageRef: "post-validation", wantStages: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := governedChainHarness(t)
+			h.pipeline.planStatusScripts[tc.stageRef] = []string{"active", "active"}
+			input := chainInputWithRef("jira:GENERIC-1044", "trace-boundary-"+tc.stageRef)
+			input.MaxStageObservationPolls = 2
+			blocked, err := runChainShadowWorkflow(t, h, input)
+			if err != nil {
+				t.Fatalf("blocked workflow failed: %v", err)
+			}
+			if blocked.FinalStatus != activities.ChainTraceStatusBlocked || blocked.FailureCategory != activities.ChainFailureStageObservationTimeout {
+				t.Fatalf("expected boundary timeout block, got %#v", blocked)
+			}
+			if len(blocked.Stages) != tc.wantStages {
+				t.Fatalf("unexpected blocked stage count: got %d want %d trace=%#v", len(blocked.Stages), tc.wantStages, blocked.Stages)
+			}
+			stagePlanID := h.pipeline.compiled[tc.stageRef].PlanID
+			plans, tasks, automations := h.pipeline.counts()
+
+			h.pipeline.mu.Lock()
+			h.pipeline.planStatusScripts[stagePlanID] = []string{"done"}
+			h.pipeline.mu.Unlock()
+			resumeInput := input
+			resumeInput.TraceID = input.TraceID + "-resume"
+			resumed, err := runChainShadowWorkflow(t, h, resumeInput)
+			if err != nil {
+				t.Fatalf("resume workflow failed: %v", err)
+			}
+			if resumed.FinalStatus != activities.ChainTraceStatusCompleted || resumed.PullRequestRef != "github-pr-1044" {
+				t.Fatalf("expected resumed completion, got %#v", resumed)
+			}
+			plans2, tasks2, automations2 := h.pipeline.counts()
+			if plans2 < plans || tasks2 < tasks || automations2 < automations {
+				t.Fatalf("resume lost compiled state: before=%d/%d/%d after=%d/%d/%d", plans, tasks, automations, plans2, tasks2, automations2)
+			}
+			for _, stage := range []string{"decomposition", "implementation", "post-validation"} {
+				if h.pipeline.compileCount(stage) > 1 {
+					t.Fatalf("stage %s duplicated compile path %d times", stage, h.pipeline.compileCount(stage))
+				}
+			}
+		})
 	}
 }
 
