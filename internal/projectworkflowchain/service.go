@@ -827,6 +827,135 @@ func (svc *Service) dryRunStart(ctx context.Context, cfg Config, inputRef string
 	return result, nil
 }
 
+// ResolveStageConfigsForShadow returns the enabled stage configuration for a
+// durable shadow adapter. It deliberately exposes metadata only; callers still
+// drive compile/activate through the narrow exported methods below.
+func (svc *Service) ResolveStageConfigsForShadow(ctx context.Context, projectID, chainRef string) ([]StageConfig, error) {
+	projectID, err := safeRef(projectID, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	chainRef, err = safeRef(chainRef, "chain_ref")
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := svc.config(projectID, chainRef)
+	if err != nil {
+		return nil, err
+	}
+	if err := svc.validateConfiguredWorkflows(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return append([]StageConfig(nil), cfg.Stages...), nil
+}
+
+// CompileStageMetadataForShadow exposes the current compileStageMetadata
+// helper for the durable workflow-chain shadow adapter. It is compile only:
+// no task release, plan activation, or GitOps finalization happens here.
+func (svc *Service) CompileStageMetadataForShadow(ctx context.Context, run ChainRun, stage StageConfig) (StageRun, projectworkflow.WorkflowCompileResult, error) {
+	cfg, err := svc.config(run.ProjectID, run.ChainRef)
+	if err != nil {
+		return StageRun{}, projectworkflow.WorkflowCompileResult{}, err
+	}
+	stage, err = configuredShadowStage(cfg, stage)
+	if err != nil {
+		return StageRun{}, projectworkflow.WorkflowCompileResult{}, err
+	}
+	return svc.compileStageMetadata(ctx, cfg, run, stage, false)
+}
+
+// CarryForwardStageOutputTasksForShadow exposes the current carry-forward
+// rules to the durable shadow adapter so generated task handoffs are converted
+// through the same concrete Work Task ID path as the current service.
+func (svc *Service) CarryForwardStageOutputTasksForShadow(ctx context.Context, projectID string, run ChainRun, compiled projectworkflow.WorkflowCompileResult) error {
+	cfg, err := svc.shadowConfigForProjectRun(projectID, run)
+	if err != nil {
+		return err
+	}
+	return svc.carryForwardStageOutputTasks(ctx, cfg.ProjectID, run, compiled)
+}
+
+// ReleaseCompiledTasksForShadow exposes the current release helper for the
+// durable shadow adapter. Callers are responsible for invoking it before
+// ActivateCompiledWorkPlanForShadow to preserve the current event order.
+func (svc *Service) ReleaseCompiledTasksForShadow(ctx context.Context, projectID string, compiled projectworkflow.WorkflowCompileResult, run ChainRun) error {
+	cfg, err := svc.shadowConfigForProjectRun(projectID, run)
+	if err != nil {
+		return err
+	}
+	return svc.releaseCompiledTasks(ctx, cfg.ProjectID, compiled, run)
+}
+
+// ActivateCompiledWorkPlanForShadow exposes only the Work Plan activation
+// part of activateCompiledStage for the durable shadow adapter. Carry-forward
+// and task release remain separate exported calls so the durable trace records
+// the same step order explicitly.
+func (svc *Service) ActivateCompiledWorkPlanForShadow(ctx context.Context, run ChainRun, compiled projectworkflow.WorkflowCompileResult) error {
+	cfg, err := svc.config(run.ProjectID, run.ChainRef)
+	if err != nil {
+		return err
+	}
+	if compiled.WorkPlanID == "" {
+		return nil
+	}
+	if svc.workPlans == nil {
+		return fmt.Errorf("%w: work plan service is required", ErrInvalidInput)
+	}
+	_, err = svc.workPlans.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+		ProjectID:      cfg.ProjectID,
+		PlanID:         compiled.WorkPlanID,
+		Status:         projectworkplan.WorkPlanStatusActive,
+		SafeNextAction: "workflow chain stage automation may run through lifecycle triggers",
+		RunID:          firstNonEmpty(run.CreatedByRunID, run.ID),
+		TraceID:        run.TraceID,
+	})
+	return err
+}
+
+// FinalizeGitOpsForShadow exposes the current GitOps finalization helper to
+// durable shadow tests. The helper mutates run; callers must persist the run
+// through the store after a nil error, mirroring the current service callers.
+func (svc *Service) FinalizeGitOpsForShadow(ctx context.Context, run *ChainRun) error {
+	if run != nil {
+		if _, err := svc.config(run.ProjectID, run.ChainRef); err != nil {
+			return err
+		}
+	}
+	return svc.finalizeGitOps(ctx, run)
+}
+
+func (svc *Service) shadowConfigForProjectRun(projectID string, run ChainRun) (Config, error) {
+	projectID, err := safeRef(projectID, "project_id")
+	if err != nil {
+		return Config{}, err
+	}
+	if run.ProjectID != projectID {
+		return Config{}, fmt.Errorf("%w: shadow project mismatch", ErrInvalidInput)
+	}
+	return svc.config(run.ProjectID, run.ChainRef)
+}
+
+func configuredShadowStage(cfg Config, requested StageConfig) (StageConfig, error) {
+	stageRef, err := safeRef(requested.StageRef, "stage_ref")
+	if err != nil {
+		return StageConfig{}, err
+	}
+	workflowRef, err := safeRef(requested.WorkflowRef, "workflow_ref")
+	if err != nil {
+		return StageConfig{}, err
+	}
+	for _, stage := range cfg.Stages {
+		if stage.StageRef != stageRef {
+			continue
+		}
+		if stage.WorkflowRef != workflowRef {
+			return StageConfig{}, fmt.Errorf("%w: shadow stage workflow mismatch", ErrInvalidInput)
+		}
+		return stage, nil
+	}
+	return StageConfig{}, fmt.Errorf("%w: shadow stage is not configured", ErrInvalidInput)
+}
+
 func (svc *Service) compileStage(ctx context.Context, cfg Config, run ChainRun, stage StageConfig, dryRun bool) (StageRun, error) {
 	stageRun, compiled, err := svc.compileStageMetadata(ctx, cfg, run, stage, dryRun)
 	if err != nil {
@@ -944,7 +1073,10 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 		if strings.TrimSpace(task.TaskRef) != "" {
 			sourceRefs[task.TaskRef] = struct{}{}
 		}
-		if chainStageOutputTaskCandidate(task, compiledTaskIDs) && task.Status != projectworkplan.WorkTaskStatusPlanned && task.Status != projectworkplan.WorkTaskStatusReady {
+		if chainStageOutputTaskCandidate(task, compiledTaskIDs) &&
+			task.Status != projectworkplan.WorkTaskStatusPlanned &&
+			task.Status != projectworkplan.WorkTaskStatusReady &&
+			task.Status != projectworkplan.WorkTaskStatusDone {
 			return fmt.Errorf("%w: non_ready_carried_implementation_task_%s", ErrInvalidInput, safeAutomationToken(task.Status))
 		}
 		if chainStageOutputTaskCandidate(task, compiledTaskIDs) && !chainStageOutputTaskHasReviewProof(task) {
@@ -1159,7 +1291,9 @@ func chainStageOutputTask(task projectworkplan.WorkTask, compiledTaskIDs map[str
 	if !chainStageOutputTaskCandidate(task, compiledTaskIDs) {
 		return false
 	}
-	return (task.Status == projectworkplan.WorkTaskStatusPlanned || task.Status == projectworkplan.WorkTaskStatusReady) &&
+	return (task.Status == projectworkplan.WorkTaskStatusPlanned ||
+		task.Status == projectworkplan.WorkTaskStatusReady ||
+		task.Status == projectworkplan.WorkTaskStatusDone) &&
 		chainStageOutputTaskHasReviewProof(task)
 }
 
@@ -1167,7 +1301,7 @@ func chainStageOutputTaskCandidate(task projectworkplan.WorkTask, compiledTaskID
 	if _, compiled := compiledTaskIDs[task.ID]; compiled {
 		return false
 	}
-	if task.Status == projectworkplan.WorkTaskStatusDone || task.Status == projectworkplan.WorkTaskStatusFailed || task.Status == projectworkplan.WorkTaskStatusCancelled || task.Status == projectworkplan.WorkTaskStatusSuperseded {
+	if task.Status == projectworkplan.WorkTaskStatusFailed || task.Status == projectworkplan.WorkTaskStatusCancelled || task.Status == projectworkplan.WorkTaskStatusSuperseded {
 		return false
 	}
 	if strings.TrimSpace(task.TaskRef) == "" || strings.HasPrefix(strings.TrimSpace(task.TaskRef), "review-") {

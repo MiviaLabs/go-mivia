@@ -134,3 +134,75 @@ type WorkTaskClaimPort interface {
 type AttemptCompletionPort interface {
 	CompleteAttempt(ctx context.Context, ref SafeAutomationRunRef, outcome DurableAttemptOutcome) (DurableRunSnapshot, error)
 }
+
+// SafeChainStagePlan is the metadata-only stage descriptor a durable chain
+// workflow may consume. Production durable code knows only stage/workflow refs;
+// test adapters resolve these from the current workflow-chain config.
+type SafeChainStagePlan struct {
+	StageRef    string `json:"stage_ref"`
+	WorkflowRef string `json:"workflow_ref"`
+}
+
+// Validate checks both refs fail-closed.
+func (p SafeChainStagePlan) Validate() error {
+	if err := validateRequiredRef(p.StageRef, "stage_ref"); err != nil {
+		return err
+	}
+	return validateRequiredRef(p.WorkflowRef, "workflow_ref")
+}
+
+// SafeStageCompileOutcome is the metadata-only result of compiling one chain
+// stage. Test adapters implement compile-or-get idempotency: when a stage has
+// already been compiled for the same chain ref, CompileStage returns the
+// existing outcome instead of creating duplicate Work Plans, tasks,
+// automations, or permission snapshots.
+type SafeStageCompileOutcome struct {
+	PlanID                string   `json:"plan_id"`
+	TaskIDs               []string `json:"task_ids,omitempty"`
+	ReviewerTaskIDs       []string `json:"reviewer_task_ids,omitempty"`
+	AutomationIDs         []string `json:"automation_ids,omitempty"`
+	PermissionSnapshotIDs []string `json:"permission_snapshot_ids,omitempty"`
+	ContextRefs           []string `json:"context_refs,omitempty"`
+}
+
+// Validate applies safe-ref checks to the plan id and every returned ref.
+func (o SafeStageCompileOutcome) Validate() error {
+	if err := validateRequiredRef(o.PlanID, "plan_id"); err != nil {
+		return err
+	}
+	for name, refs := range map[string][]string{
+		"task_ids":                o.TaskIDs,
+		"reviewer_task_ids":       o.ReviewerTaskIDs,
+		"automation_ids":          o.AutomationIDs,
+		"permission_snapshot_ids": o.PermissionSnapshotIDs,
+		"context_refs":            o.ContextRefs,
+	} {
+		if err := validateRefSlice(refs, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ChainPipelinePort is the cohesive metadata-only port used by the Phase 5
+// workflow-chain shadow. Implementations are test adapters over the CURRENT
+// workflow, work-plan, automation, and workflow-chain services until cutover
+// approval. CompileStage must be compile-or-get idempotent for the tuple
+// (project_id, chain_ref, stage_ref) so durable resume never duplicates
+// current-system state.
+type ChainPipelinePort interface {
+	ResolveChainStages(ctx context.Context, projectID, chainRef string) ([]SafeChainStagePlan, error)
+	CompileStage(ctx context.Context, projectID, chainRef string, stage SafeChainStagePlan, inputRef string, carriedTaskIDs []string) (SafeStageCompileOutcome, error)
+	ReleaseCompiledTasks(ctx context.Context, planID string) error
+	ActivateWorkPlan(ctx context.Context, planID string) error
+	ObserveStagePlanStatus(ctx context.Context, planID string) (status string, taskStatuses map[string]string, err error)
+	CarryForwardOutputs(ctx context.Context, fromPlanID, toStageRef string) (concreteTaskIDs []string, err error)
+	ObserveGitOps(ctx context.Context, chainRef string) (gitOpsReady bool, prRef string, recoveryStatus string, blockedReason string, err error)
+}
+
+// ChainRunComparator loads the current workflow-chain run read model as safe
+// comparison fields. It is separate from ChainPipelinePort so tests can prove
+// comparison-last behavior even when no current chain run exists.
+type ChainRunComparator interface {
+	LoadCurrentChainRun(ctx context.Context, projectID, chainRef string) (fields map[string]string, found bool, err error)
+}

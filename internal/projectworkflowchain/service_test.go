@@ -797,6 +797,59 @@ func TestAdvancingStageBackfillsAutomationForExistingCarriedImplementationTask(t
 	}
 }
 
+func TestShadowWrappersStayBoundToConfiguredChainStages(t *testing.T) {
+	ctx := context.Background()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	svc := New(newTestChainStore(), workflows, &fakeWorkPlans{}, []Config{testConfig()})
+	run := ChainRun{
+		ID:             "workflow_chain_run_1",
+		ProjectID:      "project-1",
+		ChainRef:       "chain-1",
+		InputRef:       "jira:GENERIC-1044",
+		CreatedByRunID: "run-1",
+		TraceID:        "trace-1",
+	}
+
+	stage, compiled, err := svc.CompileStageMetadataForShadow(ctx, run, testConfig().Stages[1])
+	if err != nil {
+		t.Fatalf("configured shadow stage compile failed: %v", err)
+	}
+	if stage.StageRef != "implementation" || compiled.WorkPlanID != "plan-implementation" || len(workflows.compileInputs) != 1 {
+		t.Fatalf("configured shadow stage compile lost stage refs: stage=%#v compiled=%#v inputs=%#v", stage, compiled, workflows.compileInputs)
+	}
+
+	_, _, err = svc.CompileStageMetadataForShadow(ctx, run, StageConfig{StageRef: "implementation", WorkflowRef: "governed-post-implementation-validation"})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected workflow-ref mismatch rejection, got %v", err)
+	}
+	_, _, err = svc.CompileStageMetadataForShadow(ctx, run, StageConfig{StageRef: "unconfigured", WorkflowRef: "governed-workplan-implementation"})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected unconfigured stage rejection, got %v", err)
+	}
+	if len(workflows.compileInputs) != 1 {
+		t.Fatalf("rejected shadow compiles must not call compiler, got %#v", workflows.compileInputs)
+	}
+}
+
+func TestShadowWrappersRejectProjectAndChainDrift(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newTestChainStore(), &fakeWorkflowAPI{workflows: enabledWorkflows()}, &fakeWorkPlans{}, []Config{testConfig()})
+	run := ChainRun{ID: "workflow_chain_run_1", ProjectID: "project-1", ChainRef: "chain-1"}
+	compiled := projectworkflow.WorkflowCompileResult{WorkPlanID: "plan-implementation"}
+
+	if err := svc.CarryForwardStageOutputTasksForShadow(ctx, "project-2", run, compiled); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected carry-forward project mismatch rejection, got %v", err)
+	}
+	if err := svc.ReleaseCompiledTasksForShadow(ctx, "project-2", compiled, run); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected release project mismatch rejection, got %v", err)
+	}
+	badRun := run
+	badRun.ChainRef = "other-chain"
+	if err := svc.FinalizeGitOpsForShadow(ctx, &badRun); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected unconfigured chain finalization rejection, got %v", err)
+	}
+}
+
 func TestStartWithSameCorrelationReturnsExistingActiveChainRun(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
