@@ -341,7 +341,7 @@ func TestLoad_GitOpsConventionEnvOverrides(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_BRANCH_TEMPLATE", "{{change_type}}-{{ticket_ref}}")
 	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_REQUIRE_TICKET_REF", "true")
-	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN", "^MASS-[0-9]+$")
+	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_TICKET_REF_PATTERN", "^PROJ-[0-9]+$")
 	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_TICKET_URL_TEMPLATE", "https://tracker.example.test/browse/{{ticket_ref}}")
 	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_ALLOWED_TYPES", "feat,fix,chore")
 	t.Setenv("MIVIA_GIT_OPS_CONVENTIONS_DEFAULT_CHANGE_TYPE", "feat")
@@ -356,7 +356,7 @@ func TestLoad_GitOpsConventionEnvOverrides(t *testing.T) {
 	if conventions.BranchTemplate != "{{change_type}}-{{ticket_ref}}" || !conventions.RequireTicketRef {
 		t.Fatalf("unexpected branch/ticket env conventions: %+v", conventions)
 	}
-	if conventions.TicketRefPattern != "^MASS-[0-9]+$" || strings.Join(conventions.AllowedTypes, ",") != "feat,fix,chore" {
+	if conventions.TicketRefPattern != "^PROJ-[0-9]+$" || strings.Join(conventions.AllowedTypes, ",") != "feat,fix,chore" {
 		t.Fatalf("unexpected ticket/type env conventions: %+v", conventions)
 	}
 	if conventions.TicketURLTemplate != "https://tracker.example.test/browse/{{ticket_ref}}" {

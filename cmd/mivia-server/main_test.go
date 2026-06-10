@@ -117,10 +117,10 @@ func TestWorkflowCompileOptionsUseProjectGitOpsConventions(t *testing.T) {
 			DefaultChangeType: "chore",
 		}},
 		Projects: []config.Project{{
-			ID: "mass-monorepo",
+			ID: "PROJ-monorepo",
 			GitOperations: &config.GitOperations{
 				BranchPrefix:      "",
-				BranchNamePattern: "^(feat|fix|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+				BranchNamePattern: "^(feat|fix|chore)-PROJ-[0-9]+(-[a-z0-9-]+)*$",
 				Conventions: config.GitOpsConventions{
 					BranchTemplate:    "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}",
 					AllowedTypes:      []string{"feat", "fix", "chore"},
@@ -131,12 +131,12 @@ func TestWorkflowCompileOptionsUseProjectGitOpsConventions(t *testing.T) {
 	}
 
 	options := workflowCompileOptions(cfg)
-	mass := options["mass-monorepo"]
-	if mass.DefaultChangeType != "feat" {
-		t.Fatalf("project default change type must override global default, got %#v", mass)
+	PROJ := options["PROJ-monorepo"]
+	if PROJ.DefaultChangeType != "feat" {
+		t.Fatalf("project default change type must override global default, got %#v", PROJ)
 	}
-	if mass.BranchSummaryTemplate != "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}" {
-		t.Fatalf("project branch template must be adapted for workflow refs, got %#v", mass)
+	if PROJ.BranchSummaryTemplate != "{{change_type}}-{{ticket_ref}}-{{workflow_ref}}" {
+		t.Fatalf("project branch template must be adapted for workflow refs, got %#v", PROJ)
 	}
 }
 

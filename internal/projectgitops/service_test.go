@@ -131,20 +131,20 @@ func TestPostTaskCommitsWhenChangesExist(t *testing.T) {
 	}
 }
 
-func TestPostTaskCreatesDraftPRWithMASSTicketConventions(t *testing.T) {
+func TestPostTaskCreatesDraftPRWithPROJTicketConventions(t *testing.T) {
 	runner := &recordingRunner{
 		results: []CommandResult{
 			{},
 			{Stdout: " M apps/domain/src/module.ts\n"},
-			{Stdout: "feat-MASS-1044-governed-post-implementation-validation-compile-9ef\n"},
+			{Stdout: "feat-PROJ-1044-governed-post-implementation-validation-compile-9ef\n"},
 			{},
 			{},
 			{},
 			{Stdout: "abc123def456\n"},
-			{Stdout: "https://github.com/MiviaLabs/mass-monorepo.git\n"},
+			{Stdout: "https://github.com/MiviaLabs/PROJ-monorepo.git\n"},
 			{},
 			{},
-			{Stdout: "https://github.com/MiviaLabs/mass-monorepo/pull/1044\n"},
+			{Stdout: "https://github.com/MiviaLabs/PROJ-monorepo/pull/1044\n"},
 		},
 		errs: []error{
 			nil, nil, nil, nil, nil, nil, nil, nil,
@@ -157,7 +157,7 @@ func TestPostTaskCreatesDraftPRWithMASSTicketConventions(t *testing.T) {
 		CommitAfterTask:      true,
 		PushAfterTask:        true,
 		DraftPRAfterPush:     true,
-		BranchNamePattern:    "^(feat|fix|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+		BranchNamePattern:    "^(feat|fix|chore)-PROJ-[0-9]+(-[a-z0-9-]+)*$",
 		CommitAuthorName:     "Mivia Automation",
 		CommitAuthorEmailEnv: "MIVIA_GIT_AUTHOR_EMAIL",
 		RemoteName:           "origin",
@@ -167,7 +167,7 @@ func TestPostTaskCreatesDraftPRWithMASSTicketConventions(t *testing.T) {
 			AllowedChangeTypes:       []string{"feat", "fix", "chore"},
 			DefaultChangeType:        "feat",
 			RequireTicket:            true,
-			TicketRefPattern:         "^MASS-[0-9]+$",
+			TicketRefPattern:         "^PROJ-[0-9]+$",
 			TicketURLTemplate:        "https://mivialabs.atlassian.net/browse/{{ticket_ref}}",
 			PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): {{work_task_title}}",
 			PullRequestBodyTemplate:  "Ticket: {{ticket_url}}\n\n{{what_changed}}\n\n{{how_verified}}\n\nReview refs: {{review_refs}}\nVerifier refs: {{verifier_refs}}\nTests: {{test_results}}",
@@ -177,18 +177,18 @@ func TestPostTaskCreatesDraftPRWithMASSTicketConventions(t *testing.T) {
 	t.Setenv("MIVIA_TEST_GH_TOKEN", "test-token")
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
-		WorkDir:          "/tmp/mass-worktree",
-		ProjectID:        "mass-monorepo",
-		PlanID:           "work_plan_mass_1044",
+		WorkDir:          "/tmp/PROJ-worktree",
+		ProjectID:        "PROJ-monorepo",
+		PlanID:           "work_plan_PROJ_1044",
 		TaskID:           "work_task_final_readiness",
 		TaskRef:          "final-pr-readiness",
 		TaskTitle:        "booking expiry service v2",
-		TicketRef:        "MASS-1044",
+		TicketRef:        "PROJ-1044",
 		ChangeType:       "feat",
-		BranchName:       "feat-MASS-1044-governed-post-implementation-validation-compile-9ef",
+		BranchName:       "feat-PROJ-1044-governed-post-implementation-validation-compile-9ef",
 		BaseRef:          "main",
-		AutomationID:     "automation_mass_1044",
-		AutomationRunID:  "workflow_chain_run_mass_1044",
+		AutomationID:     "automation_PROJ_1044",
+		AutomationRunID:  "workflow_chain_run_PROJ_1044",
 		OperatorID:       "operator_1",
 		AllowedPathspecs: []string{"apps/domain/src/module.ts"},
 		ReviewRefs:       []string{"review_result:post_validation_approved"},
@@ -196,7 +196,7 @@ func TestPostTaskCreatesDraftPRWithMASSTicketConventions(t *testing.T) {
 		TestResults:      []string{"pnpm exec nx affected -t test --base=origin/main: passed"},
 	})
 	if err != nil {
-		t.Fatalf("expected MASS GitOps draft PR to succeed: %v", err)
+		t.Fatalf("expected PROJ GitOps draft PR to succeed: %v", err)
 	}
 	if result.PullRequestRef != "github-pr-1044" || !containsString(result.EvidenceRefs, "draft-pr-ready") {
 		t.Fatalf("expected draft PR evidence, got %#v", result)
@@ -214,8 +214,8 @@ func TestPostTaskCreatesDraftPRWithMASSTicketConventions(t *testing.T) {
 	args := strings.Join(create.Args, "\n")
 	for _, want := range []string{
 		"--draft",
-		"feat(MASS-1044): booking expiry service v2",
-		"https://mivialabs.atlassian.net/browse/MASS-1044",
+		"feat(PROJ-1044): booking expiry service v2",
+		"https://mivialabs.atlassian.net/browse/PROJ-1044",
 		"review_result:post_validation_approved",
 		"verifier:focused_tests_passed",
 		"pnpm exec nx affected -t test --base=origin/main: passed",
@@ -234,12 +234,12 @@ func TestPostTaskFailsWhenDraftPRCreateOutputHasNoActionablePRRef(t *testing.T) 
 		results: []CommandResult{
 			{},
 			{Stdout: " M internal/projectgitops/service.go\n"},
-			{Stdout: "feat-MASS-1044-gitops\n"},
+			{Stdout: "feat-PROJ-1044-gitops\n"},
 			{},
 			{},
 			{},
 			{Stdout: "abc123def456\n"},
-			{Stdout: "https://github.com/MiviaLabs/mass-monorepo.git\n"},
+			{Stdout: "https://github.com/MiviaLabs/PROJ-monorepo.git\n"},
 			{},
 			{},
 			{Stdout: "created draft pull request\n"},
@@ -259,12 +259,12 @@ func TestPostTaskFailsWhenDraftPRCreateOutputHasNoActionablePRRef(t *testing.T) 
 		RemoteName:        "origin",
 		GitHubCLIPath:     "gh",
 		GitHubTokenEnv:    "MIVIA_TEST_GH_TOKEN",
-		BranchNamePattern: "^(feat|fix|chore)-MASS-[0-9]+(-[a-z0-9-]+)*$",
+		BranchNamePattern: "^(feat|fix|chore)-PROJ-[0-9]+(-[a-z0-9-]+)*$",
 		Conventions: Conventions{
 			AllowedChangeTypes:       []string{"feat", "fix", "chore"},
 			DefaultChangeType:        "feat",
 			RequireTicket:            true,
-			TicketRefPattern:         "^MASS-[0-9]+$",
+			TicketRefPattern:         "^PROJ-[0-9]+$",
 			PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): {{work_task_title}}",
 			PullRequestBodyTemplate:  "{{what_changed}}\n\n{{how_verified}}",
 		},
@@ -272,15 +272,15 @@ func TestPostTaskFailsWhenDraftPRCreateOutputHasNoActionablePRRef(t *testing.T) 
 	t.Setenv("MIVIA_TEST_GH_TOKEN", "test-token")
 
 	result, err := svc.PostTask(context.Background(), PostTaskInput{
-		WorkDir:          "/tmp/mass-worktree",
-		ProjectID:        "mass-monorepo",
-		PlanID:           "work_plan_mass_1044",
+		WorkDir:          "/tmp/PROJ-worktree",
+		ProjectID:        "PROJ-monorepo",
+		PlanID:           "work_plan_PROJ_1044",
 		TaskID:           "work_task_final_readiness",
 		TaskRef:          "final-pr-readiness",
 		TaskTitle:        "booking expiry service v2",
-		TicketRef:        "MASS-1044",
+		TicketRef:        "PROJ-1044",
 		ChangeType:       "feat",
-		BranchName:       "feat-MASS-1044-gitops",
+		BranchName:       "feat-PROJ-1044-gitops",
 		BaseRef:          "main",
 		ReviewRefs:       []string{"review_result:post_validation_approved"},
 		VerifierRefs:     []string{"verifier:focused_tests_passed"},
@@ -2137,7 +2137,7 @@ func TestDerivePolicyBranchPrefersConfiguredCommitType(t *testing.T) {
 
 func TestDerivePolicyBranchRendersRequiredTicketTemplate(t *testing.T) {
 	svc := NewWithRunner(Options{
-		BranchNamePattern: `^(feat|fix)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
+		BranchNamePattern: `^(feat|fix)-PROJ-[0-9]+(-[a-z0-9-]+)*$`,
 		Conventions: Conventions{
 			CommitType:         "fix",
 			RequireTicket:      true,
@@ -2146,20 +2146,20 @@ func TestDerivePolicyBranchRendersRequiredTicketTemplate(t *testing.T) {
 	}, &recordingRunner{})
 
 	got := svc.derivePolicyBranch(PostTaskInput{
-		TaskRef:   "mass-1044",
+		TaskRef:   "PROJ-1044",
 		TaskTitle: "Configurable ticket aware GitOps",
 	})
-	if got != "fix-MASS-1044-configurable-ticket-aware-gitops" {
+	if got != "fix-PROJ-1044-configurable-ticket-aware-gitops" {
 		t.Fatalf("expected lowercase ticket ref normalized in templated branch, got %q", got)
 	}
 	if strings.Contains(got, "GENERIC-0000") {
-		t.Fatalf("required-ticket MASS branch must not use fake GENERIC fallback, got %q", got)
+		t.Fatalf("required-ticket PROJ branch must not use fake GENERIC fallback, got %q", got)
 	}
 }
 
-func TestDerivePolicyBranchRequiresTicketForMassConfig(t *testing.T) {
+func TestDerivePolicyBranchRequiresTicketForPROJConfig(t *testing.T) {
 	svc := NewWithRunner(Options{
-		BranchNamePattern: `^(feat|fix)-MASS-[0-9]+(-[a-z0-9-]+)*$`,
+		BranchNamePattern: `^(feat|fix)-PROJ-[0-9]+(-[a-z0-9-]+)*$`,
 		Conventions: Conventions{
 			CommitType:         "fix",
 			RequireTicket:      true,
@@ -2182,9 +2182,9 @@ func TestRenderRejectsDisallowedChangeType(t *testing.T) {
 		ProjectID:       "project-1",
 		PlanID:          "work_plan_1",
 		TaskID:          "work_task_1",
-		TaskRef:         "MASS-1044",
+		TaskRef:         "PROJ-1044",
 		TaskTitle:       "Configurable ticket aware GitOps",
-		BranchName:      "feat-MASS-1044-configurable-ticket-aware-gitops",
+		BranchName:      "feat-PROJ-1044-configurable-ticket-aware-gitops",
 		AutomationID:    "automation_1",
 		AutomationRunID: "automation_run_1",
 		OperatorID:      "operator_1",
@@ -2207,9 +2207,9 @@ func TestRenderUsesDefaultChangeTypeForTemplates(t *testing.T) {
 		ProjectID:       "project-1",
 		PlanID:          "work_plan_1",
 		TaskID:          "work_task_1",
-		TaskRef:         "MASS-1044",
+		TaskRef:         "PROJ-1044",
 		TaskTitle:       "Configurable ticket aware GitOps",
-		BranchName:      "feat-MASS-1044-configurable-ticket-aware-gitops",
+		BranchName:      "feat-PROJ-1044-configurable-ticket-aware-gitops",
 		AutomationID:    "automation_1",
 		AutomationRunID: "automation_run_1",
 		OperatorID:      "operator_1",
@@ -2226,7 +2226,7 @@ func TestRenderUsesDefaultChangeTypeForTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected render to succeed: %v", err)
 	}
-	if rendered.PullRequestTitle != "feat(MASS-1044): complete Configurable ticket aware GitOps" {
+	if rendered.PullRequestTitle != "feat(PROJ-1044): complete Configurable ticket aware GitOps" {
 		t.Fatalf("expected default change type in PR title, got %q", rendered.PullRequestTitle)
 	}
 	if !strings.Contains(rendered.PullRequestBody, "Type: feat") {
@@ -2273,7 +2273,7 @@ func TestRenderRejectsTicketOutsideConfiguredPattern(t *testing.T) {
 	}, Conventions{
 		CommitType:               "fix",
 		RequireTicket:            true,
-		TicketRefPattern:         `^MASS-[0-9]+$`,
+		TicketRefPattern:         `^PROJ-[0-9]+$`,
 		CommitSummaryTemplate:    "complete {{work_task_ref}}",
 		PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): complete {{work_task_title}}",
 		WhatChangedTemplate:      "Changed {{ticket_ref}}",
@@ -2290,9 +2290,9 @@ func TestRenderRejectsLatePlaceholderInTicketURLTemplate(t *testing.T) {
 		ProjectID:       "project-1",
 		PlanID:          "work_plan_1",
 		TaskID:          "work_task_1",
-		TaskRef:         "MASS-1044",
+		TaskRef:         "PROJ-1044",
 		TaskTitle:       "Configurable ticket aware GitOps",
-		BranchName:      "feat-MASS-1044-configurable-ticket-aware-gitops",
+		BranchName:      "feat-PROJ-1044-configurable-ticket-aware-gitops",
 		AutomationID:    "automation_1",
 		AutomationRunID: "automation_run_1",
 		OperatorID:      "operator_1",
@@ -2315,9 +2315,9 @@ func TestRenderTicketAwarePRTemplates(t *testing.T) {
 		ProjectID:       "project-1",
 		PlanID:          "work_plan_1",
 		TaskID:          "work_task_1",
-		TaskRef:         "mass-1044",
+		TaskRef:         "PROJ-1044",
 		TaskTitle:       "Configurable ticket aware GitOps",
-		BranchName:      "feat-MASS-1044-configurable-ticket-aware-gitops",
+		BranchName:      "feat-PROJ-1044-configurable-ticket-aware-gitops",
 		AutomationID:    "automation_1",
 		AutomationRunID: "automation_run_1",
 		OperatorID:      "operator_1",
@@ -2337,10 +2337,10 @@ func TestRenderTicketAwarePRTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected ticket-aware render to succeed: %v", err)
 	}
-	if rendered.PullRequestTitle != "feat(MASS-1044): complete Configurable ticket aware GitOps" {
+	if rendered.PullRequestTitle != "feat(PROJ-1044): complete Configurable ticket aware GitOps" {
 		t.Fatalf("unexpected PR title %q", rendered.PullRequestTitle)
 	}
-	wantBody := "Ticket: MASS-1044\nType: feat\nURL: https://tracker.example.test/project-1/browse/MASS-1044\nSummary:\nChanged MASS-1044\nHow verified:\nReview refs: not available\nTests:\ngo test ./internal/projectgitops -count=1: passed"
+	wantBody := "Ticket: PROJ-1044\nType: feat\nURL: https://tracker.example.test/project-1/browse/PROJ-1044\nSummary:\nChanged PROJ-1044\nHow verified:\nReview refs: not available\nTests:\ngo test ./internal/projectgitops -count=1: passed"
 	if rendered.PullRequestBody != wantBody {
 		t.Fatalf("unexpected PR body:\n%s", rendered.PullRequestBody)
 	}

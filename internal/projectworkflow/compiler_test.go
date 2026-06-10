@@ -206,7 +206,7 @@ func TestCompileWorkflowUsesConfiguredChangeTypeInBranchPolicy(t *testing.T) {
 		},
 	})
 
-	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "jira:MASS-1044", CreatedByRunID: "run-1"}); err != nil {
+	if _, err := svc.CompileWorkflow(ctx, WorkflowCompileInput{ProjectID: "project-1", WorkflowID: "workflow-1", UserRequestRef: "jira:PROJ-1044", CreatedByRunID: "run-1"}); err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}
 	plans, err := workPlans.ListWorkPlans(ctx, projectworkplan.WorkPlanFilter{ProjectID: "project-1"})
@@ -216,7 +216,7 @@ func TestCompileWorkflowUsesConfiguredChangeTypeInBranchPolicy(t *testing.T) {
 	if len(plans) != 1 {
 		t.Fatalf("expected one plan, got %d", len(plans))
 	}
-	if got, wantPrefix := plans[0].GitBranchRef, "feat-MASS-1044-workflow-ref-compile-"; !strings.HasPrefix(got, wantPrefix) {
+	if got, wantPrefix := plans[0].GitBranchRef, "feat-PROJ-1044-workflow-ref-compile-"; !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("GitBranchRef = %q, want prefix %q", got, wantPrefix)
 	}
 	if strings.HasPrefix(plans[0].GitBranchRef, "chore-") {

@@ -412,27 +412,27 @@ tests_template = "{{test_results}}"
 	}
 }
 
-func TestLoadFileConfig_AcceptsMassTicketAwareGitOpsConventions(t *testing.T) {
+func TestLoadFileConfig_AcceptsPROJTicketAwareGitOpsConventions(t *testing.T) {
 	path := writeTempConfig(t, `
 version = 1
 
 [[projects]]
-id = "mass-monorepo"
-root_path = "/repo/mass"
+id = "PROJ-monorepo"
+root_path = "/repo/PROJ"
 enabled = true
 digest_mode = "content_graph"
 workspace_mode = "edit"
 
 [projects.git_operations]
 branch_prefix = ""
-branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-MASS-[0-9]+(-[a-z0-9-]+)*$"
+branch_name_pattern = "^(feat|fix|docs|chore|refactor|hotfix|revert)-PROJ-[0-9]+(-[a-z0-9-]+)*$"
 
 [projects.git_operations.conventions]
 commit_type = "chore"
 commit_scope = ""
 branch_template = "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}"
 require_ticket_ref = true
-ticket_ref_pattern = "^MASS-[0-9]+$"
+ticket_ref_pattern = "^PROJ-[0-9]+$"
 ticket_url_template = "https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}"
 allowed_types = ["feat", "fix", "docs", "chore", "refactor", "hotfix", "revert"]
 default_change_type = "chore"
@@ -446,25 +446,25 @@ tests_template = "{{test_results}}"
 
 	cfg, err := loadFileConfig(path)
 	if err != nil {
-		t.Fatalf("expected MASS GitOps conventions to parse: %v", err)
+		t.Fatalf("expected PROJ GitOps conventions to parse: %v", err)
 	}
 	merged, err := cfg.applyTo(defaultConfig(path))
 	if err != nil {
-		t.Fatalf("expected MASS GitOps conventions to apply: %v", err)
+		t.Fatalf("expected PROJ GitOps conventions to apply: %v", err)
 	}
 	merged.resolveAutoSettings(1)
 	if err := merged.Validate(); err != nil {
-		t.Fatalf("expected MASS GitOps conventions to validate: %v", err)
+		t.Fatalf("expected PROJ GitOps conventions to validate: %v", err)
 	}
 	conventions := merged.Projects[0].GitOperations.Conventions
-	if conventions.BranchTemplate != "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}" || !conventions.RequireTicketRef || conventions.TicketRefPattern != "^MASS-[0-9]+$" || conventions.TicketURLTemplate != "https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}" {
-		t.Fatalf("unexpected MASS ticket conventions: %+v", conventions)
+	if conventions.BranchTemplate != "{{change_type}}-{{ticket_ref}}-{{work_task_ref}}" || !conventions.RequireTicketRef || conventions.TicketRefPattern != "^PROJ-[0-9]+$" || conventions.TicketURLTemplate != "https://rimthan-lab.atlassian.net/browse/{{ticket_ref}}" {
+		t.Fatalf("unexpected PROJ ticket conventions: %+v", conventions)
 	}
 	if strings.Join(conventions.AllowedTypes, ",") != "feat,fix,docs,chore,refactor,hotfix,revert" || conventions.DefaultChangeType != "chore" || conventions.CommitType != "chore" {
-		t.Fatalf("unexpected MASS change type conventions: %+v", conventions)
+		t.Fatalf("unexpected PROJ change type conventions: %+v", conventions)
 	}
 	if !strings.Contains(conventions.PullRequestBodyTemplate, "## What changed") || !strings.Contains(conventions.PullRequestBodyTemplate, "{{tests}}") {
-		t.Fatalf("expected full MASS PR body template, got %q", conventions.PullRequestBodyTemplate)
+		t.Fatalf("expected full PROJ PR body template, got %q", conventions.PullRequestBodyTemplate)
 	}
 }
 

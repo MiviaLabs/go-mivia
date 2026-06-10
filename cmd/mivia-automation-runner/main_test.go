@@ -1316,7 +1316,7 @@ func TestGitOpsPostTaskInputCarriesNormalizedTicketRef(t *testing.T) {
 	claimed := projectautomation.ClaimedRun{
 		Run: projectautomation.AutomationRun{
 			ID:           "automation_run_1",
-			ProjectID:    "mass-monorepo",
+			ProjectID:    "PROJ-monorepo",
 			PlanID:       "work_plan_1",
 			TaskID:       "work_task_1",
 			AutomationID: "automation_1",
@@ -1327,16 +1327,16 @@ func TestGitOpsPostTaskInputCarriesNormalizedTicketRef(t *testing.T) {
 			Title:   "Fallback title",
 		},
 	}
-	input := gitOpsPostTaskInput("mass-monorepo", "/tmp/worktree", "fallback-agent", claimed, runnerWorkTaskMetadata{
-		TaskRef:         "mass-1044-expiry-background-trigger",
+	input := gitOpsPostTaskInput("PROJ-monorepo", "/tmp/worktree", "fallback-agent", claimed, runnerWorkTaskMetadata{
+		TaskRef:         "PROJ-1044-expiry-background-trigger",
 		Title:           "Wire bounded expiry cleanup background trigger",
-		ContextPackRefs: []string{"jira-context-MASS-1044-scope"},
+		ContextPackRefs: []string{"jira-context-PROJ-1044-scope"},
 		FilesToEdit:     []string{"apps/domain-booking/src/booking/booking.module.ts"},
 	})
-	if input.TicketRef != "MASS-1044" {
-		t.Fatalf("expected normalized MASS ticket ref, got %+v", input)
+	if input.TicketRef != "PROJ-1044" {
+		t.Fatalf("expected normalized PROJ ticket ref, got %+v", input)
 	}
-	if input.TaskRef != "mass-1044-expiry-background-trigger" {
+	if input.TaskRef != "PROJ-1044-expiry-background-trigger" {
 		t.Fatalf("expected task ref preserved for slug rendering, got %+v", input)
 	}
 }
@@ -1349,7 +1349,7 @@ func TestGitOpsOptionsFromConfigCarriesTicketAwareConventions(t *testing.T) {
 			AllowedTypes:             []string{"feat", "chore"},
 			RequireTicketRef:         true,
 			BranchTemplate:           "{{change_type}}-{{ticket_ref}}-{{slug}}",
-			TicketRefPattern:         "^MASS-[0-9]+$",
+			TicketRefPattern:         "^PROJ-[0-9]+$",
 			TicketURLTemplate:        "https://tracker.example.test/browse/{{ticket_ref}}",
 			CommitSummaryTemplate:    "complete {{work_task_ref}}",
 			PullRequestTitleTemplate: "{{change_type}}({{ticket_ref}}): complete {{work_task_ref}}",
@@ -1362,7 +1362,7 @@ func TestGitOpsOptionsFromConfigCarriesTicketAwareConventions(t *testing.T) {
 	if options.Conventions.DefaultChangeType != "feat" || strings.Join(options.Conventions.AllowedChangeTypes, ",") != "feat,chore" {
 		t.Fatalf("expected type conventions to map, got %+v", options.Conventions)
 	}
-	if options.Conventions.TicketRefPattern != "^MASS-[0-9]+$" || options.Conventions.TicketURLTemplate != "https://tracker.example.test/browse/{{ticket_ref}}" {
+	if options.Conventions.TicketRefPattern != "^PROJ-[0-9]+$" || options.Conventions.TicketURLTemplate != "https://tracker.example.test/browse/{{ticket_ref}}" {
 		t.Fatalf("expected ticket URL conventions to map, got %+v", options.Conventions)
 	}
 	if options.Conventions.CommitSummaryTemplate != "complete {{work_task_ref}}" ||
@@ -2876,7 +2876,7 @@ func TestSanitizeGovernedCloseoutRefsKeepsPipelineMovingWithSafeFallback(t *test
 		Outcome:        "ready for review",
 		SafeNextAction: "continue governed decomposition",
 		EvidenceRefs: []string{
-			"/home/mac/rimthan/mass-monorepo/apps/domain/src/module.ts",
+			"/home/mac/rimthan/PROJ-monorepo/apps/domain/src/module.ts",
 			"automation_run:automation_run_21b6e67b5e104c6a",
 			"automation_run:automation_run_21b6e67b5e104c6a",
 		},
@@ -2905,7 +2905,7 @@ func TestSanitizeGovernedCloseoutRefsAddsAutomationRunFallbackWhenWorkerOnlyRetu
 		Outcome:        "ready for review",
 		SafeNextAction: "continue governed decomposition",
 		EvidenceRefs: []string{
-			"/home/mac/rimthan/mass-monorepo/apps/domain/src/module.ts",
+			"/home/mac/rimthan/PROJ-monorepo/apps/domain/src/module.ts",
 			"raw_stderr",
 		},
 	}
@@ -2975,7 +2975,7 @@ func TestParseGovernedCloseoutNormalizesMultilineChildResumeInstructions(t *test
 
 func TestParseGovernedCloseoutNormalizesHumanReadableChildTaskRef(t *testing.T) {
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
-	output.ChildTasks[0].TaskRef = "MASS-1044 Booking Expiry Service"
+	output.ChildTasks[0].TaskRef = "PROJ-1044 Booking Expiry Service"
 	data, err := json.Marshal(output)
 	if err != nil {
 		t.Fatalf("marshal closeout: %v", err)
@@ -2984,7 +2984,7 @@ func TestParseGovernedCloseoutNormalizesHumanReadableChildTaskRef(t *testing.T) 
 	if err != nil {
 		t.Fatalf("parse human-readable child task_ref: %v", err)
 	}
-	if got, want := parsed.ChildTasks[0].TaskRef, "MASS-1044-Booking-Expiry-Service"; got != want {
+	if got, want := parsed.ChildTasks[0].TaskRef, "PROJ-1044-Booking-Expiry-Service"; got != want {
 		t.Fatalf("expected normalized child task_ref %q, got %q", want, got)
 	}
 	if err := validateGovernedCloseoutOutput(parsed, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
@@ -2995,7 +2995,7 @@ func TestParseGovernedCloseoutNormalizesHumanReadableChildTaskRef(t *testing.T) 
 func TestParseGovernedCloseoutNormalizesHumanReadableChildRefLists(t *testing.T) {
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	output.ChildTasks[0].ContextPackRefs = []string{
-		"jira-context:MASS-1044 summary context",
+		"jira-context:PROJ-1044 summary context",
 		"bounded source anchors",
 	}
 	output.ChildTasks[0].DependencyTaskIDs = []string{
@@ -3013,7 +3013,7 @@ func TestParseGovernedCloseoutNormalizesHumanReadableChildRefLists(t *testing.T)
 		t.Fatalf("parse human-readable child ref lists: %v", err)
 	}
 	child := parsed.ChildTasks[0]
-	if got, want := child.ContextPackRefs, []string{"jira-context:MASS-1044-summary-context", "bounded-source-anchors"}; !reflect.DeepEqual(got, want) {
+	if got, want := child.ContextPackRefs, []string{"jira-context:PROJ-1044-summary-context", "bounded-source-anchors"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected normalized context refs %v, got %v", want, got)
 	}
 	if got, want := child.DependencyTaskIDs, []string{"planning-review-task"}; !reflect.DeepEqual(got, want) {
@@ -3029,9 +3029,9 @@ func TestParseGovernedCloseoutNormalizesHumanReadableChildRefLists(t *testing.T)
 
 func TestParseGovernedCloseoutKeepsUnsafeChildTaskRefRejected(t *testing.T) {
 	for name, ref := range map[string]string{
-		"absolute path": "/home/mac/mass-1044",
-		"parent path":   "../mass-1044",
-		"secret":        "mass-1044 token=value",
+		"absolute path": "/home/mac/PROJ-1044",
+		"parent path":   "../PROJ-1044",
+		"secret":        "PROJ-1044 token=value",
 		"empty":         "   ",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -3279,7 +3279,7 @@ func TestGovernedCloseoutFailureCategoryUsesStaticSafeBuckets(t *testing.T) {
 			name: "unsafe path does not leak root",
 			err: governedCloseoutError{
 				category: governedCloseoutValidationFailed,
-				err:      errors.New("unsafe child task path /home/mac/rimthan/mass-monorepo/apps/domain/src/module.ts"),
+				err:      errors.New("unsafe child task path /home/mac/rimthan/PROJ-monorepo/apps/domain/src/module.ts"),
 			},
 			want: governedCloseoutValidationFailed + "_unsafe_child_task_path",
 		},
@@ -5004,10 +5004,10 @@ func TestGovernedChildTaskRunnerAcceptedPayloadsMatchWorkTaskService(t *testing.
 
 func TestGovernedCloseoutResolvesChildTaskRefDependenciesToConcreteIDs(t *testing.T) {
 	parent := validGovernedCloseoutChildTaskForTest()
-	parent.TaskRef = "mass-1044-expired-booking-selector"
+	parent.TaskRef = "PROJ-1044-expired-booking-selector"
 	parent.Title = "Select expired booking candidates"
 	child := validGovernedCloseoutChildTaskForTest()
-	child.TaskRef = "mass-1044-expire-booking-processor"
+	child.TaskRef = "PROJ-1044-expire-booking-processor"
 	child.Title = "Process expired bookings"
 	child.DependencyTaskIDs = []string{parent.TaskRef}
 	output := governedCloseoutOutput{
@@ -5109,8 +5109,8 @@ func TestGovernedCloseoutResolvesChildTaskRefDependenciesToConcreteIDs(t *testin
 
 func TestGovernedCloseoutRejectsUnresolvedChildTaskDependenciesBeforeWrapperAdvance(t *testing.T) {
 	child := validGovernedCloseoutChildTaskForTest()
-	child.TaskRef = "mass-1044-expire-booking-processor"
-	child.DependencyTaskIDs = []string{"mass-1044-missing-selector"}
+	child.TaskRef = "PROJ-1044-expire-booking-processor"
+	child.DependencyTaskIDs = []string{"PROJ-1044-missing-selector"}
 	output := governedCloseoutOutput{
 		CloseoutAction: "needs_review",
 		Outcome:        "decomposed",

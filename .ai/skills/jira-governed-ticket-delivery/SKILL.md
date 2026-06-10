@@ -1,11 +1,11 @@
 ---
 name: jira-governed-ticket-delivery
-description: Run a configured Mivia workflow-chain delivery pipeline for a Jira ticket such as MASS-1044. Use when the user asks to run governed ticket delivery, Jira ticket automation, or the whole pipeline for one ticket through Mivia MCP; do not use live Jira/Confluence connectors unless explicitly overridden.
+description: Run a configured Mivia workflow-chain delivery pipeline for a Jira ticket such as PROJ-1044. Use when the user asks to run governed ticket delivery, Jira ticket automation, or the whole pipeline for one ticket through Mivia MCP; do not use live Jira/Confluence connectors unless explicitly overridden.
 ---
 
 # Jira Governed Ticket Delivery
 
-Use this skill when a user asks to run the configured Mivia governed delivery pipeline for one Jira-style ticket key, for example `MASS-1044`.
+Use this skill when a user asks to run the configured Mivia governed delivery pipeline for one Jira-style ticket key, for example `PROJ-1044`.
 
 ## When To Use
 
@@ -17,8 +17,8 @@ Use this skill when a user asks to run the configured Mivia governed delivery pi
 
 ## Required Inputs
 
-- Target Mivia project id or alias, for example `mass-monorepo`.
-- Ticket key, for example `MASS-1044`.
+- Target Mivia project id or alias, for example `PROJ-monorepo`.
+- Ticket key, for example `PROJ-1044`.
 - Configured chain ref, normally `<PROJECT>-governed-ticket-delivery`.
 
 If project id or chain ref is missing, discover it from Mivia project config and workflow-chain list. Ask only if more than one plausible configured project/chain remains.
@@ -54,7 +54,7 @@ If project id or chain ref is missing, discover it from Mivia project config and
    - use `input_text=<TICKET-KEY>`
    - set a unique `created_by_run_id` and `trace_id`
 4. Inspect the dry-run result:
-   - input ref must be the real ticket, for example `jira:MASS-1044`
+   - input ref must be the real ticket, for example `jira:PROJ-1044`
    - context refs must include local ticket context refs
    - planned stages must include decomposition, implementation, and post-validation
    - no persisted run should exist for dry-run only
