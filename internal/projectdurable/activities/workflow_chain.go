@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/MiviaLabs/go-mivia/internal/projectdurable"
 )
@@ -260,7 +261,7 @@ func (a *WorkflowChainActivities) WriteChainShadowComparison(ctx context.Context
 		if err := projectdurable.ValidateSafeRef(key); err != nil {
 			return projectdurable.DurableActivityResult{}, fmt.Errorf("%w (chain shadow field key)", err)
 		}
-		if err := projectdurable.ValidateSafeSummary(fields[key]); err != nil {
+		if err := validateChainShadowFieldValue(key, fields[key]); err != nil {
 			return projectdurable.DurableActivityResult{}, fmt.Errorf("%w (chain shadow field value)", err)
 		}
 	}
@@ -268,6 +269,16 @@ func (a *WorkflowChainActivities) WriteChainShadowComparison(ctx context.Context
 		return newResult(ActivityWriteChainShadowComparison, projectdurable.ActivityStatusFailed, projectdurable.FailureCategoryNone, "chain shadow comparison write failed", nil)
 	}
 	return newResult(ActivityWriteChainShadowComparison, projectdurable.ActivityStatusOK, projectdurable.FailureCategoryNone, "chain shadow comparison written", []string{"shadow-fields:" + strconv.Itoa(len(fields))})
+}
+
+func validateChainShadowFieldValue(key, value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.HasSuffix(key, "_ref") || strings.HasSuffix(key, "_plan_id") {
+		return projectdurable.ValidateSafeRef(value)
+	}
+	return projectdurable.ValidateSafeSummary(value)
 }
 
 func flattenChainShadowTrace(trace ChainShadowTrace) map[string]string {
