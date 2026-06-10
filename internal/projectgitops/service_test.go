@@ -2747,6 +2747,11 @@ func TestPostTaskBlocksFailedOrPendingPostPRChecks(t *testing.T) {
 			checkOutput:  `[{"name":"CI Success","bucket":"pending","state":"PENDING"}]`,
 			wantCategory: "gitops_downstream_checks_failed_pending_ci_success",
 		},
+		{
+			name:         "empty check output",
+			checkOutput:  ``,
+			wantCategory: "gitops_downstream_checks_failed_no_check_statuses",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sshKey, knownHosts := testGitOpsCredentialFiles(t)

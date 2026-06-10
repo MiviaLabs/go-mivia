@@ -940,6 +940,9 @@ func (svc *Service) verifyPostPRChecks(ctx context.Context, workDir string) ([]s
 		}
 	}
 	result, err := svc.run(ctx, Command{Path: svc.options.GitHubCLIPath, Args: args, Dir: workDir, Env: svc.githubEnv()})
+	if strings.TrimSpace(result.Stdout) == "" {
+		return nil, fmt.Errorf("%w: no_check_statuses", ErrDownstreamChecks)
+	}
 	if parseErr := postPRChecksFailure(result.Stdout); parseErr != nil {
 		return nil, parseErr
 	}
