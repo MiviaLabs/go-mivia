@@ -260,6 +260,9 @@ func (c ControlFlowSnapshot) Validate() error {
 	if err := ValidateRunnerOrder(c.Events); err != nil {
 		return err
 	}
+	if !seenComparison {
+		return fmt.Errorf("%w: durable comparison event is required", ErrParityMetadata)
+	}
 	for _, mutation := range c.DurableMutations {
 		if err := projectdurable.ValidateSafeRef(mutation.Ref); err != nil {
 			return fmt.Errorf("%w: mutation ref", err)
@@ -275,9 +278,13 @@ func ValidateRunnerOrder(events []TraceEvent) error {
 	want := []string{"runner_claim", "runner_execute", "runner_heartbeat", "runner_report"}
 	position := 0
 	for _, event := range events {
-		if position < len(want) && event.Kind == want[position] {
-			position++
+		if !isRunnerEvent(event.Kind) {
+			continue
 		}
+		if position >= len(want) || event.Kind != want[position] {
+			return fmt.Errorf("%w: runner claim/execute/heartbeat/report order changed", ErrParityMetadata)
+		}
+		position++
 	}
 	if position == 0 {
 		return nil
@@ -286,6 +293,15 @@ func ValidateRunnerOrder(events []TraceEvent) error {
 		return fmt.Errorf("%w: runner claim/execute/heartbeat/report order changed", ErrParityMetadata)
 	}
 	return nil
+}
+
+func isRunnerEvent(kind string) bool {
+	switch kind {
+	case "runner_claim", "runner_execute", "runner_heartbeat", "runner_report":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s Snapshot) normalized() Snapshot {

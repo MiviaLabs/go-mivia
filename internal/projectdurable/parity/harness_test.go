@@ -95,15 +95,23 @@ func TestPhase8HarnessRejectsInvalidMissingDuplicateAndStaleMetadata(t *testing.
 
 func TestPhase8HarnessRejectsUnsafeMetadataEverywhere(t *testing.T) {
 	unsafeValues := map[string]string{
-		"raw prompt":       "raw_prompt: build the app",
-		"completion":       "raw_completion: done",
-		"raw stderr":       "raw_stderr: stack trace",
-		"source dump":      "source_dump package main",
-		"provider payload": "provider_payload json",
-		"secret token":     "token=abc123",
-		"filesystem root":  "/home/operator/private",
-		"external URL":     "https://example.invalid/pr/1",
-		"email PII":        "owner@example.com",
+		"raw prompt underscore":       "raw_prompt: build the app",
+		"raw prompt spaced":           "raw prompt: build the app",
+		"completion underscore":       "raw_completion: done",
+		"completion spaced":           "raw completion: done",
+		"raw stderr underscore":       "raw_stderr: stack trace",
+		"raw stderr spaced":           "raw stderr: stack trace",
+		"raw source underscore":       "raw_source package main",
+		"raw source spaced":           "raw source package main",
+		"source dump underscore":      "source_dump package main",
+		"source dump spaced":          "source dump package main",
+		"provider payload underscore": "provider_payload json",
+		"provider payload spaced":     "provider payload json",
+		"secret token":                "token=abc123",
+		"literal secret":              "secret value",
+		"filesystem root":             "/home/operator/private",
+		"external URL":                "https://example.invalid/pr/1",
+		"email PII":                   "owner@example.com",
 	}
 	for name, value := range unsafeValues {
 		t.Run(name+" summary", func(t *testing.T) {
@@ -155,8 +163,17 @@ func TestPhase8HarnessProvesControlFlowIsShadowOnlyAndComparisonLast(t *testing.
 		{"worker enabled durable authoritative", func(s *Snapshot) { s.Control.DurableExecutionAuthoritative = true }},
 		{"durable mutation without approved port", func(s *Snapshot) { s.Control.DurableMutations[0].ApprovedShadowPort = false }},
 		{"durable mutation without current path match", func(s *Snapshot) { s.Control.DurableMutations[0].MatchesCurrentPath = false }},
+		{"missing comparison event", func(s *Snapshot) {
+			s.Control.Events = []TraceEvent{{Kind: "runner_claim"}, {Kind: "runner_execute"}, {Kind: "runner_heartbeat"}, {Kind: "runner_report"}}
+		}},
 		{"runner order changed", func(s *Snapshot) {
 			s.Control.Events = []TraceEvent{{Kind: "runner_claim"}, {Kind: "runner_report"}, {Kind: "runner_execute"}, {Kind: "durable_comparison"}}
+		}},
+		{"runner extra out of order event", func(s *Snapshot) {
+			s.Control.Events = []TraceEvent{{Kind: "runner_claim"}, {Kind: "runner_execute"}, {Kind: "runner_claim"}, {Kind: "runner_heartbeat"}, {Kind: "runner_report"}, {Kind: "durable_comparison"}}
+		}},
+		{"runner leading out of order event", func(s *Snapshot) {
+			s.Control.Events = []TraceEvent{{Kind: "runner_report"}, {Kind: "runner_claim"}, {Kind: "runner_execute"}, {Kind: "runner_heartbeat"}, {Kind: "runner_report"}, {Kind: "durable_comparison"}}
 		}},
 	}
 	for _, tc := range cases {
@@ -182,7 +199,17 @@ func TestPhase8HarnessRepresentsFailureRecoveryAndDownstreamHandoffs(t *testing.
 	current.Chain.StageStatuses["stage:implementation"] = "blocked"
 	current.GitOps.FailureCategories = append(current.GitOps.FailureCategories, "gitops:retryable")
 
-	durable := current
+	durable := fullPhase8Snapshot()
+	durable.Automation.Status = "blocked"
+	durable.Automation.FailureCategory = string(projectdurable.FailureCategoryRunnerUnavailable)
+	durable.Automation.SafeSummary = "runner unavailable retry is bounded"
+	durable.WorkPlan.Status = "blocked"
+	durable.WorkPlan.SafeNextAction = "retry runner claim after lease expiry"
+	durable.WorkTasks[0].Status = "blocked"
+	durable.Chain.Status = "blocked"
+	durable.Chain.StageStatuses["stage:implementation"] = "blocked"
+	durable.GitOps.FailureCategories = append(durable.GitOps.FailureCategories, "gitops:retryable")
+
 	comparison, err := CompareSnapshots("phase8-failure-recovery", current, durable)
 	if err != nil {
 		t.Fatalf("CompareSnapshots returned error: %v", err)
@@ -192,6 +219,40 @@ func TestPhase8HarnessRepresentsFailureRecoveryAndDownstreamHandoffs(t *testing.
 	}
 	if len(current.Chain.CarriedTaskRefs) == 0 || len(current.WorkTasks[0].ArtifactRefs) == 0 {
 		t.Fatalf("scenario must preserve downstream handoff refs: %#v", current)
+	}
+	requireRefs(t, current.WorkTasks[0].VerifierRefs, "verifier:unit")
+	requireRefs(t, current.WorkTasks[0].ReviewRefs, "review:independent")
+	requireRefs(t, current.WorkTasks[0].EvidenceRefs, "evidence:commit", "evidence:outcome")
+	requireRefs(t, current.WorkTasks[0].ContextRefs, "context:pack-1")
+	requireRefs(t, current.WorkTasks[0].ArtifactRefs, "artifact:handoff", "artifact:retry-packet")
+	requireRefs(t, current.Chain.CarriedTaskRefs, "task:implement")
+	requireRefs(t, current.GitOps.FailureCategories, "gitops:retryable")
+
+	cases := []struct {
+		name       string
+		mutate     func(*Snapshot)
+		divergence string
+	}{
+		{"drops verifier refs", func(s *Snapshot) { s.WorkTasks[0].VerifierRefs = nil }, "work_tasks"},
+		{"drops review refs", func(s *Snapshot) { s.WorkTasks[0].ReviewRefs = nil }, "work_tasks"},
+		{"drops evidence refs", func(s *Snapshot) { s.WorkTasks[0].EvidenceRefs = nil }, "work_tasks"},
+		{"drops context refs", func(s *Snapshot) { s.WorkTasks[0].ContextRefs = nil }, "work_tasks"},
+		{"drops artifact handoff refs", func(s *Snapshot) { s.WorkTasks[0].ArtifactRefs = []string{"artifact:handoff"} }, "work_tasks"},
+		{"drops carried task refs", func(s *Snapshot) { s.Chain.CarriedTaskRefs = nil }, "workflow_chain"},
+		{"drops retryable gitops category", func(s *Snapshot) { s.GitOps.FailureCategories = nil }, "gitops"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mutatedDurable := durable
+			tc.mutate(&mutatedDurable)
+			comparison, err := CompareSnapshots(tc.name, current, mutatedDurable)
+			if err != nil {
+				t.Fatalf("CompareSnapshots returned error: %v", err)
+			}
+			if !contains(comparison.Divergences, tc.divergence) {
+				t.Fatalf("expected divergence %q, got %v", tc.divergence, comparison.Divergences)
+			}
+		})
 	}
 }
 
@@ -255,4 +316,13 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func requireRefs(t *testing.T, values []string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !contains(values, want) {
+			t.Fatalf("missing required ref %q in %v", want, values)
+		}
+	}
 }

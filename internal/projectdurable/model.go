@@ -259,17 +259,25 @@ var (
 // the big production sanitizer is not imported.
 var unsafeMarkers = []string{
 	"raw_prompt",
+	"raw prompt",
 	"raw_completion",
+	"raw completion",
 	"raw_stderr",
+	"raw stderr",
 	"raw_source",
+	"raw source",
 	"source_dump",
+	"source dump",
 	"provider_payload",
+	"provider payload",
 	"api_key",
 	"secret",
 	"token=",
 	"password",
+	"credential=",
 	"begin rsa",
 	"begin openssh",
+	"ghp_",
 }
 
 // unsafeRoots are absolute filesystem roots that must never leak into
