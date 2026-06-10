@@ -41,6 +41,7 @@ func TestLadybugStorePersistsChainRunsAcrossStoreInstances(t *testing.T) {
 		AutomationIDs: []string{"automation-validation"},
 		StartedAt:     time.Unix(102, 0).UTC(),
 		CompletedAt:   time.Unix(103, 0).UTC(),
+		BlockedCode:   projectworkflowchain.BlockedCodeActivationFailed,
 		BlockedReason: "gitops_finalize_failed_gitops_runtime_failed",
 	})
 	run.WorkPlanIDs = append(run.WorkPlanIDs, "plan-post-validation")
@@ -62,7 +63,7 @@ func TestLadybugStorePersistsChainRunsAcrossStoreInstances(t *testing.T) {
 	if found.GitOpsAttemptCount != 2 || found.GitOpsFailureCategory != run.GitOpsFailureCategory || found.GitOpsRecoveryStatus != projectworkflowchain.GitOpsRecoveryStatusRepairable || len(found.GitOpsFailureEvidenceRefs) != 2 {
 		t.Fatalf("persisted chain lost GitOps recovery metadata: %#v", found)
 	}
-	if len(found.StageRuns) != 2 || found.StageRuns[1].BlockedReason != "gitops_finalize_failed_gitops_runtime_failed" || found.StageRuns[1].CompletedAt.IsZero() || len(found.StageRuns[1].AutomationIDs) != 1 {
+	if len(found.StageRuns) != 2 || found.StageRuns[1].BlockedCode != projectworkflowchain.BlockedCodeActivationFailed || found.StageRuns[1].BlockedReason != "gitops_finalize_failed_gitops_runtime_failed" || found.StageRuns[1].CompletedAt.IsZero() || len(found.StageRuns[1].AutomationIDs) != 1 {
 		t.Fatalf("persisted chain lost stage handoff metadata: %#v", found.StageRuns)
 	}
 }

@@ -449,7 +449,7 @@ func TestBaselineChainMcpReadModelMatchesStoreAfterBlockedActivation(t *testing.
 		t.Fatalf("MCP read model diverged on stage count: mcp=%#v store=%#v", mcpRun.StageRuns, storeRun.StageRuns)
 	}
 	for i := range storeRun.StageRuns {
-		if mcpRun.StageRuns[i].StageRef != storeRun.StageRuns[i].StageRef || mcpRun.StageRuns[i].Status != storeRun.StageRuns[i].Status || mcpRun.StageRuns[i].BlockedReason != storeRun.StageRuns[i].BlockedReason {
+		if mcpRun.StageRuns[i].StageRef != storeRun.StageRuns[i].StageRef || mcpRun.StageRuns[i].Status != storeRun.StageRuns[i].Status || mcpRun.StageRuns[i].BlockedCode != storeRun.StageRuns[i].BlockedCode || mcpRun.StageRuns[i].BlockedReason != storeRun.StageRuns[i].BlockedReason {
 			t.Fatalf("MCP read model diverged on stage %d:\n mcp=%#v\nstore=%#v", i, mcpRun.StageRuns[i], storeRun.StageRuns[i])
 		}
 	}

@@ -52,6 +52,41 @@ Verified directly against source, git history, and live test runs at HEAD `bffe1
 | Phase 6 SQLite local pilot | DONE 2026-06-10 | `[durable_workflows]` config added with owner-approved enabled shadow defaults; owner follow-up implemented: `worker_enabled=true` by default; backend enum memory/sqlite; safe local SQLite path validation; local SQLite constructor under `internal/projectdurable/store`; tests updated with the default-worker-on expectation |
 | Phases 7-9 (durable pilot) | NOT STARTED | Phase 7 carries the remaining risk: the worker flag defaults on, but any durable runtime hook must remain shadow-only/non-authoritative, must not mutate current workflow/automation/runner state, and must not imply cutover approval |
 
+## Follow-Up Plan: Stable Blocked Reason Codes
+
+Status: implemented locally on 2026-06-11; keep `.ai/tasks/*` local-only unless explicitly approved for commit.
+
+Recommendation: keep the new `StartGovernedIntake` entrypoint and richer `BlockedReason` strings, but do not let external automation branch on the full human/debug string. Add a stable machine-readable blocked code before external callers depend on row 31 behavior.
+
+Scope:
+
+- Added a stable blocked-code field to the workflow-chain read model on `StageRun` as `BlockedCode`.
+- Keep `BlockedReason` as operator-facing detail text and backwards-compatible debug context.
+- Defined a small enum-style set for the known activation failures first:
+  - `missing_carried_implementation_tasks`
+  - `non_ready_carried_implementation_task`
+  - `activation_failed`
+- Mapped activation failures to both fields:
+  - `BlockedCode` receives the stable cause code.
+  - `BlockedReason` may keep strings like `activate_next_stage_failed_missing_carried_implementation_tasks`.
+- Updated MCP/read-model and store tests that expose chain/stage state so operators and automation can read the stable code without parsing text.
+- Preserve metadata-only safety: codes and reasons must not include raw prompts, source dumps, raw stderr, roots, secrets, provider payloads, external URLs, skipped sensitive content, or PII.
+
+Acceptance criteria:
+
+- Existing Phase 8B governed intake tests still pass unchanged.
+- Row 31 tests assert the stable blocked code in addition to the current exact blocked reason.
+- No external automation is updated to branch on `BlockedReason`; any new branching must use `BlockedCode`.
+- Unknown or unclassified activation errors fail closed with `BlockedCode = "activation_failed"` plus safe operator-facing detail in `BlockedReason`.
+- Full verifier ladder passes: `go test -count=1 ./internal/projectworkflowchain ./internal/projectdurable/workflows ./internal/projectdurable/parity` and `go test -count=1 ./...`.
+
+Out of scope until separately approved:
+
+- Cutover from shadow durable behavior to authoritative durable execution.
+- Live Codex/GitHub/Jira E2E.
+- Any Jira or Confluence connector calls.
+- Any change that requires committing `.ai/tasks/*`.
+
 Old-system behavior discovered and pinned during Phase 4 (constraint 22; V2 must do better, parity row 38 "duplicate complete"): a duplicate `CompleteAttempt` with the same claim token against a `verifying` run is accepted idempotently at run level (status/claim unchanged, no second review queued) BUT persists a SECOND attempt row with the same `AttemptNumber` while `run.AttemptCount` stays unchanged (`service.go` CompleteAttempt, verified independently in review). Pinned by `TestDurableExecutionDuplicateCompletionIsIdempotent`. The durable path must not duplicate attempt rows after cutover.
 
 Pre-existing deep coverage discovered during verification. Do NOT duplicate these tests; cite them in the baseline test matrix instead:

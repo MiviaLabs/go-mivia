@@ -227,6 +227,7 @@ func (svc *Service) Start(ctx context.Context, input StartInput) (StartResult, e
 		run.NextAction = "chain blocked while activating first stage"
 		if len(run.StageRuns) > 0 {
 			run.StageRuns[0].Status = StageStatusBlocked
+			run.StageRuns[0].BlockedCode = activationBlockedCode(err)
 			run.StageRuns[0].BlockedReason = activationBlockedReason("activate_first_stage_failed", err)
 		}
 		run.UpdatedAt = svc.now()
@@ -413,6 +414,7 @@ func (svc *Service) HandleWorkPlanStatusChanged(ctx context.Context, change proj
 			for i := range run.StageRuns {
 				if run.StageRuns[i].StageRef == next.StageRef {
 					run.StageRuns[i].Status = StageStatusBlocked
+					run.StageRuns[i].BlockedCode = activationBlockedCode(err)
 					run.StageRuns[i].BlockedReason = activationBlockedReason("activate_next_stage_failed", err)
 				}
 			}
@@ -1639,15 +1641,34 @@ func activationBlockedReason(prefix string, err error) string {
 	if err == nil {
 		return prefix
 	}
-	reason := strings.TrimSpace(err.Error())
-	if idx := strings.LastIndex(reason, ":"); idx >= 0 {
-		reason = strings.TrimSpace(reason[idx+1:])
-	}
-	reason = safeAutomationToken(reason)
+	reason := activationErrorToken(err)
 	if reason == "" {
 		return prefix
 	}
 	return prefix + "_" + reason
+}
+
+func activationBlockedCode(err error) string {
+	reason := activationErrorToken(err)
+	switch {
+	case reason == BlockedCodeMissingCarriedImplementationTasks:
+		return BlockedCodeMissingCarriedImplementationTasks
+	case strings.HasPrefix(reason, BlockedCodeNonReadyCarriedImplementationTask):
+		return BlockedCodeNonReadyCarriedImplementationTask
+	default:
+		return BlockedCodeActivationFailed
+	}
+}
+
+func activationErrorToken(err error) string {
+	if err == nil {
+		return ""
+	}
+	reason := strings.TrimSpace(err.Error())
+	if idx := strings.LastIndex(reason, ":"); idx >= 0 {
+		reason = strings.TrimSpace(reason[idx+1:])
+	}
+	return safeAutomationToken(reason)
 }
 
 func validateJiraTicketContext(issueKey string, result projectintegrations.RichContentReadResult) error {

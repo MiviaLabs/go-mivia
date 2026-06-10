@@ -442,7 +442,7 @@ func TestAdvancingStageBlocksWhenDecompositionProducedNoImplementationChildren(t
 		t.Fatalf("get chain: %v", getErr)
 	}
 	implementation := chainStageRunByRef(t, run, "implementation")
-	if run.Status != ChainStatusBlocked || implementation.Status != StageStatusBlocked || implementation.BlockedReason != "activate_next_stage_failed_missing_carried_implementation_tasks" {
+	if run.Status != ChainStatusBlocked || implementation.Status != StageStatusBlocked || implementation.BlockedCode != BlockedCodeMissingCarriedImplementationTasks || implementation.BlockedReason != "activate_next_stage_failed_missing_carried_implementation_tasks" {
 		t.Fatalf("expected chain blocked before implementation selector can run, got %#v", run)
 	}
 }
@@ -555,8 +555,38 @@ func TestAdvancingStageBlocksNonReadyCarriedImplementationTask(t *testing.T) {
 		t.Fatalf("get chain: %v", getErr)
 	}
 	implementation := chainStageRunByRef(t, run, "implementation")
-	if run.Status != ChainStatusBlocked || implementation.Status != StageStatusBlocked || implementation.BlockedReason != "activate_next_stage_failed_non_ready_carried_implementation_task_blocked" {
+	if run.Status != ChainStatusBlocked || implementation.Status != StageStatusBlocked || implementation.BlockedCode != BlockedCodeNonReadyCarriedImplementationTask || implementation.BlockedReason != "activate_next_stage_failed_non_ready_carried_implementation_task_blocked" {
 		t.Fatalf("expected chain blocked before implementation stage, got %#v", run)
+	}
+}
+
+func TestActivationBlockedCodeUsesStableMachineCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "missing carried implementation tasks",
+			err:  fmt.Errorf("%w: missing_carried_implementation_tasks", ErrInvalidInput),
+			want: BlockedCodeMissingCarriedImplementationTasks,
+		},
+		{
+			name: "non ready carried implementation task",
+			err:  fmt.Errorf("%w: non_ready_carried_implementation_task_blocked", ErrInvalidInput),
+			want: BlockedCodeNonReadyCarriedImplementationTask,
+		},
+		{
+			name: "unknown activation error",
+			err:  fmt.Errorf("%w: dependency_backend_timeout", ErrInvalidInput),
+			want: BlockedCodeActivationFailed,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := activationBlockedCode(tc.err); got != tc.want {
+				t.Fatalf("activation blocked code mismatch: got %q want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -846,7 +876,7 @@ func TestProductionCarryForwardIgnoresDoneSourceOutputTasks(t *testing.T) {
 		t.Fatalf("get chain: %v", getErr)
 	}
 	implementation := chainStageRunByRef(t, run, "implementation")
-	if implementation.Status != StageStatusBlocked || implementation.BlockedReason != "activate_next_stage_failed_missing_carried_implementation_tasks" {
+	if implementation.Status != StageStatusBlocked || implementation.BlockedCode != BlockedCodeMissingCarriedImplementationTasks || implementation.BlockedReason != "activate_next_stage_failed_missing_carried_implementation_tasks" {
 		t.Fatalf("implementation stage should block without carrying done source tasks: %#v", implementation)
 	}
 }

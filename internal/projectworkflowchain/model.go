@@ -46,6 +46,12 @@ const (
 	GitOpsModeDraftPRAfterValidation = "draft_pr_after_post_validation"
 )
 
+const (
+	BlockedCodeActivationFailed                  = "activation_failed"
+	BlockedCodeMissingCarriedImplementationTasks = "missing_carried_implementation_tasks"
+	BlockedCodeNonReadyCarriedImplementationTask = "non_ready_carried_implementation_task"
+)
+
 type Config struct {
 	ProjectID            string        `json:"project_id"`
 	ChainRef             string        `json:"chain_ref"`
@@ -102,6 +108,7 @@ type StageRun struct {
 	AutomationIDs []string  `json:"automation_ids,omitempty"`
 	StartedAt     time.Time `json:"started_at,omitempty"`
 	CompletedAt   time.Time `json:"completed_at,omitempty"`
+	BlockedCode   string    `json:"blocked_code,omitempty"`
 	BlockedReason string    `json:"blocked_reason,omitempty"`
 }
 
