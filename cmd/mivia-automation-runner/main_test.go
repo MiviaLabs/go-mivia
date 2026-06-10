@@ -2936,6 +2936,41 @@ func TestParseGovernedCloseoutNormalizesHumanReadableChildTaskRef(t *testing.T) 
 	}
 }
 
+func TestParseGovernedCloseoutNormalizesHumanReadableChildRefLists(t *testing.T) {
+	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
+	output.ChildTasks[0].ContextPackRefs = []string{
+		"jira-context:MASS-1044 summary context",
+		"bounded source anchors",
+	}
+	output.ChildTasks[0].DependencyTaskIDs = []string{
+		"planning review task",
+	}
+	output.ChildTasks[0].DownstreamImpactRefs = []string{
+		"implementation verifier scope",
+	}
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("marshal closeout: %v", err)
+	}
+	parsed, err := parseGovernedCloseoutOutput(string(data))
+	if err != nil {
+		t.Fatalf("parse human-readable child ref lists: %v", err)
+	}
+	child := parsed.ChildTasks[0]
+	if got, want := child.ContextPackRefs, []string{"jira-context:MASS-1044-summary-context", "bounded-source-anchors"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected normalized context refs %v, got %v", want, got)
+	}
+	if got, want := child.DependencyTaskIDs, []string{"planning-review-task"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected normalized dependency refs %v, got %v", want, got)
+	}
+	if got, want := child.DownstreamImpactRefs, []string{"implementation-verifier-scope"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected normalized downstream refs %v, got %v", want, got)
+	}
+	if err := validateGovernedCloseoutOutput(parsed, runnerWorkTaskMetadata{TaskRef: "decompose-work-plan"}); err != nil {
+		t.Fatalf("normalized child ref lists should validate: %v", err)
+	}
+}
+
 func TestParseGovernedCloseoutKeepsUnsafeChildTaskRefRejected(t *testing.T) {
 	for name, ref := range map[string]string{
 		"absolute path": "/home/mac/mass-1044",

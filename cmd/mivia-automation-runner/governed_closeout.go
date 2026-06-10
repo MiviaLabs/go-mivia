@@ -349,6 +349,9 @@ func normalizeGovernedCloseoutOutputText(output *governedCloseoutOutput) {
 		task.AcceptanceCriteria = normalizeGovernedCloseoutFreeTextList(task.AcceptanceCriteria)
 		task.StopConditions = normalizeGovernedCloseoutFreeTextList(task.StopConditions)
 		task.VerifierLadder = normalizeGovernedCloseoutFreeTextList(task.VerifierLadder)
+		task.ContextPackRefs = normalizeGovernedCloseoutChildTaskRefs(task.ContextPackRefs)
+		task.DependencyTaskIDs = normalizeGovernedCloseoutChildTaskRefs(task.DependencyTaskIDs)
+		task.DownstreamImpactRefs = normalizeGovernedCloseoutChildTaskRefs(task.DownstreamImpactRefs)
 	}
 }
 
@@ -394,6 +397,14 @@ func normalizeGovernedCloseoutChildTaskRef(value string) string {
 		return normalized
 	}
 	return value
+}
+
+func normalizeGovernedCloseoutChildTaskRefs(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, normalizeGovernedCloseoutChildTaskRef(value))
+	}
+	return out
 }
 
 func normalizeGovernedCloseoutFreeTextList(values []string) []string {
