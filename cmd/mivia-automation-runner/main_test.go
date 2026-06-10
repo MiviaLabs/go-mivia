@@ -387,8 +387,11 @@ func TestShouldRunGitOpsPostTaskRequiresCloseoutReady(t *testing.T) {
 	}
 	task.ReviewResultRefs = nil
 	task.ReviewExemptReason = "tiny mechanical task reviewed by policy exemption"
-	if !shouldRunGitOpsPostTask(task) {
-		t.Fatal("GitOps post-task should allow an explicit review exemption")
+	if shouldRunGitOpsPostTask(task) {
+		t.Fatal("GitOps post-task must not allow arbitrary review exemption for write tasks")
+	}
+	if got := gitOpsPostTaskCloseoutFailure(task); got != "automation_task_closeout_missing_review_refs" {
+		t.Fatalf("expected missing review refs failure for arbitrary review exemption, got %q", got)
 	}
 	task = runnerWorkTaskMetadata{
 		TaskRef:                "smoke-draft-pr",
@@ -1162,6 +1165,23 @@ func TestShouldAutoCloseoutMetadataOnlyTaskRejectsFalseGreenGovernanceSteps(t *t
 	}
 	if !shouldAutoCloseoutMetadataOnlyTask(true, runnerWorkTaskMetadata{TaskRef: "review-pr-gitops-readiness-implementation-independent-review"}) {
 		t.Fatal("read-only review gate closeout should remain allowed")
+	}
+}
+
+func TestTaskHasGovernedCloseoutRejectsReadyWriteTaskWithOnlyReviewExemption(t *testing.T) {
+	task := runnerWorkTaskMetadata{
+		Status:             "ready",
+		FilesToEdit:        []string{"internal/foo.go"},
+		EvidenceRefs:       []string{"evidence.implementation"},
+		VerifierResultRefs: []string{"verifier.implementation"},
+		ReviewExemptReason: "operator says review is not needed",
+	}
+	if taskHasGovernedCloseout(task) {
+		t.Fatal("ready write task must not be treated as closeout-ready with only arbitrary review exemption")
+	}
+	task.ReviewResultRefs = []string{"review.implementation.passed"}
+	if !taskHasGovernedCloseout(task) {
+		t.Fatal("ready write task should be closeout-ready after explicit review refs")
 	}
 }
 

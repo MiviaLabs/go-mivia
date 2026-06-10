@@ -759,7 +759,7 @@ func gitOpsPostTaskCloseoutFailure(task runnerWorkTaskMetadata) string {
 	if len(task.VerifierResultRefs) == 0 {
 		return "automation_task_closeout_missing_verifier_refs"
 	}
-	if len(task.ReviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" {
+	if len(task.ReviewResultRefs) == 0 {
 		return "automation_task_closeout_missing_review_refs"
 	}
 	return ""
@@ -1164,7 +1164,7 @@ func taskHasGovernedCloseout(task runnerWorkTaskMetadata) bool {
 	case "needs_review", "verifying", "done", "blocked", "failed", "cancelled", "superseded":
 		return true
 	case "ready":
-		return len(task.EvidenceRefs) > 0 && len(task.VerifierResultRefs) > 0 && (len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "")
+		return len(task.EvidenceRefs) > 0 && len(task.VerifierResultRefs) > 0 && len(task.ReviewResultRefs) > 0
 	case "":
 		return len(task.EvidenceRefs) > 0 || len(task.ClaimRefs) > 0 || len(task.ReviewResultRefs) > 0 || len(task.VerifierResultRefs) > 0
 	default:
