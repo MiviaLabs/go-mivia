@@ -733,14 +733,30 @@ func TestConfigWorkflowTaskProducingStepsHaveGateOrReviewerRole(t *testing.T) {
 					if stepCoveredByRequiredGate(step.ID, requiredGateByID) {
 						continue
 					}
-					if requiredReviewerAgents[step.Agent] {
+					if requiredReviewerAgents[step.Agent] && reviewerOwnedGateTaskExemptionAllowed(workflow.WorkflowRef, step.ID) {
 						continue
 					}
-					t.Fatalf("workflow %s step %s produces work without a required review gate or reviewer-owner exemption", workflow.WorkflowRef, step.ID)
+					t.Fatalf("workflow %s step %s produces work without a required review gate or explicit reviewer-owner exemption", workflow.WorkflowRef, step.ID)
 				}
 			}
 		})
 	}
+}
+
+func reviewerOwnedGateTaskExemptionAllowed(workflowRef string, stepID string) bool {
+	allowed := map[string]map[string]bool{
+		"governed-workplan-implementation": {
+			"analyze-downstream-impact":   true,
+			"review-implementation-batch": true,
+		},
+		"governed-post-implementation-validation": {
+			"validate-regression-and-downstream": true,
+		},
+		"governed-code-review-bug-planning": {
+			"review-candidate-bugs": true,
+		},
+	}
+	return allowed[workflowRef][stepID]
 }
 
 func TestConfigWorkflowRequiredReviewGatesCompileReviewAutomations(t *testing.T) {

@@ -10414,6 +10414,82 @@ func TestCompleteAttemptRequeuesVerifierRepairAfterGitOpsVerificationFailure(t *
 	}
 }
 
+func TestCompleteAttemptRequeuesVerifierRepairForDetailedGitOpsVerifierFailures(t *testing.T) {
+	cases := []string{
+		"gitops_verification_failed_77ad7c8b586e",
+		"gitops_verification_failed_bca012ae7812",
+		"gitops_verification_failed_90869b2644cd",
+		"gitops_verification_failed_10e839274a6c",
+	}
+	for _, failureCategory := range cases {
+		t.Run(failureCategory, func(t *testing.T) {
+			ctx := context.Background()
+			task := readyTask("task-a", "a", []string{"internal/foo.go"})
+			task.Status = projectworkplan.WorkTaskStatusVerifying
+			task.ClaimedByRunID = "run-a"
+			task.EvidenceRefs = []string{"implementation/evidence"}
+			task.VerifierResultRefs = []string{"verifier/focused"}
+			task.ReviewResultRefs = []string{"review/approved"}
+			fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+			store := newTestStore()
+			svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+			svc.codexAvailable = func() bool { return false }
+			automation := createAutomaticTriggerAutomation(t, ctx, svc)
+			now := time.Now().UTC()
+			if _, err := store.CreateRun(ctx, AutomationRun{
+				ID:             "run-a",
+				ProjectID:      automation.ProjectID,
+				AutomationID:   automation.ID,
+				AgentID:        automation.AgentID,
+				PlanID:         task.PlanID,
+				TaskID:         task.ID,
+				WorkTaskStatus: task.Status,
+				Status:         RunStatusRunning,
+				RunnerKind:     RunnerKindCodexCLI,
+				AttemptCount:   2,
+				SafeSummary:    RunSafeSummaryGitOpsPostTaskRecovery,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			}); err != nil {
+				t.Fatalf("CreateRun returned error: %v", err)
+			}
+
+			run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+				ProjectID:       automation.ProjectID,
+				RunID:           "run-a",
+				Status:          RunStatusFailed,
+				FailureCategory: failureCategory,
+				EvidenceRefs:    []string{"gitops-failure:" + failureCategory},
+			})
+			if err != nil {
+				t.Fatalf("CompleteAttempt returned error: %v", err)
+			}
+			if run.Status != RunStatusFailed || run.FailureCategory != "gitops_recovery_failed_requires_verification_repair" || !strings.Contains(run.SafeSummary, failureCategory) {
+				t.Fatalf("expected detailed verifier failure to reroute to bounded repair, got %+v", run)
+			}
+			requeuedTask := fake.tasks[task.ID]
+			if requeuedTask.Status != projectworkplan.WorkTaskStatusReady || requeuedTask.ClaimedByRunID != "" {
+				t.Fatalf("expected task ready for detailed verifier repair, got %+v", requeuedTask)
+			}
+			if !strings.Contains(requeuedTask.ResumeInstructions, failureCategory) || strings.Contains(strings.ToLower(requeuedTask.ResumeInstructions), "rerun implementation") {
+				t.Fatalf("expected focused verifier repair instructions with failure category, got %q", requeuedTask.ResumeInstructions)
+			}
+			if !contains(requeuedTask.EvidenceRefs, "gitops-failure:"+failureCategory) {
+				t.Fatalf("expected requeued task to retain detailed verifier evidence, got %+v", requeuedTask.EvidenceRefs)
+			}
+			queued := 0
+			for _, candidate := range store.runs {
+				if candidate.ID != "run-a" && candidate.TaskID == task.ID && candidate.Status == RunStatusQueued {
+					queued++
+				}
+			}
+			if queued != 1 {
+				t.Fatalf("expected one replacement repair run, got %d runs=%+v", queued, store.runs)
+			}
+		})
+	}
+}
+
 func TestCompleteAttemptBlocksAfterDetailedGitOpsPostTaskRecoveryFailure(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("task-a", "a", []string{"internal/foo.go"})
@@ -10608,6 +10684,67 @@ func TestCompleteAttemptExpandsScopeForParentBarrelOfAllowedEditScope(t *testing
 	}
 	if !strings.Contains(requeuedTask.ResumeInstructions, "apps/domain-booking/src/domain/index.ts") {
 		t.Fatalf("expected resume instructions to name barrel path, got %q", requeuedTask.ResumeInstructions)
+	}
+}
+
+func TestCompleteAttemptBlocksAncestorBarrelOutsideImmediateEditScopeParent(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "a", []string{"apps/domain-booking/src/domain/repositories/booking.repository.interface.ts"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.ClaimedByRunID = "run-a"
+	task.FilesToEdit = []string{"apps/domain-booking/src/domain/repositories"}
+	task.LikelyFilesAffected = []string{"apps/domain-booking/src/infrastructure/database/repositories"}
+	task.EvidenceRefs = []string{"implementation/evidence"}
+	task.VerifierResultRefs = []string{"verifier/focused"}
+	task.ReviewResultRefs = []string{"review/approved"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{"task-a": task}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.codexAvailable = func() bool { return false }
+	automation := createAutomaticTriggerAutomation(t, ctx, svc)
+	now := time.Now().UTC()
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID:             "run-a",
+		ProjectID:      automation.ProjectID,
+		AutomationID:   automation.ID,
+		AgentID:        automation.AgentID,
+		PlanID:         task.PlanID,
+		TaskID:         task.ID,
+		WorkTaskStatus: task.Status,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		AttemptCount:   2,
+		SafeSummary:    RunSafeSummaryGitOpsPostTaskRecovery,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	run, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       automation.ProjectID,
+		RunID:           "run-a",
+		Status:          RunStatusFailed,
+		FailureCategory: "gitops_dirty_worktree_scope",
+		EvidenceRefs:    []string{"gitops-dirty-path:apps/domain-booking/src/index.ts"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if run.Status != RunStatusFailed || run.WorkTaskStatus != projectworkplan.WorkTaskStatusBlocked || run.FailureCategory != "gitops_dirty_worktree_scope_requires_plan" {
+		t.Fatalf("expected ancestor barrel dirty scope to block, got %+v", run)
+	}
+	blockedTask := fake.tasks[task.ID]
+	if blockedTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected task to block for ancestor barrel, got %+v", blockedTask)
+	}
+	if containsString(blockedTask.FilesToEdit, "apps/domain-booking/src/index.ts") {
+		t.Fatalf("ancestor barrel must not be added to files_to_edit, got %+v", blockedTask.FilesToEdit)
+	}
+	for _, candidate := range store.runs {
+		if candidate.ID != "run-a" && candidate.TaskID == task.ID && candidate.Status == RunStatusQueued {
+			t.Fatalf("ancestor barrel must not queue replacement run, got %+v", candidate)
+		}
 	}
 }
 
