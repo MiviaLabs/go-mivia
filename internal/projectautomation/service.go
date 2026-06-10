@@ -2038,6 +2038,9 @@ func (svc *Service) CompleteAttempt(ctx context.Context, input CompleteAttemptIn
 	run.UpdatedAt = now
 	switch status {
 	case RunStatusCompleted:
+		if category := svc.postImplementationReviewCompletionBlocker(ctx, run); category != "" {
+			return svc.blockTaskAfterTerminalAttempt(ctx, run, category)
+		}
 		run.Status = RunStatusVerifying
 		run.SafeSummary = "external_codex_cli_completed_verification_required"
 		if err := svc.queuePostImplementationReview(ctx, run); err != nil {
@@ -2146,6 +2149,34 @@ func (svc *Service) blockTaskAfterTerminalAttempt(ctx context.Context, run Autom
 		return updated, err
 	}
 	return svc.store.UpdateRun(ctx, updated)
+}
+
+func (svc *Service) postImplementationReviewCompletionBlocker(ctx context.Context, run AutomationRun) string {
+	if svc == nil || svc.workTasks == nil || strings.TrimSpace(run.ProjectID) == "" || strings.TrimSpace(run.TaskID) == "" {
+		return ""
+	}
+	reviewTask, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, run.TaskID)
+	if err != nil || !isReviewTask(reviewTask) {
+		return ""
+	}
+	targetID := postImplementationReviewTargetID(reviewTask)
+	if targetID == "" {
+		return ""
+	}
+	target, err := svc.workTasks.GetWorkTask(ctx, run.ProjectID, targetID)
+	if err != nil {
+		return ""
+	}
+	reviewer := firstNonEmpty(run.AgentID, reviewTask.OwnerAgent)
+	owner := strings.TrimSpace(target.OwnerAgent)
+	if reviewer != "" && owner != "" && strings.EqualFold(reviewer, owner) {
+		return "post_implementation_review_self_review"
+	}
+	gate := strings.ToLower(strings.TrimSpace(reviewTask.ReviewGate))
+	if reviewer != "" && strings.Contains(gate, "independent-reviewer-must-not-be-"+strings.ToLower(reviewer)) {
+		return "post_implementation_review_self_review"
+	}
+	return ""
 }
 
 func (svc *Service) failTaskAfterTerminalAttempt(ctx context.Context, run AutomationRun, category string) (AutomationRun, error) {

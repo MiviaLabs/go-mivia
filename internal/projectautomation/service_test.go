@@ -12042,6 +12042,86 @@ func TestCompletedPostImplementationReviewCompletesTargetAndParentRun(t *testing
 	}
 }
 
+func TestCompletedPostImplementationReviewRejectsSelfReviewHandoff(t *testing.T) {
+	ctx := context.Background()
+	target := completedTaskForAutomationRun(readyTask("task-a", "implementation-task", []string{"internal/foo.go"}), "run-parent", []string{"internal/foo.go"}, []string{"evidence.impl", "gitops-commit:abc", "gitops-push:branch", "gitops-pr:draft"}, []string{"claim.impl"}, nil, "implemented")
+	target.OwnerAgent = "implementation-worker"
+	target.AcceptanceCriteria = []string{"implemented behavior is covered"}
+	target.StopConditions = []string{"missing verifier evidence"}
+	target.VerifierLadder = []string{"focused regression test"}
+	target.RegressionApplicability = "required"
+	target.DownstreamImpactRefs = []string{"downstream.impl"}
+	target.OutputContract = "diff and verifier refs"
+	reviewTask := readyTask("review-task-a", "review-implementation-task", []string{"internal/foo.go"})
+	reviewTask.OwnerAgent = "implementation-worker"
+	reviewTask.Status = projectworkplan.WorkTaskStatusNeedsReview
+	reviewTask.ClaimedByRunID = "run-review"
+	reviewTask.EvidenceNeeded = []string{"review-target-task-a", "implementation-task-task-a", "implementation-output-refs"}
+	reviewTask.EvidenceRefs = []string{"evidence.review"}
+	reviewTask.VerifierResultRefs = []string{"verifier.review"}
+	reviewTask.ReviewGate = "independent-reviewer-must-not-be-implementation-worker"
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		target.ID:     target,
+		reviewTask.ID: reviewTask,
+	}}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal, MaxParallelTasks: 1})
+	svc.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	if _, err := store.CreateAutomation(ctx, Automation{ID: "auto-parent", ProjectID: "project-1", AutomationRef: "auto-parent", Status: AutomationStatusEnabled, AgentID: "implementation-worker", PlanID: "plan-1"}); err != nil {
+		t.Fatalf("CreateAutomation parent returned error: %v", err)
+	}
+	if _, err := store.CreateAutomation(ctx, Automation{ID: "auto-review", ProjectID: "project-1", AutomationRef: "auto-review", Status: AutomationStatusEnabled, AgentID: "implementation-worker", PlanID: "plan-1"}); err != nil {
+		t.Fatalf("CreateAutomation review returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-parent", ProjectID: "project-1", AutomationID: "auto-parent", AgentID: "implementation-worker",
+		PlanID: "plan-1", TaskID: target.ID, WorkTaskStatus: target.Status, Status: RunStatusVerifying, RunnerKind: RunnerKindCodexCLI,
+	}); err != nil {
+		t.Fatalf("CreateRun parent returned error: %v", err)
+	}
+	if _, err := store.CreateRun(ctx, AutomationRun{
+		ID: "run-review", ProjectID: "project-1", AutomationID: "auto-review", AgentID: "implementation-worker",
+		PlanID: "plan-1", TaskID: reviewTask.ID, WorkTaskStatus: projectworkplan.WorkTaskStatusInProgress, Status: RunStatusRunning, RunnerKind: RunnerKindCodexCLI,
+		ClaimID: "claim-review", RunnerID: "runner-review", ParentRunID: "run-parent",
+	}); err != nil {
+		t.Fatalf("CreateRun review returned error: %v", err)
+	}
+
+	reviewRun, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:          "project-1",
+		RunID:              "run-review",
+		ClaimID:            "claim-review",
+		RunnerID:           "runner-review",
+		Status:             RunStatusCompleted,
+		VerifierResultRefs: []string{"verifier.review"},
+		EvidenceRefs:       []string{"evidence.review"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if reviewRun.Status != RunStatusBlocked || reviewRun.FailureCategory != "post_implementation_review_self_review" {
+		t.Fatalf("expected blocked self-review run, got %#v", reviewRun)
+	}
+	updatedTarget := fake.tasks[target.ID]
+	if updatedTarget.Status == projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("expected self-reviewed target to remain incomplete, got %#v", updatedTarget)
+	}
+	if containsRef(updatedTarget.ReviewResultRefs, "review_result_task-a_approved") {
+		t.Fatalf("self-review must not attach target review result ref, got %#v", updatedTarget.ReviewResultRefs)
+	}
+	parentRun, err := store.GetRun(ctx, "project-1", "run-parent")
+	if err != nil {
+		t.Fatalf("GetRun parent returned error: %v", err)
+	}
+	if parentRun.Status != RunStatusVerifying {
+		t.Fatalf("expected parent run to stay verifying after rejected self-review, got %#v", parentRun)
+	}
+	blockedReviewTask := fake.tasks[reviewTask.ID]
+	if blockedReviewTask.Status != projectworkplan.WorkTaskStatusBlocked {
+		t.Fatalf("expected self-review task to block, got %#v", blockedReviewTask)
+	}
+}
+
 func TestSubmitRunRejectsUnsafeCallerMetadataBeforeReviewGateQueue(t *testing.T) {
 	ctx := context.Background()
 	reviewTask := readyTask("automation-review", "automation-review", []string{"internal/review.go"})
