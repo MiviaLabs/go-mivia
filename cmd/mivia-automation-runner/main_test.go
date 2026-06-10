@@ -3151,6 +3151,44 @@ func TestValidateGovernedCloseoutRejectsChildTaskMetadataBeforeREST(t *testing.T
 	}
 }
 
+func TestValidateGovernedCloseoutRejectsSelectReadyWithoutConcreteImplementationRefs(t *testing.T) {
+	err := validateGovernedCloseoutOutput(governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		Outcome:        "selected implementation work",
+		SafeNextAction: "review selected ready tasks",
+		EvidenceRefs:   []string{"automation-run-ref"},
+		VerifierRefs:   []string{"verifier-result-ref-selector"},
+		ChildTasks:     nil,
+	}, runnerWorkTaskMetadata{TaskRef: "select-ready-tasks"})
+	if !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutValidationFailed) ||
+		!strings.Contains(err.Error(), "select-ready-tasks missing dependency-status-ref") {
+		t.Fatalf("expected select-ready concrete ref validation failure, got %v", err)
+	}
+}
+
+func TestValidateGovernedCloseoutRequiresVerifierRefsForGovernedSelectorNeedsReview(t *testing.T) {
+	output := governedCloseoutOutput{
+		CloseoutAction: "needs_review",
+		Outcome:        "selected implementation work",
+		SafeNextAction: "review selected ready tasks",
+		EvidenceRefs: []string{
+			"dependency-status-ref-plan-1",
+			"ready-task-list-ref-plan-1",
+			"review-result-ref-select-ready",
+		},
+	}
+	err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "select-ready-tasks"})
+	if !governedCloseoutCategoryHasPrefix(governedCloseoutFailureCategory(err), governedCloseoutValidationFailed) ||
+		!strings.Contains(err.Error(), "select-ready-tasks requires verifier_result_refs") {
+		t.Fatalf("expected missing verifier refs validation failure, got %v", err)
+	}
+
+	output.VerifierRefs = []string{"verifier-result-ref-selector"}
+	if err := validateGovernedCloseoutOutput(output, runnerWorkTaskMetadata{TaskRef: "select-ready-tasks"}); err != nil {
+		t.Fatalf("expected selector closeout with concrete evidence and verifier refs to pass, got %v", err)
+	}
+}
+
 func TestValidateGovernedCloseoutAllowsSafeProhibitionPhrases(t *testing.T) {
 	output := mustParseGovernedCloseout(t, governedCloseoutFixtureJSON())
 	output.ChildTasks[0].FailureCriteria = "block when the output would include raw source"

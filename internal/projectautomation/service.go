@@ -2919,22 +2919,6 @@ func (svc *Service) requeueTaskAfterGovernedCloseoutFailure(ctx context.Context,
 		run.UpdatedAt = svc.now()
 		return svc.store.UpdateRun(ctx, run)
 	}
-	if planUpdater, ok := svc.workTasks.(interface {
-		UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
-	}); ok && planUpdater != nil && strings.TrimSpace(run.PlanID) != "" {
-		if _, err := planUpdater.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
-			ProjectID:      run.ProjectID,
-			PlanID:         run.PlanID,
-			Status:         projectworkplan.WorkPlanStatusActive,
-			RunID:          firstNonEmpty(run.ID, task.ClaimedByRunID),
-			TraceID:        firstNonEmpty(run.TraceID, run.ID),
-			CurrentTaskID:  task.ID,
-			SafeNextAction: "governed_closeout_failed_requeue_implementation",
-			ResumeSummary:  governedCloseoutRecoveryResumeInstructions(category),
-		}); err != nil {
-			return AutomationRun{}, err
-		}
-	}
 	switch task.Status {
 	case projectworkplan.WorkTaskStatusReady, projectworkplan.WorkTaskStatusClaimed, projectworkplan.WorkTaskStatusInProgress, projectworkplan.WorkTaskStatusFailed:
 	default:
@@ -2960,6 +2944,22 @@ func (svc *Service) requeueTaskAfterGovernedCloseoutFailure(ctx context.Context,
 		}
 		run.UpdatedAt = now
 		return svc.store.UpdateRun(ctx, run)
+	}
+	if planUpdater, ok := svc.workTasks.(interface {
+		UpdateWorkPlanStatus(context.Context, projectworkplan.UpdateWorkPlanStatusInput) (projectworkplan.WorkPlan, error)
+	}); ok && planUpdater != nil && strings.TrimSpace(run.PlanID) != "" {
+		if _, err := planUpdater.UpdateWorkPlanStatus(ctx, projectworkplan.UpdateWorkPlanStatusInput{
+			ProjectID:      run.ProjectID,
+			PlanID:         run.PlanID,
+			Status:         projectworkplan.WorkPlanStatusActive,
+			RunID:          firstNonEmpty(run.ID, task.ClaimedByRunID),
+			TraceID:        firstNonEmpty(run.TraceID, run.ID),
+			CurrentTaskID:  task.ID,
+			SafeNextAction: "governed_closeout_failed_requeue_implementation",
+			ResumeSummary:  governedCloseoutRecoveryResumeInstructions(category),
+		}); err != nil {
+			return AutomationRun{}, err
+		}
 	}
 	readyTask, err := updater.UpdateWorkTaskStatus(ctx, projectworkplan.UpdateWorkTaskStatusInput{
 		WorkTaskActionInput: projectworkplan.WorkTaskActionInput{
@@ -5236,8 +5236,8 @@ func (svc *Service) ComputeParallelBatch(ctx context.Context, input ComputeParal
 		if conflict := firstFileConflict(task, usedFiles); conflict != "" {
 			continue
 		}
-		for _, file := range task.LikelyFilesAffected {
-			usedFiles[strings.ToLower(file)] = task.ID
+		for _, file := range taskConflictScopes(task) {
+			usedFiles[file] = task.ID
 		}
 		selected = append(selected, task)
 	}
@@ -6647,16 +6647,29 @@ func refIndicatesNoConfirmedBug(value string) bool {
 }
 
 func firstFileConflict(task projectworkplan.WorkTask, used map[string]string) string {
-	for _, file := range task.LikelyFilesAffected {
-		key := strings.ToLower(strings.TrimSpace(file))
-		if key == "" {
-			continue
-		}
+	for _, key := range taskConflictScopes(task) {
 		if used[key] != "" {
 			return key
 		}
 	}
 	return ""
+}
+
+func taskConflictScopes(task projectworkplan.WorkTask) []string {
+	scopes := make([]string, 0, len(task.FilesToEdit)+len(task.LikelyFilesAffected))
+	seen := map[string]struct{}{}
+	for _, file := range append(append([]string{}, task.FilesToEdit...), task.LikelyFilesAffected...) {
+		key := strings.ToLower(strings.TrimSpace(file))
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		scopes = append(scopes, key)
+	}
+	return scopes
 }
 
 func safeProjectObject(projectID, objectID, field string) (string, string, error) {

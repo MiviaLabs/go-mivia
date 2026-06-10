@@ -6242,6 +6242,40 @@ func TestComputeParallelBatchRejectsConflictingFiles(t *testing.T) {
 	}
 }
 
+func TestComputeParallelBatchRejectsConflictingFilesToEditWhenLikelyFilesMissing(t *testing.T) {
+	ctx := context.Background()
+	taskA := readyTask("task-a", "a", nil)
+	taskA.FilesToEdit = []string{"internal/foo.go"}
+	taskB := readyTask("task-b", "b", nil)
+	taskB.FilesToEdit = []string{"internal/foo.go"}
+	taskC := readyTask("task-c", "c", nil)
+	taskC.FilesToEdit = []string{"internal/bar.go"}
+	fake := &fakeWorkTasks{tasks: map[string]projectworkplan.WorkTask{
+		"task-a": taskA,
+		"task-b": taskB,
+		"task-c": taskC,
+	}}
+	svc := New(newTestStore(), fake, Options{Enabled: true, RunnerEnabled: true, MaxParallelTasks: 3})
+
+	batch, err := svc.ComputeParallelBatch(ctx, ComputeParallelBatchInput{ProjectID: "project-1", PlanID: "plan-1", OrchestratorRunID: "run-orchestrator"})
+	if err != nil {
+		t.Fatalf("ComputeParallelBatch returned error: %v", err)
+	}
+	if len(batch.TaskIDs) != 2 {
+		t.Fatalf("expected 2 non-conflicting tasks, got %#v", batch.TaskIDs)
+	}
+	seen := map[string]bool{}
+	for _, id := range batch.TaskIDs {
+		seen[id] = true
+	}
+	if seen["task-a"] && seen["task-b"] {
+		t.Fatalf("conflicting files_to_edit tasks were batched together: %#v", batch.TaskIDs)
+	}
+	if !seen["task-c"] {
+		t.Fatalf("expected non-conflicting task-c in batch: %#v", batch.TaskIDs)
+	}
+}
+
 func TestComputeParallelBatchSkipsNotReadyTasks(t *testing.T) {
 	ctx := context.Background()
 	notReady := readyTask("task-a", "a", []string{"internal/foo.go"})
@@ -6462,6 +6496,53 @@ func TestExternalClaimAndCompleteAttempt(t *testing.T) {
 	}
 	if len(svc.store.(*testStore).attempts) != 1 {
 		t.Fatalf("expected one attempt, got %d", len(svc.store.(*testStore).attempts))
+	}
+}
+
+func TestGovernedCloseoutRecoveryDoesNotReopenPlanWhenTaskCannotRequeue(t *testing.T) {
+	ctx := context.Background()
+	task := readyTask("task-a", "select-ready-tasks", []string{"configs/workflows/governed-workplan-implementation.toml"})
+	task.Status = projectworkplan.WorkTaskStatusDone
+	task.ClaimedByRunID = "run-a"
+	fake := &fakeWorkTasks{
+		plans: map[string]projectworkplan.WorkPlan{
+			"plan-1": {ID: "plan-1", ProjectID: "project-1", Status: projectworkplan.WorkPlanStatusFailed},
+		},
+		tasks: map[string]projectworkplan.WorkTask{task.ID: task},
+	}
+	store := newTestStore()
+	svc := New(store, fake, Options{Enabled: true, RunnerEnabled: true, RunnerExecution: RunnerExecutionExternal})
+	run := AutomationRun{
+		ID:             "run-a",
+		ProjectID:      "project-1",
+		PlanID:         "plan-1",
+		TaskID:         task.ID,
+		WorkTaskStatus: task.Status,
+		Status:         RunStatusRunning,
+		RunnerKind:     RunnerKindCodexCLI,
+		SafeSummary:    "external_codex_cli_running",
+	}
+	if _, err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun returned error: %v", err)
+	}
+
+	updated, err := svc.CompleteAttempt(ctx, CompleteAttemptInput{
+		ProjectID:       "project-1",
+		RunID:           run.ID,
+		Status:          RunStatusFailed,
+		FailureCategory: "governed_closeout_output_missing",
+	})
+	if err != nil {
+		t.Fatalf("CompleteAttempt returned error: %v", err)
+	}
+	if updated.Status != RunStatusFailed || updated.SafeSummary != "governed_closeout_failed_task_advanced" {
+		t.Fatalf("expected failed non-requeueable closeout recovery, got %#v", updated)
+	}
+	if fake.plans["plan-1"].Status != projectworkplan.WorkPlanStatusFailed {
+		t.Fatalf("non-requeueable closeout failure must not reopen failed plan, got %#v", fake.plans["plan-1"])
+	}
+	if fake.tasks[task.ID].Status != projectworkplan.WorkTaskStatusDone {
+		t.Fatalf("non-requeueable task must remain done, got %#v", fake.tasks[task.ID])
 	}
 }
 

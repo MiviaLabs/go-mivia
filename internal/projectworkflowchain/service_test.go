@@ -506,6 +506,74 @@ func TestAdvancingStageStripsWrapperDependenciesFromCarriedImplementationTasks(t
 	}
 }
 
+func TestAdvancingStageBlocksNonReadyCarriedImplementationTask(t *testing.T) {
+	ctx := context.Background()
+	store := newTestChainStore()
+	workflows := &fakeWorkflowAPI{workflows: enabledWorkflows()}
+	blockedGenerated := projectworkplan.WorkTask{
+		ID:                   "generated-task-1",
+		ProjectID:            "project-1",
+		PlanID:               "plan-decomposition",
+		TaskRef:              "implement-mass-1044-slice",
+		Title:                "Implement MASS-1044 Slice",
+		Status:               projectworkplan.WorkTaskStatusBlocked,
+		OwnerAgent:           "planning-worker",
+		FilesToEdit:          []string{"internal/output.go"},
+		DecompositionQuality: projectworkplan.DecompositionReady,
+		ReviewResultRefs:     []string{"review:implementation-independent-review"},
+	}
+	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
+		"plan-decomposition": {
+			{ID: "select-ready-tasks", ProjectID: "project-1", PlanID: "plan-decomposition", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusReady, DecompositionQuality: projectworkplan.DecompositionReady},
+			blockedGenerated,
+		},
+		"plan-implementation": {
+			{ID: "task-implementation", ProjectID: "project-1", PlanID: "plan-implementation", TaskRef: "select-ready-tasks", Status: projectworkplan.WorkTaskStatusPlanned, DecompositionQuality: projectworkplan.DecompositionReady},
+		},
+	}}
+	automations := &fakeAutomationAPI{}
+	svc := New(store, workflows, workPlans, []Config{testConfig()})
+	svc.SetAutomationAPI(automations)
+	svc.newID = deterministicIDs("workflow_chain_run_1")
+
+	result, err := svc.Start(ctx, StartInput{ProjectID: "project-1", ChainRef: "chain-1", InputText: "GENERIC-1044", CreatedByRunID: "run-1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	err = svc.HandleWorkPlanStatusChanged(ctx, projectworkplan.WorkPlanStatusChange{ProjectID: "project-1", PlanID: "plan-decomposition", NewStatus: projectworkplan.WorkPlanStatusDone})
+	if err == nil || !strings.Contains(err.Error(), "non_ready_carried_implementation_task_blocked") {
+		t.Fatalf("expected non-ready carried task error, got %v", err)
+	}
+	if len(workPlans.createdTasks) != 0 || len(automations.created) != 0 {
+		t.Fatalf("blocked generated task must not be carried or automated, tasks=%#v automations=%#v", workPlans.createdTasks, automations.created)
+	}
+	run, getErr := svc.Get(ctx, "project-1", result.ChainRunID)
+	if getErr != nil {
+		t.Fatalf("get chain: %v", getErr)
+	}
+	implementation := chainStageRunByRef(t, run, "implementation")
+	if run.Status != ChainStatusBlocked || implementation.Status != StageStatusBlocked || implementation.BlockedReason != "activate_next_stage_failed" {
+		t.Fatalf("expected chain blocked before implementation stage, got %#v", run)
+	}
+}
+
+func TestChainStageOutputTaskRejectsUnreviewedDecompositionChild(t *testing.T) {
+	task := projectworkplan.WorkTask{
+		ID:                   "generated-task-1",
+		TaskRef:              "implement-mass-1044-slice",
+		Status:               projectworkplan.WorkTaskStatusPlanned,
+		FilesToEdit:          []string{"internal/projectworkflowchain/service.go"},
+		DecompositionQuality: projectworkplan.DecompositionReady,
+	}
+	if chainStageOutputTask(task, map[string]struct{}{}) {
+		t.Fatal("unreviewed decomposition child must not be eligible for implementation carry-forward")
+	}
+	task.ReviewResultRefs = []string{"review:planning-readiness-approved"}
+	if !chainStageOutputTask(task, map[string]struct{}{}) {
+		t.Fatal("reviewed decomposition child should be eligible for implementation carry-forward")
+	}
+}
+
 func TestAdvancingStagePreservesExternalDependenciesOnCarriedImplementationTasks(t *testing.T) {
 	ctx := context.Background()
 	store := newTestChainStore()
@@ -521,6 +589,7 @@ func TestAdvancingStagePreservesExternalDependenciesOnCarriedImplementationTasks
 		DependencyTaskIDs:       []string{"upstream-external-task"},
 		VerificationRequirement: "focused verifier",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
+		ReviewResultRefs:        []string{"review:planning-readiness-approved"},
 	}
 	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
 		"plan-decomposition": {
@@ -563,6 +632,7 @@ func TestAdvancingStageNormalizesCarriedTaskRefDependenciesToCreatedTaskIDs(t *t
 		FilesToEdit:             []string{"apps/domain-booking/src/repository.ts"},
 		VerificationRequirement: "focused repository verifier",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
+		ReviewResultRefs:        []string{"review:planning-readiness-approved"},
 	}
 	triggerTask := projectworkplan.WorkTask{
 		ID:                      "source-trigger-task",
@@ -575,6 +645,7 @@ func TestAdvancingStageNormalizesCarriedTaskRefDependenciesToCreatedTaskIDs(t *t
 		DependencyTaskIDs:       []string{"mass-1044-expired-booking-repository-query"},
 		VerificationRequirement: "focused trigger verifier",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
+		ReviewResultRefs:        []string{"review:planning-readiness-approved"},
 	}
 	workPlans := &fakeWorkPlans{openTasksByPlan: map[string][]projectworkplan.WorkTask{
 		"plan-decomposition": {
@@ -677,6 +748,7 @@ func TestAdvancingStageBackfillsAutomationForExistingCarriedImplementationTask(t
 		FilesToEdit:             []string{"internal/output.go"},
 		VerificationRequirement: "focused verifier",
 		DecompositionQuality:    projectworkplan.DecompositionReady,
+		ReviewResultRefs:        []string{"review:planning-readiness-approved"},
 		AcceptanceCriteria:      []string{"works"},
 		StopConditions:          []string{"blocked"},
 		VerifierLadder:          []string{"unit"},
@@ -1321,6 +1393,7 @@ func TestRealChainCarriesConcreteChildTaskFromCompletedDecompositionPlan(t *test
 		OwnerAgent:              "developer",
 		FilesToEdit:             []string{"apps/domain-booking/src/infrastructure/database/repositories/booking.repository.ts"},
 		VerificationRequirement: "focused booking repository tests",
+		ReviewResultRefs:        []string{"review:planning-readiness-approved"},
 		VerifierResultRefs:      []string{"verifier:planning-readiness"},
 		DecompositionQuality:    projectworkplan.DecompositionReady,
 		AcceptanceCriteria:      []string{"Expired eligible bookings are selected for cleanup."},
@@ -1404,8 +1477,8 @@ func TestRealChainCarriesConcreteChildTaskFromCompletedDecompositionPlan(t *test
 	if carried.ID == "" || carried.Status != projectworkplan.WorkTaskStatusReady || carried.OwnerAgent != "implementation-worker" {
 		t.Fatalf("concrete child task was not carried ready into implementation plan, child=%#v tasks=%#v", child, implementationTasks)
 	}
-	if !containsString(carried.ReviewResultRefs, "review:carried-from-completed-decomposition-stage") {
-		t.Fatalf("carried child task without direct review refs must receive stage review handoff ref, got %#v", carried.ReviewResultRefs)
+	if !containsString(carried.ReviewResultRefs, "review:planning-readiness-approved") {
+		t.Fatalf("carried child task must preserve direct review refs, got %#v", carried.ReviewResultRefs)
 	}
 	implementation = chainStageRunByRef(t, run, "implementation")
 	if !containsString(implementation.WorkTaskIDs, carried.ID) {

@@ -936,9 +936,39 @@ func validateGovernedCloseoutOutput(output governedCloseoutOutput, wrapper runne
 	if strings.TrimSpace(wrapper.TaskRef) == "decompose-work-plan" && action == "needs_review" && len(output.ChildTasks) == 0 {
 		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("decompose-work-plan requires child_tasks or block")}
 	}
+	if strings.TrimSpace(wrapper.TaskRef) == "select-ready-tasks" && action == "needs_review" {
+		if err := validateSelectReadyCloseoutOutput(output); err != nil {
+			return err
+		}
+	}
 	for _, task := range output.ChildTasks {
 		if err := validateGovernedChildTask(task); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateSelectReadyCloseoutOutput(output governedCloseoutOutput) error {
+	if len(output.ChildTasks) != 0 {
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("select-ready-tasks must not create child_tasks")}
+	}
+	if len(output.VerifierRefs) == 0 {
+		return governedCloseoutError{category: governedCloseoutValidationFailed, err: errors.New("select-ready-tasks requires verifier_result_refs")}
+	}
+	requiredEvidence := []string{"dependency-status-ref", "ready-task-list-ref", "review-result-ref"}
+	foundEvidence := make(map[string]bool, len(requiredEvidence))
+	for _, ref := range output.EvidenceRefs {
+		ref = strings.ToLower(strings.TrimSpace(ref))
+		for _, required := range requiredEvidence {
+			if strings.Contains(ref, required) {
+				foundEvidence[required] = true
+			}
+		}
+	}
+	for _, required := range requiredEvidence {
+		if !foundEvidence[required] {
+			return governedCloseoutError{category: governedCloseoutValidationFailed, err: fmt.Errorf("select-ready-tasks missing %s", required)}
 		}
 	}
 	return nil

@@ -819,8 +819,11 @@ func (svc *Service) carryForwardStageOutputTasks(ctx context.Context, projectID 
 		if strings.TrimSpace(task.TaskRef) != "" {
 			sourceRefs[task.TaskRef] = struct{}{}
 		}
-		if !chainStageOutputTask(task, compiledTaskIDs) {
-			continue
+		if chainStageOutputTaskCandidate(task, compiledTaskIDs) && task.Status != projectworkplan.WorkTaskStatusPlanned && task.Status != projectworkplan.WorkTaskStatusReady {
+			return fmt.Errorf("%w: non_ready_carried_implementation_task_%s", ErrInvalidInput, safeAutomationToken(task.Status))
+		}
+		if chainStageOutputTaskCandidate(task, compiledTaskIDs) && !chainStageOutputTaskHasReviewProof(task) {
+			return fmt.Errorf("%w: unreviewed_carried_implementation_task", ErrInvalidInput)
 		}
 	}
 	carriedCount := 0
@@ -994,6 +997,14 @@ func safeAutomationToken(value string) string {
 }
 
 func chainStageOutputTask(task projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}) bool {
+	if !chainStageOutputTaskCandidate(task, compiledTaskIDs) {
+		return false
+	}
+	return (task.Status == projectworkplan.WorkTaskStatusPlanned || task.Status == projectworkplan.WorkTaskStatusReady) &&
+		chainStageOutputTaskHasReviewProof(task)
+}
+
+func chainStageOutputTaskCandidate(task projectworkplan.WorkTask, compiledTaskIDs map[string]struct{}) bool {
 	if _, compiled := compiledTaskIDs[task.ID]; compiled {
 		return false
 	}
@@ -1006,11 +1017,12 @@ func chainStageOutputTask(task projectworkplan.WorkTask, compiledTaskIDs map[str
 	return task.DecompositionQuality == projectworkplan.DecompositionReady && len(task.FilesToEdit) > 0
 }
 
+func chainStageOutputTaskHasReviewProof(task projectworkplan.WorkTask) bool {
+	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != ""
+}
+
 func carriedTaskCreateInput(projectID string, planID string, run ChainRun, task projectworkplan.WorkTask, status string, dependencyIDs []string) projectworkplan.CreateWorkTaskInput {
 	reviewResultRefs := append([]string(nil), task.ReviewResultRefs...)
-	if len(reviewResultRefs) == 0 && strings.TrimSpace(task.ReviewExemptReason) == "" {
-		reviewResultRefs = append(reviewResultRefs, "review:carried-from-completed-decomposition-stage")
-	}
 	return projectworkplan.CreateWorkTaskInput{
 		ProjectID:               projectID,
 		PlanID:                  planID,
