@@ -6447,7 +6447,7 @@ func taskReadyForAutomationCloseout(task projectworkplan.WorkTask) bool {
 	if len(automationCloseoutVerifierRefs(task)) == 0 {
 		return false
 	}
-	return len(task.ReviewResultRefs) > 0 || strings.TrimSpace(task.ReviewExemptReason) != "" || automationReviewExemptReason(task) != ""
+	return len(task.ReviewResultRefs) > 0 || automationReviewExemptReason(task) != ""
 }
 
 func taskUsesBoundedSmokeGitOpsVerification(task projectworkplan.WorkTask) bool {

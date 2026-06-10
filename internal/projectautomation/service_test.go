@@ -9134,6 +9134,28 @@ func TestRemediationPlannerIsNotReadOnlyScannerCloseoutTask(t *testing.T) {
 	}
 }
 
+func TestTaskReadyForAutomationCloseoutRejectsWriteTaskWithOnlyReviewExemption(t *testing.T) {
+	task := readyTask("task-a", "fix-booking-expiry", []string{"internal/foo.go"})
+	task.Status = projectworkplan.WorkTaskStatusVerifying
+	task.FilesToEdit = []string{"internal/foo.go"}
+	task.EvidenceRefs = []string{"evidence.implementation"}
+	task.VerifierResultRefs = []string{"verifier.implementation"}
+	task.ReviewExemptReason = "operator says review is not needed"
+	if taskReadyForAutomationCloseout(task) {
+		t.Fatalf("write task with arbitrary review exemption must not be closeout-ready: %#v", task)
+	}
+	if taskNeedsGitOpsPostTaskRecovery(AutomationRun{Status: RunStatusVerifying}, task) {
+		t.Fatalf("write task with arbitrary review exemption must not enter GitOps recovery: %#v", task)
+	}
+	task.ReviewResultRefs = []string{"review.implementation.passed"}
+	if !taskReadyForAutomationCloseout(task) {
+		t.Fatalf("write task with explicit review refs should be closeout-ready: %#v", task)
+	}
+	if !taskNeedsGitOpsPostTaskRecovery(AutomationRun{Status: RunStatusVerifying}, task) {
+		t.Fatalf("reviewed write task should enter GitOps recovery: %#v", task)
+	}
+}
+
 func TestClaimNextRunClosesNoConfirmedBugPlannerWithoutSecondaryReview(t *testing.T) {
 	ctx := context.Background()
 	task := readyTask("planner-task", "create-confirmed-bug-work-plans-audit-alpha", []string{"repo-audit-scope"})
